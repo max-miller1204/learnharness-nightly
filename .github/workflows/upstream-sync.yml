@@ -1,0 +1,107 @@
+name: Upstream sync
+
+# Upstream is a feed you choose from, not something that lands on its own.
+# Every hour this mirrors upstream main to the `upstream-main` branch and
+# keeps ONE standing "Sync upstream" PR open into main (or closes it once
+# main contains everything). It never pushes to main. Merge the PR with
+# "Create a merge commit", never squash, so later syncs merge cleanly.
+#
+# Needs the FORK_BOT_TOKEN secret (fine-grained PAT on this fork only:
+# Contents, Pull requests, Issues read/write) so CI runs on the PR.
+# See docs/fork-workflow.md.
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: amosblomqvist/learnharness
+  UPSTREAM_BRANCH: main
+  MIRROR_BRANCH: upstream-main
+
+jobs:
+  sync:
+    if: github.repository == 'max-miller1204/learnharness-nightly'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.FORK_BOT_TOKEN }}
+    steps:
+      - name: Require FORK_BOT_TOKEN
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Add the FORK_BOT_TOKEN secret (docs/fork-workflow.md). PRs opened with the built-in token don't run CI."
+            exit 1
+          fi
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.FORK_BOT_TOKEN }}
+      - name: Mirror upstream
+        run: |
+          git fetch --no-tags "https://github.com/${UPSTREAM_REPO}.git" "${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}"
+          git push --force origin "refs/remotes/upstream/${UPSTREAM_BRANCH}:refs/heads/${MIRROR_BRANCH}"
+      - name: Open, update or close the Sync PR
+        run: |
+          set -euo pipefail
+          upstream="refs/remotes/upstream/${UPSTREAM_BRANCH}"
+          existing=$(gh pr list --head "$MIRROR_BRANCH" --base main --state open --json number --jq '.[0].number // ""')
+          if git merge-base --is-ancestor "$upstream" origin/main; then
+            echo "main already contains upstream."
+            if [ -n "$existing" ]; then
+              gh pr close "$existing" --comment "main already contains everything from upstream. Closing; a new Sync PR opens when upstream moves."
+            fi
+            exit 0
+          fi
+          count=$(git rev-list --count "origin/main..$upstream")
+          title="Sync upstream (${count} new commit$([ "$count" = 1 ] || echo s))"
+          {
+            echo "Upstream \`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\` has ${count} commit(s) that \`main\` doesn't."
+            echo
+            echo "Review what's worth taking. Merge with **Create a merge commit** (never squash or rebase), so the next sync knows these commits are in. Leave it open to skip for now; this PR updates itself every hour."
+            echo
+            echo "**Merge status:** STATUS_PLACEHOLDER"
+            echo
+            echo "### Commits"
+            # Subjects as code: no @mentions, no #links into this fork, and no
+            # "mentioned this" entries on upstream's PRs.
+            git log --no-merges --format='%h%x09%s' "origin/main..$upstream" | head -n 300 |
+              while IFS=$'\t' read -r hash subject; do printf -- '- `%s` %s\n' "${subject//\`/\'}" "$hash"; done
+            prs=$(git log --format='%s %b' "origin/main..$upstream" | grep -o '#[0-9]\+' | sort -u -t'#' -k2n | tr '\n' ' ' || true)
+            if [ -n "$prs" ]; then
+              echo
+              echo "### Upstream PRs referenced"
+              for pr in $prs; do echo "- \`${UPSTREAM_REPO}${pr}\`"; done
+            fi
+          } > body.md
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --title "$title" --body-file body.md
+            number="$existing"
+          else
+            url=$(gh pr create --head "$MIRROR_BRANCH" --base main --title "$title" --body-file body.md)
+            number="${url##*/}"
+          fi
+          # GitHub computes mergeability in the background.
+          state="UNKNOWN"
+          for _ in $(seq 1 12); do
+            state=$(gh pr view "$number" --json mergeable --jq .mergeable)
+            [ "$state" != "UNKNOWN" ] && break
+            sleep 5
+          done
+          case "$state" in
+            MERGEABLE) status="merges cleanly." ;;
+            CONFLICTING) status="**has conflicts.** Resolve them in this PR (or locally on \`${MIRROR_BRANCH}\` merged into a branch from \`main\`)." ;;
+            *) status="GitHub hasn't decided yet; check the PR page." ;;
+          esac
+          sed -i "s|STATUS_PLACEHOLDER|${status//|/\\|}|" body.md
+          gh pr edit "$number" --body-file body.md
+          echo "Sync PR #${number}: ${title} (${state})"

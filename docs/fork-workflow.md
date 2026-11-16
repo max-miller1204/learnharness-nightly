@@ -1,0 +1,59 @@
+# Fork workflow
+
+`max-miller1204/learnharness-nightly` is a curated, fast-moving version of [`amosblomqvist/learnharness`](https://github.com/amosblomqvist/learnharness). Upstream PRs are reviewed and merged here, often before upstream lands them, and new work goes straight to `main`. Upstream is a source of ideas to pick from, not something that lands on its own. Every push to `main` becomes a nightly (see [self-hosting](self-hosting.md)).
+
+## The Sync PR
+
+`.github/workflows/upstream-sync.yml` runs every hour:
+
+1. It mirrors upstream `main` to the `upstream-main` branch (only the bot writes there).
+2. If `main` already contains it, any open Sync PR is closed.
+3. Otherwise it keeps **one** PR, "Sync upstream (N new commits)", open from `upstream-main` into `main`. The body lists the new upstream commits, the upstream PRs they mention, and whether GitHub sees conflicts. CI runs on it.
+
+It never pushes to `main`. Read it, take what's worth taking, and merge with **Create a merge commit** (never squash or rebase) so the next sync knows those commits are in. To take only part of it, branch from `main`, merge or cherry-pick what you want, and leave the Sync PR open; it updates itself.
+
+Upstream often lands a reworked version of a PR you already merged here, so conflicts are expected. Resolve them in the PR, or locally: `git fetch origin upstream-main`, then merge it into a branch from `main`.
+
+## Importing an upstream PR
+
+Run **Actions → Import upstream PR** with the PR number, or locally:
+
+```sh
+selfhost/scripts/import-upstream-pr.sh 674
+```
+
+It pushes the PR's exact commits to `upstream-pr/<N>` (same commit IDs as upstream) and opens or updates a fork PR "[upstream PR N] <title>" that names the original and credits its author. Run it again to pick up new pushes to the upstream PR.
+
+**Merge imported PRs with "Create a merge commit", never squash.** When upstream later merges the same commits, git sees them as already merged and the Sync PR stays clean. (Upstream's maintainer often reworks PRs before landing them; those reworked versions still conflict, and you resolve them once in the Sync PR.)
+
+The bots never ping anyone upstream: upstream PR references are written as code, and an imported PR's original description is copied into a collapsed code block. So no `@mentions` fire, and nothing adds "mentioned this" entries to upstream's timelines.
+
+## FORK_BOT_TOKEN
+
+PRs opened with GitHub's built-in workflow token don't trigger CI, so the sync and import workflows use a fine-grained personal access token:
+
+1. GitHub → Settings → Developer settings → Fine-grained tokens → **Generate new token**.
+2. Resource owner: you. Repository access: **Only select repositories** → `learnharness-nightly`.
+3. Repository permissions: **Contents: Read and write**, **Pull requests: Read and write**, **Issues: Read and write**. Nothing else.
+4. Pick an expiry and generate it.
+5. In the fork: Settings → Secrets and variables → Actions → **New repository secret**, name `FORK_BOT_TOKEN`.
+
+Renew it before it expires; the workflows fail with a clear message when it's missing.
+
+## One-time repository settings
+
+- **Enable Actions on the fork.** GitHub turns off workflows inherited by a fork until you click "I understand my workflows, go ahead and enable them" on the Actions tab. Nothing builds or syncs until then.
+- **Disable inherited workflows** that don't apply to the fork: `gh workflow disable "Desktop release"` and `gh workflow disable notify-website`. (Tags created by the nightly use the built-in token, which can't start other workflows anyway; disabling makes it explicit.)
+- **Allow merge commits** (Settings → General → Pull Requests), since upstream-derived PRs must use them.
+- Optional: `PAUSE_NIGHTLY=true` as a repository variable stops publishing nightlies.
+
+## What lives where
+
+| Path | Purpose |
+|---|---|
+| `selfhost/` | The `lh` launcher, installer, packaging scripts and their tests (`node --test selfhost/tests/*.test.ts`) |
+| `src/server/self-update.ts`, `app/api/updates`, `app/api/health` | The in-app updater and the launcher's health check |
+| `src/server/data-lock.ts` | One server per data folder |
+| `.github/workflows/nightly.yml`, `feed-check.yml` | Build, publish and verify nightlies |
+| `.github/workflows/upstream-sync.yml`, `import-upstream-pr.yml` | Upstream feed and PR intake |
+| [`fork-roadmap.md`](fork-roadmap.md) | Work considered and deliberately deferred |

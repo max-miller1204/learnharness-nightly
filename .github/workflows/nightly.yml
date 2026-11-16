@@ -1,0 +1,207 @@
+name: Nightly (self-hosted server)
+
+# Every push to main builds the self-hosted server for linux-x64 and
+# linux-arm64 and publishes one prerelease (v<version>-nightly.<date>.<run>),
+# all or nothing: typecheck, tests, lint, both bundles and both archive
+# smoke tests must pass. Installs read the fixed `nightly` release's
+# latest.json. See docs/self-hosting.md and docs/fork-workflow.md.
+#
+# Pause with the repository variable PAUSE_NIGHTLY=true.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and smoke-test only; publish nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One nightly at a time, never cancelled mid-publish. GitHub keeps only the
+# newest pending run, which already contains the older commits.
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+  FORK_HOMEPAGE: https://github.com/${{ github.repository }}
+
+jobs:
+  meta:
+    name: Version
+    if: vars.PAUSE_NIGHTLY != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+      skip: ${{ steps.meta.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          base=$(node -p "require('./package.json').version")
+          version="${base}-nightly.$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          shipped=$(gh release download nightly -p latest.json -O - 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).sha)}catch{console.log("")}})' || true)
+          if [ "$shipped" = "$GITHUB_SHA" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "The newest nightly already ships $GITHUB_SHA."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  quality:
+    name: Typecheck, tests, lint
+    needs: meta
+    if: needs.meta.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+          cache: npm
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      - run: npm run plugins:setup
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run lint
+      - name: Launcher tests
+        run: node --test selfhost/tests/*.test.ts
+
+  bundle:
+    name: Bundle (${{ matrix.arch }})
+    needs: meta
+    if: needs.meta.outputs.skip != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: linux-x64
+            node_arch: x64
+          - runner: ubuntu-24.04-arm
+            arch: linux-arm64
+            node_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+          cache: npm
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      - run: npm run plugins:setup
+      - run: npm run build
+        env:
+          LH_VERSION: ${{ env.VERSION }}
+          LH_HOMEPAGE: ${{ env.FORK_HOMEPAGE }}
+      # Same gates as CI and the desktop release, on the host Node.
+      - run: node scripts/smoke-provider-runtime.mjs
+      - run: node scripts/build-server.mjs
+      - run: node scripts/smoke-server.mjs
+      - name: Download the Node runtime that ships in the archive
+        run: |
+          nv=$(node -p process.version)
+          file="node-${nv}-linux-${{ matrix.node_arch }}.tar.xz"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO --retry 3 "https://nodejs.org/dist/${nv}/${file}"
+          curl -fsSLO --retry 3 "https://nodejs.org/dist/${nv}/SHASUMS256.txt"
+          grep " ${file}\$" SHASUMS256.txt | sha256sum -c -
+          tar -xJf "$file"
+          echo "NODE_DIR=$RUNNER_TEMP/node-${nv}-linux-${{ matrix.node_arch }}" >> "$GITHUB_ENV"
+      - name: Assemble the archive
+        run: node selfhost/scripts/package-archive.ts --version "$VERSION" --arch "${{ matrix.arch }}" --node-dir "$NODE_DIR" --standalone .next/standalone --out dist-selfhost
+      - name: Smoke the assembled archive with its bundled Node
+        run: |
+          dir="$RUNNER_TEMP/archive"
+          mkdir -p "$dir"
+          tar -xzf "dist-selfhost/learnharness-${VERSION}-${{ matrix.arch }}.tar.gz" -C "$dir"
+          "$dir/lh" __selftest --expect-version "$VERSION"
+      - name: Launcher tests on this arch
+        run: node --test selfhost/tests/*.test.ts
+      - uses: actions/upload-artifact@v7
+        with:
+          name: selfhost-${{ matrix.arch }}
+          path: dist-selfhost/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish
+    needs: [meta, quality, bundle]
+    if: needs.meta.outputs.skip != 'true' && !inputs.dry_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.meta.outputs.version }}
+      TAG: ${{ needs.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: selfhost-*
+          merge-multiple: true
+          path: dist-selfhost
+      - name: Release notes
+        run: |
+          prev=$(git tag --list 'v*-nightly.*' --sort=-creatordate | head -n 1)
+          {
+            echo "Nightly build of \`${GITHUB_SHA::12}\` from \`main\`."
+            echo
+            echo "Install or update: see [self-hosting](${FORK_HOMEPAGE}/blob/main/docs/self-hosting.md)."
+            echo
+            if [ -n "$prev" ]; then
+              echo "### Changes since $prev"
+              git log --no-merges --format='- %s (%h)' "$prev..$GITHUB_SHA" | head -n 200
+            fi
+          } > notes.md
+      - name: Feed entry
+        run: node selfhost/scripts/make-feed.ts --version "$VERSION" --tag "$TAG" --sha "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" --dir dist-selfhost > dist-selfhost/latest.json
+      - name: Create the prerelease
+        run: |
+          gh release create "$TAG" dist-selfhost/*.tar.gz dist-selfhost/*.sha256 dist-selfhost/latest.json \
+            --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "LearnHarness Nightly $VERSION (${GITHUB_SHA::12})" --notes-file notes.md
+      - name: Point the `nightly` feed at it
+        run: |
+          if ! gh release view nightly >/dev/null 2>&1; then
+            gh release create nightly --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "Nightly feed (install.sh + latest.json)" \
+              --notes "Fixed release for the installer and update feed. Builds live in the v*-nightly.* prereleases. See docs/self-hosting.md."
+          fi
+          cp selfhost/install.sh dist-selfhost/install.sh
+          gh release upload nightly dist-selfhost/latest.json dist-selfhost/install.sh --clobber
+      - name: Prune beyond the newest 30 nightlies
+        run: |
+          gh release list --limit 1000 --json tagName,createdAt --jq '[.[] | select(.tagName | test("^v.*-nightly\\."))] | sort_by(.createdAt) | reverse | .[30:] | .[].tagName' |
+          while read -r old; do
+            [ -n "$old" ] && gh release delete "$old" --yes --cleanup-tag
+          done

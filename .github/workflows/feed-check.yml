@@ -1,0 +1,64 @@
+name: Feed check
+
+# Modeled on T3 Code's update_feed job. Confirms the `nightly` release's
+# latest.json (what installs read) points at the newest published nightly,
+# and that its checksums match that release's files. Repairs it when it
+# doesn't; fails when it can't. Runs after each nightly and once a day, so it
+# also heals a publish that died halfway.
+
+on:
+  workflow_run:
+    workflows: ["Nightly (self-hosted server)"]
+    types: [completed]
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Its own group: sharing `nightly` would let a queued check cancel a queued
+# nightly. Racing a publish is harmless; the repair is idempotent.
+concurrency:
+  group: feed-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Compare and repair
+        run: |
+          set -euo pipefail
+          newest=$(gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName,isDraft,createdAt \
+            --jq '[.[] | select(.isDraft | not) | select(.tagName | test("^v.*-nightly\\."))] | sort_by(.createdAt) | last | .tagName // ""')
+          if [ -z "$newest" ]; then echo "No nightly published yet."; exit 0; fi
+          work=$(mktemp -d)
+          if ! gh release download "$newest" -R "$GITHUB_REPOSITORY" -p 'latest.json' -p '*.sha256' -D "$work/release"; then
+            echo "::notice::$newest has no latest.json yet (still publishing?). Nothing to check."
+            exit 0
+          fi
+          gh release download nightly -R "$GITHUB_REPOSITORY" -p latest.json -O "$work/feed.json" 2>/dev/null || echo '{}' > "$work/feed.json"
+          node - "$work" <<'EOF'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const work = process.argv[2];
+          const entry = JSON.parse(fs.readFileSync(path.join(work, "release", "latest.json"), "utf8"));
+          const feed = JSON.parse(fs.readFileSync(path.join(work, "feed.json"), "utf8"));
+          for (const [arch, asset] of Object.entries(entry.assets)) {
+            const name = path.basename(new URL(asset.url).pathname);
+            const sums = path.join(work, "release", `${name}.sha256`);
+            const actual = fs.readFileSync(sums, "utf8").trim().split(/\s+/)[0];
+            if (actual !== asset.sha256) { console.error(`${entry.tag}: ${arch} checksum in latest.json doesn't match ${name}.sha256`); process.exit(2); }
+          }
+          const same = JSON.stringify(entry) === JSON.stringify(feed);
+          fs.writeFileSync(path.join(work, "verdict"), same ? "ok" : "stale");
+          console.log(same ? `Feed is current: ${entry.tag}.` : `Feed points at ${feed.tag ?? "nothing"}; newest is ${entry.tag}.`);
+          EOF
+          if [ "$(cat "$work/verdict")" = "stale" ]; then
+            echo "::warning::latest.json was stale; repointing it at $newest."
+            gh release upload nightly "$work/release/latest.json" -R "$GITHUB_REPOSITORY" --clobber
+          fi

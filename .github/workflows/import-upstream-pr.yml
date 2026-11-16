@@ -1,0 +1,47 @@
+name: Import upstream PR
+
+# Bring one upstream PR into the fork for review: its exact head commits go
+# to `upstream-pr/<N>` unchanged, and a fork PR into main links the
+# original and credits its author. Running it again updates the branch.
+# Merge these with "Create a merge commit", never squash, so a later
+# upstream version of the same work has the best chance to merge cleanly.
+#
+# Local equivalent: selfhost/scripts/import-upstream-pr.sh <N>
+# Needs FORK_BOT_TOKEN (see docs/fork-workflow.md).
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Upstream PR number"
+        required: true
+        type: number
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: amosblomqvist/learnharness
+
+jobs:
+  import:
+    if: github.repository == 'max-miller1204/learnharness-nightly'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.FORK_BOT_TOKEN }}
+      PR: ${{ inputs.pr }}
+    steps:
+      - name: Require FORK_BOT_TOKEN
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Add the FORK_BOT_TOKEN secret (docs/fork-workflow.md)."
+            exit 1
+          fi
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.FORK_BOT_TOKEN }}
+      - name: Import
+        run: bash selfhost/scripts/import-upstream-pr.sh "$PR"
