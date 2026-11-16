@@ -16,6 +16,8 @@
   <a href="https://discord.gg/5tCHHQEB2e">Discord</a>
 </p>
 
+> **This fork (`learnharness-nightly`)** ships every change on `main` as a nightly self-hosted server for Linux, with automatic, health-checked updates: `curl -fsSL https://github.com/max-miller1204/learnharness-nightly/releases/download/nightly/install.sh | sh`. See [Self-hosting](docs/self-hosting.md), the [fork workflow](docs/fork-workflow.md) and the [fork roadmap](docs/fork-roadmap.md).
+
 LearnHarness uses AI agents to plan and teach lessons from your current understanding to your goal. It builds a detailed picture of what you understand and how you reason. That picture is updated as you learn.
 
 Instead of just giving you an explanation, it uses your answers and thinking to decide what you need next. Teaching builds understanding one reasoning step at a time. Practice makes it usable. A persistent knowledge graph carries it across sessions.
