@@ -48,9 +48,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 						</SidebarProvider>
 					</AppearanceProvider>
 				</PluginsProvider>
+				{/* Auto-update banner (Wave C): fixed card. Inside the events
+				    provider so self-hosted installs refetch on "update-changed". */}
+				<UpdateBanner />
 			</ServerEventsProvider>
-			{/* Auto-update banner (Wave C): fixed card, Electron-only pushes. */}
-			<UpdateBanner />
 		</body>
 		</html>
 	);

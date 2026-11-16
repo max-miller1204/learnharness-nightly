@@ -18,6 +18,7 @@ import { flushSync } from "react-dom";
 import { parseHTML } from "linkedom";
 import UpdateBanner from "../components/update-banner.tsx";
 import type { UpdateState } from "../components/settings/update-settings.tsx";
+import { ServerEventsProvider, type NotifySource } from "../components/server-events.tsx";
 
 // linkedom as the DOM for the interactive pass (first createRoot test in
 // the repo — the banner's push→render→click flow needs real effects).
@@ -79,5 +80,54 @@ describe("update banner (Wave C)", () => {
 		assert.equal(installed, 1, "Restart asks the shell to quit-and-install");
 		root.unmount();
 		host.remove();
+	});
+
+	it("self-hosted (no bridge): reads /api/updates, refetches on update-changed, Restart posts install", async () => {
+		const calls: Array<{ url: string; method: string }> = [];
+		const queue: UpdateState[] = [
+			{ status: "idle", version: null, revision: 1 },
+			{ status: "downloaded", version: "0.6.1-nightly.20261117.2", revision: 3 },
+			// An older reply arriving late must not hide the newer state.
+			{ status: "idle", version: null, revision: 2 },
+		];
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			calls.push({ url: String(input), method: init?.method ?? "GET" });
+			const body = queue.shift() ?? { status: "downloaded", version: "0.6.1-nightly.20261117.2", revision: 4 };
+			return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+		}) as typeof fetch;
+		const handlers = new Map<string, (data: string) => void>();
+		const source: NotifySource = {
+			close: () => {},
+			onOpen: () => {},
+			onEvent: (name, cb) => { handlers.set(name, cb); },
+		};
+		try {
+			const host = document.createElement("div");
+			document.body.appendChild(host);
+			const root = ReactDOMClient.createRoot(host);
+			flushSync(() => root.render(<ServerEventsProvider connect={() => source}><UpdateBanner /></ServerEventsProvider>));
+			await new Promise((r) => setTimeout(r, 0));
+			await new Promise((r) => setTimeout(r, 0));
+			assert.equal(host.innerHTML, "", "idle: hidden");
+			handlers.get("update-changed")?.("{}");
+			await new Promise((r) => setTimeout(r, 0));
+			await new Promise((r) => setTimeout(r, 0));
+			assert.ok(host.innerHTML.includes("0.6.1-nightly.20261117.2"), "the downloaded version renders");
+			assert.ok(host.innerHTML.includes("no agent is working"), "self-hosted wording");
+			handlers.get("update-changed")?.("{}");
+			await new Promise((r) => setTimeout(r, 0));
+			await new Promise((r) => setTimeout(r, 0));
+			assert.ok(host.innerHTML.includes("0.6.1-nightly.20261117.2"), "a stale revision is ignored");
+			const button = host.querySelector<HTMLButtonElement>("[data-testid='update-banner'] button");
+			button!.click();
+			await new Promise((r) => setTimeout(r, 0));
+			assert.deepEqual(calls.at(-1), { url: "/api/updates/install", method: "POST" });
+			assert.ok(calls.slice(0, 3).every((c) => c.url === "/api/updates" && c.method === "GET"));
+			root.unmount();
+			host.remove();
+		} finally {
+			globalThis.fetch = realFetch;
+		}
 	});
 });
