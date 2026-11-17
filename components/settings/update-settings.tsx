@@ -124,6 +124,8 @@ export function useUpdateState() {
 
 export function updateStatusText(state: UpdateState | null, transport: UpdateTransport | null = "desktop"): string | null {
 	if (state?.message) return state.message;
+	// A rollback stays explained here until dismissed, even after a later check clears the message.
+	if (state?.notice && state.status !== "downloaded" && state.status !== "available" && state.status !== "downloading") return state.notice.text;
 	switch (state?.status) {
 		case "checking": return "Checking for updates…";
 		case "available": return state.version ? `Version ${state.version} is available.` : "An update is available.";
@@ -154,7 +156,7 @@ export function UpdateSettings({
 	useEffect(() => setCheckFailed(false), [state]);
 	const active = state !== null && state.status !== "disabled";
 	const busy = state?.status === "checking" || state?.status === "downloading";
-	const status = state?.status === "downloaded" || state?.status === "available" || state?.message ? updateStatusText(state, transport)
+	const status = state?.status === "downloaded" || state?.status === "available" || state?.message || state?.notice ? updateStatusText(state, transport)
 		: failed || checkFailed ? UPDATE_ERROR : updateStatusText(state, transport);
 	const releaseNotes = version && homepage ? `${homepage}/releases/tag/v${version}` : null;
 	const web = transport === "web";

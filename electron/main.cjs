@@ -558,22 +558,38 @@ function downloadUpdateNow() {
 	});
 }
 
+// A quitAndInstall that does not quit (a cancelled admin prompt, a missing
+// installer) leaves the app without its server: relaunch onto the old version.
+const INSTALL_QUIT_GRACE_MS = 10 * 1000;
+
 /** The user confirmed Install: re-check, take a newer build if one appeared, then quit and install. */
 async function installUpdateNow() {
 	if (!autoUpdater || installing || updateState.status !== "downloaded") return;
 	installing = true;
 	const downloaded = updateState.version;
+	let offered = null;
 	try {
 		const result = await autoUpdater.checkForUpdates();
-		const offered = result?.updateInfo?.version;
-		if (typeof offered === "string" && typeof downloaded === "string" && releaseNotes.compareVersions(offered, downloaded) > 0) {
-			log(`install: ${offered} is newer than the downloaded ${downloaded}; downloading it first`);
-			adoptOfferedNotes(result.updateInfo);
-			await autoUpdater.downloadUpdate();
-		}
+		const version = result?.updateInfo?.version;
+		if (typeof version === "string" && typeof downloaded === "string" && releaseNotes.compareVersions(version, downloaded) > 0) offered = result.updateInfo;
 	} catch (err) {
-		// A failed re-check (or newer download) installs what is already downloaded.
+		// A failed re-check (feed unreachable) installs what is already downloaded.
 		log(`install re-check failed: ${err?.message ?? err}; installing ${downloaded}`);
+	}
+	if (offered) {
+		log(`install: ${offered.version} is newer than the downloaded ${downloaded}; downloading it first`);
+		adoptOfferedNotes(offered);
+		try {
+			await autoUpdater.downloadUpdate();
+		} catch (err) {
+			// electron-updater empties its cache when it starts a different version,
+			// so the old download is gone: install nothing, offer the newer one again.
+			log(`install: downloading ${offered.version} failed (${err?.message ?? err}); nothing installed`);
+			installing = false;
+			updateState = { ...updateState, status: "available" };
+			reportUpdateStatus("available", offered.version);
+			return;
+		}
 	}
 	try {
 		releaseNotes.mergeNotesCache(DATA_DIR(), offeredGroups);
@@ -586,7 +602,22 @@ async function installUpdateNow() {
 	} catch {
 		/* already dead */
 	}
-	autoUpdater.quitAndInstall();
+	let quitting = false;
+	const markQuitting = () => { quitting = true; };
+	app.once("before-quit", markQuitting);
+	try {
+		autoUpdater.quitAndInstall();
+	} catch (err) {
+		log(`quitAndInstall failed: ${err?.message ?? err}`);
+	}
+	setTimeout(() => {
+		if (quitting) return;
+		app.removeListener("before-quit", markQuitting);
+		installing = false;
+		log("install did not quit the app; relaunching on the current version");
+		app.relaunch();
+		app.exit(0);
+	}, INSTALL_QUIT_GRACE_MS);
 }
 
 function setupAutoUpdater() {
@@ -841,7 +872,10 @@ async function main() {
 	// and the 4h interval are scheduled after it below. setupAutoUpdater's contract: failures
 	// are log lines — this can never block boot.
 	setupAutoUpdater();
-	ipcMain.on("lh:update-install", () => { void installUpdateNow(); });
+	ipcMain.on("lh:update-install", (event) => {
+		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, new URL(url).origin, BrowserWindow)) return;
+		void installUpdateNow();
+	});
 	ipcMain.handle("lh:update:download", (event) => {
 		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, new URL(url).origin, BrowserWindow)) throw new Error("Untrusted desktop request.");
 		downloadUpdateNow();

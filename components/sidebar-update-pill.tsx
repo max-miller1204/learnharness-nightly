@@ -43,7 +43,7 @@ export function pillAction(state: UpdateState | null): PillAction {
 /** The tooltip, and the popover's title line (T3's wording). */
 export function pillTooltip(state: UpdateState, action: PillAction): string {
 	switch (action) {
-		case "download": return `Update ${state.version ?? "available"} ready to download`;
+		case "download": return "Update ready to download";
 		case "downloading": return "Downloading update";
 		case "install": return `Update ${state.version ?? "ready"} downloaded. Click to restart and install.`;
 		case "dismiss-notice": return state.notice?.text ?? "";
@@ -104,7 +104,7 @@ export function SidebarUpdatePill() {
 			onFocus={(event) => { if (event.currentTarget.matches(":focus-visible")) show(); }}
 			onBlur={hideSoon}
 			className={cn(
-				"inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-foreground outline-hidden ring-ring transition-colors focus-visible:ring-2",
+				"inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-accent text-foreground outline-hidden ring-ring transition-colors focus-visible:ring-2",
 				action === "downloading" ? "cursor-not-allowed opacity-80" : "cursor-pointer hover:bg-accent/70",
 			)}
 		>

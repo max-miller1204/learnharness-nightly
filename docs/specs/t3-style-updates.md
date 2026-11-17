@@ -52,7 +52,7 @@ Answers to my questions: the rollback notice becomes a pill warning state (hover
 - `autoDownload = false`, `autoInstallOnAppQuit = false`, `fullChangelog = true`.
 - Automatic checks: 15 s after launch, then every 4 hours, gated by the toggle as today. Manual checks unchanged.
 - `update-available` sets `available` with the version and notes (no download). New IPC `lh:update:download` (preload `downloadUpdate()`) calls `downloadUpdate()`; progress shows `downloading`; done shows `downloaded`.
-- Install (`lh:update-install`): first re-checks; when the feed offers a version newer than the downloaded one, downloads it, then installs that one; otherwise installs the downloaded one. Before quitting it saves the installed version's notes to the notes cache (section 6) and kills the server first, as today.
+- Install (`lh:update-install`, trusted windows only): first re-checks; when the feed offers a version newer than the downloaded one, downloads it, then installs that one; otherwise installs the downloaded one. A failed re-check (feed unreachable) installs the downloaded one. If downloading the newer one fails, nothing installs and the server keeps running: electron-updater 6.8.9 has already deleted the old download, so the state returns to `available` for the newer version and the user can retry (decided after review, 2026-11-17). Before quitting it saves the installed version's notes to the notes cache (section 6) and kills the server first, as today. If the app has not started quitting 10 s after `quitAndInstall` (a cancelled admin prompt, a missing installer), it relaunches on the current version so it is never left without its server.
 - Notes: `electron/release-notes.cjs`, a port of T3's `apps/desktop/src/updates/releaseNotes.ts` (HTML/markdown stripping, `<details>` cut, 6 groups, 8 items, 220 characters), turns electron-updater's `releaseNotes` (string or per-version array) into `ReleaseNoteGroup[]`, dropping T3's intro/stats/footer extras and channel filter.
 - The rule "a later check must not hide a staged update" stays.
 
@@ -76,7 +76,7 @@ Release notes popover (T3's content): opens on hover or keyboard focus with a 15
 **Settings** (`components/settings/update-settings.tsx`): the button is "Download" for desktop `available`, "Install" (was "Restart") for `downloaded` (opens the confirm dialog), otherwise "Check for updates". Texts:
 - Toggle label "Check for updates automatically". Hint, web: "Check at startup and every 4 hours, and download new versions in the background. Nothing installs until you click Install." Desktop: "Check 15 seconds after launch and every 4 hours. Nothing downloads or installs until you click."
 - Version row hint, web: "Check for updates downloads a newer version. It installs when you click Install." Desktop: "Check for updates looks for a newer version. Download and Install happen when you click them."
-- Status: `available` "Version X is available."; `downloaded` "Version X is ready to install." (both transports); others unchanged.
+- Status: `available` "Version X is available."; `downloaded` "Version X is ready to install." (both transports); a rollback notice's text while it is undismissed and no update is offered; others unchanged.
 
 **Removed**: `components/update-banner.tsx` and its mount in `app/layout.tsx`.
 
@@ -85,9 +85,9 @@ Release notes popover (T3's content): opens on hover or keyboard focus with a 15
 - Data, in the data folder (`config.ts` data root, so "per server": every browser on that server sees the same thing):
   - `release-notes.json`: the notes cache, `{ groups: ReleaseNoteGroup[] }`, newest 30 versions. Written by the self-hosted updater on each check and by Electron main before installing.
   - `updates.json`: `{ lastSeenVersion?: string; dismissedNotice?: string }`, written atomically.
-- GET `/api/whats-new` → `{ version, groups, omittedReleaseCount } | null`. Null when the running version is not an exact version (dev builds), or equals `lastSeenVersion`. With no `lastSeenVersion` (fresh install, or the first build with this feature) it records the running version and returns null, so nobody gets a popup for an install. Groups: cached groups with `lastSeen < version <= running`, newest first, at most 6, same limits.
+- GET `/api/whats-new` → `{ version, releaseNotes, omittedReleaseCount } | null` (`releaseNotes` as in `UpdateState`). Null when the running version is not an exact version (dev builds), or equals `lastSeenVersion`. With no `lastSeenVersion` (fresh install, or the first build with this feature) it records the running version and returns null, so nobody gets a popup for an install. Groups: cached groups with `lastSeen < version <= running`, newest first, at most 6, same limits.
 - POST `/api/whats-new/seen` `{ version }` records it and emits `whats-new-changed`; every open client refetches, so seeing it on one device closes it on the others.
-- Popup (`components/whats-new-dialog.tsx`, HostDialog, mounted in the layout where the banner was): title "What's new in X"; the same sections as the pill popover (shared renderer); with no groups the body is "Updated to version X." and a Read more link to that release. One button "Got it". Any dismissal (button, Esc, backdrop) marks it seen.
+- Popup (`components/whats-new-dialog.tsx`, HostDialog, mounted once in the app shell, inside the dialog providers it needs): title "What's new in X"; the same sections as the pill popover (shared renderer); with no groups the body is "Updated to version X." and a Read more link to that release. One button "Got it". Any dismissal (button, Esc, backdrop) marks it seen.
 
 ### 7. Docs
 

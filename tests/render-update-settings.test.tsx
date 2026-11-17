@@ -151,6 +151,12 @@ describe("General update rows", () => {
 		await click(q(document, "install-update-confirm")); assert.equal(b.calls.install, 1);
 	});
 
+	it("an undismissed rollback stays explained in Settings after a later check clears the message", () => {
+		const notice = { kind: "rolled-back" as const, version: "0.3.8", text: "Update to version 0.3.8 failed to start and was rolled back.", at: 1 };
+		assert.equal(updateStatusText(state({ status: "up-to-date", notice, message: null })), notice.text);
+		assert.equal(updateStatusText(state({ status: "downloaded", version: "0.3.9", notice })), "Version 0.3.9 is ready to install.");
+	});
+
 	it("desktop available offers Download (downloads only on click)", async () => {
 		const b = bridge(); const host = await mount(<UpdateSettings {...props} />);
 		await b.push(state({ status: "available", version: "0.3.8", revision: 1 }));

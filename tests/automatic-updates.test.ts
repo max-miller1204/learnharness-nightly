@@ -34,6 +34,7 @@ function fixture({ packaged = true, updaterMissing = false } = {}) {
 		/** A version the feed offers (update-available), or null for none. */
 		offer: { version: string; releaseNotes?: unknown } | null = null;
 		failure: Error | null = null;
+		downloadFails = false;
 		checkForUpdates() {
 			this.checks++;
 			this.emit("checking-for-update");
@@ -48,6 +49,7 @@ function fixture({ packaged = true, updaterMissing = false } = {}) {
 		downloadUpdate() {
 			this.downloads++;
 			order.push(`download:${this.offer?.version ?? "?"}`);
+			if (this.downloadFails) return Promise.reject(new Error("network dropped"));
 			this.emit("download-progress", { percent: 50 });
 			this.emit("update-downloaded", this.offer ?? { version: "?" });
 			return Promise.resolve([]);
@@ -92,6 +94,8 @@ function fixture({ packaged = true, updaterMissing = false } = {}) {
 		setPath: (_: string, value: string) => { userData = value; },
 		requestSingleInstanceLock: () => false,
 		quit() {},
+		relaunch() { order.push("relaunch"); },
+		exit() { order.push("exit"); },
 		whenReady: async () => {},
 	});
 	const electron = {
@@ -271,6 +275,28 @@ describe("status observation never controls the updater", () => {
 		await f.run("serverProcess = fixtureChild; installUpdateNow()");
 		assert.deepEqual(f.order, ["download:0.3.9", "SIGTERM", "install"]);
 		assert.equal(f.state().version, "0.3.9");
+	});
+
+	it("a failed newer download installs nothing and offers the newer build again", async () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		f.updater.offer = { version: "0.3.9" }; f.updater.downloadFails = true;
+		await f.run("serverProcess = fixtureChild; installUpdateNow()");
+		assert.deepEqual(f.order, ["download:0.3.9"], "the server keeps running and nothing installs");
+		assert.equal(f.state().status, "available"); assert.equal(f.state().version, "0.3.9");
+		f.updater.downloadFails = false;
+		f.run("downloadUpdateNow()");
+		assert.equal(f.state().status, "downloaded", "retry works");
+	});
+
+	it("an install that never quits relaunches the app on the current version", async () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		await f.run("serverProcess = fixtureChild; installUpdateNow()");
+		const grace = f.timeouts.find((t) => t.delay === 10_000);
+		assert.ok(grace, "a quit grace timer is armed");
+		grace.callback();
+		assert.deepEqual(f.order, ["SIGTERM", "install", "relaunch", "exit"]);
 	});
 
 	it("a failed re-check still installs the downloaded build; nothing installs without a download", async () => {
