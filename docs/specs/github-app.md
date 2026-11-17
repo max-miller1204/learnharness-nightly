@@ -96,13 +96,13 @@ Plain UI steps instead of a manifest flow, so the private key goes straight from
 
 ## Verification
 
-1. `gh api /user/installations` shows the App installed on this repo only, with exactly the permissions above.
+1. The owner confirms on the App's settings page that it's installed on this repo only, with exactly the permissions above. (Correction made during the build: `gh api /user/installations` needs an App user token, and a private App's `/apps/<slug>` is not readable, so the API can't show this with a normal `gh` login.) The mint step logs that the token covers only this repository.
 2. Dispatch **Upstream sync** from this PR's branch: the token mints, the mirror push authenticates, and the run ends as today ("main already contains upstream" while that holds).
 3. Dispatch **Import upstream PR** from this PR's branch with small upstream PR 757 (3 files, no workflow changes): `upstream-pr/757` is pushed, a fork PR opens authored by the App, and CI including `Check` starts on it. Run it again to prove the update path. Then close that PR and delete its branch (unless the owner wants to keep it).
 4. CI `Check` green on this PR; one independent review round; a `prove-learnharness` run (a CI-only diff reaches no app surface; prove says so).
 5. After merge, the next scheduled sync on `main` succeeds. Then it's safe to delete `FORK_BOT_TOKEN`.
 
-Not proven live: a push that edits workflow files (no open upstream PR touches them). Step 1 confirms the permission is granted.
+Not proven live: a push that edits workflow files (no open upstream PR touches them). The owner's check in step 1 covers the permission.
 
 ## Out of scope
 
