@@ -1,10 +1,24 @@
 import * as fs from "node:fs/promises";
+import * as nodePath from "node:path";
 import { Type } from "typebox";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute, type ImageFileResult } from "../tool-execute.ts";
 import { resolveSourcePath } from "./fs-shared.ts";
 import { detectSupportedImageMimeTypeFromFile, processImage } from "../image-processing/index.ts";
+import {
+	conversionFailureMessage,
+	convertDocument,
+	detectDocumentFormat,
+	documentFormatFromName,
+	DocumentConversionError,
+	isOleCompound,
+	isPdf,
+	isZip,
+	looksBinary,
+	MAX_DOCUMENT_BYTES,
+	type DocumentFormat,
+} from "../documents/index.ts";
 
 /**
  * The read tool — sources v0 (2026-09): a Node port of pi's read semantics
@@ -23,6 +37,10 @@ import { detectSupportedImageMimeTypeFromFile, processImage } from "../image-pro
  *   toToolResult maps ImageFileResult to pi's ImageContent).
  * - unreadable/missing files throw — pi turns that into an error tool
  *   result the model sees and recovers from.
+ * - documents (docx, xlsx, pptx, odt, ods, odp, rtf, epub, ipynb) are
+ *   converted to text by src/agent/documents/ and paged like text; PDFs,
+ *   old binary Office files and other binaries are refused with a pointer
+ *   (docs/specs/document-converters.md).
  *
  * Usage guidance ships in the description (the self-contained-tools
  * principle, user-decided 2026-09: system prompts reference only
@@ -78,6 +96,36 @@ function readTextSlice(text: string, offset: number | undefined, limit: number |
 	return `${selected.join("\n")}\n\n[Showing lines ${startLine + 1}-${endLineDisplay} of ${totalLines} (${reason}). Use offset=${endLineDisplay + 1} to continue.]`;
 }
 
+const SHEET_HEADING = "## Sheet: ";
+
+/** The header line `read` puts above converted text; spreadsheets list their sheets. */
+function withHeader(text: string, format: DocumentFormat): string {
+	if (format !== "xlsx" && format !== "ods") return `[Converted from ${format} to text.]\n\n${text}`;
+	const lines = text.split("\n");
+	const sheets: Array<{ name: string; line: number; rows: number }> = [];
+	for (const [index, line] of lines.entries()) {
+		if (line.startsWith(SHEET_HEADING)) sheets.push({ name: line.slice(SHEET_HEADING.length), line: index + 3, rows: 0 });
+		else if (sheets.length && line.trim() && !line.startsWith("[Extracted text truncated") && !line.startsWith("[Skipped document part")) sheets.at(-1)!.rows++;
+	}
+	const count = (n: number) => n.toLocaleString("en-US");
+	const index = sheets.map((sheet) => `${sheet.name} (${count(sheet.rows)} ${sheet.rows === 1 ? "row" : "rows"}, line ${count(sheet.line)})`).join(", ");
+	return `[Converted from ${format} to text. Sheets: ${index}]\n\n${text}`;
+}
+
+/** Convert a document for read, or fall back / refuse per the spec. */
+async function readDocument(buffer: Buffer, format: DocumentFormat, name: string, signal?: AbortSignal): Promise<string> {
+	try {
+		return withHeader((await convertDocument(buffer, format, { signal })).text, format);
+	} catch (error) {
+		if (!(error instanceof DocumentConversionError)) throw error;
+		// The two text-based formats stay useful raw when they don't parse.
+		if (error.reason === "invalid" && (format === "rtf" || format === "ipynb") && !looksBinary(buffer)) {
+			return `[Could not convert this as ${format}; showing the raw file.]\n${buffer.toString("utf-8")}`;
+		}
+		throw new Error(conversionFailureMessage(name, format, error.reason));
+	}
+}
+
 /**
  * The read tool, shared verbatim by the prober and the teacher. Sources v1
  * (2026-09-19): the description is pi-verbatim (user: copy tool usage
@@ -95,11 +143,16 @@ export function createReadTool(model?: ReadModel): AgentTool<typeof readInput> {
 	return {
 		name: "read",
 		label: "read",
-		description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50.0KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete. File access settings and protected-location denials apply; use ls without a path to discover allowed folders when restricted.`,
+		description: `Read the contents of a file. Supports text files, images (jpg, png, gif, webp, bmp) and documents (docx, xlsx, pptx, odt, ods, odp, rtf, epub, ipynb). Images are sent as attachments; documents are converted to text. For text files, output is truncated to 2000 lines or 50.0KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete. File access settings and protected-location denials apply; use ls without a path to discover allowed folders when restricted.`,
 		parameters: readInput,
 		execute: serverExecute("read", readInput, async ({ path: rawPath, offset, limit }, { signal }): Promise<string | ImageFileResult> => {
 			const absolute = resolveSourcePath(rawPath);
+			const name = nodePath.basename(absolute);
 			const mime = await detectSupportedImageMimeTypeFromFile(absolute);
+			const named = mime ? undefined : documentFormatFromName(name);
+			if (named && (await fs.stat(absolute)).size > MAX_DOCUMENT_BYTES) {
+				throw new Error(conversionFailureMessage(name, named, "too-large"));
+			}
 			const buffer = await fs.readFile(absolute, { signal });
 			if (mime) {
 				const processed = await processImage(buffer, mime, { resizeOptions: model?.inputLimits?.images?.resize });
@@ -114,6 +167,17 @@ export function createReadTool(model?: ReadModel): AgentTool<typeof readInput> {
 					text: note.join("\n"),
 					...(processed.ok ? { images: [{ data: processed.data, mimeType: processed.mimeType }] } : {}),
 				};
+			}
+			if (isPdf(buffer)) {
+				throw new Error("This is a PDF. read doesn't extract PDFs: dispatch a pdf job with this path and your question.");
+			}
+			const format = detectDocumentFormat(name, buffer);
+			if (format) return readTextSlice(await readDocument(buffer, format, name, signal), offset, limit);
+			if (isOleCompound(buffer)) {
+				throw new Error("This is an old binary Office file (.doc, .xls or .ppt), which read can't convert. Ask the learner to save it as .docx, .xlsx or .pptx.");
+			}
+			if (looksBinary(buffer)) {
+				throw new Error(`${absolute} is ${isZip(buffer) ? "a zip archive" : "a binary file"} and can't be read as text.`);
 			}
 			return readTextSlice(buffer.toString("utf-8"), offset, limit);
 		}),

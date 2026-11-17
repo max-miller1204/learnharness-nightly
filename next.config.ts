@@ -93,6 +93,16 @@ const nextConfig: NextConfig = {
 			"src/agent/image-processing/*.mjs",
 			"src/agent/image-processing/LICENSE",
 			"node_modules/@silvia-odwyer/photon-node/**/*",
+			// Document conversion (docs/specs/document-converters.md) runs in an
+			// unbundled worker too; the tracer can't see a Worker's imports, so
+			// list the worker files and its runtime packages.
+			"src/agent/documents/*.mjs",
+			"src/agent/documents/LICENSE",
+			"node_modules/saxes/**/*",
+			"node_modules/xmlchars/**/*",
+			"node_modules/yauzl/**/*",
+			"node_modules/pend/**/*",
+			"node_modules/character-entities/**/*",
 			// Wave E stage 2: resvg rasterizes visual-maker SVGs natively; same
 			// per-platform-binary story as the canvas above (one per build).
 			"node_modules/@resvg/resvg-js-*/**/*",
