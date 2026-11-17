@@ -5,7 +5,6 @@ import { EllipsisIcon, PuzzleIcon } from "lucide-react";
 import type { PluginAction, PluginActionContext } from "@/src/core";
 import type { FrontendPlugin } from "@/components/plugin-manager";
 import { usePlugins } from "@/components/plugins";
-import { useSidebar } from "@/components/sidebar";
 import { useInteractionLayers } from "@/components/interaction-layers";
 import { MenuShell } from "@/components/menu-shell";
 import { Hint } from "@/components/ui/hint";
@@ -85,13 +84,14 @@ export function PluginSidebarActions({ children }: { children: ReactNode }) {
 
 export function PluginGraphActions() {
 	const { snapshot } = usePlugins();
-	const { open } = useSidebar();
 	const actions = placedPluginActions(snapshot.plugins, GRAPH_CONTEXT);
 	if (!actions.length) return null;
 	// Only buttons intercept canvas input. Wheel events over a button still
 	// bubble to this scroll container; transparent gaps target the canvas.
+	// The offset follows the sidebar attribute on <html> (sidebar-closed:),
+	// so the first paint is already final (components/sidebar-boot.ts).
 	return <div data-testid="plugin-graph-actions" aria-label="Plugin graph actions"
-		className={`lh-plugin-scroll lh-no-drag pointer-events-none absolute bottom-0 left-0 z-10 flex w-[3.25rem] flex-col gap-2 overflow-y-auto p-2 ${open ? "top-0" : "lh-plugin-graph-closed top-11"}`}>
+		className="lh-plugin-scroll lh-no-drag pointer-events-none absolute bottom-0 left-0 z-10 flex w-[3.25rem] flex-col gap-2 overflow-y-auto p-2 lh-plugin-graph-closed top-0 sidebar-closed:top-11">
 		{actions.map(item => <ActionButton key={item.key} item={item} context={GRAPH_CONTEXT} iconOnly
 			className="pointer-events-auto flex size-9 shrink-0 items-center justify-center rounded-xl border bg-card/85 text-muted-foreground shadow-lg backdrop-blur transition-colors hover:bg-accent hover:text-foreground" />)}
 	</div>;

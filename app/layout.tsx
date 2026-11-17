@@ -10,6 +10,7 @@ import { AppearanceProvider } from "@/components/settings/appearance";
 import UpdateBanner from "@/components/update-banner";
 import { PluginsProvider } from "@/components/plugins";
 import { readThemeBoot } from "@/src/server";
+import { SIDEBAR_BOOT_SCRIPT } from "@/components/sidebar-boot";
 
 // Chrome = JetBrains Mono, teaching prose = Source Sans 3, titles = CMU
 // Serif (the bundled lh-cmu @font-face in globals.css — no CDN).
@@ -35,6 +36,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 			style={vars as React.CSSProperties}
 			suppressHydrationWarning
 		>
+			<head>
+				{/* Before the first paint: the sidebar's stored open/closed state
+				    lands on <html> (components/sidebar-boot.ts), so the shell
+				    renders in its final layout with no shift. */}
+				<script dangerouslySetInnerHTML={{ __html: SIDEBAR_BOOT_SCRIPT }} />
+			</head>
 			<body className="min-h-dvh antialiased">
 			{/* The notification channel rides OUTSIDE everything: sidebar, dock,
 				 and pages all subscribe as the polls retire (push S3, 2026-10-02). */}

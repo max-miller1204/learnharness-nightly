@@ -15,11 +15,11 @@ The primary surface: the Next.js app served by the production standalone server 
 
 | Budget | How it is measured | Rule |
 |---|---|---|
-| Console errors | `console` events of type error plus uncaught page errors, with the resource URL | 0 beyond the known list (favicon 404, `/api/stt/token` 503 with no Deepgram key) |
-| CLS | `PerformanceObserver` on `layout-shift` from page start (buffered), summed, input-driven shifts excluded; the reloaded session page is loaded 3 times (`clsSamples`) | `CLS_MODE=relative` (temporary): head median <= highest base sample on the same page + 0.01. `absolute`: head median < 0.1 |
+| Console errors | `console` events of type error plus uncaught page errors, with the resource URL | 0 beyond the known list (`/api/stt/token` 503 with no Deepgram key) |
+| CLS | `PerformanceObserver` on `layout-shift` from page start (buffered), summed, input-driven shifts excluded; the reloaded session page is loaded 3 times (`clsSamples`) | `CLS_MODE=absolute` (the default): head median < 0.1. `relative`: head median <= highest base sample on the same page + 0.01 |
 | Accessibility | axe-core `AXE_CORE_VERSION` injected from `.prove-it/tools/` (`scripts/ensure-axe.sh`) | no serious or critical rule id on a page that base does not also have |
 
-Main's baseline, 2026-11-17: CLS about 0.27 on every page (the sidebar slides open on first load); axe `color-contrast` (serious) everywhere and `button-name` (critical) on a session page; console errors only the two known ones.
+Main's baseline before the first-load polish (docs/specs/polish-first-load.md), 2026-11-17: CLS about 0.27 on every page (the sidebar slid open on first load); axe `color-contrast` (serious) everywhere and `button-name` (critical) on a session page; console errors favicon 404 and the stt 503. That change fixes the first three.
 
 To add a page to a drive, call the drive's `budgetsHere("<label>")` after the page settles, with the same label on base and head.
 

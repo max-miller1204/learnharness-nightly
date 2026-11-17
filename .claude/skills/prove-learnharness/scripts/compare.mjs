@@ -40,7 +40,10 @@ try {
 	process.exit(2);
 }
 const budgets = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "..", "budgets.json"), "utf8")).web;
-const clsMode = process.env.CLS_MODE || "relative";
+// A real CLS_MODE wins; otherwise knobs.env's default (compare.mjs runs as
+// plain `node`, so nothing has sourced knobs.env for it).
+const knobCls = /\$\{CLS_MODE:=([a-z]+)\}/.exec(fs.readFileSync(path.join(import.meta.dirname, "knobs.env"), "utf8"))?.[1];
+const clsMode = process.env.CLS_MODE || knobCls || "relative";
 const lines = [];
 let failed = 0;
 const row = (ok, what, detail) => { if (!ok) failed++; lines.push(`- [${ok ? "PASS" : "FAIL"}] ${what}${detail ? `: ${detail}` : ""}`); };

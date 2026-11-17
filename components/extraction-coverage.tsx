@@ -309,6 +309,8 @@ export function CoverageRing({ chatId, refreshKey = 0 }: { chatId: string; refre
 				<button
 					type="button"
 					data-testid="coverage-ring"
+					// The tooltip's words, as the button's name (axe button-name).
+					aria-label="How much of this session isn't mapped yet"
 					onClick={() => setOpen((o) => !o)}
 					aria-expanded={open}
 					className="relative flex size-5 cursor-pointer items-center justify-center transition-opacity hover:opacity-80"

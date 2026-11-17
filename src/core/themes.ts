@@ -148,7 +148,7 @@ export const BUILTIN_THEMES: readonly Theme[] = [
 		mode: "dark",
 		builtin: true,
 		colors: {
-			background: "#141414", surface: "#1c1c1c", border: "#434343", text: "#e6e6e6", textMuted: "#8d8d8d",
+			background: "#141414", surface: "#1c1c1c", border: "#434343", text: "#e6e6e6", textMuted: "#919191",
 			accent: "#8d8d8d", bold: "#e6e6e6", italic: "#e6e6e6", code: "#e6e6e6",
 			error: "#ef4444", success: "#22c55e", warning: "#f59e0b",
 		},
