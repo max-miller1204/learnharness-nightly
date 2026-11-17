@@ -29,3 +29,8 @@ xai-credentials.json*
 
 # dev-fresh launcher scratch (fresh-user sim): disposable per launch
 .fresh-data/
+
+# prove-learnharness: run evidence and audits stay local; snapshots are committed.
+/.prove-it/runs/
+/.prove-it/audits/
+/.prove-it/tools/

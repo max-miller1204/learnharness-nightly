@@ -1,0 +1,28 @@
+# Web UI
+
+The primary surface: the Next.js app served by the production standalone server (`.next/standalone/server.js`, what ships to self-hosted installs and inside the desktop app).
+
+## How a run drives it
+
+- **Browser:** puppeteer-core (an app dependency, so nothing to install) launching `/usr/bin/google-chrome` headless (`PROVE_CHROME`), with a per-side profile in `$RUN/<side>/chrome-profile` (removed by `stop.sh`). Viewport 1280x900.
+- **Selectors:** `data-testid` first (`composer`, `question-dock`, `session-row`, `ctx-delete`, `delete-session-dialog`, `delete-confirm`, `setup-cta`, `settings-entry`, `new-session`, `new-session-practice`). The composer is `[data-testid="composer"] [contenteditable="true"]`. Question options are `[data-testid="question-dock"] [role="radio"]` (labels are the scenario's text, which is what is under test). Submit is `[data-testid="question-dock"] form button[type="submit"]`. List more with `page.$$eval("[data-testid]", ...)`.
+- **Waiting:** never `networkidle` (`/api/events` streams forever). Wait for a selector or a text with `waitForFunction`.
+- **Session row menu:** right-click the row (retry: it can render before it is interactive), then `ctx-delete`, then `delete-confirm`. Rows have no id attribute, so each drive types a unique goal (`zz-prove-it <nonce> ...`) and matches on it.
+
+## Budgets (answer keys in `budgets.json`)
+
+`web-teach.mjs` measures on each page it drives and `compare.mjs` judges:
+
+| Budget | How it is measured | Rule |
+|---|---|---|
+| Console errors | `console` events of type error plus uncaught page errors, with the resource URL | 0 beyond the known list (favicon 404, `/api/stt/token` 503 with no Deepgram key) |
+| CLS | `PerformanceObserver` on `layout-shift` from page start (buffered), summed, input-driven shifts excluded | `CLS_MODE=relative`: head <= base + 0.01 on the same page. `absolute`: < 0.1 |
+| Accessibility | axe-core `AXE_CORE_VERSION` injected from `.prove-it/tools/` (`scripts/ensure-axe.sh`) | no serious or critical rule id on a page that base does not also have |
+
+Main's baseline, 2026-11-17: CLS about 0.27 on every page (the sidebar slides open on first load); axe `color-contrast` (serious) everywhere and `button-name` (critical) on a session page; console errors only the two known ones.
+
+To add a page to a drive, call the drive's `budgetsHere("<label>")` after the page settles, with the same label on base and head.
+
+## Adding a drive for a new feature
+
+Copy the shape of `scripts/web-teach.mjs`: same instance file, same `result.json` (`steps`, `observations`, `budgets`), so `compare.mjs` works unchanged. Put only base/head-comparable facts in `observations` (no ids, timestamps or nonces; normalize paths with the `<chat>` placeholder). Write the recipe in `features/` once it ran.

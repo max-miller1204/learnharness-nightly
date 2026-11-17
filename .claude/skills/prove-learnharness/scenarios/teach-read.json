@@ -1,0 +1,75 @@
+{
+	"_comment": "Teaching session with one file read and one graded question. Used by web-teach.mjs and the teaching-session recipe. {{env:PROVE_FIXTURE}} is the fixture start.sh writes.",
+	"models": [
+		"prove-strong",
+		"prove-cheap",
+		"prove-vision"
+	],
+	"rules": [
+		{
+			"id": "probe-reads-fixture",
+			"match": {
+				"lastRole": "user",
+				"lastIncludes": "zz-prove-it",
+				"hasTool": "read"
+			},
+			"times": 1,
+			"reply": {
+				"toolCalls": [
+					{
+						"name": "read",
+						"arguments": {
+							"path": "{{env:PROVE_FIXTURE}}"
+						}
+					}
+				]
+			}
+		},
+		{
+			"id": "probe-asks-question",
+			"match": {
+				"lastRole": "tool",
+				"lastIncludes": "PROVE-FIXTURE-SKY",
+				"hasTool": "probe"
+			},
+			"times": 1,
+			"reply": {
+				"toolCalls": [
+					{
+						"name": "probe",
+						"arguments": {
+							"question": "zz-prove-it: which colour of sunlight scatters most in air?",
+							"options": [
+								{
+									"label": "Blue",
+									"value": "blue"
+								},
+								{
+									"label": "Red",
+									"value": "red"
+								}
+							],
+							"explanation": "Rayleigh scattering grows as the wavelength shrinks, so blue scatters most.",
+							"correctAnswer": "blue"
+						}
+					}
+				]
+			}
+		},
+		{
+			"id": "probe-acknowledges-answer",
+			"match": {
+				"lastRole": "tool",
+				"lastIncludes": "\"kind\":\"quiz\"",
+				"hasTool": "probe"
+			},
+			"times": 1,
+			"reply": {
+				"text": "zz-prove-it acknowledged your answer: {{lastText}}"
+			}
+		}
+	],
+	"fallback": {
+		"text": "zz-prove-it fallback reply."
+	}
+}

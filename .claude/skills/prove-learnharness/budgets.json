@@ -1,0 +1,29 @@
+{
+	"_comment": "Answer keys set by the user (2026-11-17). Only the user changes these. Never edit them to make a run pass. CLS_MODE in scripts/knobs.env picks relative or absolute CLS.",
+	"web": {
+		"consoleErrors": {
+			"max": 0,
+			"known": [
+				{
+					"urlEndsWith": "/favicon.ico",
+					"status": 404,
+					"why": "Temporary: the production build serves no favicon. A follow-up PR fixes it and removes this entry."
+				},
+				{
+					"urlEndsWith": "/api/stt/token",
+					"status": 503,
+					"why": "Deliberate in prove instances: no Deepgram key is configured, so dictation token minting answers 503."
+				}
+			]
+		},
+		"cls": {
+			"absoluteMax": 0.1,
+			"relativeNoise": 0.01,
+			"why": "Main scores about 0.27 on every page because the sidebar animates open on first load. Until that is fixed (then set CLS_MODE=absolute), head CLS may not exceed base CLS on the same page plus relativeNoise."
+		},
+		"axe": {
+			"impacts": ["serious", "critical"],
+			"rule": "no serious or critical violation id on a page that the base commit does not also have on that page"
+		}
+	}
+}
