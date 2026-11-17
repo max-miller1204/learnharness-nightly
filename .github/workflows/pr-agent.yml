@@ -53,6 +53,12 @@ jobs:
           # at 128k tokens (the default 32k clips larger diffs).
           config.custom_model_max_tokens: "1048576"
           config.max_model_tokens: "128000"
+          # PR-Agent sets no output cap by default, so a runaway generation ran
+          # for 5 minutes until the upstream provider's limit and came back empty
+          # (finish_reason: length). Cap the completion, and keep reasoning
+          # under half of it so the answer always has room.
+          config.max_output_tokens: "32000"
+          OPENROUTER.REASONING_MAX_TOKENS: "16000"
           # No automatic /describe: it rewrites the PR title and body.
           github_action_config.auto_describe: "false"
           github_action_config.auto_review: "true"

@@ -19,6 +19,7 @@ Upstream often lands a reworked version of a PR you already merged here, so conf
 `.github/workflows/ci.yml` runs on every PR and every push to `main` (design: [specs/ci-foundation.md](specs/ci-foundation.md)). A first `Changes` job reads the PR's diff and skips jobs it can't affect: a docs-only PR runs only lint, and a tests-only PR skips the three standalone builds. Pushes to `main` always run everything. The last job, **`Check`**, passes only when every other job passed or was skipped for that reason.
 
 `main` requires `Check`: a PR merges only when its `Check` is green, and **direct pushes to `main` must now pass `Check` too.** Push to a branch and open a PR instead. A new push to a PR cancels its older CI run.
+Repository admins can bypass the required `Check` (GitHub's default; the rule doesn't enforce it for admins).
 
 The nightly starts only after CI passes on a push to `main`, and builds that exact commit.
 
