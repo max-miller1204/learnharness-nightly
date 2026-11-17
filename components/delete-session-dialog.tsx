@@ -79,7 +79,8 @@ export function DeleteSessionDialog({
 		try {
 			const res = await fetch(`/api/chats/${chat.id}?mode=${mode}`, { method: "DELETE" });
 			settle(res.ok);
-			const body = (await res.json()) as {
+			// An unreadable body never undoes a delete the status confirmed.
+			const body = (await res.json().catch(() => ({}))) as {
 				ok?: boolean;
 				error?: string;
 				code?: string;
