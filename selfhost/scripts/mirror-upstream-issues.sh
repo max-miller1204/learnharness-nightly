@@ -32,12 +32,16 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 today=$(date -u +%F)
 
+# Each write is followed by a pause (1 second, or the first argument) to stay
+# under GitHub's secondary write limits.
 write() {
+	local pause=1
+	[[ "$1" =~ ^[0-9]+$ ]] && { pause=$1; shift; }
 	if [ -n "$DRY_RUN" ]; then
 		echo "DRY_RUN: $*"
 	else
 		"$@" >/dev/null
-		sleep 1 # Stay well under GitHub's secondary write limits.
+		sleep "$pause"
 	fi
 }
 
@@ -111,13 +115,14 @@ def fit($cs; $keep; $cut):
 	else (.body |= .[:((length * 9 / 10) | floor)]) | fit($cs; 0; true) end;
 fit($comments[0]; $comments[0] | length; false)
 JQ
-	title=$(jq -r '"[upstream issue \(.number)] \(.title)"' "$tmp/issue.json")
+	title=$(jq -r '"[upstream issue \(.number)] \(.title[:230])"' "$tmp/issue.json") # GitHub caps titles at 256
 	mapfile -t labels < <(jq -r --slurpfile have "$tmp/fork-labels.json" '
 		["upstream"] + [.labels[] | select(. as $l | $have[0] | index($l))]
 		+ (if .state == "closed" then ["upstream-closed"] else [] end) | unique | .[]' "$tmp/issue.json")
 	label_args=()
 	for l in "${labels[@]}"; do label_args+=(--label "$l"); done
-	write gh issue create -R "$FORK_REPO" --title "$title" --body-file "$tmp/body.md" "${label_args[@]}"
+	# Issue creation also has an anti-spam check that rejects fast bulk creates.
+	write 3 gh issue create -R "$FORK_REPO" --title "$title" --body-file "$tmp/body.md" "${label_args[@]}"
 	if [ -n "$DRY_RUN" ] && [ -n "$ONLY" ]; then cat "$tmp/body.md"; fi
 	created=$((created + 1))
 done 3< <(jq -r --argjson max "$MAX_NEW" '.[:$max][] | .number' "$tmp/todo.json")

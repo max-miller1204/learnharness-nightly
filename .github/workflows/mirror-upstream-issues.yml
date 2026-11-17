@@ -32,6 +32,10 @@ concurrency:
 env:
   UPSTREAM_REPO: amosblomqvist/learnharness
   FORK_REPO: ${{ github.repository }}
+  # Issues above this are mirrored even if already closed; at or below it
+  # (the backfill), only open ones.
+  NEW_AFTER: "792"
+  MAX_NEW: "100"
 
 jobs:
   mirror:
@@ -39,7 +43,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      ISSUE: ${{ inputs.issue || '751' }} # TEMP
+      ISSUE: ${{ inputs.issue }}
     steps:
       - uses: actions/checkout@v7
         with:

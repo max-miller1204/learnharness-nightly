@@ -49,7 +49,7 @@ The bots never ping anyone upstream: upstream PR references are written as code,
 - The hidden first line of a mirror's body (`<!-- upstream-issue: amosblomqvist/learnharness#N -->`) is how the job finds it. Keep that line, or the next run mirrors the issue again.
 - Like the imports, nothing pings upstream: references and authors are written as code and the copied text sits in code blocks.
 
-To mirror one issue now (even an older closed one), run **Actions → Mirror upstream issues** with its number, or locally `selfhost/scripts/mirror-upstream-issues.sh 751`. `DRY_RUN=1` prints what a run would do without writing.
+To mirror one issue now (even an older closed one), run **Actions → Mirror upstream issues** with its number, or locally `selfhost/scripts/mirror-upstream-issues.sh <N>`. With `DRY_RUN=1` in front, it prints what it would do (and the body) without writing. If a manual run shows as cancelled, a scheduled run took its queue slot; run it again.
 
 ## Fork bot (GitHub App)
 
@@ -96,5 +96,5 @@ The workflows fail with a clear message when either secret is missing. To replac
 | `.github/workflows/pr-agent.yml` | Advisory AI review on PRs |
 | `.github/workflows/nightly.yml`, `feed-check.yml` | Build, publish and verify nightlies |
 | `.github/workflows/upstream-sync.yml`, `import-upstream-pr.yml`, `mirror-upstream-issues.yml` | Upstream feed, PR intake and issue mirror (scripts in `selfhost/scripts/`) |
-| `.github/actions/fork-bot-token/` | Mints the fork bot App token for workflows that push or open PRs |
+| `.github/actions/fork-bot-token/` | Mints the fork bot App token for workflows that push, open PRs or mirror issues |
 | [`fork-roadmap.md`](fork-roadmap.md) | Work considered and deliberately deferred |
