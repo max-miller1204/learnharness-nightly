@@ -193,6 +193,15 @@ describe("read tool: documents", () => {
 		});
 	});
 
+	it("points a PDF at the pdf job even when it is large and named like a document", async () => {
+		const file = path.join(tmp, "bigpdf.docx");
+		fs.writeFileSync(file, "%PDF-1.7\n");
+		fs.truncateSync(file, 16 * 1024 * 1024 + 1);
+		await assert.rejects(() => run({ path: file }), {
+			message: "This is a PDF. read doesn't extract PDFs: dispatch a pdf job with this path and your question.",
+		});
+	});
+
 	it("refuses old binary Office files with a save-as hint", async () => {
 		const file = path.join(tmp, "old.doc");
 		fs.writeFileSync(file, Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(512)]));

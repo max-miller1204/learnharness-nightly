@@ -97,6 +97,19 @@ function readTextSlice(text: string, offset: number | undefined, limit: number |
 }
 
 const SHEET_HEADING = "## Sheet: ";
+const PDF_MESSAGE = "This is a PDF. read doesn't extract PDFs: dispatch a pdf job with this path and your question.";
+
+/** The first bytes of a file, for signature checks before a full read. */
+async function readHead(absolute: string, length: number): Promise<Buffer> {
+	const handle = await fs.open(absolute, "r");
+	try {
+		const head = Buffer.alloc(length);
+		const { bytesRead } = await handle.read(head, 0, length, 0);
+		return head.subarray(0, bytesRead);
+	} finally {
+		await handle.close();
+	}
+}
 
 /** The header line `read` puts above converted text; spreadsheets list their sheets. */
 function withHeader(text: string, format: DocumentFormat): string {
@@ -151,6 +164,8 @@ export function createReadTool(model?: ReadModel): AgentTool<typeof readInput> {
 			const mime = await detectSupportedImageMimeTypeFromFile(absolute);
 			const named = mime ? undefined : documentFormatFromName(name);
 			if (named && (await fs.stat(absolute)).size > MAX_DOCUMENT_BYTES) {
+				// The PDF check comes first (spec read flow step 2), even for a large file.
+				if (isPdf(await readHead(absolute, 8))) throw new Error(PDF_MESSAGE);
 				throw new Error(conversionFailureMessage(name, named, "too-large"));
 			}
 			const buffer = await fs.readFile(absolute, { signal });
@@ -169,7 +184,7 @@ export function createReadTool(model?: ReadModel): AgentTool<typeof readInput> {
 				};
 			}
 			if (isPdf(buffer)) {
-				throw new Error("This is a PDF. read doesn't extract PDFs: dispatch a pdf job with this path and your question.");
+				throw new Error(PDF_MESSAGE);
 			}
 			const format = detectDocumentFormat(name, buffer);
 			if (format) return readTextSlice(await readDocument(buffer, format, name, signal), offset, limit);
