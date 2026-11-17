@@ -33,7 +33,7 @@ runs:
         path: |
           node_modules
           plugins/*/node_modules
-        key: deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.node }}-${{ hashFiles('package.json', 'package-lock.json', 'plugins/*/package.json', 'plugins/*/package-lock.json') }}
+        key: deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.node }}-${{ hashFiles('package.json', 'package-lock.json', 'plugins/*/package.json', 'plugins/*/package-lock.json') }}
 
     - name: Install
       if: steps.restore.outputs.cache-hit != 'true'
@@ -56,7 +56,9 @@ runs:
           plugins/*/node_modules
         key: ${{ steps.restore.outputs.cache-primary-key }}
 
-    # The plugin SDK types come from repo source, not the lockfiles.
+    # The plugin SDK types come from repo source, not the lockfiles. This also
+    # relinks each plugin's learnharness-plugin-api -> .sdk link, which a
+    # Windows restore loses (npm makes it a junction with an absolute target).
     - name: Generate plugin SDK types
       if: steps.restore.outputs.cache-hit == 'true'
       shell: bash
