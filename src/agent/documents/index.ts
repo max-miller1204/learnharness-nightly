@@ -1,0 +1,289 @@
+import { createHash } from "node:crypto";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { MAX_INPUT, TRUNCATED } from "./document-text.mjs";
+
+/**
+ * The document converter layer (docs/specs/document-converters.md): one
+ * entry point for every caller that needs the text of an Office,
+ * OpenDocument, RTF, EPUB or Jupyter file. `read` uses it today; the
+ * Extract files import route (roadmap item 26) calls the same two
+ * functions with the uploaded bytes:
+ *
+ *   const format = detectDocumentFormat(file.name, bytes);
+ *   if (format) text = (await convertDocument(bytes, format)).text;
+ *
+ * The extraction itself is T3 Code's converter (./document-text.mjs, MIT)
+ * run in a child process with T3's limits: two at once, 15 s, 192 MB heap.
+ * A process, not a worker thread: an out-of-memory inside a Node worker
+ * thread can abort the whole server, while a child only takes itself down.
+ * Results (and rejections) are cached in memory by content hash.
+ */
+
+export const DOCUMENT_FORMATS = ["docx", "xlsx", "pptx", "odt", "ods", "odp", "rtf", "epub", "ipynb"] as const;
+export type DocumentFormat = (typeof DOCUMENT_FORMATS)[number];
+export const MAX_DOCUMENT_BYTES: number = MAX_INPUT;
+
+export type DocumentConversionReason = "too-large" | "invalid" | "encrypted" | "empty" | "timeout" | "failed";
+
+export class DocumentConversionError extends Error {
+	readonly reason: DocumentConversionReason;
+	constructor(reason: DocumentConversionReason, detail?: string) {
+		super(detail ? `Document conversion failed (${reason}): ${detail}` : `Document conversion failed (${reason})`);
+		this.name = "DocumentConversionError";
+		this.reason = reason;
+	}
+}
+
+/** The message a caller shows for a failed conversion of `name`. */
+export function conversionFailureMessage(name: string, format: DocumentFormat, reason: DocumentConversionReason): string {
+	switch (reason) {
+		case "too-large":
+			return `${name} is larger than 16 MiB, the limit for converting documents.`;
+		case "encrypted":
+			return `${name} is password-protected or encrypted, so its text can't be read.`;
+		case "invalid":
+			return `${name} isn't a valid ${format} file.`;
+		case "empty":
+			return `${name} has no text to read.`;
+		case "timeout":
+			return `Converting ${name} took longer than 15 s and was stopped.`;
+		case "failed":
+			return `Could not convert ${name} to text.`;
+	}
+}
+
+// ─── Signatures ─────────────────────────────────────────────────────────────
+
+const startsWith = (bytes: Uint8Array, signature: readonly number[]) => signature.every((byte, i) => bytes[i] === byte);
+const ascii = (text: string) => [...text].map((char) => char.charCodeAt(0));
+
+export const isPdf = (bytes: Uint8Array): boolean => startsWith(bytes, ascii("%PDF-"));
+export const isZip = (bytes: Uint8Array): boolean => startsWith(bytes, [0x50, 0x4b, 0x03, 0x04]);
+/** OLE compound file: old .doc/.xls/.ppt, and also password-protected OOXML. */
+export const isOleCompound = (bytes: Uint8Array): boolean => startsWith(bytes, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+/** The Extract files check: a NUL byte in the first 8 KB. */
+export const looksBinary = (bytes: Uint8Array): boolean => bytes.subarray(0, 8192).includes(0);
+
+const MIMETYPES: Record<string, DocumentFormat> = {
+	"application/vnd.oasis.opendocument.text": "odt",
+	"application/vnd.oasis.opendocument.spreadsheet": "ods",
+	"application/vnd.oasis.opendocument.presentation": "odp",
+	"application/epub+zip": "epub",
+};
+const OOXML_PARTS: Array<[string, DocumentFormat]> = [
+	["word/document.xml", "docx"],
+	["xl/workbook.xml", "xlsx"],
+	["ppt/presentation.xml", "pptx"],
+];
+
+function zipFormat(bytes: Uint8Array): DocumentFormat | undefined {
+	const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	if (buffer.length >= 30) {
+		const nameLength = buffer.readUInt16LE(26);
+		const extraLength = buffer.readUInt16LE(28);
+		if (buffer.toString("latin1", 30, 30 + nameLength) === "mimetype") {
+			const start = 30 + nameLength + extraLength;
+			const size = buffer.readUInt32LE(18);
+			const mimetype = buffer.toString("latin1", start, Math.min(buffer.length, start + Math.min(size, 128))).trim();
+			if (MIMETYPES[mimetype]) return MIMETYPES[mimetype];
+		}
+	}
+	const names = zipEntryNames(buffer);
+	for (const [part, format] of OOXML_PARTS) if (names.has(part)) return format;
+	return undefined;
+}
+
+/** Entry names from the zip's central directory (empty when it can't be found). */
+function zipEntryNames(buffer: Buffer): Set<string> {
+	const names = new Set<string>();
+	// The end-of-central-directory record sits in the last 22 bytes plus up to a 64 KiB comment.
+	let end = -1;
+	for (let i = buffer.length - 22; i >= Math.max(0, buffer.length - 22 - 0xffff); i--) {
+		if (buffer.readUInt32LE(i) === 0x06054b50) {
+			end = i;
+			break;
+		}
+	}
+	if (end < 0) return names;
+	const count = buffer.readUInt16LE(end + 10);
+	let offset = buffer.readUInt32LE(end + 16);
+	for (let i = 0; i < count && offset + 46 <= buffer.length && buffer.readUInt32LE(offset) === 0x02014b50; i++) {
+		const nameLength = buffer.readUInt16LE(offset + 28);
+		names.add(buffer.toString("latin1", offset + 46, offset + 46 + nameLength));
+		offset += 46 + nameLength + buffer.readUInt16LE(offset + 30) + buffer.readUInt16LE(offset + 32);
+	}
+	return names;
+}
+
+/** Format by extension first, then by signature; undefined when it is not a convertible document. */
+export function detectDocumentFormat(fileName: string, bytes: Uint8Array): DocumentFormat | undefined {
+	const extension = path.extname(fileName).slice(1).toLowerCase();
+	if ((DOCUMENT_FORMATS as readonly string[]).includes(extension)) return extension as DocumentFormat;
+	if (isZip(bytes)) return zipFormat(bytes);
+	if (startsWith(bytes, ascii("{\\rtf"))) return "rtf";
+	return undefined;
+}
+
+/** The format detected by extension alone (lets callers refuse oversized files before reading them). */
+export function documentFormatFromName(fileName: string): DocumentFormat | undefined {
+	const extension = path.extname(fileName).slice(1).toLowerCase();
+	return (DOCUMENT_FORMATS as readonly string[]).includes(extension) ? (extension as DocumentFormat) : undefined;
+}
+
+// ─── Conversion ─────────────────────────────────────────────────────────────
+
+/** Test seams (tool-execute.ts's toolTimeoutMs idiom). */
+export const documentLimits = { timeoutMs: 15_000, heapMb: 192 };
+export const documentStats = { workerRuns: 0, liveWorkers: 0, peakWorkers: 0 };
+
+type CacheEntry = { text: string } | { reason: DocumentConversionReason };
+const CACHE_SIZE = 8;
+const cache = new Map<string, CacheEntry>();
+export function clearDocumentCache(): void {
+	cache.clear();
+}
+function remember(key: string, entry: CacheEntry) {
+	cache.delete(key);
+	cache.set(key, entry);
+	while (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value!);
+}
+
+const SLOTS = 2;
+let active = 0;
+const waiting: Array<() => void> = [];
+function acquire(signal?: AbortSignal): Promise<void> {
+	signal?.throwIfAborted();
+	if (active < SLOTS) {
+		active++;
+		return Promise.resolve();
+	}
+	return new Promise((resolve, reject) => {
+		const onAbort = () => {
+			const index = waiting.indexOf(grant);
+			if (index >= 0) waiting.splice(index, 1);
+			reject(signal!.reason);
+		};
+		const grant = () => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		};
+		waiting.push(grant);
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+function release() {
+	const next = waiting.shift();
+	if (next) next();
+	else active--;
+}
+
+type WorkerReply = { text: string } | { reason: DocumentConversionReason; error: string };
+
+/** Most a reply can be: 1,000,000 characters as JSON-escaped UTF-8, plus room. */
+const MAX_REPLY_BYTES = 8 * 1024 * 1024;
+
+async function runWorker(bytes: Uint8Array, format: DocumentFormat, signal?: AbortSignal): Promise<WorkerReply> {
+	signal?.throwIfAborted();
+	documentStats.workerRuns++;
+	// Same packaging contract as the image worker: unbundled .mjs files traced
+	// at this cwd-relative path (next.config.ts outputFileTracingIncludes).
+	// process.execPath is Node, or the Electron binary in the desktop app,
+	// which ELECTRON_RUN_AS_NODE turns into Node (T3's spawn, adopted).
+	const child = spawn(process.execPath, [path.join(process.cwd(), "src/agent/documents/document-text-worker.mjs"), `.${format}`], {
+		stdio: ["pipe", "pipe", "ignore"],
+		windowsHide: true,
+		env: {
+			...process.env,
+			ELECTRON_RUN_AS_NODE: "1",
+			NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --max-old-space-size=${documentLimits.heapMb}`.trim(),
+		},
+	});
+	documentStats.peakWorkers = Math.max(documentStats.peakWorkers, ++documentStats.liveWorkers);
+	const exited = new Promise<void>((resolve) => {
+		child.once("close", () => resolve());
+		child.once("error", () => resolve());
+	});
+	try {
+		return await new Promise<WorkerReply>((resolve, reject) => {
+			const output: Buffer[] = [];
+			let size = 0;
+			const timer = setTimeout(() => {
+				done();
+				resolve({ reason: "timeout", error: "timed out" });
+			}, documentLimits.timeoutMs);
+			const done = () => {
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", onAbort);
+			};
+			const onAbort = () => {
+				done();
+				reject(signal!.reason);
+			};
+			if (signal?.aborted) return onAbort();
+			signal?.addEventListener("abort", onAbort, { once: true });
+			child.once("error", (error) => {
+				done();
+				resolve({ reason: "failed", error: error.message });
+			});
+			child.stdout.on("data", (chunk: Buffer) => {
+				size += chunk.length;
+				if (size > MAX_REPLY_BYTES) {
+					done();
+					resolve({ reason: "failed", error: "reply too large" });
+					child.kill("SIGKILL");
+					return;
+				}
+				output.push(chunk);
+			});
+			child.once("close", (code, signalName) => {
+				done();
+				if (code !== 0) return resolve({ reason: "failed", error: `converter exited (${code ?? signalName})` });
+				try {
+					resolve(JSON.parse(Buffer.concat(output).toString("utf8")) as WorkerReply);
+				} catch {
+					resolve({ reason: "failed", error: "unreadable converter reply" });
+				}
+			});
+			// A child that dies early closes stdin; its exit code reports it.
+			child.stdin.on("error", () => undefined);
+			child.stdin.end(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+		});
+	} finally {
+		// Hold the slot until the process is gone, so at most two ever exist.
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+		await exited;
+		documentStats.liveWorkers--;
+	}
+}
+
+/** OOXML files that arrive as OLE containers are password-protected (Office's encryption format). */
+const OOXML_FORMATS: ReadonlySet<DocumentFormat> = new Set(["docx", "xlsx", "pptx"]);
+
+/** Converts with the hash cache and the two-slot queue. Throws DocumentConversionError. */
+export async function convertDocument(
+	bytes: Uint8Array,
+	format: DocumentFormat,
+	options: { signal?: AbortSignal } = {},
+): Promise<{ text: string; truncated: boolean }> {
+	if (bytes.byteLength > MAX_DOCUMENT_BYTES) throw new DocumentConversionError("too-large");
+	if (OOXML_FORMATS.has(format) && isOleCompound(bytes)) throw new DocumentConversionError("encrypted");
+	const key = `${format}:${createHash("sha256").update(bytes).digest("hex")}`;
+	let entry = cache.get(key);
+	if (entry) remember(key, entry);
+	else {
+		await acquire(options.signal);
+		let reply: WorkerReply;
+		try {
+			reply = await runWorker(bytes, format, options.signal);
+		} finally {
+			release();
+		}
+		entry = "text" in reply ? { text: reply.text } : { reason: reply.reason };
+		// Rejections are properties of the bytes; timeouts and crashes retry next time.
+		if ("text" in entry || entry.reason === "invalid" || entry.reason === "encrypted" || entry.reason === "empty") remember(key, entry);
+		if (!("text" in reply)) throw new DocumentConversionError(reply.reason, reply.error);
+	}
+	if (!("text" in entry)) throw new DocumentConversionError(entry.reason);
+	return { text: entry.text, truncated: entry.text.endsWith(TRUNCATED) };
+}
