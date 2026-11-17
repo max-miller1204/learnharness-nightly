@@ -1,5 +1,8 @@
 name: CI
 
+# Parallel jobs gated by what a PR changes, with one required check, `Check`,
+# at the end. Modeled on T3 Code's ci.yml. See docs/specs/ci-foundation.md.
+
 on:
   push:
     branches: [main]
@@ -9,32 +12,122 @@ on:
 permissions:
   contents: read
 
+# A new push to a PR cancels its older run; runs on main are never cancelled
+# (nightly.yml waits for them).
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   NEXT_TELEMETRY_DISABLED: "1"
 
 jobs:
-  quality:
-    name: Typecheck, tests, lint
+  # Skips jobs a pull request cannot affect: docs-only changes run only lint,
+  # and test-only changes skip the standalone builds. Pushes to main and
+  # manual runs run everything. Detection fails open: if the diff cannot be
+  # read, everything runs. .github/scripts/ci-changes.cjs holds the rules.
+  changes:
+    name: Changes
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 5
+    outputs:
+      typecheck: ${{ steps.detect.outputs.typecheck }}
+      test: ${{ steps.detect.outputs.test }}
+      selfhost: ${{ steps.detect.outputs.selfhost }}
+      standalone: ${{ steps.detect.outputs.standalone }}
+    steps:
+      # Depth 2 brings the base commit the PR's merge commit is diffed against.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Detect affected jobs
+        id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -uo pipefail
+          decide() {
+            node .github/scripts/ci-changes.cjs "$@" | tee -a "$GITHUB_OUTPUT"
+            exit "${PIPESTATUS[0]}"
+          }
+          if [[ "$EVENT_NAME" != pull_request ]]; then
+            decide --full
+          fi
+          # A pull request checks out GitHub's merge commit, so its first parent
+          # is the base branch and the diff is the PR's change. --no-renames
+          # lists a rename as both its old and new path.
+          if ! git diff --name-only --no-renames HEAD^1 HEAD > "$RUNNER_TEMP/changed-paths"; then
+            echo "Could not diff against the base. Running every job."
+            decide
+          fi
+          decide --paths "$RUNNER_TEMP/changed-paths"
+
+  # Always runs (T3: lint covers every file). Also tests the change classifier.
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-deps
+      - run: npm run lint
+      - name: CI script tests
+        run: node --test .github/scripts/*.test.cjs
+
+  typecheck:
+    name: Typecheck
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.typecheck != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-deps
+      - run: npm run typecheck
+
+  # `npm test` split five ways. Node assigns test files to shards round-robin
+  # over the sorted file list. With four shards the four slowest files (the
+  # plugin-*-types tests, about 45 s each) all landed in shard 1; five spreads
+  # them. Some tests start Electron, so its download is cached and fetched
+  # before the tests run.
+  test:
+    name: Test ${{ matrix.shard }}
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.test != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-deps
+        with:
+          electron: "true"
+      - name: Test
+        env:
+          NODE_ENV: test
+        run: npx tsx --test --test-shard=${{ matrix.shard }}/${{ strategy.job-total }} tests/*.test.ts tests/*.test.tsx
+
+  # The lh launcher uses Node built-ins only, so no install.
+  selfhost:
+    name: Launcher tests
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.selfhost != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: "26"
-          cache: npm
-      - run: npm ci
-      - run: npm run plugins:setup
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run lint
+      - run: node --test selfhost/tests/*.test.ts
 
   standalone:
     name: Standalone (${{ matrix.platform }})
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.standalone != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -53,19 +146,53 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: ./.github/actions/setup-deps
         with:
-          node-version: "26"
-          cache: npm
-      - run: npm ci
-      - run: npm run plugins:setup
+          electron: "true"
       - name: Native renderer tests on this OS
         run: npx electron --import tsx --test tests/pdf-native-render.test.ts tests/pdf-ops.test.ts tests/svg-native-render.test.ts tests/browser-service.test.ts
         env:
           NODE_ENV: test
           ELECTRON_RUN_AS_NODE: "1"
+      # Restored on every run, saved only from main so PRs never evict each
+      # other's entries (T3's rule for its build caches).
+      - name: Restore the Next.js build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: .next/cache
+          key: nextjs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json', 'plugins/*/package-lock.json') }}-${{ github.sha }}
+          restore-keys: nextjs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json', 'plugins/*/package-lock.json') }}-
       - run: npm run build
+      - name: Save the Next.js build cache
+        if: github.event_name == 'push'
+        uses: actions/cache/save@v6
+        with:
+          path: .next/cache
+          key: nextjs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json', 'plugins/*/package-lock.json') }}-${{ github.sha }}
       # Check the fresh trace before any static copying/curation.
       - run: node scripts/smoke-provider-runtime.mjs
       - run: node scripts/build-server.mjs
       - run: node scripts/smoke-server.mjs --electron
+
+  # The required status check for main. It fails when any other job fails, is
+  # cancelled, or is skipped although `changes` said it was needed, so splitting
+  # or resharding jobs needs no branch-protection change. Add every new job to
+  # `needs`. `always()` rather than `!cancelled()`: a skipped job reports
+  # success to branch protection, so a cancelled run must still fail here.
+  check:
+    name: Check
+    if: ${{ always() }}
+    needs: [changes, lint, typecheck, test, selfhost, standalone]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          # A job may skip only when `changes` set its gate (keyed by job id) to false.
+          echo "$RESULTS" | jq -e '.changes.outputs as $gates
+            | all(to_entries[];
+                .value.result == "success"
+                or (.value.result == "skipped" and $gates[.key] == "false"))' > /dev/null

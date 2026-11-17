@@ -1,6 +1,6 @@
 # Fork workflow
 
-`max-miller1204/learnharness-nightly` is a curated, fast-moving version of [`amosblomqvist/learnharness`](https://github.com/amosblomqvist/learnharness). Upstream PRs are reviewed and merged here, often before upstream lands them, and new work goes straight to `main`. Upstream is a source of ideas to pick from, not something that lands on its own. Every push to `main` becomes a nightly (see [self-hosting](self-hosting.md)).
+`max-miller1204/learnharness-nightly` is a curated, fast-moving version of [`amosblomqvist/learnharness`](https://github.com/amosblomqvist/learnharness). Upstream PRs are reviewed and merged here, often before upstream lands them, and new work goes straight to `main`. Upstream is a source of ideas to pick from, not something that lands on its own. Every push to `main` that passes CI becomes a nightly (see [self-hosting](self-hosting.md)).
 
 ## The Sync PR
 
@@ -13,6 +13,17 @@
 It never pushes to `main`. Read it, take what's worth taking, and merge with **Create a merge commit** (never squash or rebase) so the next sync knows those commits are in. To take only part of it, branch from `main`, merge or cherry-pick what you want, and leave the Sync PR open; it updates itself.
 
 Upstream often lands a reworked version of a PR you already merged here, so conflicts are expected. Resolve them in the PR, or locally: `git fetch origin upstream-main`, then merge it into a branch from `main`.
+
+## CI and the `Check` gate
+
+`.github/workflows/ci.yml` runs on every PR and every push to `main` (design: [specs/ci-foundation.md](specs/ci-foundation.md)). A first `Changes` job reads the PR's diff and skips jobs it can't affect: a docs-only PR runs only lint, and a tests-only PR skips the three standalone builds. Pushes to `main` always run everything. The last job, **`Check`**, passes only when every other job passed or was skipped for that reason.
+
+`main` requires `Check`: a PR merges only when its `Check` is green, and **direct pushes to `main` must now pass `Check` too.** Push to a branch and open a PR instead. A new push to a PR cancels its older CI run.
+Repository admins can bypass the required `Check` (GitHub's default; the rule doesn't enforce it for admins).
+
+The nightly starts only after CI passes on a push to `main`, and builds that exact commit.
+
+`.github/workflows/pr-agent.yml` runs [PR-Agent](https://github.com/The-PR-Agent/pr-agent) on every PR: an AI review and code suggestions as comments, on open and on each push. It's advisory and never blocks a merge. People with write access can also comment `/review`, `/improve`, `/describe` or `/ask ...` on a PR. It uses the `OPENROUTER_API_KEY` secret and the model in the `OPENROUTER_MODEL` repository variable (a bare OpenRouter ID such as `deepseek/deepseek-v4.1-flash-1017`, which is also the default when the variable is unset).
 
 ## Importing an upstream PR
 
@@ -45,6 +56,8 @@ Renew it before it expires; the workflows fail with a clear message when it's mi
 - **Enable Actions on the fork.** GitHub turns off workflows inherited by a fork until you click "I understand my workflows, go ahead and enable them" on the Actions tab. Nothing builds or syncs until then.
 - **Disable inherited workflows** that don't apply to the fork: `gh workflow disable "Desktop release"` and `gh workflow disable notify-website`. (Tags created by the nightly use the built-in token, which can't start other workflows anyway; disabling makes it explicit.)
 - **Allow merge commits** (Settings → General → Pull Requests), since upstream-derived PRs must use them.
+- **Branch protection on `main`:** require the `Check` status check, nothing else.
+- **`OPENROUTER_API_KEY`** secret for PR-Agent. Optional: an `OPENROUTER_MODEL` variable to change its model.
 - Optional: `PAUSE_NIGHTLY=true` as a repository variable stops publishing nightlies.
 
 ## What lives where
@@ -54,6 +67,8 @@ Renew it before it expires; the workflows fail with a clear message when it's mi
 | `selfhost/` | The `lh` launcher, installer, packaging scripts and their tests (`node --test selfhost/tests/*.test.ts`) |
 | `src/server/self-update.ts`, `app/api/updates`, `app/api/health` | The in-app updater and the launcher's health check |
 | `src/server/data-lock.ts` | One server per data folder |
+| `.github/workflows/ci.yml`, `.github/scripts/ci-changes.cjs`, `.github/actions/setup-deps/` | CI, its affected-only gating, and the cached install |
+| `.github/workflows/pr-agent.yml` | Advisory AI review on PRs |
 | `.github/workflows/nightly.yml`, `feed-check.yml` | Build, publish and verify nightlies |
 | `.github/workflows/upstream-sync.yml`, `import-upstream-pr.yml` | Upstream feed and PR intake |
 | [`fork-roadmap.md`](fork-roadmap.md) | Work considered and deliberately deferred |

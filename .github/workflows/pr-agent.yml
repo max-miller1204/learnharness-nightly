@@ -1,0 +1,67 @@
+name: PR-Agent
+
+# Advisory AI review (https://github.com/The-PR-Agent/pr-agent) through
+# OpenRouter. It comments; it is not part of CI's `Check` and never blocks a
+# merge. The model is the OPENROUTER_MODEL repository variable (a bare
+# OpenRouter model ID, also meant for the AI release notes), with a default
+# when it is unset. See docs/specs/ci-foundation.md.
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-agent:
+    name: PR-Agent
+    # PRs from forks get no secrets, and bots don't trigger it. A comment runs
+    # it only on a PR, only as a /command, and only from someone with write
+    # access, so strangers on this public repo can't spend the key.
+    if: >-
+      github.event.sender.type != 'Bot' && (
+        (github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository) ||
+        (github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request &&
+          startsWith(github.event.comment.body, '/') &&
+          contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+      )
+    # Job-level, so a skipped plain comment never joins the group and pushes
+    # out a queued command. A new push cancels an older automatic run only.
+    concurrency:
+      group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event_name == 'pull_request' && 'auto' || github.event.comment.id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      # 0.50.0, pinned by digest.
+      - uses: docker://pragent/pr-agent:0.50.0-github_action@sha256:548e894a88071180832b2f4233f734d0acd0db1a879e2fcbaa70bac8b8372ebe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENROUTER.KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          config.model: openrouter/${{ vars.OPENROUTER_MODEL || 'deepseek/deepseek-v4.1-flash-1017' }}
+          config.fallback_models: "[]"
+          # PR-Agent doesn't know this model's 1M context; the input cap stays
+          # at 128k tokens (the default 32k clips larger diffs).
+          config.custom_model_max_tokens: "1048576"
+          config.max_model_tokens: "128000"
+          # PR-Agent sets no output cap by default, so a runaway generation ran
+          # for 5 minutes until the upstream provider's limit and came back empty
+          # (finish_reason: length). Cap the completion, and keep reasoning
+          # under half of it so the answer always has room.
+          config.max_output_tokens: "32000"
+          OPENROUTER.REASONING_MAX_TOKENS: "16000"
+          # No automatic /describe: it rewrites the PR title and body.
+          github_action_config.auto_describe: "false"
+          github_action_config.auto_review: "true"
+          github_action_config.auto_improve: "true"
+          github_action_config.handle_push_trigger: "true"
+          github_action_config.push_commands: '["/review", "/improve"]'

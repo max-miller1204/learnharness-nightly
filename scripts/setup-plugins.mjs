@@ -1,5 +1,7 @@
 /** Prepare source-plugin dependencies for checkout validation, never distribution.
- * Invoke through npm so npm_execpath works identically on Windows and Unix. */
+ * Invoke through npm so npm_execpath works identically on Windows and Unix.
+ * `--sdk-only` regenerates the SDK types without installing: CI uses it when it
+ * restored the plugins' node_modules from a cache keyed on their lockfiles. */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import * as path from "node:path";
@@ -13,7 +15,7 @@ function runNpm(args, cwd) {
 	if (result.status !== 0) throw new Error(`${path.basename(cwd)}: npm ${args.join(" ")} failed (${result.signal ?? result.status})`);
 }
 
-export function setupPlugins(root, { run = runNpm } = {}) {
+export function setupPlugins(root, { run = runNpm, sdkOnly = false } = {}) {
 	const source = path.join(root, "plugins");
 	const packages = readdirSync(source, { withFileTypes: true })
 		.filter(entry => entry.isDirectory())
@@ -27,11 +29,11 @@ export function setupPlugins(root, { run = runNpm } = {}) {
 	for (const { directory, manifest } of packages) {
 		console.log(`[plugin-setup] ${path.basename(directory)}`);
 		if (typeof manifest.scripts?.sdk === "string") run(["run", "sdk"], directory);
-		run(["ci"], directory);
+		if (!sdkOnly) run(["ci"], directory);
 	}
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-	try { setupPlugins(path.resolve(import.meta.dirname, "..")); }
+	try { setupPlugins(path.resolve(import.meta.dirname, ".."), { sdkOnly: process.argv.includes("--sdk-only") }); }
 	catch (error) { console.error("[plugin-setup]", error); process.exitCode = 1; }
 }

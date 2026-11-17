@@ -298,22 +298,38 @@ describe("workflow action versions", () => {
 	type Workflow = { jobs: Record<string, { steps: Step[] }> };
 	const yaml = require("js-yaml") as { load(source: string): Workflow };
 
-	for (const filename of ["ci.yml", "release.yml"]) {
+	// CI installs through its own composite action, which caches node_modules
+	// instead of the npm store (docs/specs/ci-foundation.md); releases stay cold.
+	const sources: Record<string, { path: string; expected: string[]; npmCache: boolean }> = {
+		"ci.yml": {
+			path: "../.github/workflows/ci.yml",
+			expected: ["actions/checkout@v7", "actions/setup-node@v7", "./.github/actions/setup-deps", "actions/cache/restore@v6", "actions/cache/save@v6"],
+			npmCache: false,
+		},
+		"setup-deps": {
+			path: "../.github/actions/setup-deps/action.yml",
+			expected: ["actions/setup-node@v7", "actions/cache/restore@v6", "actions/cache/save@v6", "actions/cache@v6"],
+			npmCache: false,
+		},
+		"release.yml": {
+			path: "../.github/workflows/release.yml",
+			expected: ["actions/checkout@v7", "actions/setup-node@v7", "actions/github-script@v9", "actions/upload-artifact@v7", "maxim-lobanov/setup-xcode@v1"],
+			npmCache: true,
+		},
+	};
+	for (const [filename, { path: source, expected, npmCache }] of Object.entries(sources)) {
 		it(`${filename} uses supported Action runtimes without changing the app's Node 26`, () => {
-			const workflow = yaml.load(readFileSync(new URL(`../.github/workflows/${filename}`, import.meta.url), "utf8"));
-			const expected = ["actions/checkout@v7", "actions/setup-node@v7"];
-			if (filename === "release.yml") {
-				expected.push("actions/github-script@v9", "actions/upload-artifact@v7", "maxim-lobanov/setup-xcode@v1");
-			}
+			const parsed = yaml.load(readFileSync(new URL(source, import.meta.url), "utf8")) as Workflow & { runs?: { steps: Step[] } };
+			const stepLists = parsed.runs ? [parsed.runs.steps] : Object.values(parsed.jobs).map(job => job.steps);
 			const observed = new Set<string>();
-			for (const job of Object.values(workflow.jobs)) {
-				for (const step of job.steps) {
+			for (const steps of stepLists) {
+				for (const step of steps) {
 					if (!step.uses) continue;
 					assert.ok(expected.includes(step.uses), `unexpected Action reference: ${step.uses}`);
 					observed.add(step.uses);
 					if (step.uses === "actions/setup-node@v7") {
 						assert.equal(step.with?.["node-version"], "26");
-						assert.equal(step.with?.cache, "npm");
+						assert.equal(step.with?.cache, npmCache ? "npm" : undefined);
 					}
 					if (step.uses === "actions/upload-artifact@v7") {
 						assert.equal(step.with?.archive ?? true, true, "multi-file installers remain zipped artifacts");
