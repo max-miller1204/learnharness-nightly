@@ -39,18 +39,30 @@ It pushes the PR's exact commits to `upstream-pr/<N>` (same commit IDs as upstre
 
 The bots never ping anyone upstream: upstream PR references are written as code, and an imported PR's original description is copied into a collapsed code block. So no `@mentions` fire, and nothing adds "mentioned this" entries to upstream's timelines.
 
+## Mirroring upstream issues
+
+`.github/workflows/mirror-upstream-issues.yml` runs every hour (minute 47) and copies each upstream issue into the fork **once** (design: [specs/upstream-issue-mirror.md](specs/upstream-issue-mirror.md)):
+
+- A mirror is a fork issue "[upstream issue N] <title>" labeled `upstream`, plus upstream's own labels that exist here. Its body credits the author and quotes the original issue and the comments it had at copy time. Later upstream edits and comments aren't copied.
+- Every upstream issue numbered above 792 is mirrored, even one already closed. Older ones were backfilled only if open. At most 100 new mirrors per run, oldest first.
+- While an upstream issue is closed, its mirror carries `upstream-closed`; the label goes away if upstream reopens it. The job never opens or closes fork issues.
+- The hidden first line of a mirror's body (`<!-- upstream-issue: amosblomqvist/learnharness#N -->`) is how the job finds it. Keep that line, or the next run mirrors the issue again.
+- Like the imports, nothing pings upstream: references and authors are written as code and the copied text sits in code blocks.
+
+To mirror one issue now (even an older closed one), run **Actions → Mirror upstream issues** with its number, or locally `selfhost/scripts/mirror-upstream-issues.sh <N>`. With `DRY_RUN=1` in front, it prints what it would do (and the body) without writing. If a manual run shows as cancelled, a scheduled run took its queue slot; run it again.
+
 ## Fork bot (GitHub App)
 
-PRs opened with GitHub's built-in workflow token don't trigger CI, so the sync and import workflows authenticate as a private GitHub App installed only on this fork (design: [specs/github-app.md](specs/github-app.md)). Each run mints a token that lasts at most an hour, through the shared `.github/actions/fork-bot-token` step, which also makes it the `gh` and `git` credential for the rest of the job. Nothing expires and nothing is tied to your account. Bot PRs show the App as author and run CI, including `Check`. PR-Agent skips them (it ignores bots); comment `/review` on one when you want a review.
+PRs opened with GitHub's built-in workflow token don't trigger CI, so the sync, import and issue mirror workflows authenticate as a private GitHub App installed only on this fork (design: [specs/github-app.md](specs/github-app.md)). Each run mints a token that lasts at most an hour, through the shared `.github/actions/fork-bot-token` step, which also makes it the `gh` and `git` credential for the rest of the job. Nothing expires and nothing is tied to your account. Bot PRs show the App as author and run CI, including `Check`. PR-Agent skips them (it ignores bots); comment `/review` on one when you want a review.
 
-The token can push branches (Contents), open, edit, close and comment on PRs (Pull requests), and push commits that edit `.github/workflows/*` (Workflows), on this repository only.
+The token can push branches (Contents), open, edit, close and comment on PRs (Pull requests), create and label issues (Issues), and push commits that edit `.github/workflows/*` (Workflows), on this repository only.
 
 To create it (once, as the repository owner):
 
 1. Open <https://github.com/settings/apps/new>.
 2. **GitHub App name:** any globally unique name; PRs show it as `<name>[bot]`. **Homepage URL:** `https://github.com/max-miller1204/learnharness-nightly`.
 3. **Webhook:** untick **Active**.
-4. **Repository permissions:** Contents: Read and write; Pull requests: Read and write; Workflows: Read and write. Metadata: Read is set automatically. Nothing under Organization or Account permissions.
+4. **Repository permissions:** Contents: Read and write; Pull requests: Read and write; Issues: Read and write; Workflows: Read and write. Metadata: Read is set automatically. Nothing under Organization or Account permissions.
 5. **Where can this GitHub App be installed?** Only on this account. **Create GitHub App**.
 6. Copy the **Client ID** from the App's page. Under **Private keys**, **Generate a private key**; a `.pem` downloads.
 7. **Install App** (left menu) → your account → **Only select repositories** → `learnharness-nightly` → **Install**.
@@ -61,7 +73,7 @@ To create it (once, as the repository owner):
    gh secret set FORK_BOT_PRIVATE_KEY -R max-miller1204/learnharness-nightly < path/to/key.pem
    ```
 
-The workflows fail with a clear message when either secret is missing. To replace a lost or leaked key, generate a new one on the App's page, store it the same way and delete the old key there. A future workflow that needs more access (for example Issues) gets it by adding the permission on the App's page and approving the change on the installation.
+The workflows fail with a clear message when either secret is missing. To replace a lost or leaked key, generate a new one on the App's page, store it the same way and delete the old key there. A future workflow that needs more access gets it by adding the permission on the App's page and approving the change on the installation.
 
 ## Dependency updates
 
@@ -96,6 +108,7 @@ gh api repos/max-miller1204/learnharness-nightly/automated-security-fixes   # {"
 
 ## One-time repository settings
 
+- **Turn on Issues** (Settings → General → Features → Issues), so the issue mirror has somewhere to write.
 - **Enable Actions on the fork.** GitHub turns off workflows inherited by a fork until you click "I understand my workflows, go ahead and enable them" on the Actions tab. Nothing builds or syncs until then.
 - **Disable inherited workflows** that don't apply to the fork: `gh workflow disable "Desktop release"` and `gh workflow disable notify-website`. (Tags created by the nightly use the built-in token, which can't start other workflows anyway; disabling makes it explicit.)
 - **Allow merge commits** (Settings → General → Pull Requests), since upstream-derived PRs must use them.
@@ -113,7 +126,7 @@ gh api repos/max-miller1204/learnharness-nightly/automated-security-fixes   # {"
 | `.github/workflows/ci.yml`, `.github/scripts/ci-changes.cjs`, `.github/actions/setup-deps/` | CI, its affected-only gating, and the cached install |
 | `.github/workflows/pr-agent.yml` | Advisory AI review on PRs |
 | `.github/workflows/nightly.yml`, `feed-check.yml` | Build, publish and verify nightlies |
-| `.github/workflows/upstream-sync.yml`, `import-upstream-pr.yml` | Upstream feed and PR intake |
+| `.github/workflows/upstream-sync.yml`, `import-upstream-pr.yml`, `mirror-upstream-issues.yml` | Upstream feed, PR intake and issue mirror (scripts in `selfhost/scripts/`) |
 | `.github/dependabot.yml`, `.github/workflows/dependabot-auto-merge.yml` | Dependency update PRs and their auto-merge |
-| `.github/actions/fork-bot-token/` | Mints the fork bot App token for workflows that push or open PRs |
+| `.github/actions/fork-bot-token/` | Mints the fork bot App token for workflows that push, open PRs or mirror issues |
 | [`fork-roadmap.md`](fork-roadmap.md) | Work considered and deliberately deferred |
