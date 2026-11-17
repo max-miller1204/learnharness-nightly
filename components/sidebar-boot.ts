@@ -23,6 +23,13 @@ export const SIDEBAR_AUTOCLOSE = 928;
 /** The <html> attribute the `sidebar-closed:` variant reads. */
 export const SIDEBAR_CLOSED_ATTR = "data-lh-sidebar";
 
+/** The stored preference: nothing stored = open (the default), "1" =
+ *  open, anything else = closed. SidebarProvider and the boot script
+ *  below apply this one rule. */
+export function sidebarStoredOpen(stored: string | null): boolean {
+	return stored === null || stored === "1";
+}
+
 /** Same rule as SidebarProvider: rendered = stored preference (default
  *  open) && !(Electron && narrow). Storage unavailable: open. */
-export const SIDEBAR_BOOT_SCRIPT = `(function(){try{var s=localStorage.getItem(${JSON.stringify(SIDEBAR_STORAGE_KEY)});var n=navigator.userAgent.indexOf("Electron")!==-1&&window.innerWidth<${SIDEBAR_AUTOCLOSE};if(s==="0"||n)document.documentElement.setAttribute(${JSON.stringify(SIDEBAR_CLOSED_ATTR)},"closed")}catch(e){}})()`;
+export const SIDEBAR_BOOT_SCRIPT = `(function(){try{var s=localStorage.getItem(${JSON.stringify(SIDEBAR_STORAGE_KEY)});var n=navigator.userAgent.indexOf("Electron")!==-1&&window.innerWidth<${SIDEBAR_AUTOCLOSE};if((s!==null&&s!=="1")||n)document.documentElement.setAttribute(${JSON.stringify(SIDEBAR_CLOSED_ATTR)},"closed")}catch(e){}})()`;

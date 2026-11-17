@@ -22,7 +22,7 @@ import { useServerEvent, useServerResync } from "@/components/server-events";
 import type { ChatListItem } from "@/src/core";
 import { kbdEventForAction } from "@/src/core";
 import { notifySettingsSaved } from "@/components/settings-signal";
-import { SIDEBAR_AUTOCLOSE, SIDEBAR_CLOSED_ATTR, SIDEBAR_STORAGE_KEY } from "@/components/sidebar-boot";
+import { SIDEBAR_AUTOCLOSE, SIDEBAR_CLOSED_ATTR, SIDEBAR_STORAGE_KEY, sidebarStoredOpen } from "@/components/sidebar-boot";
 import { PluginWidgets } from "@/components/plugins";
 import { PluginSidebarActions } from "@/components/plugin-chrome";
 import { HostContentRootContext, HostRouteLifetimeProvider } from "@/components/host-content-root";
@@ -143,9 +143,9 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 		const off = window.lh?.onZoom?.(setZoomVar);
 		void window.lh?.getZoom?.().then(setZoomVar);
 
-		const stored = localStorage.getItem(STORAGE_KEY);
-		// Default: open (first run introduces the sidebar).
-		setOpen(stored === null ? true : stored === "1");
+		// Default: open (first run introduces the sidebar). The same rule as
+		// the first-paint script (sidebar-boot.ts), so the two always agree.
+		setOpen(sidebarStoredOpen(localStorage.getItem(STORAGE_KEY)));
 		setMounted(true);
 		return () => off?.();
 	}, []);
@@ -978,9 +978,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 	const pathname = usePathname();
 	// The session the learner deleted while viewing it: its route content
 	// stops rendering now, not when the navigation home commits (see
-	// SessionsSidebar's onDeleted). Ids are never reused, so it needs no reset.
+	// SessionsSidebar's onDeleted). Only for that gap: once the route has
+	// left it, the mark clears, so a later visit (Back to an older history
+	// entry, a link) renders the route again (its not-found page).
 	const [deletedViewedId, setDeletedViewedId] = useState<string | null>(null);
 	const showRoute = deletedViewedId === null || pathname !== `/chat/${deletedViewedId}`;
+	useEffect(() => {
+		if (deletedViewedId !== null && pathname !== `/chat/${deletedViewedId}`) setDeletedViewedId(null);
+	}, [deletedViewedId, pathname]);
 	return (
 		<HostRouteLifetimeProvider pathname={pathname}>
 		<HostContentRootContext.Provider value={contentRoot}>
