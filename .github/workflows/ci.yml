@@ -85,9 +85,11 @@ jobs:
       - uses: ./.github/actions/setup-deps
       - run: npm run typecheck
 
-  # `npm test` split four ways. Node assigns test files to shards round-robin
-  # over the sorted file list. Some tests start Electron, so its download is
-  # cached and fetched before the tests run.
+  # `npm test` split five ways. Node assigns test files to shards round-robin
+  # over the sorted file list. With four shards the four slowest files (the
+  # plugin-*-types tests, about 45 s each) all landed in shard 1; five spreads
+  # them. Some tests start Electron, so its download is cached and fetched
+  # before the tests run.
   test:
     name: Test ${{ matrix.shard }}
     needs: changes
@@ -97,7 +99,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-deps

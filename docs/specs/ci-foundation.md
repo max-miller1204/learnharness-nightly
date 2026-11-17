@@ -39,14 +39,14 @@ Jobs, all on `ubuntu-24.04` unless noted:
 | `changes` | Changes | none | always | Maps the diff to the gates below (see "Affected-only gating"). |
 | `lint` | Lint | none | always (T3: lint always runs) | install, `npm run lint`, `node --test .github/scripts/*.test.cjs` |
 | `typecheck` | Typecheck | `changes` | `typecheck != false` | install, `npm run typecheck` |
-| `test` | Test (1..4) | `changes` | `test != false` | matrix `shard: [1, 2, 3, 4]`, `fail-fast: false`; install, Electron cache, `NODE_ENV=test npx tsx --test --test-shard=${shard}/4 tests/*.test.ts tests/*.test.tsx` |
+| `test` | Test (1..5) | `changes` | `test != false` | matrix `shard: [1, 2, 3, 4, 5]`, `fail-fast: false`; install, Electron cache, `NODE_ENV=test npx tsx --test --test-shard=${shard}/5 tests/*.test.ts tests/*.test.tsx` |
 | `selfhost` | Launcher tests | `changes` | `selfhost != false` | checkout + setup-node only (the launcher uses Node built-ins), `node --test selfhost/tests/*.test.ts` |
 | `standalone` | Standalone (platform) | `changes` | `standalone != false` | Same matrix and steps as today (macos-15, windows-2025, ubuntu-24.04), plus the caches below |
 | `check` | Check | all of the above | `always()` | T3's aggregator (below) |
 
 `npm test` in `package.json` stays as it is for local use; the shard command in CI is the same command plus `--test-shard`. (Verified locally: `tsx --test --test-shard=1/200 ...` runs only its slice.)
 
-Expected PR critical path: about 20 s `changes`, then a test shard of about 30 s setup plus about 105 s of tests, so about 3 minutes; the Windows standalone job (about 3 to 4 minutes with caches) may be the longest. The PR records the measured times. If one shard runs much longer than the others, the shard count changes in this PR, not the approach.
+Expected PR critical path: about 20 s `changes`, then a test shard of about 30 s setup plus about 105 s of tests, so about 3 minutes; the Windows standalone job (about 3 to 4 minutes with caches) may be the longest. The PR records the measured times. If one shard runs much longer than the others, the shard count changes in this PR, not the approach. (It did: with 4 shards the four slowest files, `plugin-{document,grading,submission,view}-types.test.ts` at about 45 s each, all landed in shard 1, which ran 164 s against about 75 s for the others. Five shards put them in four different shards.)
 
 ### `Check` aggregator (T3 ci.yml pattern, adopted)
 
@@ -62,7 +62,7 @@ Outputs: `typecheck`, `test`, `selfhost`, `standalone` (`true`/`false`). Each ch
 
 | Class | Paths | Gates it turns on |
 |---|---|---|
-| Inert | `docs/**` except the files the app or its plugin-authoring bundle ships (the nine `AUTHORING_DOCS` in `scripts/build-plugin-authoring.mjs`, `docs/plugin-api/**`, `docs/compaction-accounting.md` which electron-builder packages); root `*.md`; `LICENSE`; `.claude/**`; `.github/ISSUE_TEMPLATE/**`; `.github/workflows/pr-agent.yml` | none (lint and `Check` still run) |
+| Inert | `docs/**` except the files the app or its plugin-authoring bundle ships or the tests read (the nine `AUTHORING_DOCS` in `scripts/build-plugin-authoring.mjs`, `docs/plugin-api/**`, `docs/compaction-accounting.md` which electron-builder packages, `docs/development.md` which `tests/plugin-setup.test.ts` checks); root `*.md`; `.claude/**`; `.github/ISSUE_TEMPLATE/**`; `.github/workflows/pr-agent.yml`. A TypeScript file in these paths counts as tests only, because `tsc` checks every `.ts`. `LICENSE` is not inert: the plugin-authoring bundle copies it. | none (lint and `Check` still run) |
 | Tests only | `tests/**` except `tests/helpers/**`, `tests/fixtures/**` and the four native renderer tests the standalone job runs | `typecheck`, `test` |
 | Everything else | any other path, including all of `.github/`, `selfhost/` (the server imports it), `plugins/`, `skills/`, `examples/`, `package*.json` | all four |
 
@@ -74,7 +74,7 @@ The classifier gets a small `node:test` suite (`.github/scripts/ci-changes.test.
 
 **Dependencies.** A local composite action, `.github/actions/setup-deps`, used by every job that installs:
 - `actions/setup-node@v7` with Node 26 and no npm store cache (restoring the multi-GB `~/.npm` would cost every job time the `node_modules` cache already saves).
-- Restore a cache of `node_modules` plus `plugins/*/node_modules`, keyed exactly on `runner.os`, `runner.arch`, the Node version and the hash of `package-lock.json` and `plugins/*/package-lock.json`. No restore-keys: a hit is byte-for-byte what `npm ci` would produce from that lockfile, a miss runs the full install.
+- Restore a cache of `node_modules` plus `plugins/*/node_modules`, keyed exactly on `runner.os`, `runner.arch`, the Node version and the hash of the root and plugin `package.json` and `package-lock.json` files (the manifests too, so a `package.json` out of sync with its lockfile misses and `npm ci` refuses it, as it would cold). No restore-keys: a hit is byte-for-byte what `npm ci` would produce from that lockfile, a miss runs the full install.
 - On a miss: `npm ci` and `npm run plugins:setup`, then save the cache immediately (before anything runs, so no build or test output gets into it). PRs save only when based on `main` (T3's rule for its store cache).
 - On a hit: only regenerate each plugin's `.sdk` types (the `sdk` script `plugins:setup` already runs), because they come from repo source, not from the lockfile. This needs a `--sdk-only` flag on `scripts/setup-plugins.mjs`.
 
@@ -102,7 +102,9 @@ The classifier gets a small `node:test` suite (`.github/scripts/ci-changes.test.
 
 ### Nightly reuses CI (`.github/workflows/nightly.yml`)
 
-Mechanism (owner choice): `nightly.yml` triggers on `workflow_run` of `CI`, `types: [completed]`, `branches: [main]`, and runs only when that run's `conclusion` is `success` and its event was `push`. Every job builds `github.event.workflow_run.head_sha` (not `github.sha`, which for `workflow_run` is the latest `main`), including the version metadata, the "already shipped" check, release notes, the feed entry and the release target. A manual `workflow_dispatch` builds the current `main` head and first looks up the `Check` check run for that SHA; it refuses unless `Check` concluded `success`.
+Mechanism (owner choice): `nightly.yml` triggers on `workflow_run` of `CI`, `types: [completed]`, `branches: [main]`, and runs only when that run's `conclusion` is `success` and its event was `push`. Every job builds `github.event.workflow_run.head_sha` (not `github.sha`, which for `workflow_run` is the latest `main`), including the version metadata, the "already shipped" check, release notes, the feed entry and the release target. A manual `workflow_dispatch` must run from `main`, builds its head, and refuses unless a CI run for that SHA on a push succeeded (CI succeeds only when `Check` passed); the `meta` job gets `actions: read` for that lookup.
+
+CI runs on `main` can finish out of order, so `meta` also skips (outside manual runs) a commit that the shipped nightly's commit is not an ancestor of: an older commit never replaces a newer nightly. Only runs that will build join the `nightly` concurrency group; the others get a per-run group, so a CI completion that publishes nothing can't push a pending real nightly out of the queue.
 
 Also:
 - The `quality` job is removed from `nightly.yml`.

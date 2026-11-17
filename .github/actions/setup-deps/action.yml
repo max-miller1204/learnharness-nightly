@@ -23,7 +23,9 @@ runs:
       run: echo "node=$(node -p process.version)" >> "$GITHUB_OUTPUT"
 
     # No restore-keys: a hit is exactly what npm ci makes from these lockfiles
-    # on this OS, arch and Node version, and a miss installs from scratch.
+    # on this OS, arch and Node version, and a miss installs from scratch. The
+    # manifests are in the key too, so a package.json that no longer matches
+    # its lockfile misses and npm ci refuses it, as it would on a cold install.
     - name: Restore node_modules
       id: restore
       uses: actions/cache/restore@v6
@@ -31,7 +33,7 @@ runs:
         path: |
           node_modules
           plugins/*/node_modules
-        key: deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.node }}-${{ hashFiles('package-lock.json', 'plugins/*/package-lock.json') }}
+        key: deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.node }}-${{ hashFiles('package.json', 'package-lock.json', 'plugins/*/package.json', 'plugins/*/package-lock.json') }}
 
     - name: Install
       if: steps.restore.outputs.cache-hit != 'true'

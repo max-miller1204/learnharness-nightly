@@ -27,9 +27,15 @@ permissions:
   contents: read
 
 # One nightly at a time, never cancelled mid-publish. GitHub keeps only the
-# newest pending run, which already contains the older commits.
+# newest pending run in a group. Only runs that will build join `nightly`, so a
+# CI completion that publishes nothing (a failed run, a manual CI run, a fork's
+# main) can't push out a pending real one. CI runs can finish out of order, so
+# `meta` also skips a commit that is not newer than the shipped one.
 concurrency:
-  group: nightly
+  group: >-
+    ${{ (github.event_name == 'workflow_dispatch' ||
+    (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
+    && 'nightly' || format('nightly-noop-{0}', github.run_id) }}
   cancel-in-progress: false
 
 env:
@@ -48,6 +54,9 @@ jobs:
       )
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     outputs:
       sha: ${{ steps.sha.outputs.sha }}
       version: ${{ steps.meta.outputs.version }}
@@ -59,7 +68,7 @@ jobs:
         env:
           SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-      - name: A manual run needs CI's Check to have passed for this commit
+      - name: A manual run needs CI to have passed for this commit
         if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -69,16 +78,19 @@ jobs:
             echo "::error::Run the nightly from main (got $GITHUB_REF)."
             exit 1
           fi
-          passed=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs?check_name=Check&per_page=100" \
-            --jq '[.check_runs[] | select(.app.slug == "github-actions" and .conclusion == "success")] | length')
+          # CI succeeds only when its Check job passed.
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SHA&event=push&per_page=100" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
           if [ "$passed" = "0" ]; then
-            echo "::error::CI's Check has not passed for $SHA. Wait for CI, or fix it first."
+            echo "::error::CI has not passed for $SHA on main. Wait for CI, or fix it first."
             exit 1
           fi
-          echo "CI's Check passed for $SHA."
+          echo "CI passed for $SHA."
+      # Full history to compare the shipped commit with this one.
       - uses: actions/checkout@v7
         with:
           ref: ${{ steps.sha.outputs.sha }}
+          fetch-depth: 0
       - id: meta
         env:
           GH_TOKEN: ${{ github.token }}
@@ -90,12 +102,23 @@ jobs:
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           echo "short_sha=${SHA::12}" >> "$GITHUB_OUTPUT"
           shipped=$(gh release download nightly -p latest.json -O - 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).sha)}catch{console.log("")}})' || true)
-          if [ "$shipped" = "$SHA" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
-            echo "The newest nightly already ships $SHA."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+          skip=false
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] && [ -n "$shipped" ]; then
+            if [ "$shipped" = "$SHA" ]; then
+              echo "The newest nightly already ships $SHA."
+              skip=true
+            else
+              # Exit 1: the shipped commit is not in this one's history, so this
+              # run is older (CI finished out of order, or an old run was
+              # re-run). Any other error (shipped commit unknown) publishes.
+              git merge-base --is-ancestor "$shipped" "$SHA" && rc=0 || rc=$?
+              if [ "$rc" = "1" ]; then
+                echo "$SHA is not newer than the shipped $shipped. Skipping."
+                skip=true
+              fi
+            fi
           fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
 
   bundle:
     name: Bundle (${{ matrix.arch }})

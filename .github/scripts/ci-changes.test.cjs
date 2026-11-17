@@ -10,13 +10,17 @@ const none = { typecheck: false, test: false, selfhost: false, standalone: false
 const all = { typecheck: true, test: true, selfhost: true, standalone: true };
 
 test("docs-only and other inert changes skip every gated job", () => {
-	assert.deepEqual(decide(["docs/self-hosting.md", "README.md", "LICENSE", ".claude/skills/x/SKILL.md", ".github/workflows/pr-agent.yml", "docs/specs/ci-foundation.md"]), none);
+	assert.deepEqual(decide(["docs/self-hosting.md", "README.md", ".claude/skills/x/SKILL.md", ".github/workflows/pr-agent.yml", "docs/specs/ci-foundation.md"]), none);
 });
 
 test("docs the app or plugin-authoring bundle ships run everything", () => {
-	for (const file of ["docs/plugin-authoring.md", "docs/dialog-overlay-contract.md", "docs/plugin-api/README.md", "docs/compaction-accounting.md"]) {
+	for (const file of ["docs/plugin-authoring.md", "docs/dialog-overlay-contract.md", "docs/plugin-api/README.md", "docs/compaction-accounting.md", "LICENSE", "docs/development.md"]) {
 		assert.deepEqual(decide([file]), all, file);
 	}
+});
+
+test("TypeScript under an inert folder is still typechecked and tested", () => {
+	assert.deepEqual(decide([".claude/skills/x/tool.ts"]), { ...none, typecheck: true, test: true });
 });
 
 test("test-only changes run typecheck and tests but no standalone build", () => {

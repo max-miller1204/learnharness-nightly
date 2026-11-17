@@ -33,7 +33,11 @@ const fs = require("node:fs");
 // Docs the app or its plugin-authoring bundle ships, so they are not inert:
 // AUTHORING_DOCS in scripts/build-plugin-authoring.mjs, the generated API
 // reference, and the license notice electron-builder.yml packages.
+// Also files the build or the tests read: LICENSE goes into the plugin-authoring
+// bundle, and tests/plugin-setup.test.ts checks docs/development.md.
 const SHIPPED_DOCS = [
+	/^LICENSE$/,
+	/^docs\/development\.md$/,
 	/^docs\/(plugin-authoring|plugin-architecture|plugin-question-contract|plugin-problem-contract|plugin-session-extension-contract|plugin-tree-contract|plugin-view-context|dialog-overlay-contract|plugin-examples)\.md$/,
 	/^docs\/plugin-api\//,
 	/^docs\/compaction-accounting\.md$/,
@@ -42,7 +46,6 @@ const SHIPPED_DOCS = [
 const INERT = [
 	/^docs\//,
 	/^[^/]+\.md$/,
-	/^LICENSE$/,
 	/^\.claude\//,
 	/^\.github\/ISSUE_TEMPLATE\//,
 	/^\.github\/workflows\/pr-agent\.yml$/,
@@ -60,7 +63,8 @@ const GATES = ["typecheck", "test", "selfhost", "standalone"];
 /** "inert", "tests" or "everything" for one repo-relative path. */
 function classify(file) {
 	if (SHIPPED_DOCS.some((pattern) => pattern.test(file))) return "everything";
-	if (INERT.some((pattern) => pattern.test(file))) return "inert";
+	// TypeScript anywhere is typechecked (tsconfig includes **/*.ts).
+	if (INERT.some((pattern) => pattern.test(file))) return /\.[cm]?tsx?$/.test(file) ? "tests" : "inert";
 	if (/^tests\//.test(file) && !STANDALONE_TESTS.some((pattern) => pattern.test(file))) return "tests";
 	return "everything";
 }

@@ -15,10 +15,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   pr-agent:
     name: PR-Agent
@@ -34,6 +30,11 @@ jobs:
           startsWith(github.event.comment.body, '/') &&
           contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
       )
+    # Job-level, so a skipped plain comment never joins the group and pushes
+    # out a queued command. A new push cancels an older automatic run only.
+    concurrency:
+      group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event_name == 'pull_request' && 'auto' || github.event.comment.id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
