@@ -53,7 +53,7 @@ To create it (once, as the repository owner):
 4. **Repository permissions:** Contents: Read and write; Pull requests: Read and write; Workflows: Read and write. Metadata: Read is set automatically. Nothing under Organization or Account permissions.
 5. **Where can this GitHub App be installed?** Only on this account. **Create GitHub App**.
 6. Copy the **Client ID** from the App's page. Under **Private keys**, **Generate a private key**; a `.pem` downloads.
-7. **Install App** → your account → **Only select repositories** → `learnharness-nightly`.
+7. **Install App** (left menu) → your account → **Only select repositories** → `learnharness-nightly` → **Install**.
 8. Store both as repository secrets, then delete the `.pem` (or keep it in a password manager):
 
    ```sh
