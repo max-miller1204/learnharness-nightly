@@ -682,3 +682,16 @@ test("private leases bind active account, authority revision and raw visible mod
 		assert.equal((await f.rawLease(false, expected)).accountId, catalog.accountId);
 	} finally { f.service.close(); }
 });
+
+test("account catalog passes the account's window, input and effort metadata through for the bridge to validate", async () => {
+	const f = await loggedIn({ provider: async (target) => target.endsWith("/models") ? Response.json({ models: [
+		{ slug: "gpt-new", display_name: "New model", visibility: "list", context_window: 500000, input_modalities: ["text", "image", "audio"], supported_reasoning_levels: [{ effort: "low", description: "" }, { effort: "ultra", description: "" }] },
+		{ slug: "gpt-5", display_name: "Scratch model", visibility: "list" },
+	] }) : undefined });
+	try {
+		assert.deepEqual((await f.service.models()).models, [
+			{ id: "gpt-new", name: "New model", contextWindow: 500000, input: ["text", "image", "audio"], reasoningLevels: ["low", "ultra"] },
+			{ id: "gpt-5", name: "Scratch model" },
+		]);
+	} finally { f.service.close(); }
+});

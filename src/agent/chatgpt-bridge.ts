@@ -5,7 +5,9 @@ import type { AdmissionScope, NoDispatchKind } from "./chatgpt-request-cycle.ts"
 export type { ChatGPTStatus } from "../core/contracts/chatgpt.ts";
 export interface Stamp { epoch: number; authorityRevision: number; revision: number }
 interface StatusValue extends Stamp { status: ChatGPTStatus }
-interface ModelsValue extends StatusValue { accountId: string | null; models: { id: string; name: string }[] }
+/** Account metadata is unvalidated input: only accountModel() reads it. */
+interface AccountModelEntry { id: string; name: string; contextWindow?: unknown; input?: unknown; reasoningLevels?: unknown }
+interface ModelsValue extends StatusValue { accountId: string | null; models: AccountModelEntry[] }
 interface LeaseValue extends Stamp { accessToken: string; accountId: string }
 interface Pending { op: string; resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
 interface BridgeState {
@@ -111,7 +113,30 @@ export async function chatGPTDenial(scope: AdmissionScope | undefined, controlle
  if (controller.signal.reason === "all" || !chatGPTScopeCurrent(scope)) return "all";
  return !chatGPTBackgroundAllowed() ? "background" : "other";
 }
-/** Preserve account order; unknown capabilities/windows are never fabricated. */
+const ACCOUNT_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+/** A model Pi's catalog doesn't know yet: the account supplies its identity,
+ * window, input and effort levels; the first Pi-known account model supplies
+ * the transport shape (api, compat, input limits, output cap). */
+function accountModel(entry: AccountModelEntry, template: Model<"openai-responses">): Model<"openai-responses"> | undefined {
+ // Limits are never borrowed from another model: without the account's own
+ // window and input list, the model stays unavailable.
+ const window = entry.contextWindow;
+ if (typeof window !== "number" || !Number.isSafeInteger(window) || window <= 0 || !Array.isArray(entry.input)) return undefined;
+ const input = (["text", "image"] as const).filter((modality) => (entry.input as unknown[]).includes(modality));
+ if (!input.includes("text")) return undefined;
+ const levels = Array.isArray(entry.reasoningLevels) ? ACCOUNT_EFFORTS.filter((effort) => (entry.reasoningLevels as unknown[]).includes(effort)) : [];
+ return {
+  ...template,
+  id: entry.id,
+  name: entry.name,
+  input: [...input],
+  contextWindow: window,
+  reasoning: levels.length > 0,
+  thinkingLevelMap: { off: null, minimal: null, ...Object.fromEntries(ACCOUNT_EFFORTS.map((effort) => [effort, levels.includes(effort) ? effort : null])) },
+ };
+}
+/** Preserve account order. Pi-known models keep Pi's capabilities; others are
+ * built by accountModel() when an account model Pi knows can serve as template. */
 export async function refreshChatGPTModels(supported: Model<"openai-responses">[]): Promise<void> {
  const state = bridge();
  if (!runtimeConnected()) { clearCatalog(state); return; }
@@ -122,9 +147,11 @@ export async function refreshChatGPTModels(supported: Model<"openai-responses">[
   acceptStatus(state, value);
   if (value.epoch !== state.stamp.epoch || value.authorityRevision !== state.stamp.authorityRevision || value.accountId !== state.status.activeId || !chatGPTConnected()) return;
   state.catalogAccount = value.accountId;
+  const known = (entry: AccountModelEntry) => supported.find((m) => m.id === entry.id && m.api === "openai-responses");
+  const template = value.models.map(known).find((m) => m !== undefined);
   state.models = value.models.flatMap((entry) => {
-   const known = supported.find((m) => m.id === entry.id && m.api === "openai-responses");
-   return known ? [{ ...known, provider: "chatgpt", name: entry.name, headers: undefined, samplingParams: undefined, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] : [];
+   const base = known(entry) ?? (template && accountModel(entry, template));
+   return base ? [{ ...base, provider: "chatgpt", name: entry.name, headers: undefined, samplingParams: undefined, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] : [];
   });
  } catch { if (sequence === state.catalogRequest) clearCatalog(state); }
 }
