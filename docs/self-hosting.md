@@ -113,3 +113,4 @@ Every LearnHarness server, including `npm start`, `npm run dev` and the desktop 
 `.github/workflows/nightly.yml` runs after CI passes on a push to `main` (CI covers typecheck, tests, lint and the launcher tests) and builds that exact commit: a native build on linux-x64 and linux-arm64 runners, the same build-server gates as the desktop release, and a boot test of each assembled archive with its own bundled Node. Only if everything passes does it publish a prerelease `v<version>-nightly.<date>.<run>` and point the fixed `nightly` release's `latest.json` at it. `feed-check.yml` re-verifies that pointer after every nightly and once a day. The newest 30 nightlies are kept.
 
 Set the repository variable `PAUSE_NIGHTLY=true` to stop publishing.
+
