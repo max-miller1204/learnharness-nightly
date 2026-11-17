@@ -18,7 +18,7 @@ Goal: the agent's `read` tool reads Office, OpenDocument, RTF, EPUB and Jupyter 
 - **Converter code.** `documentTextWorker.ts` ported nearly verbatim to plain JavaScript (`.mjs`, LearnHarness's convention for worker code, with a `.d.mts` type file). All of T3's per-format rules come along unchanged: hidden parts (tracked deletions, field codes, layout values), Word headings as `#` lines, tables and sheet rows as tab-separated cells, xlsx shared strings, booleans and number-format hints (`[Excel numFmtId=...; date system 1900]`), ODF whitespace and repeat counts, pptx `## Slide N` plus `Notes:` from the notes slide, epub `## Chapter N` in spine order, ipynb `## Cell N (code|markdown)` with text outputs and error tracebacks, RTF control words and code pages.
 - **Archive and structure limits.** 2,048 zip entries, only XML-like entries are inflated, a 200:1 compression-ratio cap per entry, encrypted archives rejected, 200,000 XML nodes, nesting depth 128, 10,000 rows or notebook cells, 512 columns.
 - **Truncation.** When any limit is hit after some text was produced, the text so far is kept and T3's notice is appended: `[Extracted text truncated at document extraction limits.]`.
-- **Isolation, two slots, 15 s, 192 MB heap.** T3 runs each extraction in a separate process with `--max-old-space-size=192` behind a two-permit semaphore. LearnHarness runs it in a `worker_threads` Worker (the pattern `src/agent/image-processing/` already uses) with `resourceLimits.maxOldGenerationSizeMb: 192`, terminated at 15 s. Same memory bound and crash containment, no need to locate the Node or Electron binary.
+- **Isolation, two slots, 15 s, 192 MB heap.** As T3: each extraction runs in a separate child process (`process.execPath` with `ELECTRON_RUN_AS_NODE=1` and `--max-old-space-size=192` in `NODE_OPTIONS`) behind a two-slot queue, killed at 15 s. The bytes go in on stdin and one JSON reply comes back on stdout. (Owner, 2026-11-17, after prove round 3: the first build used a `worker_threads` Worker instead, and a 15 MiB notebook that ran the worker out of memory aborted the whole server. Node can't contain that in a thread, so the T3 design is adopted.)
 - **Rejection caching.** T3 remembers documents it rejected so it doesn't retry them; here a rejection (invalid, encrypted, no text) is cached in the same 8-entry hash cache. Timeouts and worker crashes are not cached, so the next call retries.
 
 ## Design
@@ -28,7 +28,7 @@ Goal: the agent's `read` tool reads Office, OpenDocument, RTF, EPUB and Jupyter 
 | File | What it is |
 |---|---|
 | `src/agent/documents/document-text.mjs` (+ `.d.mts`) | The T3 port. `extractDocumentText(bytes, extension)` returns the text (with the truncation notice when truncated) or throws. Takes bytes instead of a path (`yauzl.fromBuffer`), so Extract files can pass uploaded bytes. T3's MIT notice in the file header. |
-| `src/agent/documents/document-text-worker.mjs` | Worker shell: receives `{ bytes, extension }`, replies `{ text }` or `{ error, rejected }`. |
+| `src/agent/documents/document-text-worker.mjs` | Child-process entry: takes the extension as an argument and the bytes on stdin, writes `{ text }` or `{ reason, error }` as JSON to stdout. |
 | `src/agent/documents/index.ts` | The public entry point (below): format detection, the two-slot queue, the timeout, the cache. |
 | `src/agent/documents/LICENSE` | T3 Code's MIT license text, the third-party notice (same convention as `src/agent/image-processing/LICENSE`). |
 
@@ -93,7 +93,7 @@ The prompt fragments already route PDFs to the `pdf` job and need no change.
 ### Packaging
 
 - `package.json`: `saxes` 6.0.0, `yauzl` ^3.4.0, `character-entities` 2.0.2; `@types/yauzl` ^3.4.0 as a dev dependency.
-- `next.config.ts` `outputFileTracingIncludes`: `src/agent/documents/*.mjs`, `src/agent/documents/LICENSE`, and the worker's runtime packages (`saxes`, `xmlchars`, `yauzl`, `pend`, `character-entities`), because the tracer can't see a Worker's imports (same reason the image worker's files are listed).
+- `next.config.ts` `outputFileTracingIncludes`: `src/agent/documents/*.mjs`, `src/agent/documents/LICENSE`, and the worker's runtime packages (`saxes`, `xmlchars`, `yauzl`, `pend`, `character-entities`), because the tracer can't see the child process's imports (same reason the image worker's files are listed).
 
 ### Tests
 

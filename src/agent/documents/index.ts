@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { Worker } from "node:worker_threads";
+import { spawn } from "node:child_process";
 import { MAX_INPUT, TRUNCATED } from "./document-text.mjs";
 
 /**
@@ -14,7 +14,9 @@ import { MAX_INPUT, TRUNCATED } from "./document-text.mjs";
  *   if (format) text = (await convertDocument(bytes, format)).text;
  *
  * The extraction itself is T3 Code's converter (./document-text.mjs, MIT)
- * run in a worker thread with T3's limits: two at once, 15 s, 192 MB heap.
+ * run in a child process with T3's limits: two at once, 15 s, 192 MB heap.
+ * A process, not a worker thread: an out-of-memory inside a Node worker
+ * thread can abort the whole server, while a child only takes itself down.
  * Results (and rejections) are cached in memory by content hash.
  */
 
@@ -178,17 +180,34 @@ function release() {
 
 type WorkerReply = { text: string } | { reason: DocumentConversionReason; error: string };
 
+/** Most a reply can be: 1,000,000 characters as JSON-escaped UTF-8, plus room. */
+const MAX_REPLY_BYTES = 8 * 1024 * 1024;
+
 async function runWorker(bytes: Uint8Array, format: DocumentFormat, signal?: AbortSignal): Promise<WorkerReply> {
 	signal?.throwIfAborted();
 	documentStats.workerRuns++;
 	// Same packaging contract as the image worker: unbundled .mjs files traced
 	// at this cwd-relative path (next.config.ts outputFileTracingIncludes).
-	const worker = new Worker(path.join(process.cwd(), "src/agent/documents/document-text-worker.mjs"), {
-		resourceLimits: { maxOldGenerationSizeMb: documentLimits.heapMb },
+	// process.execPath is Node, or the Electron binary in the desktop app,
+	// which ELECTRON_RUN_AS_NODE turns into Node (T3's spawn, adopted).
+	const child = spawn(process.execPath, [path.join(process.cwd(), "src/agent/documents/document-text-worker.mjs"), `.${format}`], {
+		stdio: ["pipe", "pipe", "ignore"],
+		windowsHide: true,
+		env: {
+			...process.env,
+			ELECTRON_RUN_AS_NODE: "1",
+			NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --max-old-space-size=${documentLimits.heapMb}`.trim(),
+		},
 	});
 	documentStats.peakWorkers = Math.max(documentStats.peakWorkers, ++documentStats.liveWorkers);
+	const exited = new Promise<void>((resolve) => {
+		child.once("close", () => resolve());
+		child.once("error", () => resolve());
+	});
 	try {
 		return await new Promise<WorkerReply>((resolve, reject) => {
+			const output: Buffer[] = [];
+			let size = 0;
 			const timer = setTimeout(() => {
 				done();
 				resolve({ reason: "timeout", error: "timed out" });
@@ -203,25 +222,37 @@ async function runWorker(bytes: Uint8Array, format: DocumentFormat, signal?: Abo
 			};
 			if (signal?.aborted) return onAbort();
 			signal?.addEventListener("abort", onAbort, { once: true });
-			worker.once("message", (reply: WorkerReply) => {
+			child.once("error", (error) => {
 				done();
-				resolve(reply);
-		});
-		worker.once("error", (error) => {
-			done();
-			resolve({ reason: "failed", error: error.message });
-		});
-		worker.once("exit", (code) => {
-			done();
-			resolve({ reason: "failed", error: `worker exited (${code})` });
-		});
-		// Transfer a worker-owned copy so the caller's bytes stay intact.
-		const copy = new Uint8Array(bytes);
-		worker.postMessage({ bytes: copy, extension: `.${format}` }, [copy.buffer]);
+				resolve({ reason: "failed", error: error.message });
+			});
+			child.stdout.on("data", (chunk: Buffer) => {
+				size += chunk.length;
+				if (size > MAX_REPLY_BYTES) {
+					done();
+					resolve({ reason: "failed", error: "reply too large" });
+					child.kill("SIGKILL");
+					return;
+				}
+				output.push(chunk);
+			});
+			child.once("close", (code, signalName) => {
+				done();
+				if (code !== 0) return resolve({ reason: "failed", error: `converter exited (${code ?? signalName})` });
+				try {
+					resolve(JSON.parse(Buffer.concat(output).toString("utf8")) as WorkerReply);
+				} catch {
+					resolve({ reason: "failed", error: "unreadable converter reply" });
+				}
+			});
+			// A child that dies early closes stdin; its exit code reports it.
+			child.stdin.on("error", () => undefined);
+			child.stdin.end(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
 		});
 	} finally {
-		// Hold the slot until the worker is gone, so at most two ever exist.
-		await worker.terminate().catch(() => undefined);
+		// Hold the slot until the process is gone, so at most two ever exist.
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+		await exited;
 		documentStats.liveWorkers--;
 	}
 }

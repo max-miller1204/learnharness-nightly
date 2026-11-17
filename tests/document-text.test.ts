@@ -937,6 +937,16 @@ describe("convertDocument: worker, cache, limits", () => {
 		assert.equal(documentStats.workerRuns, before);
 	});
 
+	it("contains an out-of-memory converter: the call fails, the caller survives, nothing is cached", async () => {
+		// Round 3 of the prove run: this notebook ran a 192 MB worker thread out of memory and aborted the server.
+		const bytes = new Uint8Array(Buffer.from(`{"cells":[${Array(5_242_874).fill("{}").join(",")}]}`));
+		const before = documentStats.workerRuns;
+		assert.equal(await reason(convertDocument(bytes, "ipynb")), "failed");
+		assert.equal(await reason(convertDocument(bytes, "ipynb")), "failed");
+		assert.equal(documentStats.workerRuns - before, 2, "a crash is retried, not cached");
+		assert.equal((await convertDocument(docx("Still alive"), "docx")).text, "Still alive");
+	});
+
 	it("stops a conversion at the timeout and does not cache it", async () => {
 		documentLimits.timeoutMs = 1;
 		const bytes = docx("Slow");

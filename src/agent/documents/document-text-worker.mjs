@@ -1,10 +1,9 @@
-// Runs one document extraction off the main thread (see ./index.ts and
-// docs/specs/document-converters.md). Replies once with the text or a classified error.
-import { parentPort } from "node:worker_threads";
+// Runs one document extraction in its own process (see ./index.ts and
+// docs/specs/document-converters.md), as T3 Code does: an out-of-memory or
+// crash here ends only this process. Reads `<extension>` from argv and the
+// document bytes from stdin, and writes one JSON reply to stdout: the text,
+// or a classified error.
 import { EMPTY, ENCRYPTED, extractDocumentText } from "./document-text.mjs";
-
-const port = parentPort;
-if (!port) throw new Error("document text worker requires parentPort");
 
 /** Rejections are properties of the bytes (cached by the caller); OS errors are not. */
 function classify(error) {
@@ -15,13 +14,13 @@ function classify(error) {
 	return "invalid";
 }
 
-port.once("message", (message) => {
-	void (async () => {
-		try {
-			const text = await extractDocumentText(message.bytes, message.extension);
-			port.postMessage({ text });
-		} catch (error) {
-			port.postMessage({ reason: classify(error), error: error instanceof Error ? error.message : String(error) });
-		}
-	})();
-});
+const extension = process.argv[2] ?? "";
+const chunks = [];
+for await (const chunk of process.stdin) chunks.push(chunk);
+let reply;
+try {
+	reply = { text: await extractDocumentText(new Uint8Array(Buffer.concat(chunks)), extension) };
+} catch (error) {
+	reply = { reason: classify(error), error: error instanceof Error ? error.message : String(error) };
+}
+process.stdout.write(JSON.stringify(reply));

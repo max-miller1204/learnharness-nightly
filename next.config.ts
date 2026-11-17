@@ -94,7 +94,7 @@ const nextConfig: NextConfig = {
 			"src/agent/image-processing/LICENSE",
 			"node_modules/@silvia-odwyer/photon-node/**/*",
 			// Document conversion (docs/specs/document-converters.md) runs in an
-			// unbundled worker too; the tracer can't see a Worker's imports, so
+			// unbundled child process; the tracer can't see that process's imports, so
 			// list the worker files and its runtime packages.
 			"src/agent/documents/*.mjs",
 			"src/agent/documents/LICENSE",
