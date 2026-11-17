@@ -30,3 +30,23 @@ test("build refuses symlinked dist and any misplaced dist/data without deleting 
     }
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
 });
+
+test("build inlines the bundled TeX font faces into styles.css with URLs that resolve beside it", () => {
+  // The real build in place: a copied tree with symlinked node_modules trips the
+  // build's own runtime-input check. dist/ is git-ignored build output.
+  const result = spawnSync(process.execPath, [path.join(root, "scripts/build.mjs")], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const dist = path.join(root, "dist"), css = fs.readFileSync(path.join(dist, "styles.css"), "utf8");
+  // No import rule: CSSOM walkers such as axe-core resolve its raw href against the page URL.
+  assert.doesNotMatch(css.replace(/\/\*[\s\S]*?\*\//g, ""), /@import/i);
+  assert.equal(fs.existsSync(path.join(dist, "assets/fonts/fonts.css")), false);
+  const faces = [...css.matchAll(/@font-face \{ font-family: (rich-code-blocks-font-[a-z0-9]+); src: url\('([^']+)'\); \}/g)];
+  const upstream = fs.readFileSync(path.join(root, "node_modules/isomorphic-tikzjax/css/fonts.css"), "utf8").split("\n").filter(line => line.trim());
+  assert.equal(faces.length, upstream.length);
+  assert.ok(faces.some(([, family]) => family === "rich-code-blocks-font-cmr10"));
+  for (const [, , url] of faces) {
+    assert.match(url!, /^assets\/fonts\/bakoma\/ttf\/[a-z0-9]+\.ttf$/);
+    assert.ok(fs.statSync(path.join(dist, url!)).isFile(), url);
+  }
+  assert.ok(css.endsWith(fs.readFileSync(path.join(root, "src/styles.css"), "utf8")), "the plugin's own rules follow the font faces unchanged");
+});

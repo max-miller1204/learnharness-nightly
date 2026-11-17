@@ -58,12 +58,24 @@ for (const result of [browser, worker, backend]) {
   }
 }
 for (const file of ["manifest.json", "README.md", "LICENSE", "THIRD-PARTY.md"]) fs.copyFileSync(path.join(root, file), path.join(output, file));
-fs.copyFileSync(path.join(root, "src/styles.css"), path.join(output, "styles.css"));
 const engine = path.join(root, "node_modules/isomorphic-tikzjax");
 fs.cpSync(path.join(engine, "tex"), path.join(output, "assets/tex"), { recursive: true });
 fs.cpSync(path.join(engine, "css/bakoma"), path.join(output, "assets/fonts/bakoma"), { recursive: true });
-const fontCss = fs.readFileSync(path.join(engine, "css/fonts.css"), "utf8").replace(/font-family:\s*([a-zA-Z0-9_-]+);/g, "font-family: rich-code-blocks-font-$1;");
-fs.writeFileSync(path.join(output, "assets/fonts/fonts.css"), fontCss);
+// Inline the TeX @font-face rules into styles.css instead of @import-ing a second
+// stylesheet: axe-core and similar CSSOM walkers refetch an @import's raw href
+// against the page URL (404 /chat/assets/fonts/fonts.css). Font URLs are rebased
+// from css/ to the styles.css directory, so the browser resolves them as before.
+const fontFace = /^@font-face \{ font-family: ([a-z0-9]+); src: url\('(bakoma\/ttf\/[a-z0-9]+\.ttf)'\); \}$/;
+const fontLines = fs.readFileSync(path.join(engine, "css/fonts.css"), "utf8").split("\n").filter(line => line.trim());
+const fontCss = fontLines.map(line => {
+  const match = fontFace.exec(line);
+  if (!match) throw new Error(`Pinned TeX font CSS no longer matches; review the dependency before building: ${line}`);
+  const font = `assets/fonts/${match[2]}`;
+  if (!fs.statSync(path.join(output, font), { throwIfNoEntry: false })?.isFile()) throw new Error(`Missing bundled TeX font: ${font}`);
+  return `@font-face { font-family: rich-code-blocks-font-${match[1]}; src: url('${font}'); }`;
+}).join("\n");
+if (!fontLines.length) throw new Error("Pinned TeX font CSS is empty; review the dependency before building.");
+fs.writeFileSync(path.join(output, "styles.css"), `${fontCss}\n\n${fs.readFileSync(path.join(root, "src/styles.css"), "utf8")}`);
 const notices = path.join(output, "licenses");
 fs.mkdirSync(notices, { recursive: true });
 fs.cpSync(path.join(root, "licenses"), notices, { recursive: true });
