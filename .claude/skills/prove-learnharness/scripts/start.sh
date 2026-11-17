@@ -21,6 +21,12 @@ case "$SIDE" in
 	*) die "side must be head or base" ;;
 esac
 SERVER=$BUILD/.next/standalone/server.js
+if [ "$SIDE" = base ]; then
+	# A shared lock the server inherits and holds until it exits: build.sh
+	# never prunes a base build that a running instance serves from.
+	exec 7>"$PROVE_CACHE/base/$(base_sha).inuse"
+	flock -s 7
+fi
 [ -f "$SERVER" ] || die "missing $SERVER; run build.sh $RUN $SIDE"
 
 SD=$RUN/$SIDE

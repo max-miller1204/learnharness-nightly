@@ -89,8 +89,14 @@ build_base() {
 		mkdir -p "$dir"
 		git -C "$REPO" archive "$sha" | tar -x -C "$dir"
 		version="$(pkg_version "$dir")$PROVE_BASE_VERSION_SUFFIX"
+		# Seed from the head's .next/cache only when no head build is writing it
+		# right now (in `both` mode they run in parallel): a half-written cache
+		# must never seed the base, which becomes an answer key.
 		if [ "$SEED_BASE_NEXT_CACHE" = 1 ] && [ -d "$REPO/.next/cache" ]; then
-			mkdir -p "$dir/.next" && cp -r "$REPO/.next/cache" "$dir/.next/cache"
+			(
+				flock -n 8 || { say "[base] head build in progress: not seeding .next/cache"; exit 0; }
+				mkdir -p "$dir/.next" && cp -r "$REPO/.next/cache" "$dir/.next/cache"
+			) 8>"$(git -C "$REPO" rev-parse --path-format=absolute --git-path prove-build.lock)"
 		fi
 		ensure_deps "$dir" "$log" || { rm -rf "$dir"; die "base npm ci failed (log: $log)"; }
 		say "[base] building ${sha:0:12} as $version"
@@ -100,11 +106,17 @@ build_base() {
 		record_time "$RUN" "base build (cold ${sha:0:12}, incl. npm ci$(grep -q SecurityFatalError "$log" && echo ', Next security-notice retry'))" "$tstart"
 	fi
 	exec 9>&-
-	# Keep the newest $BASE_CACHE_KEEP builds; never the one just used.
+	# Keep the newest $BASE_CACHE_KEEP builds; never the one just used, and
+	# never one a running instance or selfhost script holds (<sha>.inuse,
+	# shared-locked by start.sh's server and selfhost-*.sh).
 	# shellcheck disable=SC2012
 	ls -1t "$PROVE_CACHE"/base/*/.prove-done 2>/dev/null | tail -n +"$((BASE_CACHE_KEEP + 1))" | while read -r done; do
 		old=$(dirname "$done")
-		[ "$old" = "$dir" ] || { say "[base] pruning $(basename "$old")"; rm -rf "$old"; }
+		[ "$old" = "$dir" ] && continue
+		(
+			flock -n -x 6 || { say "[base] keeping $(basename "$old"): in use"; exit 0; }
+			say "[base] pruning $(basename "$old")"; rm -rf "$old" "$old.lock" "$old.inuse"
+		) 6>"$old.inuse"
 	done
 	echo "base $dir"
 }

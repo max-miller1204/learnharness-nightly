@@ -35,6 +35,8 @@ const save = () => fs.writeFileSync(path.join(OUT, "result.json"), `${JSON.strin
 const step = (name, ok, note) => { steps.push({ name, ok, note }); save(); console.log(`[${ok ? "ok" : "FAIL"}] ${name}${note ? `: ${note}` : ""}`); };
 
 const browser = await puppeteer.launch({ executablePath: process.env.PROVE_CHROME || "/usr/bin/google-chrome", headless: true, args: ["--no-first-run", `--user-data-dir=${path.join(SIDE_DIR, "chrome-profile")}`] });
+const chromePid = path.join(SIDE_DIR, "chrome-web-real-turn.pid");
+fs.writeFileSync(chromePid, String(browser.process().pid)); // stop.sh ends Chrome if this script dies
 try {
 	const page = await browser.newPage();
 	await page.setViewport({ width: 1280, height: 900 });
@@ -74,6 +76,7 @@ try {
 } finally {
 	save();
 	await browser.close();
+	fs.rmSync(chromePid, { force: true });
 }
 console.log(`result: ${path.join(OUT, "result.json")}`);
 process.exit(steps.every((s) => s.ok) ? 0 : 1);

@@ -6,7 +6,7 @@
 
 `scripts/electron.sh "$RUN" dev|packaged` (needs `start.sh "$RUN" head` first):
 
-- `xvfb-run -a` with a 1280x900 screen, `XDG_CONFIG_HOME=$RUN/electron-<mode>/config` (so `userData` is throwaway, never `~/.config/LearnHarness`), `--remote-debugging-port=<free>`, `--no-sandbox` while `ELECTRON_NO_SANDBOX=1`.
+- `env -i` (no ambient keys; `LH_IGNORE_ENV_KEYS=1`; HOME is `$RUN/electron-<mode>/home`), `xvfb-run -a` with a 1280x900 screen, `XDG_CONFIG_HOME=$RUN/electron-<mode>/config` (so `userData` is throwaway, never `~/.config/LearnHarness`), `--remote-debugging-port=<free>`, `--no-sandbox` while `ELECTRON_NO_SANDBOX=1`.
 - dev: `node_modules/.bin/electron <repo>` with `LH_DEV_URL=<head APP_URL>`; shares the head server, data and fake model.
 - packaged: `npx electron-builder --linux dir --publish never` (unpacked, no AppImage or deb, nothing signed or published; about 10 s once Electron is cached), then `dist/linux-unpacked/learnharness`. It runs its own bundled server with its own data under the throwaway config. The drive seeds the fake model from inside the window (`SEED_IN_PAGE=1`), since only the window carries the desktop secret.
 - Writes `$RUN/electron-<mode>/instance.env` with `CDP_URL`; `web-teach.mjs` attaches to that window instead of launching Chrome and runs the same teaching drive.

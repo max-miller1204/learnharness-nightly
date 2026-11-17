@@ -161,7 +161,7 @@ One section per surface. `/prove-it` adds a section when the app gains a surface
 
 ### Self-hosted server and `lh` launcher (`selfhost/`)
 
-**Drive**: tier A (routine, seconds): `scripts/selfhost-a.sh "$RUN" base` and `head`, then `compare.mjs` on `selfhost-a/result.json`. Tier B (hard, about a minute after builds): `scripts/selfhost-b.sh "$RUN"` installs the base build through `install.sh` under a throwaway `lh-prove-<run>.service`, updates to the change, fails a broken trial, and `lh rollback`s. Details: [references/selfhost.md](references/selfhost.md).
+**Drive**: tier A (routine, seconds): `scripts/selfhost-a.sh "$RUN" base` and `head`, then `compare.mjs` on `selfhost-a/result.json`. Tier B (hard, about a minute after builds): `scripts/selfhost-b.sh "$RUN"` installs the base build through `install.sh` under a throwaway `lh-prove-<hash of the run path>.service`, updates to the change, fails a broken trial, and `lh rollback`s. Details: [references/selfhost.md](references/selfhost.md).
 
 **Copies**: nothing; the base build's launcher is the "before".
 
@@ -173,7 +173,7 @@ One section per surface. `/prove-it` adds a section when the app gains a surface
 
 ### Electron desktop (Linux)
 
-**Drive**: `E=$(scripts/electron.sh "$RUN" dev)` (dev shell on the head server) or `packaged` (`electron-builder --linux dir`, about 10 s with a warm cache), then `node scripts/web-teach.mjs "$E"` and parity with the browser: `node scripts/compare.mjs "$RUN/head/web-teach/result.json" "$E_DIR/web-teach/result.json" --allow 'apiCalls=GET /api/updates 200' --allow 'apiCalls=GET /api/subscriptions 200'`. Details: [references/electron.md](references/electron.md).
+**Drive**: `E=$(scripts/electron.sh "$RUN" dev)` (dev shell on the head server) or `packaged` (`electron-builder --linux dir`, about 10 s with a warm cache), then `node scripts/web-teach.mjs "$E"` and parity with the browser: `node scripts/compare.mjs "$RUN/head/web-teach/result.json" "$(dirname "$E")/web-teach/result.json" --allow 'apiCalls=GET /api/updates 200' --allow 'apiCalls=GET /api/subscriptions 200'`. Details: [references/electron.md](references/electron.md).
 
 **Copies**: the web UI on the same server (parity, rung 1).
 
@@ -214,7 +214,7 @@ After the happy path passes, run at least one probe that matches what you change
 - model failure mid-turn: `curl -X POST "$FAKE_CONTROL/__prove/fail?mode=broken-stream"` (or `http500`, `hang`), send a turn, expect a recorded error, "Something went wrong" with Retry, a usable composer and a working follow-up; reset with `mode=none`.
 - delete the session you are viewing (open it, right-click its row, Delete): on main this can log a 404 for `/api/chats/<id>/side-chats`; a new error beyond that is BROKEN.
 - doing it twice: on the question card press Enter twice on Submit answer; expect one answer in `data/chats/<id>.json`.
-- cold start: `PROVE_SEED=0 scripts/start.sh "$RUN" head` starts with no model configured; `/chat/new` must show the setup call to action (`data-testid="setup-cta"`), not an error page, and a turn must answer 503 `models_not_configured`.
+- cold start, in its own run folder (one instance per side per run): `C=$(scripts/new-run.sh cold); PROVE_SEED=0 scripts/start.sh "$C" head` starts with no model configured; `/chat/new` must show the setup call to action (`data-testid="setup-cta"`), not an error page, and a turn must answer 503 `models_not_configured`.
 - selfhost: a broken version is already probed by tier B; for launcher changes also try `lh use <bad version>` and `lh rollback` with no previous version.
 - a sibling flow that should behave the same: practice sessions (`new-session-practice`) for a teaching-session change.
 
@@ -291,7 +291,7 @@ Send the findings back to the agent that made the change: the failing steps, the
 
 ## Clean up
 
-`scripts/stop.sh "$RUN"`: stops only what this run started (by pid file and process group, never by name), removes its `lh-prove-*` unit and throwaway homes, data and browser profiles. Evidence in `.prove-it/runs/` stays. Base builds stay cached in `$PROVE_CACHE` (newest `BASE_CACHE_KEEP` kept).
+`scripts/stop.sh "$RUN"`: refuses anything but a run folder made by `new-run.sh`; stops only what this run started (by pid file and process group, never by name, and only processes whose command line or environment names this run), removes its `lh-prove-<hash>` unit and throwaway homes, data, browser profiles and tier B archives. Evidence in `.prove-it/runs/` stays. Base builds stay cached in `$PROVE_CACHE` (newest `BASE_CACHE_KEEP` kept).
 
 ## Gotchas
 
@@ -302,4 +302,5 @@ Send the findings back to the agent that made the change: the failing steps, the
 - Electron downloads its binary on first use; the downloaded `chrome-sandbox` isn't SUID root here, hence `--no-sandbox`.
 - A fresh Chrome profile's first load reads a different CLS (cold caches); `web-teach.mjs` loads `/chat/new` once before measuring. If a relative-CLS step still fails while the app code is identical, rerun both sides and record it under Retries and fixes; never widen `relativeNoise` yourself.
 - Main already fails absolute CLS < 0.1 (about 0.27: the sidebar slides open on first load). `CLS_MODE=relative` until fixed, then flip it to `absolute` in `knobs.env`.
-- Selfhost tier B runs under your real systemd user manager and real HOME (the unit has its own LH_HOME, port, bin dir and data); it never sets linger or Tailscale.
+- Selfhost tier B runs under your real systemd user manager and real HOME (the unit has its own LH_HOME, port, bin dir and data); it never sets linger or Tailscale. Because the launchers under test choose where they write, `selfhost-b.sh` first asks both (base and head) for their home, unit name, shim and unit file and refuses to install unless all are the run's, and it fingerprints your real unit, shim, state file and service pid before and after.
+- Base builds in `$PROVE_CACHE` are shared by every run and worktree: `start.sh` (base side) and `selfhost-*.sh` hold `<sha>.inuse` shared, and `build.sh` never prunes a build in use.

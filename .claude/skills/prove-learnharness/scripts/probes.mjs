@@ -27,6 +27,8 @@ const shape = (msgs) => msgs.map((m) => `${m.role}${m.role === "assistant" ? `[$
 const composer = '[data-testid="composer"] [contenteditable="true"]';
 
 const browser = await puppeteer.launch({ executablePath: process.env.PROVE_CHROME || "/usr/bin/google-chrome", headless: true, args: ["--no-first-run", "--no-default-browser-check", `--user-data-dir=${path.join(path.dirname(instPath), "chrome-profile")}`] });
+const chromePid = path.join(path.dirname(instPath), "chrome-probes.pid");
+fs.writeFileSync(chromePid, String(browser.process().pid)); // stop.sh ends Chrome if this script dies
 let code = 0;
 try {
 	const page = await browser.newPage();
@@ -67,7 +69,7 @@ try {
 		recordedError: Boolean(errored),
 		errorMessage: errored?.errorMessage?.slice(0, 160) ?? null,
 		shapeAfterFailure: errShape,
-		uiShowsError: /error|failed|went wrong|retry/i.test(uiText),
+		uiShowsError: /Something went wrong/.test(uiText) && /Retry/i.test(uiText),
 		uiErrorSnippet: (uiText.match(/.{0,60}(error|failed|went wrong|retry).{0,60}/i)?.[0] ?? null),
 		composerAfterFailure: composerState,
 		followUpAccepted: Boolean(recovered),
@@ -112,6 +114,7 @@ try {
 } finally {
 	save();
 	await browser.close();
+	fs.rmSync(chromePid, { force: true });
 }
 for (const st of res.steps) console.log(`[${st.ok ? "ok" : "FAIL"}] ${st.name}${st.note ? `: ${String(st.note).slice(0, 200)}` : ""}`);
 console.log(`result: ${path.join(OUT, "result.json")}`);

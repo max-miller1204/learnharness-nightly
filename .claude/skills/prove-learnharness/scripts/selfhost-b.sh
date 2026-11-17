@@ -6,7 +6,7 @@
 #   A = the base build (version ...1), B = the head build (...2),
 #   C = B with a server that exits at once (...3, a failing trial).
 # Serves them from a file:// feed and drives the real launcher of the BASE
-# install under its own systemd user unit, lh-prove-<run>.service, with its
+# install under its own systemd user unit, lh-prove-<hash of the run path>.service, with its
 # own LH_HOME, port and bin dir:
 #   1. install.sh installs A           -> healthy on A, a session created
 #   2. feed -> B, lh update / --now    -> healthy on B, committed, data kept
@@ -34,25 +34,62 @@ NODE_DIR=$(dirname "$(dirname "$(readlink -f "$(command -v node)")")")
 VA="$(pkg_version "$BASE_TREE")$PROVE_BASE_VERSION_SUFFIX"
 VB="$(pkg_version "$REPO")$PROVE_HEAD_VERSION_SUFFIX"
 VC="$(pkg_version "$REPO")$PROVE_BROKEN_VERSION_SUFFIX"
-RUNID=$(basename "$RUN" | tr -cd 'A-Za-z0-9' | tail -c 12)
-UNIT=lh-prove-$RUNID
+# Unique per run folder (a hash of its full path), so parallel runs never share a unit.
+UNIT=lh-prove-$(printf '%s' "$RUN" | sha256sum | cut -c1-12)
 echo "$UNIT" >"$SH/unit-name"   # stop.sh removes it, even if this script dies
-# The user's real service, if any: it must look exactly the same at the end.
-systemctl --user show -p MainPID -p ActiveState learnharness.service >"$SH/real-service-before" 2>/dev/null || true
 LHH=$SH/lh-home/.learnharness
 PORT=$(free_port)
 export LH_HOME=$LHH LH_SERVICE_NAME=$UNIT LH_BIN_DIR=$SH/bin
+
+# Keep the base build from being pruned while this script uses it.
+exec 7>"$PROVE_CACHE/base/$(base_sha).inuse"
+flock -s 7
+
+# Isolation guard. The launchers under test decide where they write: if a
+# change broke LH_HOME / LH_SERVICE_NAME / LH_BIN_DIR handling, they would fall
+# back to your real ~/.learnharness, learnharness.service and ~/.local/bin/lh.
+# Ask both launchers (base = A, head = B and C) where they would write, and
+# refuse to start unless every path is this run's.
+for tree in "$BASE_TREE" "$REPO"; do
+	where=$(cd "$tree" && node --disable-warning=ExperimentalWarning --input-type=module -e "
+		const p = await import('./selfhost/src/paths.ts'); const s = await import('./selfhost/src/service.ts');
+		console.log([p.lhHome(), p.serviceName(), s.shimPath(), s.unitPath()].join('\n'));") \
+		|| die "BLOCKED: cannot ask the $tree launcher for its paths"
+	got_home=$(sed -n 1p <<<"$where"); got_name=$(sed -n 2p <<<"$where"); got_shim=$(sed -n 3p <<<"$where"); got_unit=$(sed -n 4p <<<"$where")
+	[ "$got_home" = "$LHH" ] && [ "$got_name" = "$UNIT" ] && [ "$got_shim" = "$SH/bin/lh" ] && [ "$(basename "$got_unit")" = "$UNIT.service" ] \
+		|| die "BLOCKED: the launcher in $tree would not stay isolated (home $got_home, unit $got_name, shim $got_shim, unit file $got_unit). Not installing."
+done
+
+# Your real install, if any: it must be byte-for-byte the same at the end.
+real_fingerprint() {
+	systemctl --user show -p MainPID -p ActiveState -p FragmentPath learnharness.service 2>/dev/null
+	for f in "$(systemctl --user show -p FragmentPath --value learnharness.service 2>/dev/null)" "$HOME/.local/bin/lh" "$HOME/.learnharness/runtime/service-state.json"; do
+		[ -n "$f" ] && [ -f "$f" ] && sha256sum "$f"
+	done
+	true
+}
+real_fingerprint >"$SH/real-install-before"
 LOG=$SH/steps.log
 : >"$LOG"
 step() { printf '[%s] %s\n' "$1" "$2" | tee -a "$LOG"; [ "$1" = ok ] || FAILED=1; }
 FAILED=0
 
 # --- archives (A is cached beside the base build: same SHA, same bytes) ---
-pack() { # <tree> <version> <out dir>
-	(cd "$1" && node selfhost/scripts/package-archive.ts --version "$2" --arch "$ARCH" --node-dir "$NODE_DIR" --standalone .next/standalone --out "$3") >>"$SH/pack.log" 2>&1
+mkdir -p "$PROVE_CACHE/tmp"
+pack() { # <tree> <version> <out dir>; staging off the small /tmp tmpfs
+	(cd "$1" && TMPDIR=$PROVE_CACHE/tmp node selfhost/scripts/package-archive.ts --version "$2" --arch "$ARCH" --node-dir "$NODE_DIR" --standalone .next/standalone --out "$3") >>"$SH/pack.log" 2>&1
 }
 A_ARCHIVE=$BASE_TREE/.prove-archive/learnharness-$VA-$ARCH.tar.gz
-[ -f "$A_ARCHIVE" ] || pack "$BASE_TREE" "$VA" "$BASE_TREE/.prove-archive" || die "packing A failed (see $SH/pack.log)"
+# Packed once per base SHA, under the base lock, into a temp folder that is
+# renamed only when complete: a half-written archive is never cached.
+(
+	flock 9
+	if [ ! -f "$A_ARCHIVE.sha256" ]; then
+		rm -rf "$BASE_TREE/.prove-archive.tmp" "$BASE_TREE/.prove-archive"
+		pack "$BASE_TREE" "$VA" "$BASE_TREE/.prove-archive.tmp" && mv "$BASE_TREE/.prove-archive.tmp" "$BASE_TREE/.prove-archive"
+	fi
+) 9>"$PROVE_CACHE/base/$(base_sha).lock" || die "packing A failed (see $SH/pack.log)"
+[ -f "$A_ARCHIVE.sha256" ] || die "packing A left no checksum (see $SH/pack.log)"
 pack "$REPO" "$VB" "$SH/feed" || die "packing B failed (see $SH/pack.log)"
 cp "$A_ARCHIVE" "$SH/feed/"
 B_ARCHIVE=$SH/feed/learnharness-$VB-$ARCH.tar.gz
@@ -99,14 +136,25 @@ else
 	exit 1
 fi
 SESSION=$(seed_session || true)
-[ -n "$SESSION" ] && step ok "session $SESSION created on A" || step FAIL "could not create a session on A"
+if [ -n "$SESSION" ]; then step ok "session $SESSION created on A"; else step FAIL "could not create a session on A (no point checking it survives)"; exit 1; fi
 snap "after install A"
 
 # --- 2. update to B (the change) ---
+switching_to() { # <version>: the launcher has taken a switch to it (pending, committed or rolled back)
+	node -e "const s=require('$LHH/runtime/service-state.json'); process.exit(s.update?.targetVersion==='$1' ? 0 : 1)" 2>/dev/null
+}
+downloaded_or_switching() { # <version>
+	switching_to "$1" && return 0
+	[ "$(server_update_state 2>/dev/null)" = downloaded ]
+}
 switch_via_server() { # <version>: check, wait for the download, install now
+	# With Automatic updates on (the default) the server installs a download by
+	# itself when idle, so the switch may start before `--now`: both are fine.
 	lh update >>"$SH/update.log" || true
-	wait_for "$SELFHOST_SWITCH_TIMEOUT_S" sh -c "[ \"\$(curl -sf http://127.0.0.1:$PORT/api/updates | node -e 'let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>console.log(JSON.parse(s).status))')\" = downloaded ]" || return 1
-	lh update --now >>"$SH/update.log"
+	wait_for "$SELFHOST_SWITCH_TIMEOUT_S" downloaded_or_switching "$1" || return 1
+	if switching_to "$1"; then echo "(server started the switch to $1 by itself)" >>"$SH/update.log"; return 0; fi
+	lh update --now >>"$SH/update.log" || true
+	wait_for 60 switching_to "$1"
 }
 feed "$VB" "$B_ARCHIVE"
 if switch_via_server "$VB" && wait_for "$SELFHOST_SWITCH_TIMEOUT_S" on_version "$VB" && wait_for 30 sh -c "[ \"\$(node -p \"require('$LHH/runtime/service-state.json').update?.status\")\" = committed ]"; then
@@ -120,7 +168,7 @@ snap "after update to B"
 
 # --- 3. a failing trial (C) rolls back to B ---
 feed "$VC" "$C_ARCHIVE"
-switch_via_server "$VC" || step FAIL "C never downloaded: server=$(server_update_state 2>&1)"
+switch_via_server "$VC" || step FAIL "the switch to C never started: server=$(server_update_state 2>&1) state=$(update_status 2>&1)"
 if wait_for "$SELFHOST_SWITCH_TIMEOUT_S" sh -c "node -e \"const s=require('$LHH/runtime/service-state.json'); process.exit(s.update?.targetVersion==='$VC' && s.update?.status==='rolled-back' ? 0 : 1)\"" \
 	&& wait_for "$SELFHOST_SWITCH_TIMEOUT_S" on_version "$VB"; then
 	step ok "failing trial C rolls back to B: state $(update_status)"
@@ -141,8 +189,12 @@ fi
 has_session "$SESSION" && step ok "session survives lh rollback" || step FAIL "session lost after lh rollback"
 snap "after lh rollback"
 cp "$LHH/userdata/logs/update.log" "$SH/launcher-update.log" 2>/dev/null || true
-systemctl --user show -p MainPID -p ActiveState learnharness.service >"$SH/real-service-after" 2>/dev/null || true
-cmp -s "$SH/real-service-before" "$SH/real-service-after" && step ok "the real learnharness.service is untouched ($(tr '\n' ' ' <"$SH/real-service-after"))" || step FAIL "the real learnharness.service changed: $(cat "$SH/real-service-before" "$SH/real-service-after" | tr '\n' ' ')"
+real_fingerprint >"$SH/real-install-after"
+if cmp -s "$SH/real-install-before" "$SH/real-install-after"; then
+	step ok "your real install is untouched (service pid and state, unit file, ~/.local/bin/lh, service-state.json hashes)"
+else
+	step FAIL "your real install changed during the run (if your real service updated itself meanwhile, rerun): $(diff "$SH/real-install-before" "$SH/real-install-after" | tr '\n' ' ')"
+fi
 
 echo "evidence: $SH (steps.log, status.txt, launcher-update.log, install.log, update.log)"
 exit $FAILED

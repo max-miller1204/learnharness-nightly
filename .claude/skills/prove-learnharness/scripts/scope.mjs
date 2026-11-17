@@ -88,8 +88,10 @@ if (Object.keys(surfaces).length) {
 	plan.push(`RUN=$(scripts/new-run.sh <slug>)`);
 	plan.push(T("scope", `node scripts/scope.mjs > "$RUN/scope.txt"`));
 	plan.push(`scripts/build.sh "$RUN" ${needsBase || surfaces["selfhost-b"] ? "both" : "head"}   # records head/base build or cache-hit times itself`);
-	if (web || api || electron) {
+	if ((web || api) && needsBase) {
 		plan.push(`H=$(${T("start head", `scripts/start.sh "$RUN" head`)}); B=$(${T("start base", `scripts/start.sh "$RUN" base`)}); scripts/health.sh "$H"; scripts/health.sh "$B"`);
+	} else if (electron) {
+		plan.push(`H=$(${T("start head", `scripts/start.sh "$RUN" head`)}); scripts/health.sh "$H"`);
 	}
 	if (web) {
 		plan.push(T("web: ensure axe", "scripts/ensure-axe.sh"));

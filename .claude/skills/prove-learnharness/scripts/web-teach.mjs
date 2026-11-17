@@ -59,6 +59,10 @@ const attached = Boolean(inst.CDP_URL);
 const browser = attached
 	? await puppeteer.connect({ browserURL: inst.CDP_URL, defaultViewport: null })
 	: await puppeteer.launch({ executablePath: chrome, headless: true, args: ["--no-first-run", "--no-default-browser-check", `--user-data-dir=${path.join(SIDE_DIR, "chrome-profile")}`] });
+// Puppeteer starts Chrome detached (its own process group): a pid file lets
+// stop.sh end it if this script dies before closing it.
+const chromePid = attached ? null : path.join(SIDE_DIR, "chrome-web-teach.pid");
+if (chromePid) fs.writeFileSync(chromePid, String(browser.process().pid));
 let exitCode = 0;
 try {
 	let page;
@@ -229,7 +233,7 @@ try {
 } finally {
 	result.finishedAt = new Date().toISOString();
 	save();
-	if (attached) await browser.disconnect(); else await browser.close();
+	if (attached) await browser.disconnect(); else { await browser.close(); fs.rmSync(chromePid, { force: true }); }
 }
 console.log(`result: ${path.join(OUT, "result.json")}`);
 process.exit(exitCode);

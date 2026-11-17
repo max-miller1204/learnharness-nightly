@@ -7,7 +7,7 @@ The launcher (`selfhost/lh.ts`, Node built-ins, run by each version's bundled No
 | Variable | Real install | Prove run |
 |---|---|---|
 | `LH_HOME` | `~/.learnharness` | `$RUN/selfhost/lh-home/.learnharness` (tier A: `$RUN/<side>/lh-home/.learnharness`) |
-| `LH_SERVICE_NAME` | `learnharness` | `lh-prove-<run id>` (tier A: `lh-prove-a`, never installed) |
+| `LH_SERVICE_NAME` | `learnharness` | `lh-prove-<12 hex of sha256(run path)>` (tier A: `lh-prove-a`, never installed) |
 | `LH_BIN_DIR` | `~/.local/bin` | `$RUN/selfhost/bin` |
 | port | 3774 | a free port (`lh up --port`) |
 | feed | GitHub `nightly/latest.json` | `file://$RUN/selfhost/feed/latest.json` |
