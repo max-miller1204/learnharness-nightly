@@ -43,6 +43,7 @@ import { copyImmutableData, pendingPluginQuestionOf, pluginQuestionCallsOf } fro
 import { pluginQuestionOccurrenceKey, samePluginQuestionOccurrence, type PluginQuestionAnswerState, type PluginQuestionSnapshot, type PluginQuestionOccurrence } from "../src/core/index.ts";
 
 import type { PluginProblemSnapshot, PluginProblemSubmissionState } from "../src/core/index.ts";
+import { sessionReadHold } from "./session-deletion.ts";
 
 export interface PluginProblemAvailability { problemId: string; status: "available" | "unavailable" }
 export interface PluginProblemDraft { submission: PluginProblemSubmissionState; thinking: string }
@@ -764,6 +765,11 @@ export class SessionModel {
 	}
 
 	private async fetchView(url: string, signal: AbortSignal | undefined, recoveringDrop: boolean): Promise<Response> {
+		// The record and stream reads hold while this window deletes the
+		// session: they run if the delete is refused, never if it succeeds
+		// (the server would answer 404; the view unmounts instead).
+		const hold = sessionReadHold(this.chatId);
+		if (hold) await hold;
 		try {
 			const res = await this.fetch(url, { signal });
 			if (recoveringDrop && !res.ok) throw new Error((await res.text()) || STREAM_DROPPED);

@@ -9,6 +9,7 @@ import { formatTokens } from "@/components/usage-format";
 import { Hint } from "@/components/ui/hint";
 import { timeAgo } from "@/components/sidebar";
 import { resolveSettings } from "@/src/core";
+import { sessionReadHold } from "@/components/session-deletion";
 
 /**
  * The extraction-coverage surfaces (extraction-UX redesign, owner-locked
@@ -45,6 +46,8 @@ export interface SessionCoverage {
 /** One session's coverage read — null on transport/404 (callers render
  *  nothing rather than a fake zero; the honest-render doctrine). */
 async function fetchCoverage(chatId: string): Promise<SessionCoverage | null> {
+	const hold = sessionReadHold(chatId); // holds while this window deletes the session
+	if (hold) await hold;
 	try {
 		const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`);
 		if (!res.ok) return null;
@@ -309,6 +312,8 @@ export function CoverageRing({ chatId, refreshKey = 0 }: { chatId: string; refre
 				<button
 					type="button"
 					data-testid="coverage-ring"
+					// The tooltip's words, as the button's name (axe button-name).
+					aria-label="How much of this session isn't mapped yet"
 					onClick={() => setOpen((o) => !o)}
 					aria-expanded={open}
 					className="relative flex size-5 cursor-pointer items-center justify-center transition-opacity hover:opacity-80"

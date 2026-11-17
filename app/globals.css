@@ -1,6 +1,10 @@
 @import "tailwindcss";
 
 @custom-variant dark (&:is(.dark *));
+/* The sidebar is closed: components/sidebar-boot.ts sets this attribute on
+   <html> before the first paint, SidebarProvider keeps it in sync after
+   mount. The open/closed look reads it, so the first frame never shifts. */
+@custom-variant sidebar-closed (&:where([data-lh-sidebar="closed"] *));
 
 /*
  * THE SKIN — wave 5. Design tokens, the single place to restyle the app.
@@ -50,7 +54,7 @@
 	--secondary: #1c1c1c;
 	--secondary-foreground: #e6e6e6;
 	--muted: #1c1c1c;
-	--muted-foreground: #8d8d8d;
+	--muted-foreground: #919191;
 	--accent: #2a2a2a;
 	--accent-foreground: #e6e6e6;
 	--destructive: #ef4444;
@@ -549,7 +553,7 @@ body {
 .lh-electron[data-lh-platform="darwin"] .lh-lights-gutter {
 	padding-left: calc(var(--lh-traffic-lights-width) / var(--lh-zoom));
 }
-.lh-electron[data-lh-platform="darwin"] .lh-closed-toggle {
+.lh-electron[data-lh-platform="darwin"][data-lh-sidebar="closed"] .lh-closed-toggle {
 	margin-left: calc(var(--lh-traffic-lights-width) / var(--lh-zoom));
 }
 /* Picker headers have no sidebar-reopen control. Clear only the portion of
@@ -578,7 +582,7 @@ body {
 
 /* A closed graph rail starts below the floating toggle/native lights band.
    Like the existing light gutter, its physical clearance survives desktop zoom. */
-.lh-electron[data-lh-platform="darwin"] .lh-plugin-graph-closed {
+.lh-electron[data-lh-platform="darwin"][data-lh-sidebar="closed"] .lh-plugin-graph-closed {
 	top: max(2.75rem, calc(44px / var(--lh-zoom)));
 }
 

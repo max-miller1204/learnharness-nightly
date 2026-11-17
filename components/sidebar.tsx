@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { MenuShell } from "@/components/menu-shell";
@@ -22,6 +22,7 @@ import { useServerEvent, useServerResync } from "@/components/server-events";
 import type { ChatListItem } from "@/src/core";
 import { kbdEventForAction } from "@/src/core";
 import { notifySettingsSaved } from "@/components/settings-signal";
+import { SIDEBAR_AUTOCLOSE, SIDEBAR_CLOSED_ATTR, SIDEBAR_STORAGE_KEY, sidebarStoredOpen } from "@/components/sidebar-boot";
 import { PluginWidgets } from "@/components/plugins";
 import { PluginSidebarActions } from "@/components/plugin-chrome";
 import { HostContentRootContext, HostRouteLifetimeProvider } from "@/components/host-content-root";
@@ -32,10 +33,12 @@ import { InteractionLayersProvider, useInteractionLayers, useOptionalInteraction
  * Toggleable sidebar — NOT a modal drawer: no backdrop, no focus theft. It
  * sits inline next to the content and can stay open while working in a
  * session. Open state persists across pages (provider lives in the root
- * layout) and across reloads (localStorage).
+ * layout) and across reloads (localStorage). The first paint is already
+ * final: components/sidebar-boot.ts sets the closed attribute before
+ * hydration, and the open/closed look reads it (`sidebar-closed:`).
  */
 
-const STORAGE_KEY = "lh:sidebar-open";
+const STORAGE_KEY = SIDEBAR_STORAGE_KEY;
 
 /*
  * Narrow-window behavior (owner, 2026-09-17): below SIDEBAR_AUTOCLOSE the
@@ -51,12 +54,12 @@ const STORAGE_KEY = "lh:sidebar-open";
  * appears. In the plain browser there is no window to widen and no
  * suppression — a narrow tab opens the sidebar if the user says so.
  *
- * Mirrors SIDEBAR_AUTOCLOSE in electron/main.cjs — keep in sync.
+ * SIDEBAR_AUTOCLOSE lives in components/sidebar-boot.ts (the first-paint
+ * script applies the same rule); it mirrors electron/main.cjs: keep in sync.
  */
 import type { ChatGPTControlBridge, NativeSubscriptionControlBridge } from "@/src/core";
 import type { UpdateState } from "@/components/settings/update-settings.tsx";
 import { FilePathDropZone } from "@/components/file-path-drop-zone";
-const SIDEBAR_AUTOCLOSE = 928;
 
 // Module scope, guarded for SSR (the server has no navigator).
 const IS_ELECTRON = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
@@ -111,9 +114,11 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 		notifySettingsSaved("keys"); // cover changes missed before this root-lifetime subscription
 		return off;
 	}, []);
-	// Start closed so server and client first-render agree (no hydration
-	// mismatch); the stored value is applied after mount.
-	const [open, setOpen] = useState(false);
+	// Start at the default (open) so server and client first-render agree
+	// (no hydration mismatch); the stored value is applied after mount.
+	// Until then the boot script's attribute on <html> carries the real
+	// first-paint state (components/sidebar-boot.ts).
+	const [open, setOpen] = useState(true);
 	const [narrow, setNarrow] = useState(false);
 	const [mounted, setMounted] = useState(false);
 
@@ -138,17 +143,17 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 		const off = window.lh?.onZoom?.(setZoomVar);
 		void window.lh?.getZoom?.().then(setZoomVar);
 
-		const stored = localStorage.getItem(STORAGE_KEY);
-		// Default: open (first run introduces the sidebar).
-		setOpen(stored === null ? true : stored === "1");
+		// Default: open (first run introduces the sidebar). The same rule as
+		// the first-paint script (sidebar-boot.ts), so the two always agree.
+		setOpen(sidebarStoredOpen(localStorage.getItem(STORAGE_KEY)));
 		setMounted(true);
 		return () => off?.();
 	}, []);
 
 	// Narrow-window auto-close/auto-restore (see SIDEBAR_AUTOCLOSE note):
 	// fires only on actual resizes — a boolean compare, no layout work.
-	// Both this and the mount effect land before the first paint, so a
-	// narrow window never flashes the open sidebar on load.
+	// The first paint is covered by the boot script, which applies the
+	// same narrow rule before hydration.
 	useEffect(() => {
 		if (!IS_ELECTRON) return; // plain-browser tabs open freely
 		const onResize = () => setNarrow(window.innerWidth < SIDEBAR_AUTOCLOSE);
@@ -156,6 +161,17 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 		window.addEventListener("resize", onResize);
 		return () => window.removeEventListener("resize", onResize);
 	}, []);
+
+	// The open/closed look reads data-lh-sidebar on <html> (the
+	// `sidebar-closed:` variant). After mount this state owns it; before
+	// mount the boot script's value stands, so the first frame never moves.
+	// A layout effect: the attribute and the state change in the same frame.
+	const rendered = open && !narrow;
+	useLayoutEffect(() => {
+		if (!mounted) return;
+		if (rendered) document.documentElement.removeAttribute(SIDEBAR_CLOSED_ATTR);
+		else document.documentElement.setAttribute(SIDEBAR_CLOSED_ATTR, "closed");
+	}, [mounted, rendered]);
 
 	const toggle = useCallback(() => {
 		// Opening while narrow (auto-closed, or the user's own closed-at-
@@ -189,7 +205,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 	}, [toggle]);
 
 	return (
-		<SidebarContext.Provider value={{ open: open && !narrow, toggle }}>
+		<SidebarContext.Provider value={{ open: rendered, toggle }}>
 			{/* transitions gated on mount: no slide-in flash on page load */}
 			<div className={cn("flex h-dvh", mounted && "[&_.sidebar-motion]:transition-[width,margin,opacity]")}>{children}</div>
 		</SidebarContext.Provider>
@@ -213,8 +229,8 @@ export function SidebarToggle() {
 	return (
 		<span
 			className={cn(
-				"sidebar-motion lh-no-drag relative flex h-9 shrink-0 overflow-hidden duration-200",
-				open ? "w-0 -mr-3" : "w-9 mr-0 lh-closed-toggle",
+				"sidebar-motion lh-no-drag lh-closed-toggle relative flex h-9 shrink-0 overflow-hidden duration-200",
+				"w-0 -mr-3 sidebar-closed:w-9 sidebar-closed:mr-0",
 			)}
 		>
 			<Hint label="Open sidebar" action="toggle-sidebar">
@@ -225,7 +241,7 @@ export function SidebarToggle() {
 				aria-hidden={open}
 				tabIndex={open ? -1 : 0}
 				onClick={toggle}
-				className={cn("sidebar-motion duration-200", open ? "pointer-events-none opacity-0" : "opacity-100")}
+				className="sidebar-motion duration-200 pointer-events-none opacity-0 sidebar-closed:pointer-events-auto sidebar-closed:opacity-100"
 			>
 				{/* Owner, round 6: size-4, SAME as the close glyph — the toggle
 				    must not grow when the sidebar is closed (it did: size-5 here).
@@ -402,7 +418,7 @@ export function RenameRow({ chat, onCommit, onCancel }: { chat: ChatListItem; on
 export type SessionKindFilter = "teach" | "all" | "practice";
 const KIND_FILTER_KEY = "lh:session-kind-filter";
 
-function SessionsSidebar() {
+function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (id: string) => void }) {
 	const interactions = useInteractionLayers();
 	const { open, toggle } = useSidebar();
 	const [chats, setChats] = useState<ChatListItem[] | null>(null);
@@ -612,17 +628,24 @@ function SessionsSidebar() {
 
 	// Delete success: patch the list instantly (the poll is the backstop),
 	// navigate home if the open session died (the chat view unmounts —
-	// drafts die with it, no orphan bubbles), and announce the graph
+	// drafts die with it, no orphan bubbles). The shell drops that view AT
+	// ONCE, before the navigation commits: left mounted for that gap, its
+	// timers and listeners fetched the deleted session and logged 404s
+	// (first-load polish). replace, not push (T3 Code's rule): Back must not
+	// lead to a session that no longer exists. Then announce the graph
 	// revision so the graph view refetches (deletion is the one writer
 	// the status poll can't see — no run ever transitions some→none).
 	const onDeleted = useCallback(
 		(id: string, _mode: ChatDeleteMode, graphRevision: number) => {
 			setDeleting(null);
 			setChats((prev) => (prev ? prev.filter((c) => c.id !== id) : prev));
-			if (pathname === `/chat/${id}`) router.push("/");
+			if (pathname === `/chat/${id}`) {
+				onViewedSessionDeleted(id);
+				router.replace("/");
+			}
 			window.dispatchEvent(new CustomEvent("lh:graph-revision", { detail: { revision: graphRevision } }));
 		},
-		[pathname, router],
+		[pathname, router, onViewedSessionDeleted],
 	);
 
 	useEffect(() => {
@@ -653,7 +676,7 @@ function SessionsSidebar() {
 
 	return (
 		<aside
-			className={cn("sidebar-motion shrink-0 overflow-hidden duration-200", open ? "w-72" : "w-0")}
+			className="sidebar-motion shrink-0 overflow-hidden duration-200 w-72 sidebar-closed:w-0"
 			aria-hidden={!open}
 		>
 			<div className="flex h-full w-72 flex-col border-r bg-background">
@@ -725,7 +748,7 @@ function SessionsSidebar() {
 				</PluginSidebarActions>
 
 				<div className="mx-3 mb-2 flex items-center gap-2">
-					<span className="text-xs uppercase tracking-widest text-muted-foreground/70">Sessions</span>
+					<span className="text-xs uppercase tracking-widest text-muted-foreground">Sessions</span>
 					<Hint label="Search sessions" action="sessions-search" side="bottom">
 					<span className="relative flex-1">
 						<Input
@@ -953,12 +976,22 @@ function SessionsSidebar() {
 export function AppShell({ children }: { children: React.ReactNode }) {
 	const [contentRoot, setContentRoot] = useState<HTMLElement | null>(null);
 	const pathname = usePathname();
+	// The session the learner deleted while viewing it: its route content
+	// stops rendering now, not when the navigation home commits (see
+	// SessionsSidebar's onDeleted). Only for that gap: once the route has
+	// left it, the mark clears, so a later visit (Back to an older history
+	// entry, a link) renders the route again (its not-found page).
+	const [deletedViewedId, setDeletedViewedId] = useState<string | null>(null);
+	const showRoute = deletedViewedId === null || pathname !== `/chat/${deletedViewedId}`;
+	useEffect(() => {
+		if (deletedViewedId !== null && pathname !== `/chat/${deletedViewedId}`) setDeletedViewedId(null);
+	}, [deletedViewedId, pathname]);
 	return (
 		<HostRouteLifetimeProvider pathname={pathname}>
 		<HostContentRootContext.Provider value={contentRoot}>
 			<InteractionLayersProvider><SettingsDialogProvider>
-				<SessionsSidebar />
-				<FilePathDropZone className="relative isolate min-w-0 flex-1" onContentRoot={setContentRoot}>{children}</FilePathDropZone>
+				<SessionsSidebar onViewedSessionDeleted={setDeletedViewedId} />
+				<FilePathDropZone className="relative isolate min-w-0 flex-1" onContentRoot={setContentRoot}>{showRoute ? children : null}</FilePathDropZone>
 				{/* The single document-level keydown listener (keyboard wave A) —
 				    after the content in the tree, but it's window-level so order only
 				    matters for the events it dispatches, never for DOM priority. */}

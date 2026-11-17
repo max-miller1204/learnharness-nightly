@@ -81,7 +81,7 @@ Ladder, best first: 1 an old system that does the same job, 2 a snapshot, 3 an i
 | any existing web, api, agent or `lh` CLI flow | existing | the base commit, built and run beside the change with the same seed and fake-model scenario, outputs diffed by `compare.mjs` | 1 | `$PROVE_CACHE/base/<sha>/` via `scripts/build.sh` | the app before the change |
 | Electron window (dev or packaged) | existing or new | parity with the browser on the same server: same drive, same observations | 1 | `compare.mjs head/web-teach electron-*/web-teach` | the web app |
 | update, failed trial, rollback | existing | the launcher's documented behaviour, driven on the base build (A) to the change (B) and back | 1 + 4 | `scripts/selfhost-b.sh`, `docs/self-hosting.md` | the base launcher, the owner |
-| web budgets | any page driven | console errors (two known), CLS (relative to base for now), axe | budget | `budgets.json`, `CLS_MODE` | the user, 2026-11-17 |
+| web budgets | any page driven | console errors (one known), CLS (absolute < 0.1), axe | budget | `budgets.json`, `CLS_MODE` | the user, 2026-11-17 |
 | new flow that copies nothing | new | the spec | 4 | `docs/specs/<item>.md`, found at run time | the user |
 | future mobile app, client protocol | new | parity with the web app and `/api/*` | 1 | [planned.md](references/planned.md) | the web app |
 
@@ -190,7 +190,7 @@ The Expo mobile app (Android emulator on this machine) and the versioned client 
 ### Varies by and deliberate
 
 - **Varies by**: build mode (production standalone here; `next dev` is not proved), host (`localhost` and IP literals pass, other names need `LH_ALLOWED_HOSTS`), desktop vs browser (desktop secret header, native updater, desktop-owned subscriptions), model provider (fake custom endpoint vs Claude Code CLI). A flow isn't proved while a variant the change reaches is unproven.
-- **Known and deliberate**: the desktop window never calls `GET /api/updates` or `GET /api/subscriptions` (native updater, desktop-owned subscriptions). `GET /api/claude-code` answers 403 until Claude Code is turned on. `GET /api/jobs` needs `?chatId=`. The probe card shuffles options. Console: `favicon.ico` 404 (temporary) and `/api/stt/token` 503 with no Deepgram key (see `budgets.json`).
+- **Known and deliberate**: the desktop window never calls `GET /api/updates` or `GET /api/subscriptions` (native updater, desktop-owned subscriptions). `GET /api/claude-code` answers 403 until Claude Code is turned on. `GET /api/jobs` needs `?chatId=`. The probe card shuffles options. Console: `/api/stt/token` 503 with no Deepgram key (see `budgets.json`).
 
 ### Verifying a bug fix
 
@@ -212,7 +212,7 @@ Keep recipes by feature, never by PR, commit or issue. Update the existing recip
 
 After the happy path passes, run at least one probe that matches what you changed. `node scripts/probes.mjs "$B"` and `"$H"`, then `compare.mjs` on `probes/result.json`, script the first and third:
 - model failure mid-turn: `curl -X POST "$FAKE_CONTROL/__prove/fail?mode=broken-stream"` (or `http500`, `hang`), send a turn, expect a recorded error, "Something went wrong" with Retry, a usable composer and a working follow-up; reset with `mode=none`.
-- delete the session you are viewing (open it, right-click its row, Delete): on main this can log a 404 for `/api/chats/<id>/side-chats`; a new error beyond that is BROKEN.
+- delete the session you are viewing (open it, right-click its row, Delete), including right after a turn starts: expect no 404 for the deleted session (`/api/chats/<id>`, `/api/chats/<id>/side-chats`), home after, and Back not reopening it. Any such 404 is BROKEN.
 - doing it twice: on the question card press Enter twice on Submit answer; expect one answer in `data/chats/<id>.json`.
 - cold start, in its own run folder (one instance per side per run): `C=$(scripts/new-run.sh cold); PROVE_SEED=0 scripts/start.sh "$C" head` starts with no model configured; `/chat/new` must show the setup call to action (`data-testid="setup-cta"`), not an error page, and a turn must answer 503 `models_not_configured`; then `scripts/stop.sh "$C"`.
 - selfhost: a broken version is already probed by tier B; for launcher changes also try `lh use <bad version>` and `lh rollback` with no previous version.
@@ -300,8 +300,8 @@ Send the findings back to the agent that made the change: the failing steps, the
 - The standalone server forks `next-server`: killing only the parent pid orphans it. Everything starts under `setsid` and stops by group.
 - `/api/events` keeps a stream open, so `networkidle` never fires: wait for selectors.
 - Electron downloads its binary on first use; the downloaded `chrome-sandbox` isn't SUID root here, hence `--no-sandbox`.
-- A fresh Chrome profile's first load reads a different CLS (cold caches); `web-teach.mjs` loads `/chat/new` once before measuring. The reloaded session page flickers between two CLS states on identical code, so it is loaded 3 times per side and judged head median vs base max (`budgets.json` `cls.relativeRule`, the user's choice). A CLS failure is a result, not a reason to rerun; never change `relativeNoise` or the rule yourself.
-- Main already fails absolute CLS < 0.1 (about 0.27: the sidebar slides open on first load). `CLS_MODE=relative` until fixed, then flip it to `absolute` in `knobs.env`.
+- A fresh Chrome profile's first load reads a different CLS (cold caches); `web-teach.mjs` loads `/chat/new` once before measuring. The reloaded session page flickers between two CLS states on identical code, so it is loaded 3 times per side and judged by its median (`CLS_MODE=absolute`: head median < 0.1; `relative`: head median vs base max, `budgets.json` `cls.relativeRule`). A CLS failure is a result, not a reason to rerun; never change `relativeNoise` or the rule yourself.
+- `CLS_MODE=absolute` since the sidebar's first-load shift was fixed (it scored about 0.27 before). `compare.mjs` reads the default from `knobs.env`; a real `CLS_MODE` env var wins.
 - Selfhost tier B runs under your real systemd user manager and real HOME (the unit has its own LH_HOME, port, bin dir and data); it never sets linger or Tailscale. Because the launchers under test choose where they write, `selfhost-b.sh` first asks both (base and head) for their home, unit name, shim and unit file and refuses to install unless all are the run's, and it fingerprints your real unit, shim, state file and service pid before and after.
 - Don't change the worktree while a run is going: a head rebuild replaces `.next/standalone` under every running head server. Parallel checkers in one worktree are fine (each in its own run folder), because `build.sh` reuses the head build while the tree is unchanged.
 - Base builds in `$PROVE_CACHE` are shared by every run and worktree: `start.sh` (base side) and `selfhost-*.sh` hold `<sha>.inuse` shared, and `build.sh` never prunes a build in use.

@@ -210,9 +210,9 @@ try {
 	save();
 
 	// 5. reverse: delete the session from the sidebar (right-click, Delete,
-	// confirm), from /chat/new. Deleting the session you are viewing can log a
-	// 404 for its side-chats on main (a known app finding, see Gotchas); that is
-	// a break-it probe of its own, not part of this flow's budget.
+	// confirm), from /chat/new. Deleting the session you are viewing is a
+	// break-it probe of its own (SKILL.md, Try to break it), not part of this
+	// flow's budget.
 	if (!keep) {
 		await page.goto(`${APP}/chat/new`, { waitUntil: "domcontentloaded" });
 		await page.waitForSelector('[data-testid="session-row"]', { timeout: 30_000 });

@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { serializeCitation, sideSegmentId, type LhMessage, type TextSelector, type SideChatMessage, type SideChatThread } from "@/src/core";
 import { useServerEvent, useServerResync } from "./server-events";
+import { sessionReadHold } from "./session-deletion";
 
 export type SideThreadAnchor = { kind: "range"; range: Range } | { kind: "element"; element: HTMLElement } | { kind: "composer" };
 export interface SidePassage { text: string; sourceMessageId: string; selector?: Omit<TextSelector, "text"> }
@@ -88,6 +89,8 @@ export function useSideThread(chatId: string, messages: readonly LhMessage[], ge
 			? current.map((entry) => entry.id === thread.id ? thread : entry) : [...current, thread]);
 	}, []);
 	const refresh = useCallback(async () => {
+		const hold = sessionReadHold(chatId); // holds while this window deletes the session
+		if (hold) await hold;
 		const request = ++refreshSerial.current;
 		const before = revision.current;
 		try {

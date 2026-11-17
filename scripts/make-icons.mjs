@@ -4,6 +4,7 @@
 //
 //   build/icon.ico  — Windows (.ico with 16/24/32/48/64/128/256 PNG entries)
 //   build/icon.png  — Linux (512×512; AppImage/deb/desktop entry)
+//   app/favicon.ico: the web favicon, the same bytes as build/icon.ico
 //
 // macOS does NOT come from here: build/icon.icon (the Icon Composer
 // document) is the mac source of truth, compiled by actool at package
@@ -48,6 +49,9 @@ ICO_SIZES.forEach((size, i) => {
 const ico = Buffer.concat([header, ...pngs]);
 writeFileSync(path.join(root, "build", "icon.ico"), ico);
 console.log(`build/icon.ico  ${ICO_SIZES.join("/")} — ${(ico.length / 1024).toFixed(1)} KB`);
+// The web favicon (Next serves app/favicon.ico at /favicon.ico): same bytes.
+writeFileSync(path.join(root, "app", "favicon.ico"), ico);
+console.log("app/favicon.ico (same bytes)");
 
 // ---- build/icon.png: the Linux icon -------------------------------------
 const png512 = render(512);

@@ -3,6 +3,7 @@
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { HostDialog } from "@/components/host-dialog";
 import type { ChatDeleteMode, ChatListItem } from "@/src/core";
+import { beginSessionDelete } from "@/components/session-deletion";
 
 /** The graph-traces checkbox copy (owner, 2026-09-24 flow rework — was
  *  the delete-nodes option's body in the two-button design): the
@@ -71,9 +72,15 @@ export function DeleteSessionDialog({
 		const mode: ChatDeleteMode = traces ? "delete-nodes" : "preserve-graph";
 		setBusy(true);
 		setFailure(null);
+		// Before the request: the session's view holds its reads of it until
+		// the outcome, so nothing 404s in the gap between the server's delete
+		// and the view unmounting; a refused delete lets them run.
+		const settle = beginSessionDelete(chat.id);
 		try {
 			const res = await fetch(`/api/chats/${chat.id}?mode=${mode}`, { method: "DELETE" });
-			const body = (await res.json()) as {
+			settle(res.ok);
+			// An unreadable body never undoes a delete the status confirmed.
+			const body = (await res.json().catch(() => ({}))) as {
 				ok?: boolean;
 				error?: string;
 				code?: string;
@@ -88,6 +95,7 @@ export function DeleteSessionDialog({
 			}
 			onDeleted(chat.id, mode, body.graphRevision ?? 0);
 		} catch {
+			settle(false); // no answer: the session is still there as far as we know
 			setFailure({ code: "network", error: "Delete failed — network error. Try again." });
 			setBusy(false);
 		}
