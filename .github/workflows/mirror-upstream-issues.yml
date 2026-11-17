@@ -12,8 +12,6 @@ name: Mirror upstream issues
 on:
   schedule:
     - cron: "47 * * * *"
-  push: # TEMP verification, removed before merge
-    branches: [feat/mirror-upstream-issues]
   workflow_dispatch:
     inputs:
       issue:
