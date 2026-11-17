@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { serializeCitation, sideSegmentId, type LhMessage, type TextSelector, type SideChatMessage, type SideChatThread } from "@/src/core";
 import { useServerEvent, useServerResync } from "./server-events";
+import { isSessionDeleting } from "./session-deletion";
 
 export type SideThreadAnchor = { kind: "range"; range: Range } | { kind: "element"; element: HTMLElement } | { kind: "composer" };
 export interface SidePassage { text: string; sourceMessageId: string; selector?: Omit<TextSelector, "text"> }
@@ -88,6 +89,7 @@ export function useSideThread(chatId: string, messages: readonly LhMessage[], ge
 			? current.map((entry) => entry.id === thread.id ? thread : entry) : [...current, thread]);
 	}, []);
 	const refresh = useCallback(async () => {
+		if (isSessionDeleting(chatId)) return; // the server is removing it: a read would 404
 		const request = ++refreshSerial.current;
 		const before = revision.current;
 		try {

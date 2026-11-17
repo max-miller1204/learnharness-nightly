@@ -43,6 +43,7 @@ import { copyImmutableData, pendingPluginQuestionOf, pluginQuestionCallsOf } fro
 import { pluginQuestionOccurrenceKey, samePluginQuestionOccurrence, type PluginQuestionAnswerState, type PluginQuestionSnapshot, type PluginQuestionOccurrence } from "../src/core/index.ts";
 
 import type { PluginProblemSnapshot, PluginProblemSubmissionState } from "../src/core/index.ts";
+import { isSessionDeleting } from "./session-deletion.ts";
 
 export interface PluginProblemAvailability { problemId: string; status: "available" | "unavailable" }
 export interface PluginProblemDraft { submission: PluginProblemSubmissionState; thinking: string }
@@ -449,6 +450,9 @@ export class SessionModel {
 	/** Shared canonical read/adoption seam. A stale or locally canceled read
 	 * returns undefined, never a snapshot callers may adopt independently. */
 	async readRecord(options: SessionRecordReadOptions = {}): Promise<SessionRecordSnapshot | undefined> {
+		// Being deleted from this window: no read of a record the server is
+		// removing (it would 404). Same as a stale read: nothing to adopt.
+		if (isSessionDeleting(this.chatId)) return undefined;
 		const ticket = ++this.canonicalIssued;
 		const epoch = this.canonicalEpoch;
 		const response = await this.fetchView(`/api/chats/${encodeURIComponent(this.chatId)}`, options.signal, options.recoveringDrop === true);
