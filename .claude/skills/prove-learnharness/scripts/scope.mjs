@@ -118,4 +118,7 @@ for (const r of reasons) console.log(`  ${r}`);
 for (const u of unmapped) console.log(`  ${u} -> UNMAPPED: decide by hand and add a rule here and in SKILL.md`);
 console.log(`surfaces: ${Object.keys(surfaces).join(", ") || "none (no app surface: say so in the receipt and stop)"}`);
 console.log(`hard: ${hard ? "yes (full proof in a fresh checker, plus break-it probes)" : "no (scripted checks; a fresh checker only if a script fails)"}`);
-if (plan.length) { console.log("plan (run from the skill folder):"); for (const p of plan) console.log(`  ${p}`); }
+if (plan.length) {
+	console.log("plan (run from the skill folder; or all of it: scripts/run-plan.sh <slug> with the same arguments as this scope.mjs call):");
+	for (const p of plan) console.log(`  ${p}`);
+}

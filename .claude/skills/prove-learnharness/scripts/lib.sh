@@ -46,6 +46,24 @@ record_time() { # <RUN> <phase> <start epoch> [exit]
 		"$(awk -v a="$start" -v b="$(date +%s.%N)" 'BEGIN{printf "%.1f", b-a}')" "$code" >>"$run/timings.tsv"
 }
 
+# Take one of $MACHINE_BUILD_SLOTS machine-wide build slots on file descriptor
+# <fd> (held until the caller closes it or exits). Waits up to
+# $BUILD_SLOT_WAIT_S; returns 1 if none frees up. Sets BUILD_SLOT.
+acquire_build_slot() { # <fd>
+	local fd=$1 i deadline
+	deadline=$(( $(date +%s) + BUILD_SLOT_WAIT_S ))
+	mkdir -p "$PROVE_CACHE/build-slots"
+	while :; do
+		for i in $(seq 1 "$MACHINE_BUILD_SLOTS"); do
+			eval "exec $fd>\"\$PROVE_CACHE/build-slots/slot-$i.lock\""
+			if flock -n "$fd"; then BUILD_SLOT=$i; return 0; fi
+			eval "exec $fd>&-"
+		done
+		[ "$(date +%s)" -lt "$deadline" ] || return 1
+		sleep 2
+	done
+}
+
 pkg_version() { node -p "require('$1/package.json').version"; }
 
 # The base commit: merge-base of HEAD and the base ref (fetch first if it moved).
