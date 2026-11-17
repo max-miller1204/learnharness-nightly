@@ -50,8 +50,10 @@ build_head() {
 	exec 8>"$lock"
 	flock 8
 	want="$(worktree_hash) $version"
+	local tstart; tstart=$(date +%s.%N)
 	if [ "$REUSE_HEAD_BUILD" = 1 ] && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$want" ]; then
 		say "[head] reusing build for tree $(cut -d' ' -f1 "$stamp")"
+		record_time "$RUN" "head build (reused, tree unchanged)" "$tstart"
 	else
 		local t0=$SECONDS saved
 		ensure_deps "$REPO" "$log"
@@ -62,6 +64,7 @@ build_head() {
 		cp "$saved" "$REPO/next-env.d.ts"; rm -f "$saved"
 		printf '%s\n' "$want" >"$stamp"
 		say "[head] built in $((SECONDS - t0))s"
+		record_time "$RUN" "head build$(grep -q SecurityFatalError "$log" && echo ' (incl. Next security-notice retry)')" "$tstart"
 	fi
 	exec 8>&-
 	echo "head $REPO"
@@ -73,11 +76,13 @@ build_base() {
 	sha=$(base_sha)
 	dir=$PROVE_CACHE/base/$sha
 	mkdir -p "$PROVE_CACHE/base"
+	local tstart; tstart=$(date +%s.%N)
 	exec 9>"$PROVE_CACHE/base/$sha.lock"
 	flock 9
 	if [ -f "$dir/.prove-done" ]; then
 		say "[base] reusing cached build of ${sha:0:12}"
 		touch "$dir/.prove-done"
+		record_time "$RUN" "base build (cache hit ${sha:0:12}, incl. lock wait)" "$tstart"
 	else
 		local t0=$SECONDS
 		rm -rf "$dir"
@@ -92,6 +97,7 @@ build_base() {
 		next_build "$dir" "$version" "$log" || { tail -40 "$log" >&2; rm -rf "$dir"; die "base build failed (log: $log)"; }
 		echo "$sha $version" >"$dir/.prove-done"
 		say "[base] built in $((SECONDS - t0))s"
+		record_time "$RUN" "base build (cold ${sha:0:12}, incl. npm ci$(grep -q SecurityFatalError "$log" && echo ', Next security-notice retry'))" "$tstart"
 	fi
 	exec 9>&-
 	# Keep the newest $BASE_CACHE_KEEP builds; never the one just used.

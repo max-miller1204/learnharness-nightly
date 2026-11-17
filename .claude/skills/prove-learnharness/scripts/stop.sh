@@ -28,6 +28,9 @@ find "$RUN" -name '*.pid' -print0 | while IFS= read -r -d '' pidfile; do
 	fi
 	rm -f "$pidfile"
 done
+# Tier B archives are ~100 MB each and rebuildable; their sha256s are in feed/latest.json history (pack.log).
+rm -f "$RUN"/selfhost/feed/*.tar.gz
+rm -rf "$RUN"/selfhost/c-tree
 for side in "$RUN"/*/; do
 	rm -rf "$side/home" "$side/data" "$side/chrome-profile" "$side/config" "$side/lh-home" "$side/bin"
 	rm -f "$side/instance.env" "$side/auth.json" "$side"/*-credentials.json*

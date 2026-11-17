@@ -24,7 +24,7 @@ git fetch origin main -q
 node scripts/scope.mjs        # the diff, the surfaces and tiers it reaches, and the exact plan to run
 ```
 
-`scope.mjs` runs `git merge-base HEAD origin/main`, `git diff --name-only <base>` and `git ls-files --others --exclude-standard`, then applies the map below. If the user names a flow instead ("prove the update banner"), prove that flow and skip the diff.
+`scope.mjs` runs `git merge-base HEAD origin/main`, `git diff --name-only <base>` and `git ls-files --others --exclude-standard`, then applies the map below and prints the plan: only the surfaces and tiers the diff reaches, each command wrapped in `scripts/timed.sh "$RUN" "<phase>"` so the run records wall-clock time per phase in `$RUN/timings.tsv` (`build.sh` records head build or reuse and base build or cache hit itself). If the user names a flow instead ("prove the update banner"), prove that flow and skip the diff.
 
 Follow each changed file to the surfaces and flows it reaches. Internal code counts through its callers.
 
@@ -210,8 +210,8 @@ Keep recipes by feature, never by PR, commit or issue. Update the existing recip
 
 ## Try to break it
 
-After the happy path passes, run at least one probe that matches what you changed:
-- model failure mid-turn: `curl -X POST "$FAKE_CONTROL/__prove/fail?mode=broken-stream"` (or `http500`, `hang`), send a turn, expect a recorded error and a usable composer; reset with `mode=none`.
+After the happy path passes, run at least one probe that matches what you changed. `node scripts/probes.mjs "$B"` and `"$H"`, then `compare.mjs` on `probes/result.json`, script the first and third:
+- model failure mid-turn: `curl -X POST "$FAKE_CONTROL/__prove/fail?mode=broken-stream"` (or `http500`, `hang`), send a turn, expect a recorded error, "Something went wrong" with Retry, a usable composer and a working follow-up; reset with `mode=none`.
 - delete the session you are viewing (open it, right-click its row, Delete): on main this can log a 404 for `/api/chats/<id>/side-chats`; a new error beyond that is BROKEN.
 - doing it twice: on the question card press Enter twice on Submit answer; expect one answer in `data/chats/<id>.json`.
 - cold start: `PROVE_SEED=0 scripts/start.sh "$RUN" head` starts with no model configured; `/chat/new` must show the setup call to action (`data-testid="setup-cta"`), not an error page, and a turn must answer 503 `models_not_configured`.
@@ -243,6 +243,8 @@ Instance: <url or binary, version or commit, port>
 - <item> -> <why> -> <the unlock that would cover it, or exact steps for a human>
 ## Left behind
 - <test data from this run still present, or "none">
+## Timing
+<the table from `node scripts/timings.mjs "$RUN"`: wall-clock seconds per phase, cache hits, total>
 ```
 
 Fill "Retries and fixes" honestly, even on a PROVED run. A step that failed for a reason unrelated to the change is how the next agent learns this skill has drifted.
@@ -274,7 +276,7 @@ Put "Couldn't prove" before the evidence, every time, even on PROVED. A pass tha
 
 ## Merge gate (PRs)
 
-For a PR, post the report and the receipt as a PR comment once the run is done: `gh pr comment <n> --body-file "$RUN/pr-comment.md"`, where the file starts with `prove-learnharness: <VERDICT> for <full head SHA>`, then the report block, then `receipt.md` in a collapsed `<details>` block. No screenshots, no secrets, no absolute home paths. A PR may auto-merge only when the latest such comment names the PR's current head SHA and says PROVED; a new push needs a new run.
+For a PR, post the report and the receipt as a PR comment once the run is done: `gh pr comment <n> --body-file "$RUN/pr-comment.md"`, where the file starts with `prove-learnharness: <VERDICT> for <full head SHA>`, then the report block, then the timing table (`node scripts/timings.mjs "$RUN"`), then `receipt.md` in a collapsed `<details>` block. No screenshots, no secrets, no absolute home paths. A PR may auto-merge only when the latest such comment names the PR's current head SHA and says PROVED; a new push needs a new run.
 
 ## If it is BROKEN
 
@@ -298,5 +300,6 @@ Send the findings back to the agent that made the change: the failing steps, the
 - The standalone server forks `next-server`: killing only the parent pid orphans it. Everything starts under `setsid` and stops by group.
 - `/api/events` keeps a stream open, so `networkidle` never fires: wait for selectors.
 - Electron downloads its binary on first use; the downloaded `chrome-sandbox` isn't SUID root here, hence `--no-sandbox`.
+- A fresh Chrome profile's first load reads a different CLS (cold caches); `web-teach.mjs` loads `/chat/new` once before measuring. If a relative-CLS step still fails while the app code is identical, rerun both sides and record it under Retries and fixes; never widen `relativeNoise` yourself.
 - Main already fails absolute CLS < 0.1 (about 0.27: the sidebar slides open on first load). `CLS_MODE=relative` until fixed, then flip it to `absolute` in `knobs.env`.
 - Selfhost tier B runs under your real systemd user manager and real HOME (the unit has its own LH_HOME, port, bin dir and data); it never sets linger or Tailscale.

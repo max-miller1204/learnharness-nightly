@@ -36,3 +36,4 @@ Preconditions: `scripts/build.sh "$RUN" both`; systemd user manager running; not
 - With Automatic updates on (the default), the server may install B by itself as soon as it downloads; the script waits on state, not on its own command.
 - `lh status` can fail for a moment during a switch (the shim is being rewritten); it is evidence, not a crash.
 - The update banner in the browser is not driven yet (gap).
+- Tier B always takes `lh update --now`; the automatic install-when-idle path without it is not driven yet (gap: a variant that waits for the auto-install after the download).

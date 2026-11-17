@@ -7,6 +7,7 @@
 				{
 					"urlEndsWith": "/favicon.ico",
 					"status": 404,
+					"temporary": true,
 					"why": "Temporary: the production build serves no favicon. A follow-up PR fixes it and removes this entry."
 				},
 				{

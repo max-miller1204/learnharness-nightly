@@ -36,13 +36,14 @@ for cmd in "help" "status" "versions" "update" "rollback" "use 9.9.9" "restore" 
 	obs+=("lh $cmd -> $(printf '%s' "$out" | sed "s#$H#<home>#g" | tr '\n' ' ' | cut -c1-300)")
 done
 
-node - "$OUT/result.json" "$SIDE" "$tests_ok" "$summary" "${obs[@]}" <<'EOF'
+BUILD_ID=$( [ "$SIDE" = head ] && git -C "$TREE" rev-parse --short=12 HEAD || basename "$TREE" | cut -c1-12)
+node - "$OUT/result.json" "$SIDE" "$tests_ok" "$summary" "$BUILD_ID" "${obs[@]}" <<'EOF'
 const fs = require("node:fs");
-const [file, side, testsOk, summary, ...cli] = process.argv.slice(2);
+const [file, side, testsOk, summary, build, ...cli] = process.argv.slice(2);
 const steps = [{ name: "launcher tests (node --test selfhost/tests)", ok: testsOk === "true", note: summary }];
 const leaked = cli.filter((l) => /\.learnharness(?!-)|learnharness\.service/.test(l) && !/<home>/.test(l));
 steps.push({ name: "lh commands stay inside the throwaway home", ok: leaked.length === 0, note: leaked.join("; ") });
-fs.writeFileSync(file, JSON.stringify({ side, steps, observations: { cli }, budgets: {} }, null, 2) + "\n");
+fs.writeFileSync(file, JSON.stringify({ side, build: `${side} ${build}`, steps, observations: { cli }, budgets: {} }, null, 2) + "\n");
 for (const s of steps) console.log(`[${s.ok ? "ok" : "FAIL"}] ${s.name}: ${s.note}`);
 console.log(`result: ${file}`);
 process.exit(steps.every((s) => s.ok) ? 0 : 1);

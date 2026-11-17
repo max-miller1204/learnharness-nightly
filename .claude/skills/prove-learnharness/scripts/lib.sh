@@ -25,6 +25,14 @@ wait_for() {
 # Is the pid in this file alive?
 pid_alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 
+# Append one row to <RUN>/timings.tsv (same format as timed.sh).
+record_time() { # <RUN> <phase> <start epoch> [exit]
+	local run=$1 phase=$2 start=$3 code=${4:-0}
+	[ -f "$run/timings.tsv" ] || printf 'phase\tstart\tend\tseconds\texit\n' >"$run/timings.tsv"
+	printf '%s\t%s\t%s\t%s\t%s\n' "$phase" "$(date -u -d "@${start%.*}" +%FT%TZ)" "$(date -u +%FT%TZ)" \
+		"$(awk -v a="$start" -v b="$(date +%s.%N)" 'BEGIN{printf "%.1f", b-a}')" "$code" >>"$run/timings.tsv"
+}
+
 pkg_version() { node -p "require('$1/package.json').version"; }
 
 # The base commit: merge-base of HEAD and the base ref (fetch first if it moved).

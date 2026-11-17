@@ -79,25 +79,39 @@ if (allNew && reached.length && !reached.includes("web")) surfaces.web = ["(smok
 
 const needsBase = Object.keys(surfaces).some((s) => ["web", "api", "agent", "selfhost-a", "selfhost-b"].includes(s));
 const plan = [];
+const T = (phase, cmd) => `scripts/timed.sh "$RUN" "${phase}" ${cmd}`;
 if (Object.keys(surfaces).length) {
+	const web = surfaces.web || surfaces.agent;
+	const api = surfaces.api || surfaces.agent;
+	const electron = surfaces["electron-packaged"] ? "packaged" : surfaces["electron-dev"] ? "dev" : null;
+	const allow = `--allow 'apiCalls=GET /api/updates 200' --allow 'apiCalls=GET /api/subscriptions 200'`;
 	plan.push(`RUN=$(scripts/new-run.sh <slug>)`);
-	plan.push(needsBase || surfaces["selfhost-b"] ? `scripts/build.sh "$RUN" both` : `scripts/build.sh "$RUN" head`);
-	if (surfaces.web || surfaces.api || surfaces.agent || surfaces["electron-dev"] || surfaces["electron-packaged"]) {
-		plan.push(`H=$(scripts/start.sh "$RUN" head); B=$(scripts/start.sh "$RUN" base); scripts/health.sh "$H"; scripts/health.sh "$B"`);
+	plan.push(T("scope", `node scripts/scope.mjs > "$RUN/scope.txt"`));
+	plan.push(`scripts/build.sh "$RUN" ${needsBase || surfaces["selfhost-b"] ? "both" : "head"}   # records head/base build or cache-hit times itself`);
+	if (web || api || electron) {
+		plan.push(`H=$(${T("start head", `scripts/start.sh "$RUN" head`)}); B=$(${T("start base", `scripts/start.sh "$RUN" base`)}); scripts/health.sh "$H"; scripts/health.sh "$B"`);
 	}
-	if (surfaces.web || surfaces.agent) plan.push(`scripts/ensure-axe.sh; node scripts/web-teach.mjs "$B"; node scripts/web-teach.mjs "$H"; node scripts/compare.mjs "$RUN/base/web-teach/result.json" "$RUN/head/web-teach/result.json" --out "$RUN/compare-web.md"`);
-	if (surfaces.api || surfaces.agent) plan.push(`node scripts/api-check.mjs "$B"; node scripts/api-check.mjs "$H"; node scripts/compare.mjs "$RUN/base/api-check/result.json" "$RUN/head/api-check/result.json" --out "$RUN/compare-api.md"`);
-	if (surfaces["selfhost-a"]) plan.push(`scripts/selfhost-a.sh "$RUN" base; scripts/selfhost-a.sh "$RUN" head; node scripts/compare.mjs "$RUN/base/selfhost-a/result.json" "$RUN/head/selfhost-a/result.json" --out "$RUN/compare-selfhost-a.md"`);
-	if (surfaces["selfhost-b"]) plan.push(`scripts/selfhost-b.sh "$RUN"`);
-	if (surfaces["electron-dev"] && !surfaces["electron-packaged"]) plan.push(`E=$(scripts/electron.sh "$RUN" dev); node scripts/web-teach.mjs "$E"; node scripts/compare.mjs "$RUN/head/web-teach/result.json" "$RUN/electron-dev/web-teach/result.json" --allow 'apiCalls=GET /api/updates 200' --allow 'apiCalls=GET /api/subscriptions 200' --out "$RUN/compare-electron.md"`);
-	if (surfaces["electron-packaged"]) plan.push(`E=$(scripts/electron.sh "$RUN" packaged); node scripts/web-teach.mjs "$E"; node scripts/compare.mjs "$RUN/head/web-teach/result.json" "$RUN/electron-packaged/web-teach/result.json" --allow 'apiCalls=GET /api/updates 200' --allow 'apiCalls=GET /api/subscriptions 200' --out "$RUN/compare-electron.md"`);
+	if (web) {
+		plan.push(T("web: ensure axe", "scripts/ensure-axe.sh"));
+		plan.push(`${T("web: drive base", `node scripts/web-teach.mjs "$B"`)}; ${T("web: drive head", `node scripts/web-teach.mjs "$H"`)}`);
+		plan.push(T("web: compare + budgets", `node scripts/compare.mjs "$RUN/base/web-teach/result.json" "$RUN/head/web-teach/result.json" --out "$RUN/compare-web.md"`));
+		plan.push(`${T("probes: base", `node scripts/probes.mjs "$B"`)}; ${T("probes: head", `node scripts/probes.mjs "$H"`)}; ${T("probes: compare", `node scripts/compare.mjs "$RUN/base/probes/result.json" "$RUN/head/probes/result.json" --out "$RUN/compare-probes.md"`)}`);
+	}
+	if (api) plan.push(`${T("api: base", `node scripts/api-check.mjs "$B"`)}; ${T("api: head", `node scripts/api-check.mjs "$H"`)}; ${T("api: compare", `node scripts/compare.mjs "$RUN/base/api-check/result.json" "$RUN/head/api-check/result.json" --out "$RUN/compare-api.md"`)}`);
+	if (surfaces["selfhost-a"]) plan.push(`${T("selfhost A: base", `scripts/selfhost-a.sh "$RUN" base`)}; ${T("selfhost A: head", `scripts/selfhost-a.sh "$RUN" head`)}; ${T("selfhost A: compare", `node scripts/compare.mjs "$RUN/base/selfhost-a/result.json" "$RUN/head/selfhost-a/result.json" --out "$RUN/compare-selfhost-a.md"`)}`);
+	if (surfaces["selfhost-b"]) plan.push(T("selfhost B: install, update, failed trial, rollback", `scripts/selfhost-b.sh "$RUN"`));
+	if (electron) {
+		if (!web) plan.push(T("web: drive head (for electron parity)", `node scripts/web-teach.mjs "$H"`));
+		plan.push(`E=$(${T(`electron ${electron}: launch${electron === "packaged" ? " (incl. electron-builder)" : ""}`, `scripts/electron.sh "$RUN" ${electron}`)}); ${T(`electron ${electron}: drive`, `node scripts/web-teach.mjs "$E"`)}; ${T(`electron ${electron}: parity`, `node scripts/compare.mjs "$RUN/head/web-teach/result.json" "$RUN/electron-${electron}/web-teach/result.json" ${allow} --out "$RUN/compare-electron.md"`)}`);
+	}
 	if (surfaces.mobile || surfaces.protocol) plan.push(`# PLANNED surface reached (${["mobile", "protocol"].filter((s) => surfaces[s]).join(", ")}): no scripts yet. BLOCKED until its section in references/planned.md is built with /prove-it.`);
-	plan.push(`scripts/stop.sh "$RUN"`);
+	plan.push(T("cleanup", `scripts/stop.sh "$RUN"`));
+	plan.push(`node scripts/timings.mjs "$RUN" > "$RUN/timings.md"   # paste into the receipt and the PR comment`);
 }
 
 const out = { baseRef, base, head, files, surfaces, hard, unmapped, reasons, plan };
 if (args.includes("--json")) { console.log(JSON.stringify(out, null, 2)); process.exit(0); }
-console.log(`base ${base.slice(0, 12)} (${baseRef}) .. head ${head.slice(0, 12)} + uncommitted/untracked: ${files.length} files`);
+console.log(`base ${base.slice(0, 12)} (${baseRef}) .. head ${head.slice(0, 12)}: ${files.length} files changed since the merge-base (committed, uncommitted and untracked)`);
 for (const r of reasons) console.log(`  ${r}`);
 for (const u of unmapped) console.log(`  ${u} -> UNMAPPED: decide by hand and add a rule here and in SKILL.md`);
 console.log(`surfaces: ${Object.keys(surfaces).join(", ") || "none (no app surface: say so in the receipt and stop)"}`);

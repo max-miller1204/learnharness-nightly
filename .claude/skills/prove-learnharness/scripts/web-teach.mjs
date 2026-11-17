@@ -123,6 +123,11 @@ try {
 	await fetch(`${inst.FAKE_CONTROL}/__prove/reset`, { method: "POST" });
 	const logStart = fs.existsSync(inst.MODEL_LOG) ? fs.readFileSync(inst.MODEL_LOG, "utf8").trim().split("\n").filter(Boolean).length : 0;
 	const before = await chats();
+	// Warm-up load: a fresh profile's first paint (cold font and asset cache)
+	// reads a different CLS than every later load; measure the warm one on both sides.
+	await page.goto(`${APP}/chat/new`, { waitUntil: "domcontentloaded" });
+	await page.waitForSelector('[data-testid="composer"]', { timeout: 30_000 });
+	await new Promise((r) => setTimeout(r, 1000));
 	await page.goto(`${APP}/chat/new`, { waitUntil: "domcontentloaded" });
 	const composer = '[data-testid="composer"] [contenteditable="true"]';
 	await page.waitForSelector(composer, { timeout: 30_000 });
