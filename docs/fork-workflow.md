@@ -65,17 +65,17 @@ The workflows fail with a clear message when either secret is missing. To replac
 
 ## Dependency updates
 
-Dependabot keeps npm (the root and every `plugins/*` package) and GitHub Actions current (design: [specs/dependency-updates.md](specs/dependency-updates.md); config: `.github/dependabot.yml`). Every Monday it opens, per ecosystem:
+Dependabot keeps npm (the root and every `plugins/*` package) and GitHub Actions current (design: [specs/dependency-updates.md](specs/dependency-updates.md); config: `.github/dependabot.yml`). Every Monday it opens:
 
-- **One minor/patch PR** with everything that has a minor or patch update (`npm-minor-patch`, `actions-minor-patch`).
+- **One minor/patch PR per ecosystem** with everything that has a minor or patch update (`npm-minor-patch`, `actions-minor-patch`).
 - **One PR per major**, across all directories (`npm-major`, `actions-major`). The first weeks' backlog trickles in five open PRs at a time.
-- **A `pi` PR** for `@earendil-works/*` (Pi) and `typebox`, kept out of the minor/patch batch.
+- **A `pi` PR** (npm only) for `@earendil-works/*` (Pi) and `typebox`, kept out of the minor/patch batch.
 
 Security fixes don't wait for Monday. They arrive as one grouped PR per ecosystem as soon as an advisory needs one.
 
 | PR | How it merges |
 |---|---|
-| Minor/patch batch, or a security PR whose biggest change is minor or patch | Auto-merges (squash) when `Check` is green. `.github/workflows/dependabot-auto-merge.yml` queues it with the fork bot App token, so the merge runs CI and the nightly on `main`. |
+| Minor/patch batch, or a security PR whose biggest change is minor or patch | Auto-merges (squash) when `Check` is green. `.github/workflows/dependabot-auto-merge.yml` (on `pull_request_target`, so it always runs `main`'s copy) queues it with the fork bot App token, so the merge runs CI and the nightly on `main`. |
 | A major, or a security PR that needs a major | Waits for an agent: one review round and a `prove-learnharness` run, then `gh pr merge <N> --auto --squash`. |
 | `pi`, or any PR touching Pi or typebox | Arrives red by design. The four SDK plugins' lockfiles pin Pi and typebox through their generated `.sdk/package.json`. An agent runs `npm install` at the root, then `npm run sdk && npm install` in each SDK plugin, adapts code to Pi's changes, pushes to the Dependabot branch, and then treats it like a major. |
 
@@ -85,17 +85,14 @@ Dependabot rebases its own PRs when `main` moves, including after a Sync PR merg
 
 Dependabot can't update the `docker://` PR-Agent image in `pr-agent.yml`; bump it by hand when wanted. PR-Agent skips Dependabot PRs.
 
-Owner setup (once):
+Once, right after the PR that added this merged, the agent turned on Dependabot alerts and security updates (Settings → Code security) and read both back:
 
-1. Dependabot runs can't read Actions secrets, so give the auto-merge workflow the App's values in the Dependabot store. If the `.pem` is gone, generate a new private key on the App's page; the old key keeps working for the Actions secret.
-
-   ```sh
-   gh secret set FORK_BOT_CLIENT_ID --app dependabot -R max-miller1204/learnharness-nightly   # paste the Client ID
-   gh secret set FORK_BOT_PRIVATE_KEY --app dependabot -R max-miller1204/learnharness-nightly < path/to/key.pem
-   ```
-
-   Without them, the auto-merge run fails and minor/patch PRs wait. Nothing else breaks.
-2. Turn on Dependabot alerts and security updates (Settings → Code security, or `gh api -X PUT repos/max-miller1204/learnharness-nightly/vulnerability-alerts` and `gh api -X PUT repos/max-miller1204/learnharness-nightly/automated-security-fixes`).
+```sh
+gh api -X PUT repos/max-miller1204/learnharness-nightly/vulnerability-alerts
+gh api -X PUT repos/max-miller1204/learnharness-nightly/automated-security-fixes
+gh api -i repos/max-miller1204/learnharness-nightly/vulnerability-alerts    # 204 = enabled
+gh api repos/max-miller1204/learnharness-nightly/automated-security-fixes   # {"enabled":true,...}
+```
 
 ## One-time repository settings
 

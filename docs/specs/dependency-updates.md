@@ -89,15 +89,18 @@ Bot PRs get full CI and the required `Check` (CI uses no secrets, so Dependabot'
 
 ### `.github/workflows/dependabot-auto-merge.yml` (new)
 
-- Trigger: `pull_request` (`opened`, `reopened`, `synchronize`). Runs only when `github.repository` is this fork and both the PR author and `github.actor` are `dependabot[bot]`. A push by an agent or a person to a Dependabot branch never runs it, and only Dependabot runs see the Dependabot secrets.
+- Trigger: `pull_request_target` (`opened`, `reopened`, `synchronize`), so GitHub always runs `main`'s copy of the workflow. A Dependabot PR that bumps an action used in this file (`fetch-metadata`, `checkout`) can't run the new, unreviewed version in the job that gets the App key; it runs only after it merges. These runs read the normal Actions secrets, unlike Dependabot `pull_request` runs. The workflow never checks out or runs the PR's code.
+- Runs only when `github.repository` is this fork and both the PR author and `github.actor` are `dependabot[bot]`. A PR from anyone else, or a push by an agent or a person to a Dependabot branch, never runs it.
+- One run per PR at a time (`concurrency` keyed on the PR number, `cancel-in-progress`), so the newest event decides.
 - `permissions: contents: read, pull-requests: read`. Everything that writes uses the App token.
 - Steps:
   1. `dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0`: `update-type` (the highest change in the PR) and `dependency-names`.
   2. `actions/checkout@v7` of the **default branch** (not the PR), `persist-credentials: false`. The token step then runs `main`'s copy of `.github/actions/fork-bot-token`, not one a bot PR edited (Dependabot does bump the SHA inside it).
-  3. `./.github/actions/fork-bot-token` with `secrets.FORK_BOT_CLIENT_ID` and `secrets.FORK_BOT_PRIVATE_KEY`, which come from the **Dependabot** secrets store in these runs.
-  4. Eligible when `update-type` is `version-update:semver-minor` or `version-update:semver-patch` and no dependency name is `@earendil-works/*` or `typebox`. If eligible, `gh pr merge --auto --squash <url>`; if not, `gh pr merge --disable-auto <url>` (ignoring "not enabled") and log why.
+  3. `./.github/actions/fork-bot-token` with `secrets.FORK_BOT_CLIENT_ID` and `secrets.FORK_BOT_PRIVATE_KEY` (the existing Actions secrets).
+  4. Eligible when `update-type` is `version-update:semver-minor` or `version-update:semver-patch` and no dependency name is `@earendil-works/*` or `typebox`. If eligible, `gh pr merge --auto --squash <url>`. If not, log why, and if auto-merge is on (a rebase made it ineligible) turn it off with `gh pr merge --disable-auto <url>`.
 - Why the App token: when GitHub's built-in token turns on auto-merge, the merge's push to `main` starts no workflows, so no CI on `main` and no nightly. With the App token, the merge runs CI and the nightly like any other.
-- The workflow isn't part of `Check`. If it fails (for example, missing Dependabot secrets), the PR just waits.
+- The workflow isn't part of `Check`. If it fails, the PR just waits.
+- Changed after the review round: the spec first used `pull_request` with the App values copied into the Dependabot secrets store. The review showed that this runs a bot PR's bumped actions next to the App key, so it moved to `pull_request_target` (approved), and the Dependabot secrets step went away.
 
 ## Upstream Sync PR and lockfile conflicts
 
@@ -115,15 +118,9 @@ Low risk, since upstream is mostly inactive. When the hourly Sync PR and a Depen
 
 ## Owner setup
 
-1. **Dependabot secrets** for the auto-merge workflow. Dependabot runs can't read Actions secrets, so the App's two values go into the Dependabot store too. The private key `.pem` from the App setup was likely deleted. If so, generate a new key on the App's page (Settings → Developer settings → GitHub Apps → the fork bot → **Private keys** → **Generate a private key**). The existing key keeps working for the Actions secret.
+Nothing new for the owner: the auto-merge workflow uses the existing `FORK_BOT_CLIENT_ID` and `FORK_BOT_PRIVATE_KEY` Actions secrets.
 
-   ```sh
-   gh secret set FORK_BOT_CLIENT_ID --app dependabot -R max-miller1204/learnharness-nightly   # paste the Client ID
-   gh secret set FORK_BOT_PRIVATE_KEY --app dependabot -R max-miller1204/learnharness-nightly < path/to/key.pem
-   ```
-
-   Then delete the `.pem`. Never paste the key into a chat.
-2. **Security settings** (decision 10), run by the agent right after merge:
+**Security settings** (decision 10), run by the agent right after merge:
 
    ```sh
    gh api -X PUT repos/max-miller1204/learnharness-nightly/vulnerability-alerts
@@ -138,7 +135,7 @@ Low risk, since upstream is mostly inactive. When the hourly Sync PR and a Depen
 2. Dependabot CLI (v1.97.0, local Docker): a plugin directory fails at file fetching without the committed `.sdk/package.json` and gets past it with one. (Full local update runs couldn't finish on this machine: the updater can't reach the CLI's local API, an environment limit. So the live run in step 5 is the end-to-end proof.)
 3. The new `Lint` check passes on this PR and fails on a scratch branch where a committed `.sdk/package.json` is changed (then the branch is deleted).
 4. CI `Check` green, one independent review round, and a `prove-learnharness` run (the change reaches no app surface; the `.sdk/package.json` files are build inputs, and plugin typecheck and tests run in CI).
-5. After merge: Dependabot runs on `main` (Insights → Dependency graph → Dependabot shows each directory as checked, with no errors), and the first PRs open: a `npm-minor-patch` batch, a `pi` PR (red, as designed), and up to five majors. The auto-merge run on the batch PR queues auto-merge, once the Dependabot secrets exist. Both security settings read back as enabled.
+5. After merge: Dependabot runs on `main` (Insights → Dependency graph → Dependabot shows each directory as checked, with no errors), and the first PRs open: a `npm-minor-patch` batch, a `pi` PR (red, as designed), and up to five majors. The auto-merge run on the batch PR queues auto-merge. Both security settings read back as enabled.
 
 ## Out of scope
 
