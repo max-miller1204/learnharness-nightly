@@ -9,7 +9,7 @@ import { formatTokens } from "@/components/usage-format";
 import { Hint } from "@/components/ui/hint";
 import { timeAgo } from "@/components/sidebar";
 import { resolveSettings } from "@/src/core";
-import { isSessionDeleting } from "@/components/session-deletion";
+import { sessionReadHold } from "@/components/session-deletion";
 
 /**
  * The extraction-coverage surfaces (extraction-UX redesign, owner-locked
@@ -46,7 +46,8 @@ export interface SessionCoverage {
 /** One session's coverage read — null on transport/404 (callers render
  *  nothing rather than a fake zero; the honest-render doctrine). */
 async function fetchCoverage(chatId: string): Promise<SessionCoverage | null> {
-	if (isSessionDeleting(chatId)) return null; // being deleted: a read would 404
+	const hold = sessionReadHold(chatId); // holds while this window deletes the session
+	if (hold) await hold;
 	try {
 		const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`);
 		if (!res.ok) return null;

@@ -5,21 +5,40 @@
  * The delete dialog marks a session BEFORE it sends the DELETE: the server
  * removes the record before the browser hears back, and a read timer of the
  * session's view (the turn-start re-reads, the side-chat list, ...) could
- * fire in that gap and 404. The view's own reads of that session check the
- * mark and skip. A refused or failed delete clears it; a successful one
- * keeps it (ids are never reused, and the view unmounts right after).
+ * fire in that gap and 404. The view's own reads of that session check
+ * sessionReadHold() first and await it when it returns one, so they HOLD
+ * while the delete is in flight (and keep their exact timing otherwise):
+ *   - deleted: they never run (the view unmounts right after; nothing to adopt)
+ *   - refused or failed: they run as normal, so nothing is lost.
  */
 
-const deleting = new Set<string>();
+const inFlight = new Map<string, Promise<boolean>>(); // resolves true = deleted
+const deleted = new Set<string>(); // ids are never reused
 
-export function markSessionDeleting(chatId: string): void {
-	deleting.add(chatId);
+/** A promise that never settles: a held read of a deleted session. */
+const never = new Promise<never>(() => {});
+
+/** Mark a session as being deleted; call the returned function with the
+ *  outcome (true = the server deleted it) once the DELETE settles. */
+export function beginSessionDelete(chatId: string): (wasDeleted: boolean) => void {
+	let settle!: (wasDeleted: boolean) => void;
+	inFlight.set(chatId, new Promise<boolean>((resolve) => { settle = resolve; }));
+	let done = false;
+	return (wasDeleted) => {
+		if (done) return; // the first outcome stands
+		done = true;
+		if (wasDeleted) deleted.add(chatId);
+		inFlight.delete(chatId);
+		settle(wasDeleted);
+	};
 }
 
-export function clearSessionDeleting(chatId: string): void {
-	deleting.delete(chatId);
-}
-
-export function isSessionDeleting(chatId: string): boolean {
-	return deleting.has(chatId);
+/** null for a session nobody is deleting (read now, no extra tick).
+ *  Otherwise a promise to await before the read: it resolves once a delete
+ *  in flight is refused or fails, and never if the session was deleted. */
+export function sessionReadHold(chatId: string): Promise<void> | null {
+	if (deleted.has(chatId)) return never;
+	const pending = inFlight.get(chatId);
+	if (!pending) return null;
+	return pending.then((wasDeleted) => (wasDeleted ? never : undefined));
 }

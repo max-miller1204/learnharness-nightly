@@ -11,7 +11,7 @@ import { useInteractionLayers } from "@/components/interaction-layers";
 import { isInputShortcutScopeEligible } from "@/components/plugin-input-focus";
 import { ModelPickerPill } from "@/components/model-picker-pill";
 import { Hint } from "@/components/ui/hint";
-import { isSessionDeleting } from "@/components/session-deletion";
+import { sessionReadHold } from "@/components/session-deletion";
 import { notifySettingsSaved, useSettingsSaved } from "@/components/settings-signal";
 import { useModelCatalog } from "@/components/model-catalog";
 export { useModelCatalog } from "@/components/model-catalog";
@@ -60,13 +60,17 @@ export function ModelControl({ chatId, onModelChange }: { chatId?: string; onMod
 	// unstamped session — exactly what the engine resolves); draft mode
 	// reads the models section alone.
 	const readRecord = useCallback(() => {
-		if (chatId && !isSessionDeleting(chatId)) {
-			fetch(`/api/chats/${chatId}`)
+		if (chatId) {
+			const read = () => fetch(`/api/chats/${chatId}`)
 				.then((r) => { if (!r.ok) throw new Error(`session read failed: ${r.status}`); return r.json() as Promise<{ settings?: ChatSettings }>; })
 				.then((body) => setSession({ settings: body.settings }))
 				.catch(() => {
 					/* same read-only posture as a models-section failure */
 				});
+			// Holds while this window deletes the session (no 404 read).
+			const hold = sessionReadHold(chatId);
+			if (hold) void hold.then(read);
+			else read();
 		}
 		fetch("/api/settings")
 			.then((r) => r.json() as Promise<{ settings: { models?: ModelsSettings } | null }>)
