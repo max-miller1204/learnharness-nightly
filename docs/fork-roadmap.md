@@ -63,6 +63,8 @@ Items 25 to 27 cover the owner's ingestion workflow (PDFs, code, spreadsheets an
 
 ### 20. Gemini CLI and Codex CLI providers
 
+**Status.** Gemini CLI: **parked** after the 2026-11-17 spike. The CLI no longer accepts personal Google sign-in (it points users to Antigravity), so it can't reach Gemini subscriptions. See [docs/specs/gemini-cli-provider.md](specs/gemini-cli-provider.md).
+
 **Why.** Reach models that LearnHarness can't use today, the same way Claude Code is used now: as an external CLI that LearnHarness drives as a model.
 - **Gemini CLI:** Google/Gemini subscriptions aren't reachable any other way. Today Gemini is API-key only.
 - **Codex CLI:** the ChatGPT sign-in only shows part of OpenAI's lineup. Per the owner it offers the models from the ChatGPT chat product, not the newer Codex models (the owner sees only one new model there). The Codex CLI uses Codex's own login and routing and exposes its full model list.
