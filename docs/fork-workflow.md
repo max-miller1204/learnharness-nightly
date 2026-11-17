@@ -23,7 +23,7 @@ Repository admins can bypass the required `Check` (GitHub's default; the rule do
 
 The nightly starts only after CI passes on a push to `main`, and builds that exact commit.
 
-`.github/workflows/pr-agent.yml` runs [PR-Agent](https://github.com/The-PR-Agent/pr-agent) on every PR: an AI review and code suggestions as comments, on open and on each push. It's advisory and never blocks a merge. People with write access can also comment `/review`, `/improve`, `/describe` or `/ask ...` on a PR. It uses the `OPENROUTER_API_KEY` secret and the model in the `OPENROUTER_MODEL` repository variable (a bare OpenRouter ID such as `anthropic/claude-haiku-5.5`, which is also the default when the variable is unset). It runs with low reasoning effort..
+`.github/workflows/pr-agent.yml` runs [PR-Agent](https://github.com/The-PR-Agent/pr-agent) on every PR: an AI review and code suggestions as comments, on open and on each push. It's advisory and never blocks a merge. People with write access can also comment `/review`, `/improve`, `/describe` or `/ask ...` on a PR. It uses the `OPENROUTER_API_KEY` secret and the model in the `OPENROUTER_MODEL` repository variable (a bare OpenRouter ID such as `anthropic/claude-haiku-5.5`, which is also the default when the variable is unset). It runs with low reasoning effort.
 
 ## Importing an upstream PR
 
@@ -39,17 +39,29 @@ It pushes the PR's exact commits to `upstream-pr/<N>` (same commit IDs as upstre
 
 The bots never ping anyone upstream: upstream PR references are written as code, and an imported PR's original description is copied into a collapsed code block. So no `@mentions` fire, and nothing adds "mentioned this" entries to upstream's timelines.
 
-## FORK_BOT_TOKEN
+## Fork bot (GitHub App)
 
-PRs opened with GitHub's built-in workflow token don't trigger CI, so the sync and import workflows use a fine-grained personal access token:
+PRs opened with GitHub's built-in workflow token don't trigger CI, so the sync and import workflows authenticate as a private GitHub App installed only on this fork (design: [specs/github-app.md](specs/github-app.md)). Each run mints a token that lasts at most an hour, through the shared `.github/actions/fork-bot-token` step, which also makes it the `gh` and `git` credential for the rest of the job. Nothing expires and nothing is tied to your account. Bot PRs show the App as author and run CI, including `Check`. PR-Agent skips them (it ignores bots); comment `/review` on one when you want a review.
 
-1. GitHub → Settings → Developer settings → Fine-grained tokens → **Generate new token**.
-2. Resource owner: you. Repository access: **Only select repositories** → `learnharness-nightly`.
-3. Repository permissions: **Contents: Read and write**, **Pull requests: Read and write**, **Issues: Read and write**. Nothing else.
-4. Pick an expiry and generate it.
-5. In the fork: Settings → Secrets and variables → Actions → **New repository secret**, name `FORK_BOT_TOKEN`.
+The token can push branches (Contents), open, edit, close and comment on PRs (Pull requests), and push commits that edit `.github/workflows/*` (Workflows), on this repository only.
 
-Renew it before it expires; the workflows fail with a clear message when it's missing.
+To create it (once, as the repository owner):
+
+1. Open <https://github.com/settings/apps/new>.
+2. **GitHub App name:** any globally unique name; PRs show it as `<name>[bot]`. **Homepage URL:** `https://github.com/max-miller1204/learnharness-nightly`.
+3. **Webhook:** untick **Active**.
+4. **Repository permissions:** Contents: Read and write; Pull requests: Read and write; Workflows: Read and write. Metadata: Read is set automatically. Nothing under Organization or Account permissions.
+5. **Where can this GitHub App be installed?** Only on this account. **Create GitHub App**.
+6. Copy the **Client ID** from the App's page. Under **Private keys**, **Generate a private key**; a `.pem` downloads.
+7. **Install App** (left menu) → your account → **Only select repositories** → `learnharness-nightly` → **Install**.
+8. Store both as repository secrets, then delete the `.pem` (or keep it in a password manager):
+
+   ```sh
+   gh secret set FORK_BOT_CLIENT_ID -R max-miller1204/learnharness-nightly   # paste the Client ID
+   gh secret set FORK_BOT_PRIVATE_KEY -R max-miller1204/learnharness-nightly < path/to/key.pem
+   ```
+
+The workflows fail with a clear message when either secret is missing. To replace a lost or leaked key, generate a new one on the App's page, store it the same way and delete the old key there. A future workflow that needs more access (for example Issues) gets it by adding the permission on the App's page and approving the change on the installation.
 
 ## One-time repository settings
 
@@ -71,4 +83,5 @@ Renew it before it expires; the workflows fail with a clear message when it's mi
 | `.github/workflows/pr-agent.yml` | Advisory AI review on PRs |
 | `.github/workflows/nightly.yml`, `feed-check.yml` | Build, publish and verify nightlies |
 | `.github/workflows/upstream-sync.yml`, `import-upstream-pr.yml` | Upstream feed and PR intake |
+| `.github/actions/fork-bot-token/` | Mints the fork bot App token for workflows that push or open PRs |
 | [`fork-roadmap.md`](fork-roadmap.md) | Work considered and deliberately deferred |
