@@ -1,0 +1,83 @@
+# Dependency updates: weekly grouped minor/patch PRs, one PR per major, Pi and
+# typebox in their own group, security fixes right away (grouped). Minor/patch
+# PRs auto-merge on `Check` (.github/workflows/dependabot-auto-merge.yml);
+# majors and the Pi group wait for an agent. See docs/specs/dependency-updates.md.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directories:
+      - "/"
+      - "/plugins/*"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    commit-message:
+      prefix: chore
+      prefix-development: chore
+      include: scope
+    # A dependency joins the first group it matches.
+    groups:
+      # The generated plugin SDK (.sdk/package.json) declares root's Pi and
+      # typebox as peers, so these PRs also need the four SDK files and plugin
+      # lockfiles regenerated. An agent finishes them; they stay out of the
+      # weekly batch so it stays green.
+      pi:
+        patterns:
+          - "@earendil-works/*"
+          - "typebox"
+      npm-minor-patch:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "@earendil-works/*"
+          - "typebox"
+        update-types:
+          - minor
+          - patch
+      npm-major:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "@earendil-works/*"
+          - "typebox"
+        update-types:
+          - major
+        group-by: dependency-name
+      npm-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # Workflows and the composite actions. Dependabot can't update the docker://
+  # PR-Agent image in pr-agent.yml; that one is bumped by hand.
+  - package-ecosystem: github-actions
+    directories:
+      - "/"
+      - "/.github/actions/*"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      actions-major:
+        patterns:
+          - "*"
+        update-types:
+          - major
+        group-by: dependency-name
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"

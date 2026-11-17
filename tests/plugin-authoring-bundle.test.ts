@@ -86,7 +86,9 @@ it("produces the complete rooted skill, matching versions, current example layou
 	for (const id of AUTHORING_PROJECTS) {
 		const prefix = `learnharness-plugins/plugins/${id}/`;
 		const names = [...entries.keys()].filter(name => name.startsWith(prefix));
-		const tracked = execFileSync("git", ["ls-files", `plugins/${id}`], { cwd: path.resolve(import.meta.dirname, ".."), encoding: "utf8" }).trim().split("\n").filter(Boolean);
+		// .sdk/package.json is committed only so Dependabot can read the plugin
+		// (docs/specs/dependency-updates.md); the kit never ships .sdk/.
+		const tracked = execFileSync("git", ["ls-files", `plugins/${id}`], { cwd: path.resolve(import.meta.dirname, ".."), encoding: "utf8" }).trim().split("\n").filter(name => name && !name.startsWith(`plugins/${id}/.sdk/`));
 		assert.deepEqual(names.map(name => name.slice("learnharness-plugins/".length)).sort(), tracked.sort(), `Complete canonical project: ${id}`);
 		assert.ok(names.some(name => name.startsWith(prefix + "src/")), id);
 		for (const name of names) {

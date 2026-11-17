@@ -42,7 +42,8 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      # 0.50.0, pinned by digest.
+      # 0.50.0, pinned by digest. Dependabot can't update docker:// refs, so
+      # bump this by hand.
       - uses: docker://pragent/pr-agent:0.50.0-github_action@sha256:548e894a88071180832b2f4233f734d0acd0db1a879e2fcbaa70bac8b8372ebe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

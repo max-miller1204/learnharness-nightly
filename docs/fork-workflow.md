@@ -75,6 +75,37 @@ To create it (once, as the repository owner):
 
 The workflows fail with a clear message when either secret is missing. To replace a lost or leaked key, generate a new one on the App's page, store it the same way and delete the old key there. A future workflow that needs more access gets it by adding the permission on the App's page and approving the change on the installation.
 
+## Dependency updates
+
+Dependabot keeps npm (the root and every `plugins/*` package) and GitHub Actions current (design: [specs/dependency-updates.md](specs/dependency-updates.md); config: `.github/dependabot.yml`). Every Monday it opens:
+
+- **One minor/patch PR per ecosystem** with everything that has a minor or patch update (`npm-minor-patch`, `actions-minor-patch`).
+- **One PR per major**, across all directories (`npm-major`, `actions-major`). The first weeks' backlog trickles in five open PRs at a time.
+- **A `pi` PR** (npm only) for `@earendil-works/*` (Pi) and `typebox`, kept out of the minor/patch batch.
+
+Security fixes don't wait for Monday. They arrive as one grouped PR per ecosystem as soon as an advisory needs one.
+
+| PR | How it merges |
+|---|---|
+| Minor/patch batch, or a security PR whose biggest change is minor or patch | Auto-merges (squash) when `Check` is green. `.github/workflows/dependabot-auto-merge.yml` (on `pull_request_target`, so it always runs `main`'s copy) queues it with the fork bot App token, so the merge runs CI and the nightly on `main`. |
+| A major, or a security PR that needs a major | Waits for an agent: one review round and a `prove-learnharness` run, then `gh pr merge <N> --auto --squash`. |
+| `pi`, or any PR touching Pi or typebox | Arrives red by design. The four SDK plugins' lockfiles pin Pi and typebox through their generated `.sdk/package.json`. An agent runs `npm install` at the root, then `npm run sdk && npm install` in each SDK plugin, adapts code to Pi's changes, pushes to the Dependabot branch, and then treats it like a major. |
+
+Dependabot reads the SDK plugins through their committed `.sdk/package.json` (only that file is committed; the rest of `.sdk/` stays generated). `Lint` fails when one is missing or differs from what `npm run sdk` writes. This is interim until the plugin API is a versioned package.
+
+Dependabot rebases its own PRs when `main` moves, including after a Sync PR merge, unless someone else has pushed to the branch. In that case comment `@dependabot recreate`. If the Sync PR conflicts in `package-lock.json` after a Dependabot merge, keep upstream's `package.json` intent and regenerate the lockfile with `npm install` instead of merging it by hand. An upstream Pi or typebox bump also needs the four `.sdk/package.json` files and the plugin lockfiles regenerated in the Sync PR.
+
+Dependabot can't update the `docker://` PR-Agent image in `pr-agent.yml`; bump it by hand when wanted. PR-Agent skips Dependabot PRs.
+
+Once, right after the PR that added this merged, the agent turned on Dependabot alerts and security updates (Settings → Code security) and read both back:
+
+```sh
+gh api -X PUT repos/max-miller1204/learnharness-nightly/vulnerability-alerts
+gh api -X PUT repos/max-miller1204/learnharness-nightly/automated-security-fixes
+gh api -i repos/max-miller1204/learnharness-nightly/vulnerability-alerts    # 204 = enabled
+gh api repos/max-miller1204/learnharness-nightly/automated-security-fixes   # {"enabled":true,...}
+```
+
 ## One-time repository settings
 
 - **Turn on Issues** (Settings → General → Features → Issues), so the issue mirror has somewhere to write.
@@ -96,5 +127,6 @@ The workflows fail with a clear message when either secret is missing. To replac
 | `.github/workflows/pr-agent.yml` | Advisory AI review on PRs |
 | `.github/workflows/nightly.yml`, `feed-check.yml` | Build, publish and verify nightlies |
 | `.github/workflows/upstream-sync.yml`, `import-upstream-pr.yml`, `mirror-upstream-issues.yml` | Upstream feed, PR intake and issue mirror (scripts in `selfhost/scripts/`) |
+| `.github/dependabot.yml`, `.github/workflows/dependabot-auto-merge.yml` | Dependency update PRs and their auto-merge |
 | `.github/actions/fork-bot-token/` | Mints the fork bot App token for workflows that push, open PRs or mirror issues |
 | [`fork-roadmap.md`](fork-roadmap.md) | Work considered and deliberately deferred |

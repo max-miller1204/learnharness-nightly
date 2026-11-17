@@ -70,6 +70,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-deps
+      # Dependabot can only read the SDK plugins through their committed
+      # .sdk/package.json, so it must match what setup-deps just regenerated
+      # with `npm run sdk`. See docs/specs/dependency-updates.md.
+      - name: Committed plugin SDK manifests are current
+        run: |
+          set -euo pipefail
+          for manifest in plugins/*/package.json; do
+            dir=$(dirname "$manifest")
+            if node -e 'process.exit(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).scripts?.sdk ? 0 : 1)' "$manifest" &&
+              ! git ls-files --error-unmatch "$dir/.sdk/package.json" > /dev/null 2>&1; then
+              echo "::error file=$dir/package.json::Commit $dir/.sdk/package.json: run npm run plugins:setup, then git add -f $dir/.sdk/package.json."
+              exit 1
+            fi
+          done
+          if ! git diff --exit-code -- 'plugins/*/.sdk/package.json'; then
+            echo "::error::A committed plugins/*/.sdk/package.json is out of date. Run npm run plugins:setup and commit the result (after a Pi or typebox bump, also npm install in each SDK plugin)."
+            exit 1
+          fi
       - run: npm run lint
       - name: CI script tests
         run: node --test .github/scripts/*.test.cjs
