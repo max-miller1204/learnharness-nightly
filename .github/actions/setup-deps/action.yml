@@ -1,0 +1,81 @@
+name: Set up dependencies
+description: >-
+  Node 26 plus the root and plugin node_modules, restored from a cache keyed
+  exactly on the lockfiles, or installed with npm ci and saved. CI only:
+  nightly.yml and release.yml keep cold installs. See docs/specs/ci-foundation.md.
+inputs:
+  electron:
+    description: Set to "true" to restore the Electron download cache and fetch the Electron binary up front
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    # No setup-node npm cache: restoring the ~/.npm store (several GB) would
+    # cost every job time that the node_modules cache below already saves.
+    - uses: actions/setup-node@v7
+      with:
+        node-version: "26"
+
+    - name: Resolve the dependency cache key
+      id: key
+      shell: bash
+      run: echo "node=$(node -p process.version)" >> "$GITHUB_OUTPUT"
+
+    # No restore-keys: a hit is exactly what npm ci makes from these lockfiles
+    # on this OS, arch and Node version, and a miss installs from scratch.
+    - name: Restore node_modules
+      id: restore
+      uses: actions/cache/restore@v6
+      with:
+        path: |
+          node_modules
+          plugins/*/node_modules
+        key: deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.node }}-${{ hashFiles('package-lock.json', 'plugins/*/package-lock.json') }}
+
+    - name: Install
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        npm ci
+        npm run plugins:setup
+
+    # Saved before anything builds or tests, so no output lands in the cache.
+    # A stacked PR (base other than main) saves an entry only its own reruns
+    # could read, so it only restores (T3's rule for its dependency store).
+    - name: Save node_modules
+      if: >-
+        steps.restore.outputs.cache-hit != 'true' &&
+        (github.event_name != 'pull_request' || github.base_ref == github.event.repository.default_branch)
+      uses: actions/cache/save@v6
+      with:
+        path: |
+          node_modules
+          plugins/*/node_modules
+        key: ${{ steps.restore.outputs.cache-primary-key }}
+
+    # The plugin SDK types come from repo source, not the lockfiles.
+    - name: Generate plugin SDK types
+      if: steps.restore.outputs.cache-hit == 'true'
+      shell: bash
+      run: npm run plugins:setup -- --sdk-only
+
+    # electron's index.js downloads the binary on first use into this folder,
+    # then unpacks it into node_modules/electron/dist. The key changes only
+    # with the Electron version.
+    - name: Point the Electron download at a cached folder
+      if: inputs.electron == 'true'
+      shell: bash
+      run: echo "electron_config_cache=$RUNNER_TEMP/electron-cache" >> "$GITHUB_ENV"
+
+    - name: Cache the Electron download
+      if: inputs.electron == 'true'
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/electron-cache
+        key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
+
+    - name: Fetch the Electron binary
+      if: inputs.electron == 'true'
+      shell: bash
+      run: node -e "require('electron')"

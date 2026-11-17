@@ -1,15 +1,20 @@
 name: Nightly (self-hosted server)
 
-# Every push to main builds the self-hosted server for linux-x64 and
-# linux-arm64 and publishes one prerelease (v<version>-nightly.<date>.<run>),
-# all or nothing: typecheck, tests, lint, both bundles and both archive
-# smoke tests must pass. Installs read the fixed `nightly` release's
-# latest.json. See docs/self-hosting.md and docs/fork-workflow.md.
+# After CI passes on a push to main, this builds the self-hosted server for
+# linux-x64 and linux-arm64 from that exact commit and publishes one
+# prerelease (v<version>-nightly.<date>.<run>), all or nothing: CI's `Check`
+# (typecheck, tests, lint, launcher tests, standalone builds) already passed
+# for the commit, and both bundles and both archive smoke tests must pass
+# here. Installs read the fixed `nightly` release's latest.json. See
+# docs/self-hosting.md, docs/fork-workflow.md and docs/specs/ci-foundation.md.
 #
-# Pause with the repository variable PAUSE_NIGHTLY=true.
+# A manual run builds the head of main and refuses unless CI's `Check`
+# passed for it. Pause with the repository variable PAUSE_NIGHTLY=true.
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
     inputs:
@@ -32,56 +37,65 @@ env:
   FORK_HOMEPAGE: https://github.com/${{ github.repository }}
 
 jobs:
+  # The commit every later job builds: for workflow_run that is the CI run's
+  # head_sha (github.sha would be whatever main points at now).
   meta:
     name: Version
-    if: vars.PAUSE_NIGHTLY != 'true'
+    if: >-
+      vars.PAUSE_NIGHTLY != 'true' && (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+      )
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
+      sha: ${{ steps.sha.outputs.sha }}
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
       short_sha: ${{ steps.meta.outputs.short_sha }}
       skip: ${{ steps.meta.outputs.skip }}
     steps:
+      - id: sha
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+      - name: A manual run needs CI's Check to have passed for this commit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Run the nightly from main (got $GITHUB_REF)."
+            exit 1
+          fi
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs?check_name=Check&per_page=100" \
+            --jq '[.check_runs[] | select(.app.slug == "github-actions" and .conclusion == "success")] | length')
+          if [ "$passed" = "0" ]; then
+            echo "::error::CI's Check has not passed for $SHA. Wait for CI, or fix it first."
+            exit 1
+          fi
+          echo "CI's Check passed for $SHA."
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.sha.outputs.sha }}
       - id: meta
         env:
           GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.sha.outputs.sha }}
         run: |
           base=$(node -p "require('./package.json').version")
           version="${base}-nightly.$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          echo "short_sha=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHA::12}" >> "$GITHUB_OUTPUT"
           shipped=$(gh release download nightly -p latest.json -O - 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).sha)}catch{console.log("")}})' || true)
-          if [ "$shipped" = "$GITHUB_SHA" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
-            echo "The newest nightly already ships $GITHUB_SHA."
+          if [ "$shipped" = "$SHA" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "The newest nightly already ships $SHA."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
-
-  quality:
-    name: Typecheck, tests, lint
-    needs: meta
-    if: needs.meta.outputs.skip != 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "26"
-          cache: npm
-      - run: npm ci
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
-      - run: npm run plugins:setup
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run lint
-      - name: Launcher tests
-        run: node --test selfhost/tests/*.test.ts
 
   bundle:
     name: Bundle (${{ matrix.arch }})
@@ -103,6 +117,8 @@ jobs:
       VERSION: ${{ needs.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
       - uses: actions/setup-node@v7
         with:
           node-version: "26"
@@ -148,7 +164,7 @@ jobs:
 
   release:
     name: Publish
-    needs: [meta, quality, bundle]
+    needs: [meta, bundle]
     if: needs.meta.outputs.skip != 'true' && !inputs.dry_run
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -158,9 +174,11 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.meta.outputs.version }}
       TAG: ${{ needs.meta.outputs.tag }}
+      SHA: ${{ needs.meta.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ needs.meta.outputs.sha }}
           fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
@@ -174,26 +192,26 @@ jobs:
         run: |
           prev=$(git tag --list 'v*-nightly.*' --sort=-creatordate | head -n 1)
           {
-            echo "Nightly build of \`${GITHUB_SHA::12}\` from \`main\`."
+            echo "Nightly build of \`${SHA::12}\` from \`main\`."
             echo
             echo "Install or update: see [self-hosting](${FORK_HOMEPAGE}/blob/main/docs/self-hosting.md)."
             echo
             if [ -n "$prev" ]; then
               echo "### Changes since $prev"
-              git log --no-merges --format='- %s (%h)' "$prev..$GITHUB_SHA" | head -n 200
+              git log --no-merges --format='- %s (%h)' "$prev..$SHA" | head -n 200
             fi
           } > notes.md
       - name: Feed entry
-        run: node selfhost/scripts/make-feed.ts --version "$VERSION" --tag "$TAG" --sha "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" --dir dist-selfhost > dist-selfhost/latest.json
+        run: node selfhost/scripts/make-feed.ts --version "$VERSION" --tag "$TAG" --sha "$SHA" --repo "$GITHUB_REPOSITORY" --dir dist-selfhost > dist-selfhost/latest.json
       - name: Create the prerelease
         run: |
           gh release create "$TAG" dist-selfhost/*.tar.gz dist-selfhost/*.sha256 dist-selfhost/latest.json \
-            --target "$GITHUB_SHA" --prerelease --latest=false \
-            --title "LearnHarness Nightly $VERSION (${GITHUB_SHA::12})" --notes-file notes.md
+            --target "$SHA" --prerelease --latest=false \
+            --title "LearnHarness Nightly $VERSION (${SHA::12})" --notes-file notes.md
       - name: Point the `nightly` feed at it
         run: |
           if ! gh release view nightly >/dev/null 2>&1; then
-            gh release create nightly --target "$GITHUB_SHA" --prerelease --latest=false \
+            gh release create nightly --target "$SHA" --prerelease --latest=false \
               --title "Nightly feed (install.sh + latest.json)" \
               --notes "Fixed release for the installer and update feed. Builds live in the v*-nightly.* prereleases. See docs/self-hosting.md."
           fi
