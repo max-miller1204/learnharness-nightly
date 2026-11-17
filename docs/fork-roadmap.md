@@ -371,7 +371,13 @@ Where things stand, so the entries below start from facts:
 
 **Why.** Extract files turns sources into knowledge-graph propositions, but code, spreadsheets and Office documents are turned away.
 
-**Decided.** Nothing yet.
+**Decided.**
+- The document converter keeps one 192 MB heap limit on every runtime (owner, 2026-11-17). Electron builds V8 with pointer compression and Node doesn't, so the same limit holds about twice as much data in the desktop app. Notebooks made of millions of tiny JSON values can therefore fail to convert on the server or `lh` (Node) yet convert in the desktop app. Measured on a 15 MiB notebook of 5.2 million empty cells: 320 MB of heap on Node 26, 160 MB on Electron 44. Real notebooks and all XML formats stay far below the limit on both, and T3 Code behaves the same way. Accepted as is.
+
+**Carried over from item 25** (PR #9, to do with this item, since the import route uses the same converter in `src/agent/documents/`):
+- Log converter crashes. The converter child's stderr is ignored and callers show only "Could not convert X to text.", so a broken install (for example a package missing from a packaged build) leaves nothing in the server log. Keep the last few KB of stderr and log it for `failed` and `timeout` results.
+- Memory per conversion. A converter that reaches its 192 MB heap limit peaks around 0.5 GB of total memory, about 1 GB with two at once. Decide whether two parallel conversions (T3's number) stay right.
+- Two cases the spec leaves open: a workbook with no sheets shows an empty index (`Sheets: ]`), and an old Office file over 16 MiB named `.docx` gets the too-large message rather than the password-protected one.
 
 **Proposed design (not approved).**
 - Office and notebook files: convert with item 25's converters, then extract like any text source.
