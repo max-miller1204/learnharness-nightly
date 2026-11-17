@@ -87,8 +87,31 @@ function zipFormat(bytes: Uint8Array): DocumentFormat | undefined {
 			if (MIMETYPES[mimetype]) return MIMETYPES[mimetype];
 		}
 	}
-	for (const [part, format] of OOXML_PARTS) if (buffer.includes(part, 0, "latin1")) return format;
+	const names = zipEntryNames(buffer);
+	for (const [part, format] of OOXML_PARTS) if (names.has(part)) return format;
 	return undefined;
+}
+
+/** Entry names from the zip's central directory (empty when it can't be found). */
+function zipEntryNames(buffer: Buffer): Set<string> {
+	const names = new Set<string>();
+	// The end-of-central-directory record sits in the last 22 bytes plus up to a 64 KiB comment.
+	let end = -1;
+	for (let i = buffer.length - 22; i >= Math.max(0, buffer.length - 22 - 0xffff); i--) {
+		if (buffer.readUInt32LE(i) === 0x06054b50) {
+			end = i;
+			break;
+		}
+	}
+	if (end < 0) return names;
+	const count = buffer.readUInt16LE(end + 10);
+	let offset = buffer.readUInt32LE(end + 16);
+	for (let i = 0; i < count && offset + 46 <= buffer.length && buffer.readUInt32LE(offset) === 0x02014b50; i++) {
+		const nameLength = buffer.readUInt16LE(offset + 28);
+		names.add(buffer.toString("latin1", offset + 46, offset + 46 + nameLength));
+		offset += 46 + nameLength + buffer.readUInt16LE(offset + 30) + buffer.readUInt16LE(offset + 32);
+	}
+	return names;
 }
 
 /** Format by extension first, then by signature; undefined when it is not a convertible document. */
@@ -110,7 +133,7 @@ export function documentFormatFromName(fileName: string): DocumentFormat | undef
 
 /** Test seams (tool-execute.ts's toolTimeoutMs idiom). */
 export const documentLimits = { timeoutMs: 15_000, heapMb: 192 };
-export const documentStats = { workerRuns: 0 };
+export const documentStats = { workerRuns: 0, liveWorkers: 0, peakWorkers: 0 };
 
 type CacheEntry = { text: string } | { reason: DocumentConversionReason };
 const CACHE_SIZE = 8;
@@ -155,31 +178,34 @@ function release() {
 
 type WorkerReply = { text: string } | { reason: DocumentConversionReason; error: string };
 
-function runWorker(bytes: Uint8Array, format: DocumentFormat, signal?: AbortSignal): Promise<WorkerReply> {
+async function runWorker(bytes: Uint8Array, format: DocumentFormat, signal?: AbortSignal): Promise<WorkerReply> {
+	signal?.throwIfAborted();
 	documentStats.workerRuns++;
 	// Same packaging contract as the image worker: unbundled .mjs files traced
 	// at this cwd-relative path (next.config.ts outputFileTracingIncludes).
 	const worker = new Worker(path.join(process.cwd(), "src/agent/documents/document-text-worker.mjs"), {
 		resourceLimits: { maxOldGenerationSizeMb: documentLimits.heapMb },
 	});
-	return new Promise<WorkerReply>((resolve, reject) => {
-		const timer = setTimeout(() => {
-			done();
-			resolve({ reason: "timeout", error: "timed out" });
-		}, documentLimits.timeoutMs);
-		const done = () => {
-			clearTimeout(timer);
-			signal?.removeEventListener("abort", onAbort);
-		};
-		const onAbort = () => {
-			done();
-			reject(signal!.reason);
-		};
-		if (signal?.aborted) return onAbort();
-		signal?.addEventListener("abort", onAbort, { once: true });
-		worker.once("message", (reply: WorkerReply) => {
-			done();
-			resolve(reply);
+	documentStats.peakWorkers = Math.max(documentStats.peakWorkers, ++documentStats.liveWorkers);
+	try {
+		return await new Promise<WorkerReply>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				done();
+				resolve({ reason: "timeout", error: "timed out" });
+			}, documentLimits.timeoutMs);
+			const done = () => {
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", onAbort);
+			};
+			const onAbort = () => {
+				done();
+				reject(signal!.reason);
+			};
+			if (signal?.aborted) return onAbort();
+			signal?.addEventListener("abort", onAbort, { once: true });
+			worker.once("message", (reply: WorkerReply) => {
+				done();
+				resolve(reply);
 		});
 		worker.once("error", (error) => {
 			done();
@@ -192,7 +218,12 @@ function runWorker(bytes: Uint8Array, format: DocumentFormat, signal?: AbortSign
 		// Transfer a worker-owned copy so the caller's bytes stay intact.
 		const copy = new Uint8Array(bytes);
 		worker.postMessage({ bytes: copy, extension: `.${format}` }, [copy.buffer]);
-	}).finally(() => void worker.terminate().catch(() => undefined));
+		});
+	} finally {
+		// Hold the slot until the worker is gone, so at most two ever exist.
+		await worker.terminate().catch(() => undefined);
+		documentStats.liveWorkers--;
+	}
 }
 
 /** OOXML containers that arrive as OLE files are password-protected. */

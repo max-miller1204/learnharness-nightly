@@ -222,6 +222,8 @@ describe("read tool: documents", () => {
 	it("shows an rtf or ipynb that doesn't parse as raw text", async () => {
 		const notebook = write("draft.ipynb", '{"cells": [unfinished');
 		assert.equal((await run({ path: notebook })).text, '[Could not convert this as ipynb; showing the raw file.]\n{"cells": [unfinished');
+		const letter = write("letter.rtf", String.raw`{\rtf1\ansi\ansicpg932 \'82\'a0}`);
+		assert.equal((await run({ path: letter })).text, `[Could not convert this as rtf; showing the raw file.]\n${String.raw`{\rtf1\ansi\ansicpg932 \'82\'a0}`}`);
 	});
 
 	it("still reads csv and other plain text as text", async () => {

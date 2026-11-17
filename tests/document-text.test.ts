@@ -871,6 +871,9 @@ describe("detectDocumentFormat: extension plus signature", () => {
 	});
 	it("returns undefined for other files", () => {
 		assert.equal(detectDocumentFormat("archive.zip", zipParts({ "a.txt": "hello" }).bytes()), undefined);
+		// Only exact entry names count, not longer paths or text inside stored entries.
+		assert.equal(detectDocumentFormat("nested.zip", zipParts({ "unpacked/word/document.xml": "<x/>" }).bytes()), undefined);
+		assert.equal(detectDocumentFormat("src.zip", zipParts({ "notes.txt": "see xl/workbook.xml" }).bytes()), undefined);
 		assert.equal(detectDocumentFormat("notes.txt", new Uint8Array(Buffer.from("plain"))), undefined);
 		assert.equal(detectDocumentFormat("data.json", new Uint8Array(Buffer.from('{"cells":[]}'))), undefined);
 	});
@@ -942,14 +945,29 @@ describe("convertDocument: worker, cache, limits", () => {
 	});
 
 	it("runs at most two conversions at once and serves the rest in order", async () => {
+		documentStats.peakWorkers = 0;
 		const results = await Promise.all(Array.from({ length: 5 }, (_, i) => convertDocument(docx(`Queued ${i}`), "docx")));
 		assert.deepEqual(results.map((result) => result.text), [0, 1, 2, 3, 4].map((i) => `Queued ${i}`));
+		assert.equal(documentStats.peakWorkers, 2);
+		assert.equal(documentStats.liveWorkers, 0);
 	});
 
-	it("stops waiting when the caller aborts", async () => {
+	it("drops an aborted caller from the queue and frees its place", async () => {
+		const controller = new AbortController();
+		const calls = Array.from({ length: 5 }, (_, i) => convertDocument(docx(`Waiting ${i}`), "docx", i === 3 ? { signal: controller.signal } : {}));
+		controller.abort(new Error("stop"));
+		const settled = await Promise.allSettled(calls);
+		assert.deepEqual(settled.map((result) => (result.status === "fulfilled" ? result.value.text : "rejected")), ["Waiting 0", "Waiting 1", "Waiting 2", "rejected", "Waiting 4"]);
+		const later = await Promise.all([0, 1, 2].map((i) => convertDocument(docx(`After ${i}`), "docx")));
+		assert.equal(later.length, 3);
+	});
+
+	it("stops waiting when the caller aborts, without starting a worker", async () => {
+		const before = documentStats.workerRuns;
 		const controller = new AbortController();
 		const pending = convertDocument(docx("Aborted"), "docx", { signal: controller.signal });
 		controller.abort(new Error("Operation aborted"));
 		await assert.rejects(pending, /Operation aborted/);
+		assert.equal(documentStats.workerRuns, before);
 	});
 });
