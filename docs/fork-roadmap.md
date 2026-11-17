@@ -13,7 +13,7 @@ Baseline the entries build on (the self-hosting plan):
 - The separate `lh` launcher in `selfhost/` swaps versions, health-checks, rolls back and keeps snapshots.
 - Versioned installs under `~/.learnharness/runtime/versions/`, and the `learnharness.service` systemd user unit.
 - The server binds 127.0.0.1:3774, with optional Tailscale Serve on 8443.
-- Upstream is mirrored hourly to `upstream-main` with a standing Sync PR. Upstream PRs come in through the "Import upstream PR" workflow, authenticated with `FORK_BOT_TOKEN`.
+- Upstream is mirrored hourly to `upstream-main` with a standing Sync PR. Upstream PRs come in through the "Import upstream PR" workflow, authenticated as the fork bot GitHub App.
 
 One structural rule carries over to every entry: **the launcher stays a separate process from the server.** It's what recovers from a broken version, so recovery logic must never depend on the server working.
 
@@ -34,7 +34,6 @@ Rows are in build order. **Order** is the planned sequence, after the self-hosti
 | Later | 5 | LAN mode | Access + security | 6 | Small |
 | Later | 7 | Update deadline | Ops + polish | none | Small (`self-update.ts`) |
 | Later | 8 | Chromium on demand | Ops + polish | none | No |
-| Later | 9 | GitHub App instead of a personal token | Access + security | none | No |
 | Later | 10 | Side-by-side installs | Desktop + distribution | 11 | No |
 | Later | 11 | Stable channel | Desktop + distribution | none | Small (update UI channel picker) |
 | Later | 14 | Keep the machine awake during agent work | Ops + polish | none | Small |
@@ -228,18 +227,6 @@ Items 25 to 27 cover the owner's ingestion workflow (PDFs, code, spreadsheets an
 **Open questions.** Is plain HTTP on the LAN acceptable (the session cookie would travel unencrypted), or is a locally trusted certificate needed?
 
 **Touches core.** Small. **Blocked on item 6.**
-
-### 9. GitHub App instead of a personal token
-
-**Why.** `FORK_BOT_TOKEN` is a fine-grained personal access token that expires and is tied to your account.
-
-**Decided.** The first release uses the personal token (Contents, Pull requests, Issues: read/write on this fork only).
-
-**Proposed design (not approved).** A private GitHub App with the same permissions, installed only on the fork, storing `FORK_BOT_APP_ID` and `FORK_BOT_PRIVATE_KEY`. Workflows mint a short-lived token with `actions/create-github-app-token`. PRs show the app as author and still trigger CI.
-
-**Open questions.** Keep both (app if configured, otherwise the token)?
-
-**Touches core.** No.
 
 ### 18. Signed releases
 

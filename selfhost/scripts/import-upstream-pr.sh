@@ -7,7 +7,7 @@
 # Pushes the PR's exact head commits to `upstream-pr/<N>` (unchanged, so
 # commit IDs match upstream) and opens or updates a fork PR into main that
 # names the original and credits its author. Uses your `gh` login locally,
-# FORK_BOT_TOKEN in CI. Upstream references are written as code and the
+# the fork bot App token in CI. Upstream references are written as code and the
 # copied description sits in a code block, so the import never pings anyone
 # or adds a "mentioned this" entry to upstream's PR timeline.
 set -euo pipefail

@@ -7,7 +7,7 @@ name: Import upstream PR
 # upstream version of the same work has the best chance to merge cleanly.
 #
 # Local equivalent: selfhost/scripts/import-upstream-pr.sh <N>
-# Needs FORK_BOT_TOKEN (see docs/fork-workflow.md).
+# Authenticates as the fork bot GitHub App (see docs/fork-workflow.md).
 
 on:
   workflow_dispatch:
@@ -29,19 +29,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
-      GH_TOKEN: ${{ secrets.FORK_BOT_TOKEN }}
       PR: ${{ inputs.pr }}
     steps:
-      - name: Require FORK_BOT_TOKEN
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::error::Add the FORK_BOT_TOKEN secret (docs/fork-workflow.md)."
-            exit 1
-          fi
       - uses: actions/checkout@v7
         with:
-          ref: main
           fetch-depth: 0
-          token: ${{ secrets.FORK_BOT_TOKEN }}
+          persist-credentials: false
+      - uses: ./.github/actions/fork-bot-token
+        with:
+          client-id: ${{ secrets.FORK_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.FORK_BOT_PRIVATE_KEY }}
       - name: Import
         run: bash selfhost/scripts/import-upstream-pr.sh "$PR"

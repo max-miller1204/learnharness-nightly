@@ -1,0 +1,47 @@
+name: Fork bot token
+description: >-
+  Mints a short-lived installation token for the fork bot GitHub App and makes
+  it the gh and git credential for the rest of the job (GH_TOKEN plus
+  `gh auth setup-git`). Check out with persist-credentials false first. See
+  docs/specs/github-app.md.
+inputs:
+  client-id:
+    description: The App's Client ID (secrets.FORK_BOT_CLIENT_ID)
+    required: true
+  private-key:
+    description: The App's private key (secrets.FORK_BOT_PRIVATE_KEY)
+    required: true
+outputs:
+  token:
+    description: The installation token, scoped to this repository
+    value: ${{ steps.mint.outputs.token }}
+runs:
+  using: composite
+  steps:
+    - name: Require the fork bot secrets
+      shell: bash
+      env:
+        CLIENT_ID: ${{ inputs.client-id }}
+        PRIVATE_KEY: ${{ inputs.private-key }}
+      run: |
+        if [ -z "$CLIENT_ID" ] || [ -z "$PRIVATE_KEY" ]; then
+          echo "::error::Add the FORK_BOT_CLIENT_ID and FORK_BOT_PRIVATE_KEY secrets (docs/fork-workflow.md)."
+          exit 1
+        fi
+
+    # No owner input: the token covers only the current repository. The action
+    # masks it and revokes it when the job ends.
+    - name: Mint the App token
+      id: mint
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      with:
+        client-id: ${{ inputs.client-id }}
+        private-key: ${{ inputs.private-key }}
+
+    - name: Use the App token for gh and git
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.mint.outputs.token }}
+      run: |
+        echo "GH_TOKEN=$GH_TOKEN" >> "$GITHUB_ENV"
+        gh auth setup-git

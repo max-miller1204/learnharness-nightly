@@ -6,9 +6,9 @@ name: Upstream sync
 # main contains everything). It never pushes to main. Merge the PR with
 # "Create a merge commit", never squash, so later syncs merge cleanly.
 #
-# Needs the FORK_BOT_TOKEN secret (fine-grained PAT on this fork only:
-# Contents, Pull requests, Issues read/write) so CI runs on the PR.
-# See docs/fork-workflow.md.
+# Authenticates as the fork bot GitHub App (FORK_BOT_CLIENT_ID and
+# FORK_BOT_PRIVATE_KEY secrets), so CI runs on the PR. PRs opened with the
+# built-in token don't run CI. See docs/fork-workflow.md.
 
 on:
   schedule:
@@ -32,20 +32,16 @@ jobs:
     if: github.repository == 'max-miller1204/learnharness-nightly'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    env:
-      GH_TOKEN: ${{ secrets.FORK_BOT_TOKEN }}
     steps:
-      - name: Require FORK_BOT_TOKEN
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::error::Add the FORK_BOT_TOKEN secret (docs/fork-workflow.md). PRs opened with the built-in token don't run CI."
-            exit 1
-          fi
+      # Compares against origin/main, so the checked-out ref doesn't matter.
       - uses: actions/checkout@v7
         with:
-          ref: main
           fetch-depth: 0
-          token: ${{ secrets.FORK_BOT_TOKEN }}
+          persist-credentials: false
+      - uses: ./.github/actions/fork-bot-token
+        with:
+          client-id: ${{ secrets.FORK_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.FORK_BOT_PRIVATE_KEY }}
       - name: Mirror upstream
         run: |
           git fetch --no-tags "https://github.com/${UPSTREAM_REPO}.git" "${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}"
