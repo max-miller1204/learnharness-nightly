@@ -48,7 +48,7 @@ Item 26 calls `detectDocumentFormat(file.name, bytes)` then `convertDocument(byt
 
 ### Detection (extension plus signature)
 
-1. Extension is one of the nine (case-insensitive): that format. If the bytes don't match (for example a `.docx` that isn't a zip), conversion fails as `invalid`.
+1. Extension is one of the nine (case-insensitive): that format. If the bytes don't match (for example a `.docx` that isn't a zip), conversion fails as `invalid`. Exception (owner, 2026-11-17, after the prove run): an OLE compound file (`D0 CF 11 E0 A1 B1 1A E1`) named `.docx`, `.xlsx` or `.pptx` fails as `encrypted`, because that is how Office stores a password-protected file.
 2. Otherwise, by signature:
    - zip (`PK\x03\x04`) whose first entry is `mimetype`: its content names `odt`, `ods`, `odp` (`application/vnd.oasis.opendocument.text|spreadsheet|presentation`) or `epub` (`application/epub+zip`);
    - zip whose entry names include `word/document.xml`, `xl/workbook.xml` or `ppt/presentation.xml`: docx, xlsx or pptx. This also covers macro-enabled and template variants (`.docm`, `.dotx`, `.xlsm`, `.xltx`, `.pptm`, `.potx`, `.ppsx`) and files with a missing or wrong extension;
@@ -79,7 +79,7 @@ Conversion failures are thrown errors, which pi shows the model as a failed tool
 | timeout | `Converting <name> took longer than 15 s and was stopped.` |
 | failed | `Could not convert <name> to text.` |
 
-Exception: for the two text-based formats (rtf, ipynb), an `invalid` failure falls back to the plain-text read with the first line `[Could not convert this as <format>; showing the raw file.]`, since the raw text is still useful.
+Exception: for the two text-based formats (rtf, ipynb), an `invalid` failure falls back to the plain-text read with the first line `[Could not convert this as <format>; showing the raw file.]`, since the raw text is still useful. The fallback applies only when the file isn't binary (no NUL byte in the first 8 KB); a binary one fails as `invalid` (owner, 2026-11-17, after the prove run).
 
 ### `read` tool description
 

@@ -928,6 +928,7 @@ describe("convertDocument: worker, cache, limits", () => {
 		assert.equal(await reason(convertDocument(zip.bytes(), "docx")), "encrypted");
 		const ole = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0, 0, 0]);
 		assert.equal(await reason(convertDocument(ole, "xlsx")), "encrypted");
+		assert.equal(await reason(convertDocument(ole, "odt")), "invalid", "OpenDocument is never OLE-wrapped");
 	});
 
 	it("refuses input over 16 MiB without starting a worker", async () => {

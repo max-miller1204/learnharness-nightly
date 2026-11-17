@@ -222,6 +222,9 @@ describe("read tool: documents", () => {
 	it("shows an rtf or ipynb that doesn't parse as raw text", async () => {
 		const notebook = write("draft.ipynb", '{"cells": [unfinished');
 		assert.equal((await run({ path: notebook })).text, '[Could not convert this as ipynb; showing the raw file.]\n{"cells": [unfinished');
+		const binary = path.join(tmp, "binary.ipynb");
+		fs.writeFileSync(binary, Buffer.from([0x7b, 0, 1, 2]));
+		await assert.rejects(() => run({ path: binary }), { message: "binary.ipynb isn't a valid ipynb file." });
 		const letter = write("letter.rtf", String.raw`{\rtf1\ansi\ansicpg932 \'82\'a0}`);
 		assert.equal((await run({ path: letter })).text, `[Could not convert this as rtf; showing the raw file.]\n${String.raw`{\rtf1\ansi\ansicpg932 \'82\'a0}`}`);
 	});

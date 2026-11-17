@@ -226,8 +226,8 @@ async function runWorker(bytes: Uint8Array, format: DocumentFormat, signal?: Abo
 	}
 }
 
-/** OOXML containers that arrive as OLE files are password-protected. */
-const ZIP_FORMATS: ReadonlySet<DocumentFormat> = new Set(["docx", "xlsx", "pptx", "odt", "ods", "odp", "epub"]);
+/** OOXML files that arrive as OLE containers are password-protected (Office's encryption format). */
+const OOXML_FORMATS: ReadonlySet<DocumentFormat> = new Set(["docx", "xlsx", "pptx"]);
 
 /** Converts with the hash cache and the two-slot queue. Throws DocumentConversionError. */
 export async function convertDocument(
@@ -236,7 +236,7 @@ export async function convertDocument(
 	options: { signal?: AbortSignal } = {},
 ): Promise<{ text: string; truncated: boolean }> {
 	if (bytes.byteLength > MAX_DOCUMENT_BYTES) throw new DocumentConversionError("too-large");
-	if (ZIP_FORMATS.has(format) && isOleCompound(bytes)) throw new DocumentConversionError("encrypted");
+	if (OOXML_FORMATS.has(format) && isOleCompound(bytes)) throw new DocumentConversionError("encrypted");
 	const key = `${format}:${createHash("sha256").update(bytes).digest("hex")}`;
 	let entry = cache.get(key);
 	if (entry) remember(key, entry);
