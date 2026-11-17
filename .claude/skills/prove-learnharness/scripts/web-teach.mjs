@@ -185,6 +185,20 @@ try {
 	await page.waitForFunction(() => document.body.innerText.includes("zz-prove-it acknowledged your answer"), { timeout: 30_000 }).then(() => step("transcript survives a reload", true), () => step("transcript survives a reload", false));
 	await budgetsHere("/chat/<chat> (reloaded)");
 	await shot("04-reloaded");
+	// This page's CLS flickers between two states on main (about 0.2476 or
+	// 0.2654 on identical code): three loads per side, judged by compare.mjs
+	// as head median vs base max (budgets.json cls.relativeRule).
+	const label = "/chat/<chat> (reloaded)";
+	const samples = [result.budgets.cls[label]];
+	for (let i = 0; i < 2; i++) {
+		await page.goto(`${APP}/chat/${chatId}`, { waitUntil: "domcontentloaded" });
+		await page.waitForFunction(() => document.body.innerText.includes("zz-prove-it acknowledged your answer"), { timeout: 30_000 });
+		await new Promise((r) => setTimeout(r, 500));
+		samples.push(Number((await page.evaluate(() => window.__proveCLS)).toFixed(4)));
+	}
+	result.budgets.clsSamples = { [label]: samples };
+	result.budgets.cls[label] = [...samples].sort((a, b) => a - b)[1];
+	save();
 
 	result.observations = {
 		modelRules: log().map((r) => r.rule),

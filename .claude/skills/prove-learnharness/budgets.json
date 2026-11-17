@@ -20,7 +20,8 @@
 		"cls": {
 			"absoluteMax": 0.1,
 			"relativeNoise": 0.01,
-			"why": "Main scores about 0.27 on every page because the sidebar animates open on first load. Until that is fixed (then set CLS_MODE=absolute), head CLS may not exceed base CLS on the same page plus relativeNoise."
+			"relativeRule": "head median of its samples <= highest base sample on the same page + relativeNoise (pages measured once compare their single readings)",
+			"why": "Temporary (user, 2026-11-17). Main scores about 0.27 on every page because the sidebar animates open on first load, and the reloaded session page flickers between about 0.2476 and 0.2654 on identical code, so it is loaded 3 times per side. A follow-up PR fixes the sidebar shift and sets CLS_MODE=absolute (< absoluteMax)."
 		},
 		"axe": {
 			"impacts": ["serious", "critical"],

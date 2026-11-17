@@ -78,10 +78,19 @@ const isKnown = (e) => known.some((k) => (e.url ?? "").endsWith(k.urlEndsWith) &
 const unknown = (head.budgets?.consoleErrors ?? []).filter((e) => !isKnown(e));
 row(unknown.length <= budgets.consoleErrors.max, `console errors (head): ${unknown.length} not on the known list (max ${budgets.consoleErrors.max})`, unknown.map((e) => `${e.page}: ${e.text} ${e.url ?? ""}`).join("; "));
 
-for (const [pageName, value] of Object.entries(head.budgets?.cls ?? {})) {
-	const baseValue = base.budgets?.cls?.[pageName];
-	if (clsMode === "absolute") row(value < budgets.cls.absoluteMax, `CLS ${pageName}: head ${value} (absolute < ${budgets.cls.absoluteMax}; base ${baseValue ?? "n/a"})`);
-	else row(baseValue !== undefined && value <= baseValue + budgets.cls.relativeNoise, `CLS ${pageName}: head ${value} vs base ${baseValue ?? "missing"} (relative, +${budgets.cls.relativeNoise}; absolute target < ${budgets.cls.absoluteMax})`);
+// Relative rule (budgets.json cls.relativeRule): head's median vs base's highest
+// sample on the same page, plus the noise. One-sample pages compare directly.
+const samplesOf = (r, page) => r.budgets?.clsSamples?.[page] ?? (r.budgets?.cls?.[page] !== undefined ? [r.budgets.cls[page]] : []);
+const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s[Math.floor((s.length - 1) / 2)]; };
+for (const pageName of Object.keys(head.budgets?.cls ?? {})) {
+	const headSamples = samplesOf(head, pageName);
+	const baseSamples = samplesOf(base, pageName);
+	const value = median(headSamples);
+	if (clsMode === "absolute") row(value < budgets.cls.absoluteMax, `CLS ${pageName}: head median ${value} of ${JSON.stringify(headSamples)} (absolute < ${budgets.cls.absoluteMax}; base ${JSON.stringify(baseSamples)})`);
+	else {
+		const baseMax = baseSamples.length ? Math.max(...baseSamples) : undefined;
+		row(baseMax !== undefined && value <= baseMax + budgets.cls.relativeNoise, `CLS ${pageName}: head median ${value} of ${JSON.stringify(headSamples)} vs base max ${baseMax ?? "missing"} of ${JSON.stringify(baseSamples)} (relative, +${budgets.cls.relativeNoise}; absolute target < ${budgets.cls.absoluteMax})`);
+	}
 }
 
 for (const [pageName, list] of Object.entries(head.budgets?.axe ?? {})) {

@@ -16,7 +16,7 @@ The primary surface: the Next.js app served by the production standalone server 
 | Budget | How it is measured | Rule |
 |---|---|---|
 | Console errors | `console` events of type error plus uncaught page errors, with the resource URL | 0 beyond the known list (favicon 404, `/api/stt/token` 503 with no Deepgram key) |
-| CLS | `PerformanceObserver` on `layout-shift` from page start (buffered), summed, input-driven shifts excluded | `CLS_MODE=relative`: head <= base + 0.01 on the same page. `absolute`: < 0.1 |
+| CLS | `PerformanceObserver` on `layout-shift` from page start (buffered), summed, input-driven shifts excluded; the reloaded session page is loaded 3 times (`clsSamples`) | `CLS_MODE=relative` (temporary): head median <= highest base sample on the same page + 0.01. `absolute`: head median < 0.1 |
 | Accessibility | axe-core `AXE_CORE_VERSION` injected from `.prove-it/tools/` (`scripts/ensure-axe.sh`) | no serious or critical rule id on a page that base does not also have |
 
 Main's baseline, 2026-11-17: CLS about 0.27 on every page (the sidebar slides open on first load); axe `color-contrast` (serious) everywhere and `button-name` (critical) on a session page; console errors only the two known ones.
