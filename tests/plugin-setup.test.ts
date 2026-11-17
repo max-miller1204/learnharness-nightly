@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { setupPlugins } from "../scripts/setup-plugins.mjs";
+import { relinkLocalPackages, setupPlugins } from "../scripts/setup-plugins.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -70,6 +70,62 @@ test("plugin setup with sdkOnly regenerates SDKs from a restored install without
 		const calls: { args: string[]; cwd: string }[] = [];
 		setupPlugins(root, { sdkOnly: true, run: (args: string[], cwd: string) => { calls.push({ args, cwd }); } });
 		assert.deepEqual(calls, [{ args: ["run", "sdk"], cwd: path.join(root, "plugins", "z-types") }]);
+	});
+});
+
+function linkedPlugin(root: string, plugin: (id: string, sdk?: boolean) => void, packages: Record<string, unknown>) {
+	plugin("a-linked", true);
+	const directory = path.join(root, "plugins", "a-linked");
+	writeFileSync(path.join(directory, "package-lock.json"), JSON.stringify({ packages: { "": { name: "a-linked" }, ...packages } }));
+	mkdirSync(path.join(directory, ".sdk"));
+	writeFileSync(path.join(directory, ".sdk", "package.json"), "{}");
+	return directory;
+}
+
+function assertLinkedToSdk(directory: string) {
+	const link = path.join(directory, "node_modules", "learnharness-plugin-api");
+	assert.ok(lstatSync(link).isSymbolicLink());
+	assert.equal(realpathSync(link), realpathSync(path.join(directory, ".sdk")));
+	if (process.platform !== "win32") assert.equal(readlinkSync(link), path.join("..", ".sdk"), "a relative link like npm's on POSIX");
+	assert.ok(existsSync(path.join(directory, ".sdk", "package.json")), "the link target survives");
+}
+
+const API_LINK = { "node_modules/learnharness-plugin-api": { resolved: ".sdk", link: true } };
+
+test("sdkOnly relinks the lockfile's file: packages that a restored cache lost", () => {
+	fixture((root, plugin) => {
+		const directory = linkedPlugin(root, plugin, { ...API_LINK, "node_modules/other": { version: "1.0.0" } });
+		mkdirSync(path.join(directory, "node_modules", "other"), { recursive: true });
+		writeFileSync(path.join(directory, "node_modules", "other", "package.json"), "{}");
+		// What a Windows cache restore leaves: a plain folder instead of the link.
+		mkdirSync(path.join(directory, "node_modules", "learnharness-plugin-api"), { recursive: true });
+		setupPlugins(root, { sdkOnly: true, run: () => {} });
+		assertLinkedToSdk(directory);
+		assert.ok(existsSync(path.join(directory, "node_modules", "other", "package.json")), "only link entries are touched");
+	});
+});
+
+test("relinking an intact link (a POSIX cache hit) keeps its target", () => {
+	fixture((root, plugin) => {
+		const directory = linkedPlugin(root, plugin, API_LINK);
+		mkdirSync(path.join(directory, "node_modules"));
+		symlinkSync(path.join("..", ".sdk"), path.join(directory, "node_modules", "learnharness-plugin-api"), "junction");
+		relinkLocalPackages(directory);
+		assertLinkedToSdk(directory);
+	});
+});
+
+test("relinking refuses missing targets, targets without a package, and keys outside node_modules", () => {
+	fixture((root, plugin) => {
+		const directory = linkedPlugin(root, plugin, API_LINK);
+		rmSync(path.join(directory, ".sdk"), { recursive: true });
+		assert.throws(() => relinkLocalPackages(directory), /links to missing \.sdk/);
+		mkdirSync(path.join(directory, ".sdk"));
+		assert.throws(() => relinkLocalPackages(directory), /does not resolve to a package/);
+		writeFileSync(path.join(directory, "package-lock.json"), JSON.stringify({ packages: { "../src": { resolved: ".sdk", link: true } } }));
+		assert.throws(() => relinkLocalPackages(directory), /outside node_modules/);
+		writeFileSync(path.join(directory, "package-lock.json"), JSON.stringify({ packages: { "node_modules/x": { link: true } } }));
+		assert.throws(() => relinkLocalPackages(directory), /without a resolved path/);
 	});
 });
 
