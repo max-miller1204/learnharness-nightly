@@ -7,7 +7,7 @@
  * targets on Windows, which don't survive the cache, so it relinks them the way
  * npm would. */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,18 +20,28 @@ function runNpm(args, cwd) {
 }
 
 /** Recreate every `link: true` entry of a plugin's package-lock.json, as npm ci would. */
-export function relinkLocalPackages(directory, { platform = process.platform } = {}) {
+export function relinkLocalPackages(directory) {
+	const name = path.basename(directory);
+	const modules = path.join(directory, "node_modules");
 	const lock = JSON.parse(readFileSync(path.join(directory, "package-lock.json"), "utf8"));
 	for (const [key, entry] of Object.entries(lock.packages ?? {})) {
-		if (!key || entry?.link !== true || typeof entry.resolved !== "string") continue;
+		if (!key || entry?.link !== true) continue;
+		if (typeof entry.resolved !== "string") throw new Error(`${name}: ${key} is a link without a resolved path`);
 		const link = path.join(directory, key);
+		const inside = path.relative(modules, link);
+		if (!key.startsWith("node_modules/") || !inside || inside.startsWith("..") || path.isAbsolute(inside)) throw new Error(`${name}: refusing link entry outside node_modules: ${key}`);
 		const target = path.resolve(directory, entry.resolved);
-		if (!existsSync(target)) throw new Error(`${path.basename(directory)}: ${key} links to missing ${entry.resolved}`);
-		rmSync(link, { recursive: true, force: true });
+		if (!existsSync(target)) throw new Error(`${name}: ${key} links to missing ${entry.resolved}`);
+		// Remove a link (Node reports junctions as symlinks) without following it;
+		// only a real folder or file the restore left behind is deleted recursively.
+		const existing = lstatSync(link, { throwIfNoEntry: false });
+		if (existing?.isSymbolicLink()) unlinkSync(link);
+		else if (existing) rmSync(link, { recursive: true, force: true });
 		mkdirSync(path.dirname(link), { recursive: true });
-		// Windows junctions need an absolute target; elsewhere match npm's relative symlink.
-		symlinkSync(platform === "win32" ? target : path.relative(path.dirname(link), target), link, "junction");
-		if (!existsSync(path.join(link, "package.json"))) throw new Error(`${path.basename(directory)}: ${key} does not resolve to a package after relinking`);
+		// Exactly what npm does: a relative target with type "junction", which Node
+		// turns into an absolute junction on Windows and ignores elsewhere.
+		symlinkSync(path.relative(path.dirname(link), target), link, "junction");
+		if (!existsSync(path.join(link, "package.json"))) throw new Error(`${name}: ${key} does not resolve to a package after relinking`);
 	}
 }
 
