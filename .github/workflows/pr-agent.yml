@@ -47,18 +47,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENROUTER.KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          config.model: openrouter/${{ vars.OPENROUTER_MODEL || 'deepseek/deepseek-v4.1-flash-1017' }}
+          config.model: openrouter/${{ vars.OPENROUTER_MODEL || 'anthropic/claude-haiku-5.5' }}
           config.fallback_models: "[]"
-          # PR-Agent doesn't know this model's 1M context; the input cap stays
-          # at 128k tokens (the default 32k clips larger diffs).
+          # Covers a model PR-Agent doesn't know (OPENROUTER_MODEL can be any
+          # OpenRouter ID); the input cap stays at 128k tokens (the default 32k
+          # clips larger diffs).
           config.custom_model_max_tokens: "1048576"
           config.max_model_tokens: "128000"
-          # PR-Agent sets no output cap by default, so a runaway generation ran
-          # for 5 minutes until the upstream provider's limit and came back empty
-          # (finish_reason: length). Cap the completion, and keep reasoning
-          # under half of it so the answer always has room.
+          # PR-Agent sets no output cap by default (a runaway generation once
+          # ran 5 minutes and came back empty), so cap the completion.
           config.max_output_tokens: "32000"
-          OPENROUTER.REASONING_MAX_TOKENS: "16000"
+          # Light thinking: sent as OpenRouter `reasoning: {effort: low}`.
+          # PR-Agent's own config.reasoning_effort skips Claude models, and a
+          # reasoning token budget would take precedence over this, so set none.
+          OPENROUTER.REASONING_EFFORT: low
           # No automatic /describe: it rewrites the PR title and body.
           github_action_config.auto_describe: "false"
           github_action_config.auto_review: "true"
