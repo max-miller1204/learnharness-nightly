@@ -13,7 +13,7 @@ Baseline the entries build on (the self-hosting plan):
 - The separate `lh` launcher in `selfhost/` swaps versions, health-checks, rolls back and keeps snapshots.
 - Versioned installs under `~/.learnharness/runtime/versions/`, and the `learnharness.service` systemd user unit.
 - The server binds 127.0.0.1:3774, with optional Tailscale Serve on 8443.
-- Upstream is mirrored hourly to `upstream-main` with a standing Sync PR. Upstream PRs come in through the "Import upstream PR" workflow, authenticated as the fork bot GitHub App.
+- Upstream is mirrored hourly to `upstream-main` with a standing Sync PR. Upstream PRs come in through the "Import upstream PR" workflow, and upstream issues are mirrored hourly as fork issues labeled `upstream`, both authenticated as the fork bot GitHub App.
 
 One structural rule carries over to every entry: **the launcher stays a separate process from the server.** It's what recovers from a broken version, so recovery logic must never depend on the server working.
 
@@ -25,9 +25,8 @@ Rows are in build order. **Order** is the planned sequence, after the self-hosti
 |---|---|---|---|---|---|
 | 1 | 20 | Gemini CLI and Codex CLI providers | Providers | none | Moderate (new provider folders, Settings rows) |
 | 2 | 12 | Preview builds of PRs | Review workflow | none | Small |
-| 3 | 13 | Upstream issue intake | Review workflow | none | No |
-| 4 | 6 | Login and pairing | Access + security | none | Yes |
-| 5 | 1 | Electron desktop nightlies | Desktop + distribution | none | Small (`electron/main.cjs`) |
+| 3 | 6 | Login and pairing | Access + security | none | Yes |
+| 4 | 1 | Electron desktop nightlies | Desktop + distribution | none | Small (`electron/main.cjs`) |
 | Later | 2 | Removing Electron | Desktop + distribution | none | Yes (deletions) |
 | Later | 3 | macOS self-hosting | Desktop + distribution | none | No |
 | Later | 4 | Docker image | Desktop + distribution | none | No |
@@ -48,10 +47,11 @@ Rows are in build order. **Order** is the planned sequence, after the self-hosti
 | Later | 25 | Office and data formats | Files + ingestion | none | Yes |
 | Later | 26 | More file types in Extract files | Files + ingestion | 25 | Yes |
 | Later | 27 | @-mentions for files and folders | Files + ingestion | none (remote use: 24) | Yes |
+| Later | 28 | Offering fork fixes upstream | Review workflow | none | No |
 
 "Later" items have no order yet; they're listed by ID. Item 16 (in-app update status) moved into the self-hosting plan itself.
 
-Why this order: 20 was agreed as next. 12 and 13 help with reviewing upstream work, the main job of this fork. 6 unlocks 5 and any remote access beyond Tailscale. 1 is the largest single project.
+Why this order: 20 was agreed as next. 12 helps with reviewing upstream work, the main job of this fork. 6 unlocks 5 and any remote access beyond Tailscale. 1 is the largest single project.
 
 Items 21 to 24 come from comparing LearnHarness with T3 Code and OpenBot (`nightly-labs/openbot`): in both, the server is the product and every app (desktop, web, phone) is a client that connects to a server you choose. All four need login and pairing (6) first. If they're built, the suggested order among them is 21, 22, 24, 23.
 
@@ -432,15 +432,13 @@ Where things stand, so the entries below start from facts:
 
 **Touches core.** Small (pin state in the update UI).
 
-### 13. Upstream issue intake
+### 28. Offering fork fixes upstream
 
-**Why.** The plan is to work upstream's issues here too, but only PR intake was planned.
+**Why.** Upstream issues are mirrored into the fork (`docs/specs/upstream-issue-mirror.md`), so some get fixed here first. Those fixes could go back upstream as PRs.
 
-**Decided.** Nothing yet.
+**Decided.** Nothing yet. Carried over from item 13 (upstream issue intake), which is built without it.
 
-**Proposed design (not approved).** A manual "Import upstream issue" workflow and script, mirroring "Import upstream PR": it copies the title, body and labels into a fork issue with a link back and credit, and adds an `upstream` label. Optionally, a weekly digest issue lists new upstream issues and PRs with a checkbox per item to trigger an import.
-
-**Open questions.** Per-issue import only, or the digest too? Offer fork fixes back upstream as PRs, and from which branch? Keep comments in sync, or copy once?
+**Open questions.** Offer fork fixes back upstream at all? As PRs from which branch, and who opens them?
 
 **Touches core.** No.
 
