@@ -32,7 +32,7 @@ Then open `http://127.0.0.1:3774` on that machine, or the Tailscale address on o
 | Command | What it does |
 |---|---|
 | `lh status` | Versions, service state, health, idle or busy, update state, URLs |
-| `lh update` | Check for an update now (it installs when no agent is working) |
+| `lh update` | Check for an update now and download it (it installs when you click Install in the app) |
 | `lh update --now` | Install the newest version right away, even mid-turn |
 | `lh rollback` | Switch back to the previous version |
 | `lh use <version>` | Switch to any installed version (`lh versions` lists them) |
@@ -47,12 +47,13 @@ Then open `http://127.0.0.1:3774` on that machine, or the Tailscale address on o
 
 ## Updates
 
-Updates are automatic and need nothing from you.
+Updates download on their own and install when you say so (the T3 Code model; see [the spec](specs/t3-style-updates.md)).
 
-1. **The app checks** for a new nightly at startup and every 15 minutes, and downloads it in the background. Settings → General shows the progress, and a banner appears when it's ready. Turn this off with **Automatic updates** in Settings; **Check for updates** still works.
-2. **It installs when nothing is running:** no turn, no compaction, no background job, plugin worker or extraction. **Restart** in the banner or Settings (or `lh update --now`) installs right away.
+1. **The app checks** for a new nightly at startup and every 4 hours, and downloads it in the background. Settings → General shows the progress, and an update button appears at the right of the sidebar's Settings row when it's ready. Hover it to read what changed. Turn checking off with **Check for updates automatically** in Settings; **Check for updates** still works. A newer nightly that appears while one is ready replaces it.
+2. **It installs only when you click Install** (the sidebar button, Settings, or `lh update --now`). Install checks once more for a newer build, then asks you to confirm and lists what is running (chat turns, compactions, background jobs, plugin workers, extractions), since the restart interrupts them. Nothing installs on its own.
 3. **The launcher switches versions safely.** Before stopping anything it refuses an update that isn't newer, isn't fully downloaded, failed before, or doesn't leave room for a data snapshot (the old server keeps running and Settings shows why). Then it copies your data to a snapshot, starts the new version as a trial, and keeps it only once the new server reports it's ready.
-4. **A failed trial rolls back by itself.** If the new version exits, misbehaves or isn't ready within 30 minutes, the launcher restores the snapshot, marks that version so it isn't retried, and goes back to the old one. A banner explains what happened.
+4. **A failed trial rolls back by itself.** If the new version exits, misbehaves or isn't ready within 30 minutes, the launcher restores the snapshot, marks that version so it isn't retried, and goes back to the old one. A warning button in the sidebar explains what happened; clicking it dismisses it on every device.
+5. **What's new.** The first time the app opens after an update, a "What's new in X" popup lists the changes since the version you last saw. Closing it on any device clears it on all of them.
 
 The launcher itself also updates by itself. An old launcher keeps working with newer servers, and when a version needs a newer launcher, the switch happens on its own the next time no agent is working (a restart of a few seconds onto the same, already-proven version).
 

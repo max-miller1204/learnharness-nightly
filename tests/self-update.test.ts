@@ -1,23 +1,29 @@
 /**
  * The self-hosted in-app updater (src/server/self-update.ts) with fake
  * deps: disabled outside self-hosting, autoUpdate=false skips automatic
- * checks, idle gating (each busy source blocks the switch), the handshake
- * with the launcher, and the boot notices from service-state.json. Plus the
- * one-server-per-data-folder lock (src/server/data-lock.ts).
+ * checks, never applying on its own (docs/specs/t3-style-updates.md), a
+ * newer version replacing a ready one, install re-checking first, release
+ * notes from the feed, the handshake with the launcher, and the rollback
+ * notice (dismissible per server). Plus the one-server-per-data-folder lock
+ * (src/server/data-lock.ts).
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { CHECK_INTERVAL_MS, createSelfUpdater, IDLE_POLL_MS, UPDATED_NOTICE_MS, type SelfUpdaterDeps } from "../src/server/self-update.ts";
+import { CHECK_INTERVAL_MS, createSelfUpdater, type SelfUpdaterDeps } from "../src/server/self-update.ts";
+import type { ReleaseNoteGroup } from "../src/core/release-notes.ts";
 import { dataLockPath, tryAcquireDataLock } from "../src/server/data-lock.ts";
 import type { ChildMessage } from "../selfhost/src/protocol.ts";
 import type { LatestFeed, ServiceState } from "../selfhost/src/release.ts";
 
 const CURRENT = "0.6.1-nightly.20261116.1";
 const NEXT = "0.6.1-nightly.20261117.2";
-const feed = (version: string): LatestFeed => ({ version, tag: `v${version}`, sha: "x", publishedAt: "now", launcherProtocol: 1, minLauncherProtocol: 1, assets: {} });
+const NEWER = "0.6.1-nightly.20261118.3";
+const OLDER = "0.6.1-nightly.20261115.1";
+const NOTES = [NEWER, NEXT, CURRENT, OLDER].map((version) => ({ version, publishedAt: "2026-11-17T00:00:00Z", items: [`**${version}.** changed`] }));
+const feed = (version: string): LatestFeed => ({ version, tag: `v${version}`, sha: "x", publishedAt: "now", launcherProtocol: 1, minLauncherProtocol: 1, assets: {}, notes: NOTES });
 
 function fake(overrides: Partial<SelfUpdaterDeps> = {}) {
 	const sent: ChildMessage[] = [];
@@ -25,7 +31,10 @@ function fake(overrides: Partial<SelfUpdaterDeps> = {}) {
 	let parent: ((m: unknown) => void) | undefined;
 	let id = 0;
 	let notifications = 0;
-	const flags = { idle: true, auto: true, installed: false, staged: [] as string[], latest: NEXT, state: undefined as ServiceState | undefined, now: 10_000_000 };
+	const flags = {
+		auto: true, installed: false, staged: [] as string[], latest: NEXT, state: undefined as ServiceState | undefined, now: 10_000_000,
+		merged: [] as ReleaseNoteGroup[][], dismissed: undefined as string | undefined, fetchFails: false,
+	};
 	const deps: SelfUpdaterDeps = {
 		enabled: true,
 		currentVersion: CURRENT,
@@ -33,12 +42,14 @@ function fake(overrides: Partial<SelfUpdaterDeps> = {}) {
 		feedUrl: "file:///feed",
 		send: (m) => { sent.push(m); },
 		onParentMessage: (cb) => { parent = cb; },
-		isIdle: () => flags.idle,
 		autoUpdateEnabled: () => flags.auto,
-		fetchLatest: async () => feed(flags.latest),
+		fetchLatest: async () => { if (flags.fetchFails) throw new Error("offline"); return feed(flags.latest); },
 		stage: async (f) => { flags.staged.push(f.version); },
 		isInstalled: () => flags.installed,
 		readState: () => flags.state,
+		mergeNotes: (groups) => { flags.merged.push(groups); },
+		dismissedNotice: () => flags.dismissed,
+		recordDismissedNotice: (id) => { flags.dismissed = id; },
 		waitUntilServing: async () => {},
 		notify: () => { notifications++; },
 		now: () => flags.now,
@@ -69,21 +80,67 @@ describe("self-hosted updater", () => {
 		assert.deepEqual(f.sent, []);
 	});
 
-	it("checks at startup, downloads, then applies once idle", async () => {
+	it("checks at startup and downloads, but never applies on its own", async () => {
 		const f = fake();
 		const u = createSelfUpdater(f.deps);
-		f.flags.idle = false;
 		u.start();
 		await settle();
 		assert.equal(u.state().status, "downloaded");
 		assert.equal(u.state().version, NEXT);
 		assert.deepEqual(f.flags.staged, [NEXT]);
-		f.run(0);
-		assert.deepEqual(f.sent, [], "busy: no request yet");
-		f.flags.idle = true;
-		f.run(IDLE_POLL_MS);
-		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }]);
+		assert.equal(CHECK_INTERVAL_MS, 4 * 60 * 60 * 1000, "every 4 hours");
+		assert.deepEqual(f.timers.map((t) => t.ms), [CHECK_INTERVAL_MS], "only the check timer: no idle apply loop");
+		f.run(CHECK_INTERVAL_MS);
+		await settle();
+		assert.deepEqual(f.sent, [], "no request without a click");
 		assert.ok(f.notifications() > 0, "changes are announced");
+	});
+
+	it("carries the feed's notes for versions after the running one, and caches them", async () => {
+		const f = fake();
+		f.flags.latest = NEWER;
+		const u = createSelfUpdater(f.deps);
+		await u.check();
+		assert.deepEqual(u.state().releaseNotes.map((g) => g.version), [NEWER, NEXT], "newest first, only newer than the running version");
+		assert.equal(u.state().omittedReleaseCount, 0);
+		assert.deepEqual(f.flags.merged[0]!.map((g) => g.version), [NEWER, NEXT, CURRENT, OLDER], "the whole history goes to the cache");
+	});
+
+	it("keeps checking while a version is ready: a newer one replaces it after staging", async () => {
+		const f = fake();
+		const u = createSelfUpdater(f.deps);
+		await u.check();
+		assert.equal(u.state().version, NEXT);
+		f.flags.latest = NEWER;
+		let release!: () => void;
+		f.deps.stage = (fd) => new Promise<void>((resolve) => { release = () => { f.flags.staged.push(fd.version); resolve(); }; });
+		const pending = u.check();
+		await settle();
+		assert.equal(u.state().status, "downloaded");
+		assert.equal(u.state().version, NEXT, "the ready version stays offered while the newer one stages");
+		release();
+		await pending;
+		assert.equal(u.state().version, NEWER);
+		assert.deepEqual(u.state().releaseNotes.map((g) => g.version), [NEWER, NEXT]);
+		f.flags.fetchFails = true;
+		await u.check();
+		assert.equal(u.state().status, "downloaded", "a failed check keeps the ready version");
+	});
+
+	it("install re-checks first and takes a newer build; a failed re-check installs the ready one", async () => {
+		const f = fake();
+		const u = createSelfUpdater(f.deps);
+		await u.check();
+		f.flags.latest = NEWER;
+		await u.install();
+		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEWER }]);
+
+		const g = fake();
+		const v = createSelfUpdater(g.deps);
+		await v.check();
+		g.flags.fetchFails = true;
+		await v.install();
+		assert.deepEqual(g.sent, [{ type: "request-update", targetVersion: NEXT }]);
 	});
 
 	it("skips automatic checks when autoUpdate is off, but manual checks work", async () => {
@@ -114,9 +171,8 @@ describe("self-hosted updater", () => {
 		assert.deepEqual(f.flags.staged, []);
 	});
 
-	it("install applies right away even when busy, and shows a rejection", async () => {
+	it("install applies on click, and shows a rejection", async () => {
 		const f = fake();
-		f.flags.idle = false;
 		const u = createSelfUpdater(f.deps);
 		u.start();
 		await u.install();
@@ -126,16 +182,16 @@ describe("self-hosted updater", () => {
 		assert.equal(u.state().message, "Not enough disk space");
 	});
 
-	it("as a trial child, says prepared once serving; committed shows the updated notice", async () => {
+	it("as a trial child, says prepared once serving; committed says so without a notice (What's new replaces it)", async () => {
 		const f = fake({ trialUpdateId: "u-1" });
 		const u = createSelfUpdater(f.deps);
 		u.start();
 		await settle();
 		assert.deepEqual(f.sent, [{ type: "prepared", updateId: "u-1" }]);
 		f.toParent({ type: "committed", updateId: "u-1" });
-		assert.equal(u.state().notice?.kind, "updated");
-		f.flags.now += UPDATED_NOTICE_MS + 1;
-		assert.equal(u.state().notice, null, "the updated notice expires");
+		assert.equal(u.state().status, "up-to-date");
+		assert.equal(u.state().message, `Updated to version ${CURRENT}.`);
+		assert.equal(u.state().notice, null);
 	});
 
 	it("adopts a rollback recorded by the launcher at boot", () => {
@@ -147,6 +203,13 @@ describe("self-hosted updater", () => {
 		assert.equal(u.state().status, "error");
 		assert.equal(u.state().notice?.kind, "rolled-back");
 		assert.match(u.state().notice?.text ?? "", /rolled back/);
+		u.dismissNotice();
+		assert.equal(u.state().notice, null);
+		assert.equal(f.flags.dismissed, `rolled-back:${NEXT}:5`, "recorded per server");
+		const again = createSelfUpdater(f.deps);
+		again.start();
+		assert.equal(again.state().notice, null, "a dismissed notice is not adopted again at boot");
+		assert.match(again.state().message ?? "", /rolled back/, "the Settings row still says so");
 	});
 });
 

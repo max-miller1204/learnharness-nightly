@@ -12,13 +12,17 @@
  * announced on the event bus ("update-changed"); clients fetch
  * GET /api/updates (notify, then fetch).
  *
- * Applying: once a version is downloaded, apply it the first time the app
- * is idle (no turn, no compaction, no running job, plugin worker or
- * extraction), checked every 30 s. "Restart" in the UI applies at once.
- * Applying = asking the launcher over IPC ("request-update"). The launcher
- * owns runtime/service-state.json; this module only reads it.
+ * T3 style (docs/specs/t3-style-updates.md): check at start and every 4
+ * hours, download in the background, and apply ONLY when the user clicks
+ * Install (the confirm dialog lists runningWork()). Checks keep running
+ * while a version is ready, so a newer nightly replaces it; install()
+ * re-checks first. Applying = asking the launcher over IPC
+ * ("request-update"). The launcher owns runtime/service-state.json; this
+ * module only reads it.
  */
 import { emit } from "../core/events.ts";
+import type { ReleaseNoteGroup } from "../core/release-notes.ts";
+import { feedNotesToGroups, groupsBetween, mergeNotesCache, readUpdateRecord, writeUpdateRecord } from "./update-records.ts";
 import { readSettings } from "../store/settings.ts";
 import { listChats } from "./chats.ts";
 import { compactionInFlight } from "./compaction.ts";
@@ -40,9 +44,9 @@ import {
 
 export type SelfUpdateStatus = "idle" | "checking" | "downloading" | "up-to-date" | "downloaded" | "error" | "disabled";
 
-/** The outcome of the last switch, shown once by the banner. */
+/** A rolled-back switch, shown by the sidebar pill until dismissed (per server). */
 export interface UpdateNotice {
-	kind: "updated" | "rolled-back";
+	kind: "rolled-back";
 	version: string;
 	text: string;
 	at: number;
@@ -55,14 +59,16 @@ export interface SelfUpdateState {
 	revision: number;
 	/** Detail for the Settings row (errors, rejections, progress). */
 	message: string | null;
-	/** Outcome of the last switch for the banner; "updated" expires after UPDATED_NOTICE_MS. */
+	/** A rolled-back switch until dismissed. */
 	notice: UpdateNotice | null;
+	/** Versions newer than the running one up to the offered one, newest first, at most 6. */
+	releaseNotes: ReleaseNoteGroup[];
+	omittedReleaseCount: number;
 }
 
-export const CHECK_INTERVAL_MS = 15 * 60 * 1000;
-export const IDLE_POLL_MS = 30 * 1000;
-/** "Updated to X" shows for this long after a commit, then clears. */
-export const UPDATED_NOTICE_MS = 15 * 60 * 1000;
+export const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+
+export const noticeId = (notice: UpdateNotice) => `${notice.kind}:${notice.version}:${notice.at}`;
 
 export interface SelfUpdaterDeps {
 	enabled: boolean;
@@ -72,12 +78,15 @@ export interface SelfUpdaterDeps {
 	trialUpdateId?: string;
 	send(message: ChildMessage): void;
 	onParentMessage(cb: (message: unknown) => void): void;
-	isIdle(): boolean;
 	autoUpdateEnabled(): boolean;
 	fetchLatest(feedUrl: string): Promise<LatestFeed>;
 	stage(feed: LatestFeed, badVersions: readonly string[]): Promise<void>;
 	isInstalled(version: string): boolean;
 	readState(): ServiceState | undefined;
+	/** Merge the feed's notes into the data folder's notes cache (What's new reads it). */
+	mergeNotes(groups: ReleaseNoteGroup[]): void;
+	dismissedNotice(): string | undefined;
+	recordDismissedNotice(id: string): void;
 	/** Resolves once this server answers its own /api/health. */
 	waitUntilServing(): Promise<void>;
 	notify(): void;
@@ -87,9 +96,10 @@ export interface SelfUpdaterDeps {
 }
 
 export function createSelfUpdater(deps: SelfUpdaterDeps) {
-	let state: SelfUpdateState = { status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, message: null, notice: null };
+	let state: SelfUpdateState = {
+		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, message: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
+	};
 	let checkTimer: unknown;
-	let idleTimer: unknown;
 	let checking: Promise<void> | undefined;
 	let requested = false;
 	let started = false;
@@ -99,15 +109,9 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		deps.notify();
 	};
 
-	const clearIdle = () => {
-		if (idleTimer !== undefined) deps.clearTimeout(idleTimer);
-		idleTimer = undefined;
-	};
-
 	const requestUpdate = (version: string) => {
 		if (requested) return;
 		requested = true;
-		clearIdle();
 		set({ status: "downloaded", version, message: `Restarting to install version ${version}…` });
 		try {
 			deps.send({ type: "request-update", targetVersion: version });
@@ -117,41 +121,45 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		}
 	};
 
-	const scheduleIdleApply = (version: string) => {
-		clearIdle();
-		const tick = () => {
-			idleTimer = undefined;
-			if (state.status !== "downloaded" || state.version !== version || requested) return;
-			if (deps.isIdle()) requestUpdate(version);
-			else idleTimer = deps.setTimeout(tick, IDLE_POLL_MS);
-		};
-		idleTimer = deps.setTimeout(tick, 0);
+	const notesFor = (feed: LatestFeed) => {
+		const groups = feedNotesToGroups(feed.notes ?? []);
+		try { deps.mergeNotes(groups); } catch { /* the cache is a convenience; never fail a check */ }
+		const known = isExactVersion(deps.currentVersion);
+		return groupsBetween(groups, known ? deps.currentVersion : undefined, feed.version);
 	};
 
 	const runCheck = async (): Promise<void> => {
-		if (!deps.enabled) return;
-		if (state.status === "downloaded" || requested) return;
-		set({ status: "checking", message: null });
+		if (!deps.enabled || requested) return;
+		// A ready version stays offered (no "checking" flicker) while a newer one is looked for and staged.
+		const ready = state.status === "downloaded" && state.version ? state.version : null;
+		if (!ready) set({ status: "checking", message: null });
 		try {
 			const feed = await deps.fetchLatest(deps.feedUrl);
+			if (requested) return;
 			const known = isExactVersion(deps.currentVersion);
 			if (known && compareVersions(feed.version, deps.currentVersion) <= 0) {
-				set({ status: "up-to-date", version: null, message: null });
+				if (!ready) set({ status: "up-to-date", version: null, message: null, releaseNotes: [], omittedReleaseCount: 0 });
+				return;
+			}
+			if (ready && compareVersions(feed.version, ready) <= 0) {
+				set(notesFor(feed));
 				return;
 			}
 			const bad = deps.readState()?.badVersions ?? [];
 			if (bad.includes(feed.version)) {
-				set({ status: "up-to-date", version: null, message: `Version ${feed.version} failed to start earlier and is skipped.` });
+				if (!ready) set({ status: "up-to-date", version: null, message: `Version ${feed.version} failed to start earlier and is skipped.`, releaseNotes: [], omittedReleaseCount: 0 });
 				return;
 			}
+			const notes = notesFor(feed);
 			if (!deps.isInstalled(feed.version)) {
-				set({ status: "downloading", version: feed.version });
+				if (!ready) set({ status: "downloading", version: feed.version, ...notes });
 				await deps.stage(feed, bad);
+				if (requested) return;
 			}
-			set({ status: "downloaded", version: feed.version, message: null });
-			scheduleIdleApply(feed.version);
+			set({ status: "downloaded", version: feed.version, message: null, ...notes });
 		} catch (error) {
-			set({ status: "error", message: error instanceof Error ? error.message : String(error) });
+			// A failed look for something newer keeps the ready version offered.
+			if (!ready) set({ status: "error", message: error instanceof Error ? error.message : String(error) });
 		}
 	};
 
@@ -179,8 +187,7 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			requested = false;
 			set({ status: "error", message: message.reason });
 		} else if (message.type === "committed") {
-			const text = `Updated to version ${deps.currentVersion}.`;
-			set({ status: "up-to-date", version: null, message: text, notice: { kind: "updated", version: deps.currentVersion, text, at: deps.now() } });
+			set({ status: "up-to-date", version: null, message: `Updated to version ${deps.currentVersion}.`, releaseNotes: [], omittedReleaseCount: 0 });
 		}
 	};
 
@@ -190,22 +197,27 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		if (!update) return;
 		if (update.status === "rolled-back" && update.fromVersion === deps.currentVersion) {
 			const text = `Update to version ${update.targetVersion} failed to start and was rolled back.${update.reason ? ` (${update.reason})` : ""}`;
-			set({ status: "error", version: null, message: text, notice: { kind: "rolled-back", version: update.targetVersion, text, at: update.at } });
-		} else if (update.status === "committed" && update.targetVersion === deps.currentVersion && deps.now() - update.at < UPDATED_NOTICE_MS) {
-			const text = `Updated to version ${deps.currentVersion}.`;
-			set({ status: "up-to-date", version: null, message: text, notice: { kind: "updated", version: deps.currentVersion, text, at: update.at } });
+			const notice: UpdateNotice = { kind: "rolled-back", version: update.targetVersion, text, at: update.at };
+			let dismissed: string | undefined;
+			try { dismissed = deps.dismissedNotice(); } catch { dismissed = undefined; }
+			set({ status: "error", version: null, message: text, notice: dismissed === noticeId(notice) ? null : notice });
 		}
 	};
 
 	return {
-		state: (): SelfUpdateState =>
-			state.notice?.kind === "updated" && deps.now() - state.notice.at > UPDATED_NOTICE_MS ? { ...state, notice: null } : state,
+		state: (): SelfUpdateState => state,
 		check,
-		/** "Restart" / POST /api/updates/install: apply now, checking first if nothing is staged. */
+		/** Install / POST /api/updates/install: re-check first (a download can be hours old), then apply the ready version. */
 		async install(): Promise<void> {
-			if (!deps.enabled) return;
-			if (state.status !== "downloaded") await check();
+			if (!deps.enabled || requested) return;
+			await check();
 			if (state.status === "downloaded" && state.version) requestUpdate(state.version);
+		},
+		/** POST /api/updates/notice/dismiss: hide the rollback notice on every browser of this server. */
+		dismissNotice(): void {
+			if (!state.notice) return;
+			try { deps.recordDismissedNotice(noticeId(state.notice)); } catch { /* still hide it for this run */ }
+			set({ notice: null });
 		},
 		start(): void {
 			if (!deps.enabled || started) return;
@@ -225,7 +237,6 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		},
 		stop(): void {
 			if (checkTimer !== undefined) deps.clearTimeout(checkTimer);
-			clearIdle();
 		},
 	};
 }
@@ -235,13 +246,29 @@ export type SelfUpdater = ReturnType<typeof createSelfUpdater>;
 // ---------------------------------------------------------------------------
 // The process singleton (globalThis: Next can evaluate modules twice).
 
-/** True when nothing is running that an update restart would interrupt. */
-export function appIsIdle(): boolean {
+/** One piece of running work an update restart would interrupt (GET /api/updates/running). */
+export interface RunningWork {
+	kind: "turn" | "compaction" | "job" | "plugin-worker" | "extraction";
+	title: string;
+}
+
+export function runningWork(): RunningWork[] {
+	const items: RunningWork[] = [];
 	for (const chat of listChats()) {
-		if (isTurnRunning(chat.id) || compactionInFlight(chat.id)) return false;
+		const title = chat.title ?? chat.id;
+		if (isTurnRunning(chat.id)) items.push({ kind: "turn", title });
+		if (compactionInFlight(chat.id)) items.push({ kind: "compaction", title });
 	}
 	const feed = activityFeed();
-	return feed.jobs.length === 0 && feed.pluginWorkers.length === 0 && feed.extractions.length === 0;
+	for (const job of feed.jobs) items.push({ kind: "job", title: job.title });
+	for (const worker of feed.pluginWorkers) items.push({ kind: "plugin-worker", title: worker.title });
+	for (const extraction of feed.extractions) items.push({ kind: "extraction", title: extraction.title });
+	return items;
+}
+
+/** True when nothing is running that an update restart would interrupt. */
+export function appIsIdle(): boolean {
+	return runningWork().length === 0;
 }
 
 const KEY = Symbol.for("learnharness.self-updater");
@@ -281,7 +308,6 @@ export function selfUpdater(): SelfUpdater {
 			process.send(message);
 		},
 		onParentMessage: (cb) => { process.on("message", cb); },
-		isIdle: appIsIdle,
 		autoUpdateEnabled: () => readSettings()?.general?.autoUpdate !== false,
 		fetchLatest: (url) => fetchLatest(url),
 		stage: async (feed, badVersions) => {
@@ -292,6 +318,9 @@ export function selfUpdater(): SelfUpdater {
 		readState: () => {
 			try { return readState(home); } catch { return undefined; }
 		},
+		mergeNotes: (groups) => mergeNotesCache(groups),
+		dismissedNotice: () => readUpdateRecord().dismissedNotice,
+		recordDismissedNotice: (id) => { writeUpdateRecord({ dismissedNotice: id }); },
 		waitUntilServing,
 		notify: () => emit("update-changed", {}),
 		now: () => Date.now(),

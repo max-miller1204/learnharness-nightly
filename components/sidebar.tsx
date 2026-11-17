@@ -13,6 +13,8 @@ import { LhMark } from "@/components/lh-mark";
 import { BrailleSpinner } from "@/components/braille-spinner";
 import { KeyboardShortcuts } from "@/components/keyboard-shortcuts";
 import { SettingsDialogProvider, useSettingsDialog } from "@/components/settings/settings-dialog.tsx";
+import { SidebarUpdatePill } from "@/components/sidebar-update-pill";
+import WhatsNewDialog from "@/components/whats-new-dialog";
 import { Hint } from "@/components/ui/hint";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -92,6 +94,8 @@ declare global {
 			/** Explicit manual check also downloads and stages available updates. */
 			checkForUpdates?: () => Promise<void>;
 			installUpdate?: () => void;
+			/** Download the "available" update (downloads happen only on click). */
+			downloadUpdate?: () => Promise<void>;
 			onOpenSettings?: (cb: (section: string) => void) => () => void;
 		};
 	}
@@ -879,7 +883,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 					{/* Settings entry (settings-app wave): same row language as
 					    New session — quiet, bottom-pinned, opens the centered
 					    dialog (also mod+, in the keyboard registry). */}
-					<div className="px-3 pb-3 pt-1">
+					<div className="flex items-center justify-between gap-2 px-3 pb-3 pt-1">
 						<Hint label="Settings" action="open-settings" side="right">
 							<button
 								type="button"
@@ -891,6 +895,9 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 								Settings
 							</button>
 						</Hint>
+						{/* The update pill (docs/specs/t3-style-updates.md): only
+						    when an update or a rollback notice needs a click. */}
+						<SidebarUpdatePill />
 					</div>
 				</div>
 
@@ -997,6 +1004,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 				    matters for the events it dispatches, never for DOM priority. */}
 				<KeyboardShortcuts />
 				<PluginWidgets />
+				{/* The one-time "What's new in X" popup after an update
+				    (docs/specs/t3-style-updates.md, section 6). */}
+				<WhatsNewDialog />
 			</SettingsDialogProvider></InteractionLayersProvider>
 		</HostContentRootContext.Provider>
 		</HostRouteLifetimeProvider>

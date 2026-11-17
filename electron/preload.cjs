@@ -19,10 +19,13 @@
  *
  *   window.lh.onUpdateStatus(cb) / window.lh.installUpdate() — the
  *   auto-update channel (Wave C, 2026-10-10): "lh:update-status" pushes
- *   {status, version, revision} on updater events; installUpdate asks main
- *   to kill the server and quit-and-install. getUpdateState retrieves the
- *   snapshot for a late subscriber; checkForUpdates requests a manual
- *   check (including download/install-on-quit, even with automatic checks OFF).
+ *   {status, version, revision, releaseNotes, omittedReleaseCount} on
+ *   updater events; downloadUpdate downloads the offered version (downloads
+ *   happen only on click); installUpdate asks main to re-check, kill the
+ *   server and quit-and-install (after the renderer's confirm dialog).
+ *   getUpdateState retrieves the snapshot for a late subscriber;
+ *   checkForUpdates requests a manual check (even with automatic checks
+ *   OFF). docs/specs/t3-style-updates.md.
  *
  *   window.lh.onOpenSettings(cb) — menu navigation, buffered until React
  *   subscribes after a window is reopened. Browser builds have no bridge.
@@ -95,6 +98,7 @@ contextBridge.exposeInMainWorld("lh", {
 		return () => ipcRenderer.removeListener("lh:update-status", listener);
 	},
 	installUpdate: () => ipcRenderer.send("lh:update-install"),
+	downloadUpdate: () => ipcRenderer.invoke("lh:update:download"),
 	getUpdateState: () => ipcRenderer.invoke("lh:update:get"),
 	checkForUpdates: () => ipcRenderer.invoke("lh:update:check"),
 	onOpenSettings: (cb) => {

@@ -413,7 +413,7 @@ async function updateCommand(flags: Flags): Promise<void> {
 		const response = await fetch(`http://127.0.0.1:${config.port}/api/updates/${route}`, { method: "POST" });
 		const body = (await response.json().catch(() => ({}))) as { status?: string; version?: string | null; message?: string | null };
 		out(`${body.status ?? "unknown"}${body.version ? ` ${body.version}` : ""}${body.message ? `: ${body.message}` : ""}`);
-		if (flags.now !== true && body.status === "downloaded") out("It installs automatically when no agent is working. `lh update --now` installs it right away.");
+		if (flags.now !== true && body.status === "downloaded") out("It installs when you click Install in the app, or run `lh update --now`.");
 		return;
 	}
 	out("The server isn't answering; updating through the launcher.");

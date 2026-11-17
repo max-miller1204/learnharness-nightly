@@ -18,6 +18,7 @@ function fixture({ packaged = true, updaterMissing = false } = {}) {
 	const settingsReads: string[] = [];
 	const order: string[] = [];
 	const intervals: { callback: () => void; delay: number }[] = [];
+	const timeouts: { callback: () => void; delay: number }[] = [];
 	const handles = new Map<string, (event: unknown) => unknown>();
 	const windows: FakeWindow[] = [];
 	let enumerationFails = false;
@@ -25,16 +26,31 @@ function fixture({ packaged = true, updaterMissing = false } = {}) {
 	let menu: { submenu?: { label?: string; click?: () => void }[] }[] = [];
 	class FakeUpdater extends EventEmitter {
 		checks = 0;
-		autoDownload = false;
-		autoInstallOnAppQuit = false;
+		downloads = 0;
+		autoDownload = true;
+		autoInstallOnAppQuit = true;
+		fullChangelog = false;
 		result: object | null = { updateInfo: { version: "0.3.7" } };
+		/** A version the feed offers (update-available), or null for none. */
+		offer: { version: string; releaseNotes?: unknown } | null = null;
 		failure: Error | null = null;
 		checkForUpdates() {
 			this.checks++;
 			this.emit("checking-for-update");
 			if (this.failure) return Promise.reject(this.failure);
+			if (this.offer) {
+				this.emit("update-available", this.offer);
+				return Promise.resolve({ updateInfo: this.offer });
+			}
 			if (this.result) this.emit("update-not-available", { version: "0.3.7" });
 			return Promise.resolve(this.result);
+		}
+		downloadUpdate() {
+			this.downloads++;
+			order.push(`download:${this.offer?.version ?? "?"}`);
+			this.emit("download-progress", { percent: 50 });
+			this.emit("update-downloaded", this.offer ?? { version: "?" });
+			return Promise.resolve([]);
 		}
 		quitAndInstall() { order.push("install"); }
 	}
@@ -107,13 +123,13 @@ function fixture({ packaged = true, updaterMissing = false } = {}) {
 		process: { argv: [], env: { LH_DEV_URL: "http://127.0.0.1:9000" }, platform: "darwin", on() {} },
 		__dirname: path.dirname(mainFile), URL, AbortController,
 		setInterval: (callback: () => void, delay: number) => intervals.push({ callback, delay }),
-		setTimeout() {},
+		setTimeout: (callback: () => void, delay: number) => timeouts.push({ callback, delay }),
 		fixtureChild: { kill: (signal: string) => order.push(signal) },
 	});
 	runInContext(mainSource, context, { filename: mainFile });
 	const run = (code: string) => runInContext(code, context);
 	return {
-		run, updater, windows, intervals, handles, settingsReads, order, app,
+		run, updater, windows, intervals, timeouts, handles, settingsReads, order, app,
 		setSettings: (value: unknown) => { settings = JSON.stringify(value); },
 		setSettingsFailure: (value: string | Error) => { settings = value; },
 		setEnumerationFailure: (value: boolean) => { enumerationFails = value; },
@@ -135,8 +151,9 @@ describe("automatic-update preference gate", () => {
 		await f.check(true);
 		assert.equal(f.updater.checks, 1);
 		assert.equal(f.settingsReads.length, 1);
-		assert.equal(f.updater.autoDownload, true);
-		assert.equal(f.updater.autoInstallOnAppQuit, true);
+		assert.equal(f.updater.autoDownload, false, "downloads only on click");
+		assert.equal(f.updater.autoInstallOnAppQuit, false, "never installs on quit");
+		assert.equal(f.updater.fullChangelog, true, "notes for every skipped version");
 	});
 
 	for (const [label, setting] of [
@@ -181,8 +198,18 @@ describe("status observation never controls the updater", () => {
 	it("reports events, but a staged update stays visible without suppressing future checks", async () => {
 		const f = fixture(); const win = f.window(); f.run("setupAutoUpdater()");
 		f.updater.emit("checking-for-update"); assert.equal(f.state().status, "checking");
-		f.updater.emit("update-available", { version: "0.3.8" });
-		assert.equal(f.state().status, "downloading"); assert.equal(f.state().version, "0.3.8");
+		f.updater.emit("update-available", { version: "0.3.8", releaseNotes: "- **New.** Thing." });
+		assert.equal(f.state().status, "available", "found, not downloaded"); assert.equal(f.state().version, "0.3.8");
+		assert.deepEqual(f.state().releaseNotes, [{ version: "0.3.8", items: ["**New.** Thing."] }]);
+		assert.equal(f.updater.downloads, 0);
+		f.updater.emit("checking-for-update"); f.updater.emit("update-not-available", {});
+		assert.equal(f.state().status, "available", "a later check keeps the offer on screen");
+		f.updater.offer = { version: "0.3.8" };
+		f.run("downloadUpdateNow()");
+		assert.equal(f.updater.downloads, 1);
+		assert.equal(f.state().status, "downloaded");
+		assert.deepEqual(f.state().releaseNotes, [{ version: "0.3.8", items: ["**New.** Thing."] }], "notes survive the download");
+		f.updater.offer = null;
 		f.updater.emit("update-downloaded", { version: "0.3.8" });
 		const ready = f.state();
 		await f.check();
@@ -225,32 +252,68 @@ describe("status observation never controls the updater", () => {
 		assert.equal(f.updater.checks, 3);
 	});
 
-	it("OFF does not cancel in-flight events or alter staging/install-on-quit; Restart kills server first", async () => {
+	it("OFF does not cancel in-flight events; Install re-checks, then kills the server before installing", async () => {
 		const f = fixture(); f.run("setupAutoUpdater()");
 		f.updater.emit("update-available", { version: "0.3.8" });
 		f.setSettings({ general: { autoUpdate: false } });
 		f.updater.emit("update-downloaded", { version: "0.3.8" }); await f.check();
 		assert.equal(f.state().status, "downloaded"); assert.equal(f.updater.checks, 0);
-		assert.equal(f.updater.autoDownload, true); assert.equal(f.updater.autoInstallOnAppQuit, true);
-		f.run("serverProcess = fixtureChild; installUpdateNow()");
+		f.updater.offer = { version: "0.3.8" };
+		await f.run("serverProcess = fixtureChild; installUpdateNow()");
+		assert.equal(f.updater.checks, 1, "Install re-checks first");
+		assert.deepEqual(f.order, ["SIGTERM", "install"], "the same version is not downloaded again");
+	});
+
+	it("Install takes a newer build published since the download", async () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		f.updater.offer = { version: "0.3.9", releaseNotes: "- newer" };
+		await f.run("serverProcess = fixtureChild; installUpdateNow()");
+		assert.deepEqual(f.order, ["download:0.3.9", "SIGTERM", "install"]);
+		assert.equal(f.state().version, "0.3.9");
+	});
+
+	it("a failed re-check still installs the downloaded build; nothing installs without a download", async () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		await f.run("installUpdateNow()");
+		assert.deepEqual(f.order, [], "nothing downloaded: no install");
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		f.updater.failure = new Error("offline");
+		await f.run("serverProcess = fixtureChild; installUpdateNow()");
 		assert.deepEqual(f.order, ["SIGTERM", "install"]);
+	});
+
+	it("Download is a trusted IPC call and only acts on an offered version", async () => {
+		const f = fixture(); f.setSettings({ general: { autoUpdate: false } }); await f.run("main()");
+		const sender = f.windows[0]!.webContents;
+		const download = f.handles.get("lh:update:download")!;
+		download({ sender, senderFrame: sender.mainFrame });
+		assert.equal(f.updater.downloads, 0, "nothing offered yet");
+		f.updater.emit("update-available", { version: "0.3.8" });
+		assert.throws(() => download({ sender: {}, senderFrame: sender.mainFrame }), /Untrusted/);
+		download({ sender, senderFrame: sender.mainFrame });
+		assert.equal(f.updater.downloads, 1);
 	});
 });
 
 describe("startup, timer, trusted IPC and menu wiring", () => {
-	it("starts and retains the 24h timer without any Settings subscription, checking current preference each time", async () => {
+	it("starts and retains the 4h timer without any Settings subscription, checking current preference each time", async () => {
 		const f = fixture(); f.setSettings({ general: { autoUpdate: false } });
 		await f.run("main()");
 		assert.equal(f.updater.checks, 0);
-		assert.equal(f.intervals.length, 1); assert.equal(f.intervals[0]!.delay, 24 * 60 * 60 * 1000);
+		assert.equal(f.intervals.length, 1); assert.equal(f.intervals[0]!.delay, 4 * 60 * 60 * 1000);
 		f.setSettings({ general: { autoUpdate: true } }); f.intervals[0]!.callback(); await Promise.resolve();
 		assert.equal(f.updater.checks, 1);
 		f.windows.length = 0; f.intervals[0]!.callback(); await Promise.resolve();
 		assert.equal(f.updater.checks, 2, "checks also work with every window closed");
 	});
 
-	it("ON/default boot checks immediately and status never disables the scheduled check", async () => {
+	it("ON/default boot checks 15 s after launch and status never disables the scheduled check", async () => {
 		const f = fixture(); f.setSettings({ version: 1 }); await f.run("main()");
+		assert.equal(f.updater.checks, 0, "not at launch");
+		const first = f.timeouts.find((t) => t.delay === 15_000);
+		assert.ok(first, "a 15 s startup check is scheduled");
+		first.callback(); await Promise.resolve();
 		assert.equal(f.updater.checks, 1);
 		f.run('reportUpdateStatus("downloading", "0.3.8")'); f.intervals[0]!.callback(); await Promise.resolve();
 		assert.equal(f.updater.checks, 2);

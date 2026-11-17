@@ -442,49 +442,62 @@ function createWindow(url) {
  * lights, is impossible without rebuilding the window). */
 const ZOOM_LADDER = [0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
 
-/* ── Auto-update (Wave C, owner 2026-10-10: silent download + restart ─────
- * banner; checks at startup + every 24h) ─────────────────────────────────
+/* ── Auto-update (T3 style: docs/specs/t3-style-updates.md, section 4) ────
+ * Checks 15 s after launch and every 4 hours (gated by Settings' "Check for
+ * updates automatically"), downloads ONLY when the user clicks Download,
+ * installs ONLY when the user confirms Install (never on quit). Install
+ * first re-checks: a release published since the download replaces it
+ * (T3 Code's apps/desktop/src/updates/DesktopUpdates.ts rule).
  *
- * Feed: GitHub Releases (electron-builder.yml publish → app-update.yml,
- * baked + signed into the bundle). macOS needs the app signed (it is —
+ * Feed: GitHub Releases (electron-builder.yml publish -> app-update.yml,
+ * baked + signed into the bundle). macOS needs the app signed (it is -
  * Developer ID) and updates ride the zip target (Squirrel.Mac); blockmaps
  * give differential downloads for free. Windows uses NSIS; Linux uses
  * AppImage or DebUpdater (6.8.9 supports deb; installation can request
- * administrator permission via the package manager — owner 2026-10-11).
+ * administrator permission via the package manager - owner 2026-10-11).
  *
  * Hard rules:
- *  - DEV NEVER UPDATES: !app.isPackaged skips the updater entirely — the
+ *  - DEV NEVER UPDATES: !app.isPackaged skips the updater entirely - the
  *    dev world runs `next dev` and has no signed bundle.
  *  - THE UPDATER CAN NEVER TAKE THE APP DOWN: every event and check is
- *    caught and logged (feed down, disk full, bad signature — all just
+ *    caught and logged (feed down, disk full, bad signature - all just
  *    log lines; the app keeps working, update or no update).
  *  - LH_UPDATE_FEED (env): overrides the baked GitHub feed with a generic
- *    local server — the pre-release verification drill (serve
+ *    local server - the pre-release verification drill (serve
  *    latest-mac.yml + zip + blockmap from any localhost HTTP dir and
  *    watch a real installed copy find/download/restart). Test-only seam.
  *
- * Install path: the downloaded update applies on quit (autoInstallOnAppQuit
- * — Squirrel.Mac stages natively and swaps on relaunch). The renderer
- * banner asks for an immediate restart via "lh:update-install"; we kill
- * the child server FIRST — deterministic ordering: the server lives
- * inside the .app bundle Squirrel is about to replace (extraResources),
- * and before-quit alone would race the swap. */
-const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+ * Release notes: electron-updater's releaseNotes (fullChangelog: one entry
+ * per newer version) become ReleaseNoteGroup[] (electron/release-notes.cjs)
+ * for the pill; before installing they are saved to the data folder's
+ * notes cache, which the What's new popup reads after the relaunch.
+ *
+ * Install path: we kill the child server FIRST - deterministic ordering:
+ * the server lives inside the .app bundle Squirrel is about to replace
+ * (extraResources), and before-quit alone would race the swap. */
+const UPDATE_STARTUP_DELAY_MS = 15 * 1000;
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const releaseNotes = require("./release-notes.cjs");
 let autoUpdater = null; // electron-updater's, packaged builds only
 // Observational only: this snapshot NEVER gates a check, download or install.
 // The revision lets late subscribers reject an older in-flight IPC snapshot.
-let updateState = { status: "idle", version: null, revision: 0 };
+let updateState = { status: "idle", version: null, revision: 0, releaseNotes: [], omittedReleaseCount: 0 };
+// Every group of the offered version (uncapped): the notes cache keeps them all.
+let offeredGroups = [];
+let installing = false;
 
 function reportUpdateStatus(status, version = null) {
 	try {
-		// A later check/error must not hide an update already staged for quit.
+		// A later check/error must not hide an update already staged.
 		if (updateState.status === "downloaded" && status !== "downloaded") return;
-		updateState = { status, version: typeof version === "string" ? version : null, revision: updateState.revision + 1 };
+		const keepsNotes = status === "available" || status === "downloading" || status === "downloaded";
+		const notes = keepsNotes ? releaseNotes.capGroups(offeredGroups) : { releaseNotes: [], omittedReleaseCount: 0 };
+		updateState = { status, version: typeof version === "string" ? version : null, revision: updateState.revision + 1, ...notes };
 		for (const win of BrowserWindow.getAllWindows()) {
 			try {
 				win.webContents.send("lh:update-status", updateState);
 			} catch {
-				/* window mid-teardown — snapshot retrieval covers a later load */
+				/* window mid-teardown - snapshot retrieval covers a later load */
 			}
 		}
 	} catch {
@@ -492,8 +505,18 @@ function reportUpdateStatus(status, version = null) {
 	}
 }
 
+function adoptOfferedNotes(info) {
+	try {
+		const groups = releaseNotes.releaseNoteGroups(info);
+		// A newer offer replaces the notes; a repeat of the same version keeps richer ones.
+		if (groups.length > 0 || offeredGroups[0]?.version !== info?.version) offeredGroups = groups;
+	} catch (err) {
+		log(`update notes unreadable: ${err?.message ?? err}`);
+	}
+}
+
 /** Read the SAME data directory passed to the packaged server. Only an
- * explicit false opts out; absent/corrupt/unreadable settings keep updates ON.
+ * explicit false opts out; absent/corrupt/unreadable settings keep checks ON.
  * Re-read for each automatic check so saving the toggle needs no restart. */
 function automaticUpdatesEnabled() {
 	try {
@@ -525,54 +548,95 @@ function checkForUpdates({ manual = false } = {}) {
 		});
 }
 
-function installUpdateNow() {
+/** Download the offered version (the user clicked Download). */
+function downloadUpdateNow() {
+	if (!autoUpdater || updateState.status !== "available") return;
+	reportUpdateStatus("downloading", updateState.version);
+	autoUpdater.downloadUpdate().catch((err) => {
+		log(`update download failed: ${err?.message ?? err}`);
+		reportUpdateStatus("error");
+	});
+}
+
+/** The user confirmed Install: re-check, take a newer build if one appeared, then quit and install. */
+async function installUpdateNow() {
+	if (!autoUpdater || installing || updateState.status !== "downloaded") return;
+	installing = true;
+	const downloaded = updateState.version;
+	try {
+		const result = await autoUpdater.checkForUpdates();
+		const offered = result?.updateInfo?.version;
+		if (typeof offered === "string" && typeof downloaded === "string" && releaseNotes.compareVersions(offered, downloaded) > 0) {
+			log(`install: ${offered} is newer than the downloaded ${downloaded}; downloading it first`);
+			adoptOfferedNotes(result.updateInfo);
+			await autoUpdater.downloadUpdate();
+		}
+	} catch (err) {
+		// A failed re-check (or newer download) installs what is already downloaded.
+		log(`install re-check failed: ${err?.message ?? err}; installing ${downloaded}`);
+	}
+	try {
+		releaseNotes.mergeNotesCache(DATA_DIR(), offeredGroups);
+	} catch (err) {
+		log(`could not save the release notes for What's new: ${err?.message ?? err}`);
+	}
 	// Kill the server BEFORE the quit-and-install (see block comment).
 	try {
 		killServer();
 	} catch {
 		/* already dead */
 	}
-	autoUpdater?.quitAndInstall();
+	autoUpdater.quitAndInstall();
 }
 
 function setupAutoUpdater() {
 	if (!app.isPackaged) {
-		log("auto-update: dev build — updater disabled");
+		log("auto-update: dev build - updater disabled");
 		reportUpdateStatus("disabled");
 		return;
 	}
 	try {
 		autoUpdater = require("electron-updater").autoUpdater;
 	} catch (err) {
-		log(`auto-update: electron-updater unavailable (${err?.message ?? err}) — updates disabled`);
+		log(`auto-update: electron-updater unavailable (${err?.message ?? err}) - updates disabled`);
 		reportUpdateStatus("disabled");
 		return;
 	}
 	const feed = process.env.LH_UPDATE_FEED;
 	if (feed) {
 		autoUpdater.setFeedURL({ provider: "generic", url: feed });
-		log(`auto-update: LH_UPDATE_FEED override → ${feed}`);
+		log(`auto-update: LH_UPDATE_FEED override -> ${feed}`);
 	}
-	autoUpdater.autoDownload = true;
-	autoUpdater.autoInstallOnAppQuit = true;
+	autoUpdater.autoDownload = false;
+	autoUpdater.autoInstallOnAppQuit = false;
+	autoUpdater.fullChangelog = true;
 	// Route every updater log line through the shell's own log (userData/
-	// logs/main.log) — feed failures must be diagnosable after the fact.
+	// logs/main.log) - feed failures must be diagnosable after the fact.
 	autoUpdater.logger = {
 		info: (m) => log(`updater: ${m}`),
 		warn: (m) => log(`updater warn: ${m}`),
 		debug: (m) => {}, // too chatty for the persistent log
 		error: (m) => log(`updater error: ${m}`),
 	};
-	autoUpdater.on("checking-for-update", () => reportUpdateStatus("checking"));
-	autoUpdater.on("update-available", (info) => reportUpdateStatus("downloading", info?.version));
-	autoUpdater.on("update-not-available", () => reportUpdateStatus("up-to-date"));
+	// An offered or downloading update stays on screen while a later check runs.
+	const offering = () => updateState.status === "available" || updateState.status === "downloading";
+	autoUpdater.on("checking-for-update", () => { if (!offering()) reportUpdateStatus("checking"); });
+	autoUpdater.on("update-available", (info) => {
+		if (updateState.status === "downloaded" || updateState.status === "downloading") return;
+		adoptOfferedNotes(info);
+		reportUpdateStatus("available", info?.version);
+	});
+	autoUpdater.on("download-progress", () => {
+		if (updateState.status !== "downloading") reportUpdateStatus("downloading", updateState.version);
+	});
+	autoUpdater.on("update-not-available", () => { if (!offering()) reportUpdateStatus("up-to-date"); });
 	autoUpdater.on("update-downloaded", (info) => {
-		log(`update downloaded: ${info?.version} — banner shown`);
+		log(`update downloaded: ${info?.version} - pill shown`);
 		reportUpdateStatus("downloaded", info?.version);
 	});
 	autoUpdater.on("error", (err) => {
 		log(`updater error: ${err?.message ?? err}`);
-		reportUpdateStatus("error");
+		if (!installing) reportUpdateStatus("error");
 	});
 }
 
@@ -772,12 +836,16 @@ async function main() {
 
 	installMenu();
 
-	// Auto-update (Wave C): wire the updater before the window so the
-	// banner channel is live from first paint; the first check and the 24h
-	// interval fire after it below. setupAutoUpdater's contract: failures
+	// Auto-update: wire the updater before the window so the pill's
+	// channel is live from first paint; the first check (15 s after launch)
+	// and the 4h interval are scheduled after it below. setupAutoUpdater's contract: failures
 	// are log lines — this can never block boot.
 	setupAutoUpdater();
-	ipcMain.on("lh:update-install", () => installUpdateNow());
+	ipcMain.on("lh:update-install", () => { void installUpdateNow(); });
+	ipcMain.handle("lh:update:download", (event) => {
+		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, new URL(url).origin, BrowserWindow)) throw new Error("Untrusted desktop request.");
+		downloadUpdateNow();
+	});
 	ipcMain.handle("lh:update:get", (event) => {
 		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, new URL(url).origin, BrowserWindow)) throw new Error("Untrusted desktop request.");
 		return updateState;
@@ -816,10 +884,11 @@ async function main() {
 	});
 	createWindow(url);
 	log(`window open: ${url}`);
-	// Startup + 24h checks stay main-owned and read the current preference.
-	// No renderer subscription is required; late loads retrieve the snapshot.
+	// Startup (15 s) + 4h checks stay main-owned and read the current
+	// preference. No renderer subscription is required; late loads retrieve
+	// the snapshot.
 	if (autoUpdater) {
-		checkForUpdates();
+		setTimeout(() => checkForUpdates(), UPDATE_STARTUP_DELAY_MS);
 		setInterval(() => checkForUpdates(), UPDATE_CHECK_INTERVAL_MS);
 	}
 }

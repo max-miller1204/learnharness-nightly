@@ -65,6 +65,17 @@ export interface FeedAsset {
 	sha256: string;
 }
 
+/** One nightly's release notes in latest.json (docs/specs/t3-style-updates.md). */
+export interface FeedNote {
+	version: string;
+	publishedAt: string;
+	/** Plain sentences; `**Label.** detail` renders the label bold. */
+	items: string[];
+}
+
+/** latest.json keeps the notes of this many newest nightlies (the same 30 nightly.yml keeps). */
+export const FEED_NOTES_KEEP = 30;
+
 export interface LatestFeed {
 	version: string;
 	tag: string;
@@ -73,6 +84,8 @@ export interface LatestFeed {
 	launcherProtocol: number;
 	minLauncherProtocol: number;
 	assets: Partial<Record<Arch, FeedAsset>>;
+	/** Newest first. Optional: older feeds have none, and old readers ignore it. */
+	notes?: FeedNote[];
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -80,7 +93,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 export function parseFeed(value: unknown): LatestFeed {
 	if (!isRecord(value)) throw new Error("latest.json is not an object");
-	const { version, tag, sha, publishedAt, launcherProtocol, minLauncherProtocol, assets } = value;
+	const { version, tag, sha, publishedAt, launcherProtocol, minLauncherProtocol, assets, notes } = value;
 	if (typeof version !== "string" || !isExactVersion(version)) throw new Error("latest.json has no valid version");
 	if (typeof tag !== "string" || typeof sha !== "string" || typeof publishedAt !== "string") {
 		throw new Error("latest.json is missing tag, sha or publishedAt");
@@ -98,7 +111,7 @@ export function parseFeed(value: unknown): LatestFeed {
 		}
 		parsed[arch] = { url: asset.url, sha256: asset.sha256 };
 	}
-	return {
+	const feed: LatestFeed = {
 		version,
 		tag,
 		sha,
@@ -107,6 +120,33 @@ export function parseFeed(value: unknown): LatestFeed {
 		minLauncherProtocol: minLauncherProtocol as number,
 		assets: parsed,
 	};
+	if (notes !== undefined) feed.notes = parseFeedNotes(notes);
+	return feed;
+}
+
+/** Notes never break an update: malformed entries are dropped, not thrown. */
+export function parseFeedNotes(value: unknown): FeedNote[] {
+	if (!Array.isArray(value)) return [];
+	const seen = new Set<string>();
+	const notes: FeedNote[] = [];
+	for (const entry of value) {
+		if (!isRecord(entry) || typeof entry.version !== "string" || !isExactVersion(entry.version) || seen.has(entry.version)) continue;
+		if (!Array.isArray(entry.items)) continue;
+		seen.add(entry.version);
+		notes.push({
+			version: entry.version,
+			publishedAt: typeof entry.publishedAt === "string" ? entry.publishedAt : "",
+			items: entry.items.filter((item): item is string => typeof item === "string" && item.trim() !== ""),
+		});
+	}
+	return notes;
+}
+
+/** This release's entry first, then the previous feed's, deduped by version, newest FEED_NOTES_KEEP kept. */
+export function mergeFeedNotes(entry: FeedNote, previous: readonly FeedNote[]): FeedNote[] {
+	const merged = [entry, ...previous.filter((note) => note.version !== entry.version)];
+	merged.sort((a, b) => compareVersions(b.version, a.version));
+	return merged.slice(0, FEED_NOTES_KEEP);
 }
 
 /** Read a URL (https: or file:) as bytes. */
