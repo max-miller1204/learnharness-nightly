@@ -95,6 +95,10 @@ Dependabot reads the SDK plugins through their committed `.sdk/package.json` (on
 
 Dependabot rebases its own PRs when `main` moves, including after a Sync PR merge, unless someone else has pushed to the branch. In that case comment `@dependabot recreate`. If the Sync PR conflicts in `package-lock.json` after a Dependabot merge, keep upstream's `package.json` intent and regenerate the lockfile with `npm install` instead of merging it by hand. An upstream Pi or typebox bump also needs the four `.sdk/package.json` files and the plugin lockfiles regenerated in the Sync PR.
 
+**Security overrides.** When an alert's patched version is outside what the parent package allows, an `overrides` entry in the root `package.json` forces it (the older `"katex": "$katex"` entry is not one of these). Each stays only until its removal condition holds:
+
+- `"minimatch@>=7.0.0 <11.0.1": "^11.0.1"`: alert GHSA-g3hv-75wg-m249 (globParts DoS, fixed only in 11.0.1). electron-builder's `app-builder-lib` allows minimatch `^10.2.5` and its `@electron/universal` `^9.0.3`. The version selector applies where a dependent's declared minimatch range intersects the vulnerable range, so today only those two move to 11. The 3.x and 5.x copies (eslint, `@eslint/config-array`, `@eslint/eslintrc`, eslint-plugin-import, glob 7, `@electron/asar`, dir-compare, filelist) aren't vulnerable and stay as they are. A future dependency declaring a wide range such as `*` would also be forced to 11. Dev and build only: nothing ships in the app, server or asar. Remove it once electron-builder's tree allows minimatch 11 (without it, `npm ls minimatch` shows no copy in `>=7.0.0 <11.0.1`).
+
 Dependabot can't update the `docker://` PR-Agent image in `pr-agent.yml`; bump it by hand when wanted. PR-Agent skips Dependabot PRs.
 
 Once, right after the PR that added this merged, the agent turned on Dependabot alerts and security updates (Settings → Code security) and read both back:

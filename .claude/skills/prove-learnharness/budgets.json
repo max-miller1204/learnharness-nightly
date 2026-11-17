@@ -8,11 +8,6 @@
 					"urlEndsWith": "/api/stt/token",
 					"status": 503,
 					"why": "Deliberate in prove instances: no Deepgram key is configured, so dictation token minting answers 503."
-				},
-				{
-					"urlEndsWith": "/chat/assets/fonts/fonts.css",
-					"status": 404,
-					"why": "TEMPORARY (approved 2026-11-17, delegated by the user): pre-existing on main (ca702e5) with the core plugins enabled. rich-code-blocks' relative @import of its fonts CSS resolves against the page URL. A follow-up PR fixes it and removes this entry."
 				}
 			]
 		},
