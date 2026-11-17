@@ -12,9 +12,8 @@
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-RUN=${1:?usage: build.sh <RUN> head|base|both}
+RUN=$(canon_run "${1:?usage: build.sh <RUN> head|base|both}")
 SIDE=${2:?usage: build.sh <RUN> head|base|both}
-mkdir -p "$RUN"
 
 ensure_deps() { # <dir> <log>
 	local dir=$1 log=$2

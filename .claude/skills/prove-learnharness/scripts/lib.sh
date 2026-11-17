@@ -12,6 +12,19 @@ say() { printf '%s\n' "$*" >&2; }
 
 free_port() { node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})'; }
 
+# The canonical path of a run folder made by new-run.sh, or die. Every script
+# uses it, so paths written into env, pid checks and unit names always match.
+canon_run() {
+	local run
+	run=$(realpath -e -- "${1:?run folder required}" 2>/dev/null) || die "no run folder $1"
+	case "$run" in
+		"$REPO"/.prove-it/runs/[0-9]*T[0-9]*Z-*) ;;
+		*) die "refusing: $run is not a run folder under $REPO/.prove-it/runs/ (make one with new-run.sh)" ;;
+	esac
+	[ "$(dirname "$run")" = "$REPO/.prove-it/runs" ] || die "refusing: $run is not directly under .prove-it/runs/"
+	printf '%s\n' "$run"
+}
+
 # Wait until a command succeeds, or fail after $1 seconds.
 wait_for() {
 	local timeout=$1; shift

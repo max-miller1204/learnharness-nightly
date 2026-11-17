@@ -12,7 +12,7 @@
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-RUN=${1:?usage: start.sh <RUN> head|base [scenario.json]}
+RUN=$(canon_run "${1:?usage: start.sh <RUN> head|base [scenario.json]}")
 SIDE=${2:?usage: start.sh <RUN> head|base [scenario.json]}
 SCENARIO=${3:-$PROVE_SKILL/scenarios/teach-read.json}
 case "$SIDE" in

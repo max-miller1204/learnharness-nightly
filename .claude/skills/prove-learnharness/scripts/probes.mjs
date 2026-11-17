@@ -53,6 +53,7 @@ try {
 	await new Promise((r) => setTimeout(r, 1000));
 	await page.screenshot({ path: path.join(OUT, "A1-broken-stream.png") });
 	const uiText = await page.evaluate(() => document.body.innerText);
+	const retryShown = Boolean(await page.$('[data-testid="retry-failed-turn"]')); // before the follow-up clears the banner
 	const composerState = await page.evaluate((sel) => { const el = document.querySelector(sel); return el ? { present: true, editable: el.isContentEditable, ariaDisabled: el.getAttribute("aria-disabled") } : { present: false }; }, composer);
 	const errShape = shape(record(idA)?.messages ?? []);
 	// recover: switch the failure off, send a follow-up from the same composer
@@ -69,7 +70,7 @@ try {
 		recordedError: Boolean(errored),
 		errorMessage: errored?.errorMessage?.slice(0, 160) ?? null,
 		shapeAfterFailure: errShape,
-		uiShowsError: /Something went wrong/.test(uiText) && /Retry/i.test(uiText),
+		uiShowsError: /Something went wrong/.test(uiText) && retryShown,
 		uiErrorSnippet: (uiText.match(/.{0,60}(error|failed|went wrong|retry).{0,60}/i)?.[0] ?? null),
 		composerAfterFailure: composerState,
 		followUpAccepted: Boolean(recovered),

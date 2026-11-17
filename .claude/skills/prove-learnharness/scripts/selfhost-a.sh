@@ -8,7 +8,7 @@
 # against base: the outputs are the observations.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
-RUN=${1:?usage: selfhost-a.sh <RUN> head|base}
+RUN=$(canon_run "${1:?usage: selfhost-a.sh <RUN> head|base}")
 SIDE=${2:?usage: selfhost-a.sh <RUN> head|base}
 case "$SIDE" in
 	head) TREE=$REPO ;;

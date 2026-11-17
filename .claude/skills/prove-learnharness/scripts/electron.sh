@@ -14,7 +14,7 @@
 # window shows the app. stop.sh <RUN> stops it (xvfb-run leads its group).
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
-RUN=${1:?usage: electron.sh <RUN> dev|packaged}
+RUN=$(canon_run "${1:?usage: electron.sh <RUN> dev|packaged}")
 MODE=${2:?usage: electron.sh <RUN> dev|packaged}
 HEAD_INST=$RUN/head/instance.env
 [ -f "$HEAD_INST" ] || die "start the head instance first: start.sh $RUN head"

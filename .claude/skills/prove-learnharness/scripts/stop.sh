@@ -9,12 +9,7 @@
 set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 ARG=${1:?usage: stop.sh <RUN>}
-RUN=$(realpath -e -- "$ARG" 2>/dev/null) || die "no run folder $ARG"
-case "$RUN" in
-	"$REPO"/.prove-it/runs/[0-9]*T[0-9]*Z-*) ;;
-	*) die "refusing: $RUN is not a run folder under $REPO/.prove-it/runs/ (made by new-run.sh)" ;;
-esac
-[ "$(dirname "$RUN")" = "$REPO/.prove-it/runs" ] || die "refusing: $RUN is not directly under .prove-it/runs/"
+RUN=$(canon_run "$ARG") || exit 1
 
 owned() { # <pid>: does this process belong to this run?
 	grep -qaF -- "$RUN" "/proc/$1/cmdline" 2>/dev/null || grep -qaF -- "$RUN" "/proc/$1/environ" 2>/dev/null

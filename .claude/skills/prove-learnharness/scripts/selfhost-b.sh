@@ -16,11 +16,14 @@
 # Every switch is checked in service-state.json, /api/health, `lh status`,
 # backups and the update log. Evidence in <RUN>/selfhost/. stop.sh <RUN>
 # removes the unit. Your real install (~/.learnharness, learnharness.service,
-# port 3774) is never read or written.
+# ~/.local/bin/lh, port 3774) is never written: it is only fingerprinted
+# (hashes and a file listing) before and after, and any change fails the run.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
-RUN=${1:?usage: selfhost-b.sh <RUN>}
+RUN=$(canon_run "${1:?usage: selfhost-b.sh <RUN>}")
 SH=$RUN/selfhost
+# One tier B per run folder: a rerun would reuse the old home, backups and unit.
+[ ! -e "$SH/lh-home" ] || die "tier B already ran in $RUN; use a new run folder (new-run.sh)"
 mkdir -p "$SH/feed"
 BASE_TREE=$PROVE_CACHE/base/$(base_sha)
 [ -f "$BASE_TREE/.prove-done" ] || die "no base build; run build.sh $RUN both"
@@ -60,19 +63,36 @@ for tree in "$BASE_TREE" "$REPO"; do
 		|| die "BLOCKED: the launcher in $tree would not stay isolated (home $got_home, unit $got_name, shim $got_shim, unit file $got_unit). Not installing."
 done
 
-# Your real install, if any: it must be byte-for-byte the same at the end.
-real_fingerprint() {
-	systemctl --user show -p MainPID -p ActiveState -p FragmentPath learnharness.service 2>/dev/null
-	for f in "$(systemctl --user show -p FragmentPath --value learnharness.service 2>/dev/null)" "$HOME/.local/bin/lh" "$HOME/.learnharness/runtime/service-state.json"; do
-		[ -n "$f" ] && [ -f "$f" ] && sha256sum "$f"
-	done
-	true
-}
-real_fingerprint >"$SH/real-install-before"
 LOG=$SH/steps.log
 : >"$LOG"
 step() { printf '[%s] %s\n' "$1" "$2" | tee -a "$LOG"; [ "$1" = ok ] || FAILED=1; }
 FAILED=0
+
+# Your real install, if any: its service, unit file, shim, launcher state,
+# service.env and the whole runtime/ and backups/ trees (names, sizes, times)
+# must be identical at the end. Learning data and logs are left out: they
+# change with your own use. Written on every exit, so a failed run reports too.
+real_fingerprint() {
+	local real=$HOME/.learnharness
+	systemctl --user show -p MainPID -p ActiveState -p FragmentPath learnharness.service 2>/dev/null
+	for f in "$(systemctl --user show -p FragmentPath --value learnharness.service 2>/dev/null)" "$HOME/.local/bin/lh" "$real/runtime/service-state.json" "$real/service.env" "$real/userdata/config.json"; do
+		[ -n "$f" ] && [ -f "$f" ] && sha256sum "$f"
+	done
+	for d in "$real/runtime" "$real/userdata/backups"; do
+		[ -d "$d" ] && find "$d" -maxdepth 3 -printf '%p %s %T@\n' | sort
+	done
+	true
+}
+real_fingerprint >"$SH/real-install-before"
+check_real_install() {
+	real_fingerprint >"$SH/real-install-after"
+	if cmp -s "$SH/real-install-before" "$SH/real-install-after"; then
+		step ok "your real install is untouched (service pid and state; hashes of its unit file, ~/.local/bin/lh, service-state.json, service.env, config.json; listing of runtime/ and backups/)"
+	else
+		step FAIL "your real install changed during the run (if your real service updated itself meanwhile, rerun): $(diff "$SH/real-install-before" "$SH/real-install-after" | head -20 | tr '\n' ' ')"
+	fi
+}
+trap 'check_real_install; trap - EXIT' EXIT
 
 # --- archives (A is cached beside the base build: same SHA, same bytes) ---
 mkdir -p "$PROVE_CACHE/tmp"
@@ -111,7 +131,8 @@ feed() { # <version> <archive>: point latest.json at one archive
 		"$1" "$1" "$(date -u +%FT%TZ)" "$proto" "$minproto" "$ARCH" "$2" "$sha" >"$SH/feed/latest.json"
 }
 
-lh() { "$SH/bin/lh" "$@" </dev/null 2>&1; }
+# Every launcher call is time-boxed: a launcher under test that blocks must not hang the run.
+lh() { timeout 120 "$SH/bin/lh" "$@" </dev/null 2>&1; }
 state() { node -e "const s=require('$LHH/runtime/service-state.json');console.log(JSON.stringify(s))"; }
 health_version() { curl -sf "http://127.0.0.1:$PORT/api/health" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const h=JSON.parse(s);console.log(h.ok?h.version:"unhealthy")})'; }
 on_version() { [ "$(health_version 2>/dev/null)" = "$1" ]; }
@@ -189,12 +210,7 @@ fi
 has_session "$SESSION" && step ok "session survives lh rollback" || step FAIL "session lost after lh rollback"
 snap "after lh rollback"
 cp "$LHH/userdata/logs/update.log" "$SH/launcher-update.log" 2>/dev/null || true
-real_fingerprint >"$SH/real-install-after"
-if cmp -s "$SH/real-install-before" "$SH/real-install-after"; then
-	step ok "your real install is untouched (service pid and state, unit file, ~/.local/bin/lh, service-state.json hashes)"
-else
-	step FAIL "your real install changed during the run (if your real service updated itself meanwhile, rerun): $(diff "$SH/real-install-before" "$SH/real-install-after" | tr '\n' ' ')"
-fi
+check_real_install; trap - EXIT
 
 echo "evidence: $SH (steps.log, status.txt, launcher-update.log, install.log, update.log)"
 exit $FAILED

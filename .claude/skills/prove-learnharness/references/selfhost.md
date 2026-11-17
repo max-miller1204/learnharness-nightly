@@ -12,7 +12,12 @@ The launcher (`selfhost/lh.ts`, Node built-ins, run by each version's bundled No
 | port | 3774 | a free port (`lh up --port`) |
 | feed | GitHub `nightly/latest.json` | `file://$RUN/selfhost/feed/latest.json` |
 
-Tier B also passes `--no-tailscale --no-linger`. The unit file lands in `~/.config/systemd/user/lh-prove-<id>.service` (systemd needs it there) and `stop.sh` disables and deletes it. `selfhost-b.sh` records `systemctl --user show -p MainPID -p ActiveState learnharness.service` before and after and fails if it changed.
+Tier B also passes `--no-tailscale --no-linger`. The unit file lands in the systemd user unit folder (`~/.config/systemd/user/`, or under `$XDG_CONFIG_HOME`), and `stop.sh` finds it through `systemctl --user show -p FragmentPath`, disables and deletes it.
+
+Guards, in order:
+1. Before installing, both launchers (base and head) are asked where they would write (`lhHome`, `serviceName`, `shimPath`, `unitPath`); anything but the run's paths is BLOCKED.
+2. Your real install is fingerprinted before and after, on every exit: `learnharness.service` pid, state and unit path; sha256 of its unit file, `~/.local/bin/lh`, `service-state.json`, `service.env` and `userdata/config.json`; a listing (path, size, mtime) of `~/.learnharness/runtime/` and `userdata/backups/`. Any difference fails the run. Learning data and logs are left out, since your own use changes them (if your real service updated itself during the run, rerun).
+3. Every `lh` call is time-boxed (120 s), and tier B runs once per run folder.
 
 ## Tier A (routine)
 
