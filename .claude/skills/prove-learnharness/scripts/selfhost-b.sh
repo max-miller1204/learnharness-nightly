@@ -117,7 +117,12 @@ A_ARCHIVE=$BASE_TREE/.prove-archive/learnharness-$VA-$ARCH.tar.gz
 # them; any source change makes a new stamp and so a new pair. Packed under a
 # lock into a temp folder renamed only when complete. HEAD_ARCHIVE_KEEP pairs
 # are kept, newest first.
-HKEY=$(printf '%s %s %s' "$(cat "$REPO/.next/standalone/.prove-build")" "$ARCH" "$VC" | sha256sum | cut -c1-16)
+# Hold the head build lock (shared) from reading the key until packing is done,
+# so a rebuild in this worktree can't swap .next/standalone underneath.
+exec 3>"$(git -C "$REPO" rev-parse --path-format=absolute --git-path prove-build.lock)"
+flock -s 3
+HKEY=$(printf '%s %s %s %s %s' "$(cat "$REPO/.next/standalone/.prove-build")" "$(cat "$REPO/.next/standalone/.next/BUILD_ID" 2>/dev/null)" \
+	"$ARCH" "$VC" "$(node --version)" | sha256sum | cut -c1-16)
 HDIR=$PROVE_CACHE/head-archives/$HKEY
 mkdir -p "$PROVE_CACHE/head-archives"
 B_CACHED=$HDIR/learnharness-$VB-$ARCH.tar.gz
@@ -142,14 +147,21 @@ t_pack=$(date +%s.%N)
 	echo "$HKEY" >"$HDIR.tmp/.prove-done"
 	mv "$HDIR.tmp" "$HDIR"
 ) 9>"$HDIR.lock" || die "packing B or C failed (see $SH/pack.log)"
+exec 3>&-   # head build lock released: the cached files no longer depend on .next/standalone
 [ -f "$C_CACHED" ] && [ -f "$B_CACHED" ] || die "the B/C archive cache $HDIR is incomplete"
 record_time "$RUN" "selfhost B: archives B and C ($(grep -q "reusing cached B and C archives $HKEY" "$SH/pack.log" && echo "cache hit" || echo "packed"))" "$t_pack"
-# Prune old pairs; never one another run is packing or reading (lock held).
+# Prune old pairs that no run holds right now, plus leftovers of interrupted
+# packs (*.tmp). Lock files stay: another run may be waiting on one.
 # shellcheck disable=SC2012
 ls -1t "$PROVE_CACHE"/head-archives/*/.prove-done 2>/dev/null | tail -n +"$((HEAD_ARCHIVE_KEEP + 1))" | while read -r done; do
 	old=$(dirname "$done")
 	[ "$old" = "$HDIR" ] && continue
-	( flock -n -x 6 || exit 0; rm -rf "$old" "$old.lock" ) 6>"$old.lock"
+	( flock -n -x 6 || exit 0; rm -rf "$old" ) 6>"$old.lock"
+done
+for tmp in "$PROVE_CACHE"/head-archives/*.tmp; do
+	[ -d "$tmp" ] || continue
+	key=${tmp%.tmp}
+	( flock -n -x 6 || exit 0; rm -rf "$tmp" ) 6>"$key.lock"
 done
 
 # The feed gets hard links (same disk) or copies: stop.sh may delete them freely.
