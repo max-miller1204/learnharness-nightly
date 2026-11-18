@@ -645,8 +645,10 @@ export async function handleChatInput(
 				else stores.chatStore.saveMessages(chatId, merged, { atomic: true });
 			});
 			inputSaved = true;
-			// No await separates the final liveness check from the commit.
+			// Keep the claim and commit free of events until the turn owns
+			// liveness. Opening-chat listeners can safely read both now.
 			turnClaimed = beginTurn(chatId);
+			if (opening) emit("chats-changed", {});
 		} else if (!stagedAutomatic) {
 			stores.chatStore.saveMessages(chatId, merged);
 			inputSaved = true;

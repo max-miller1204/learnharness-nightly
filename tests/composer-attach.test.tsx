@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { parseHTML } from "linkedom";
 import { renderToStaticMarkup } from "react-dom/server";
+import { useAttachmentDraft, type AttachmentDraft } from "../components/attachment-draft.tsx";
 import { Composer } from "../components/composer.tsx";
 import { attachmentPopupPlacement, pathsForFiles } from "../components/attach-files-button.tsx";
 import { restorePathSelection } from "../components/path-input-dom.ts";
@@ -20,7 +21,7 @@ import { InteractionLayersProvider, useInteractionLayers, type InteractionLayers
 let cleanup: (() => Promise<void>) | undefined;
 afterEach(async () => { await cleanup?.(); cleanup = undefined; });
 
-async function fixture({ desktop = true } = {}) {
+async function fixture({ desktop = true, onDraft }: { desktop?: boolean; onDraft?: (draft: AttachmentDraft) => void } = {}) {
 	const { window: win, document: doc } = parseHTML("<html><body><div id='root'></div></body></html>");
 	let active: Element = doc.body;
 	Object.defineProperty(doc, "activeElement", { get: () => active });
@@ -58,9 +59,14 @@ async function fixture({ desktop = true } = {}) {
 	const { createRoot } = await import("react-dom/client");
 	const root = createRoot(doc.getElementById("root")!);
 	let controller!: InteractionLayersController;
+	function UploadHarness() {
+		const draft = useAttachmentDraft();
+		onDraft?.(draft);
+		return null;
+	}
 	function Harness() {
 		controller = useInteractionLayers();
-		return <div data-testid="clipping-dock" data-attachment-composer="" style={{ overflow: "hidden" }}><Composer busy={false} value={value} onChange={(next) => { value = next; draw(); }} onSend={() => { sends++; }} onStop={() => {}} canSend /></div>;
+		return <div data-testid="clipping-dock" data-attachment-composer="" style={{ overflow: "hidden" }}>{onDraft && <UploadHarness />}<Composer busy={false} value={value} onChange={(next) => { value = next; draw(); }} onSend={() => { sends++; }} onStop={() => {}} canSend /></div>;
 	}
 	function draw() { root.render(<InteractionLayersProvider><Harness /></InteractionLayersProvider>); }
 	await act(async () => { draw(); });
@@ -295,4 +301,48 @@ describe("composer attach button", () => {
 		await f.pick([f.file("a.pdf", "/a.pdf")]);
 		assert.equal(f.value, "readthis");
 	});
+});
+
+it("releases an expired grant before replacing it and deletes a replacement that arrives after Remove", async t => {
+	const calls: string[] = [];
+	const oldGrant = { id: "old", uploadUrl: "/upload/old", expiresAt: Date.now() - 1 };
+	const newGrant = { id: "new", uploadUrl: "/upload/new", expiresAt: Date.now() + 60_000 };
+	let oldDeleteAttempts = 0;
+	let startReplacement!: (response: Response) => void;
+	const replacement = new Promise<Response>(resolve => { startReplacement = resolve; });
+	t.mock.method(globalThis, "fetch", async (url: string, init?: RequestInit) => {
+		if (!init?.method) return Response.json({ capabilities: ["attachment-uploads-v1"] });
+		calls.push(`${init.method} ${url}`);
+		if (init.method === "POST") return calls.length === 1 ? Response.json(oldGrant) : replacement;
+		if (url.endsWith("/old") && ++oldDeleteAttempts === 1) return Response.json({ error: "This file is still uploading." }, { status: 409 });
+		return new Response(null, { status: 204 });
+	});
+	const originalXHR = Object.getOwnPropertyDescriptor(globalThis, "XMLHttpRequest");
+	class FailingUpload {
+		upload = {};
+		onerror?: () => void;
+		open() {}
+		send() { this.onerror?.(); }
+	}
+	Object.defineProperty(globalThis, "XMLHttpRequest", { value: FailingUpload, configurable: true });
+	t.after(() => {
+		if (originalXHR) Object.defineProperty(globalThis, "XMLHttpRequest", originalXHR);
+		else delete (globalThis as Record<string, unknown>).XMLHttpRequest;
+	});
+	let draft!: AttachmentDraft;
+	await fixture({ desktop: false, onDraft: value => { draft = value; } });
+	await act(async () => { draft.select([new File(["test"], "fixture.txt")]); });
+	assert.match(draft.files[0]!.error!, /Upload interrupted/);
+	await act(async () => { draft.retry(draft.files[0]!); });
+	assert.equal(draft.files[0]!.grant?.id, "old");
+	assert.equal(draft.files[0]!.error, "This file is still uploading.");
+	assert.deepEqual(calls, ["POST /api/attachments", "DELETE /api/attachments/old"]);
+	await act(async () => { draft.retry(draft.files[0]!); });
+	assert.deepEqual(calls.slice(2), ["DELETE /api/attachments/old", "POST /api/attachments"]);
+	await act(async () => {
+		draft.remove(draft.files[0]!);
+		startReplacement(Response.json(newGrant));
+	});
+	assert.deepEqual(draft.files, []);
+	assert.equal(calls.at(-1), "DELETE /api/attachments/new");
 });

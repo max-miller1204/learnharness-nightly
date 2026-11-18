@@ -35,8 +35,9 @@ export async function attachmentResponseError(response: Response): Promise<strin
 	return body || "The attachment operation failed. Try again.";
 }
 
-function deleteGrant(id: string): void {
-	void fetch(PROTOCOL_ROUTES.removeAttachment(id), { method: "DELETE" }).catch(() => {});
+async function deleteGrant(id: string): Promise<void> {
+	const response = await fetch(PROTOCOL_ROUTES.removeAttachment(id), { method: "DELETE" });
+	if (!response.ok && response.status !== 404) throw new Error(await attachmentResponseError(response));
 }
 
 function putBytes(row: DraftFile, url: string, changed: () => void): Promise<void> {
@@ -82,13 +83,18 @@ export function useAttachmentDraft(chatId?: string) {
 
 	const target = (): AttachmentTarget => chatId ? { chatId } : { draftId: openingDraft.current ??= uuid() };
 	const start = (row: DraftFile) => {
+		if (row.work || !files.current.includes(row)) return;
 		row.ready = false;
 		row.error = undefined;
 		row.progress = 0;
 		row.work = (async () => {
 			try {
 				if (!row.grant || row.grant.expiresAt <= Date.now()) {
-					if (row.grant) deleteGrant(row.grant.id);
+					if (row.grant) {
+						await deleteGrant(row.grant.id);
+						row.grant = undefined;
+					}
+					if (!files.current.includes(row)) return;
 					const response = await fetch(PROTOCOL_ROUTES.attachments, {
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
@@ -97,13 +103,14 @@ export function useAttachmentDraft(chatId?: string) {
 					if (!response.ok) throw new Error(await attachmentResponseError(response));
 					row.grant = await response.json() as AttachmentGrantResponse;
 				}
-				if (!files.current.includes(row)) { deleteGrant(row.grant.id); return; }
+				if (!files.current.includes(row)) return;
 				await putBytes(row, row.grant.uploadUrl, changed);
 				row.ready = true;
 			} catch (error) {
 				row.error = error instanceof Error ? error.message : "Upload failed. Try again.";
 			} finally {
 				row.upload = undefined;
+				row.work = undefined;
 				changed();
 			}
 		})();
@@ -123,7 +130,10 @@ export function useAttachmentDraft(chatId?: string) {
 		files.current = files.current.filter(file => file !== row);
 		// Wait for a running put to settle before asking the server to release
 		// its reservation. View teardown can still interrupt the upload.
-		void row.work?.then(() => { if (row.grant) deleteGrant(row.grant.id); });
+		void (async () => {
+			await row.work;
+			if (row.grant) await deleteGrant(row.grant.id);
+		})().catch(() => { /* The server also expires abandoned grants. */ });
 		setValidation(undefined);
 		changed();
 	};

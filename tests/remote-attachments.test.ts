@@ -233,3 +233,63 @@ test("show_image and visual save uploaded image snapshots with opaque provenance
 	await scriptedRunner([]).runJob(missing.id);
 	assert.match((jobStore.getJob(missing.id)!.result as VisualResult).notes ?? "", /File unavailable\. Attach it again to use it\./);
 });
+
+test("overlapping PUTs cannot both hold the same upload ID", async () => {
+	const { uploadUrl } = await (await reserve(randomUUID(), 4)).json();
+	assert.equal((await uploadAttachmentRequest(request(uploadUrl, "PUT", "test"))).status, 204);
+	let stream!: ReadableStreamDefaultController<Uint8Array>;
+	const body = new ReadableStream<Uint8Array>({ start: controller => { stream = controller; } });
+	const headers = request(uploadUrl, "PUT").headers;
+	const firstPut = uploadAttachmentRequest(new Request(new URL(uploadUrl, base), { method: "PUT", headers, body, duplex: "half" } as RequestInit));
+	const secondPut = await uploadAttachmentRequest(request(uploadUrl, "PUT", "test"));
+	assert.equal(secondPut.status, 409);
+	assert.match((await secondPut.json()).error, /already uploading/);
+	stream.enqueue(new TextEncoder().encode("test"));
+	stream.close();
+	assert.equal((await firstPut).status, 204);
+});
+
+test("discard cleans an interrupted claim without unlinking any live copy", async () => {
+	const chat = chatStore.createChat("Claim recovery");
+	for (const live of [false, true]) {
+		const draftId = randomUUID();
+		const { id, uploadUrl } = await (await reserve(draftId, 4)).json();
+		assert.equal((await uploadAttachmentRequest(request(uploadUrl, "PUT", "test"))).status, 204);
+		const copy = path.join(PATHS.attachments, "claimed", id);
+		fs.mkdirSync(path.dirname(copy), { recursive: true });
+		fs.writeFileSync(copy, "test");
+		if (live) chatStore.saveMessages(chat.id, [{ ...newUserMessage("Retained"), attachments: [{ id, name: "fixture.txt" }] }]);
+		assert.equal((await discardAttachmentRequest(request(`/api/attachments/${id}`, "DELETE"), Promise.resolve({ id }))).status, 204);
+		assert.equal(fs.existsSync(copy), live);
+		assert.equal(fs.existsSync(path.join(PATHS.attachments, "pending", id + ".json")), false);
+	}
+});
+
+test("sweep cleans staging despite corrupt metadata and defers claimed deletion until references are readable", async () => {
+	const damagedChat = chatStore.createChat("Damaged chat record");
+	const recordPath = path.join(PATHS.chats, damagedChat.id + ".json");
+	const original = fs.readFileSync(recordPath, "utf8");
+	const draftId = randomUUID();
+	const { id, uploadUrl } = await (await reserve(draftId, 4)).json();
+	assert.equal((await uploadAttachmentRequest(request(uploadUrl, "PUT", "test"))).status, 204);
+	const orphan = path.join(PATHS.attachments, "pending", id + ".body");
+	const metadata = path.join(PATHS.attachments, "pending", id + ".json");
+	fs.writeFileSync(metadata, "{");
+	const claimedId = randomUUID();
+	const copy = path.join(PATHS.attachments, "claimed", claimedId);
+	fs.mkdirSync(path.dirname(copy), { recursive: true });
+	fs.writeFileSync(copy, "claimed");
+	scheduleAttachmentRemoval([{ id: claimedId, name: "old.txt" }]);
+	fs.writeFileSync(recordPath, "{");
+	try {
+		assert.equal((await reserve(draftId, 1)).status, 201);
+		sweepAttachments(Date.now() + 25 * 60 * 60_000);
+		assert.equal(fs.existsSync(orphan), false);
+		assert.equal(fs.existsSync(metadata), false);
+		assert.equal(fs.existsSync(copy), true);
+	} finally {
+		fs.writeFileSync(recordPath, original);
+	}
+	sweepAttachments();
+	assert.equal(fs.existsSync(copy), false);
+});

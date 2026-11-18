@@ -62,7 +62,6 @@ export function saveOpeningChat(record: ChatRecord): void {
 	fs.mkdirSync(PATHS.chats, { recursive: true });
 	if (fs.existsSync(chatFile(record.id))) throw new Error("Chat already exists");
 	writeChat(record, false);
-	emit("chats-changed", {});
 }
 
 /** THE WRITE CHOKE POINT (schema-versioning wave, owner 2026-10-10): every

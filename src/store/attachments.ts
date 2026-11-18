@@ -64,7 +64,18 @@ function unlink(file: string): void {
 function pending(id: string): PendingAttachment | undefined {
 	if (!isAttachmentId(id)) return;
 	const file = pendingFile(id, ".json");
-	if (stat(file)) return JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ file, "utf8")) as PendingAttachment;
+	if (!stat(file)) return;
+	let upload: PendingAttachment;
+	try { upload = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ file, "utf8")); }
+	catch (error) {
+		if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw error;
+	}
+	if (upload?.id !== id || typeof upload.owner !== "string" || typeof upload.name !== "string" ||
+		typeof upload.mimeType !== "string" || !Number.isSafeInteger(upload.size) || upload.size < 0 ||
+		!Number.isFinite(upload.expiresAt) || !upload.target || typeof upload.target !== "object") return;
+	if ("chatId" in upload.target ? typeof upload.target.chatId !== "string" : !isAttachmentId(upload.target.draftId)) return;
+	return upload;
 }
 
 function sameTarget(left: AttachmentTarget, right: AttachmentTarget): boolean {
@@ -73,19 +84,21 @@ function sameTarget(left: AttachmentTarget, right: AttachmentTarget): boolean {
 		: "draftId" in right && left.draftId === right.draftId;
 }
 
+function pendingIds(files: readonly string[]): Set<string> {
+	return new Set(files.filter(file => /\.(?:json|body|part)$/.test(file)).map(file => file.slice(0, -5)).filter(isAttachmentId));
+}
+
 function stagedBytes(): number {
-	// Every pending upload reserves its declared bytes. A duplicate retry
-	// reserves a second copy until its temporary comparison file is removed.
+	// A healthy reservation accounts for its upload. Count bytes on disk
+	// even if the reservation is corrupt, plus a duplicate retry's copy.
 	let total = 0;
-	for (const entry of entries(staging)) {
-		const id = entry.slice(0, -5);
-		if (entry.endsWith(".json")) total += pending(id)?.size ?? 0;
-		else if (entry.endsWith(".part") && (stat(pendingFile(id, ".body")) || !pending(id))) {
-			total += uploads.get(id) ?? stat(path.join(/* turbopackIgnore: true */ staging, entry))?.size ?? 0;
-		}
-	}
-	for (const [id, size] of uploads) {
-		if (size && !stat(pendingFile(id, ".part"))) total += size;
+	const ids = pendingIds(entries(staging));
+	for (const id of uploads.keys()) ids.add(id);
+	for (const id of ids) {
+		const reserved = pending(id)?.size ?? 0;
+		const body = stat(pendingFile(id, ".body"));
+		const part = Math.max(stat(pendingFile(id, ".part"))?.size ?? 0, uploads.get(id) ?? 0);
+		total += body ? Math.max(reserved, body.size) + part : Math.max(reserved, part);
 	}
 	return total;
 }
@@ -138,7 +151,7 @@ export async function receiveAttachment(
 	if (retry && stagedBytes() + upload.size > MAX_STAGED_ATTACHMENT_BYTES) {
 		throw new AttachmentError(413, "The server's 512 MiB pending attachment limit was reached.");
 	}
-	uploads.set(id, retry ? upload.size : 0);
+	uploads.set(id, upload.size);
 	try {
 		unlink(part);
 		await writeAttachmentBytes(request.body, part, upload.size, request.signal);
@@ -169,6 +182,16 @@ export function discardAttachment(id: string, owner: string): void {
 	const upload = pending(id);
 	if (!upload || upload.owner !== owner) throw new AttachmentError(404, "Pending attachment not found.");
 	if (uploads.has(id)) throw new AttachmentError(409, "This file is still uploading.");
+	// A crash can leave a copy and its pending metadata side by side. Keep
+	// the metadata until the copy is either referenced or removed.
+	const copy = claimedFile(id);
+	if (stat(copy)) {
+		const { ids, complete } = liveReferences();
+		if (!ids.has(id)) {
+			if (!complete) throw new AttachmentError(503, "Could not check attachment references. Try removal again.");
+			unlink(copy);
+		}
+	}
 	removePending(id);
 }
 
@@ -252,36 +275,49 @@ export function scheduleAttachmentRemoval(attachments: readonly AttachmentRefere
 	for (const id of ids) fs.writeFileSync(/* turbopackIgnore: true */ removalFile(id), "", { mode: 0o600 });
 }
 
-function liveReferences(): Set<string> {
+function liveReferences(): { ids: Set<string>; complete: boolean } {
 	const ids = new Set<string>();
+	let complete = true;
 	for (const entry of entries(PATHS.chats)) {
 		if (!entry.endsWith(".json")) continue;
 		const file = path.join(/* turbopackIgnore: true */ PATHS.chats, entry);
-		const record = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ file, "utf8")) as { messages: LhMessage[] };
-		for (const { id } of attachmentReferences(record.messages)) ids.add(id);
+		try {
+			const record = JSON.parse(fs.readFileSync(/* turbopackIgnore: true */ file, "utf8")) as { messages: LhMessage[] };
+			for (const { id } of attachmentReferences(record.messages)) ids.add(id);
+		} catch {
+			// A damaged record may still own a claimed copy. Defer only
+			// removals that need proof that no live chat references it.
+			complete = false;
+		}
 	}
-	return ids;
+	return { ids, complete };
 }
 
 export function sweepAttachments(now: number = Date.now()): void {
-	const pendingEntries = entries(staging);
+	const staged = pendingIds(entries(staging));
 	const deleteIds = entries(removals).filter(isAttachmentId);
-	const refs = pendingEntries.length || deleteIds.length ? liveReferences() : new Set<string>();
-	for (const entry of pendingEntries) {
-		const id = entry.slice(0, -5);
-		if (!isAttachmentId(id) || uploads.has(id)) continue;
-		if (entry.endsWith(".part")) {
-			const part = pendingFile(id, ".part");
-			if ((stat(part)?.mtimeMs ?? now) + PARTIAL_MS <= now) unlink(part);
-		} else if (entry.endsWith(".json")) {
-			const upload = pending(id);
-			const body = stat(pendingFile(id, ".body"));
-			if (refs.has(id)) removePending(id); // A chat write committed before a restart.
-			else if ((body ? body.mtimeMs + PENDING_MS : upload?.expiresAt ?? Infinity) <= now && !stat(pendingFile(id, ".part"))) {
-				unlink(claimedFile(id)); // Copy left behind by a pre-commit interruption.
-				removePending(id);
-			}
+	const refs = staged.size || deleteIds.length ? liveReferences() : { ids: new Set<string>(), complete: true };
+	for (const id of staged) {
+		if (uploads.has(id)) continue;
+		const partial = pendingFile(id, ".part");
+		const part = stat(partial);
+		if (part && part.mtimeMs + PARTIAL_MS <= now) unlink(partial);
+		else if (part) continue;
+
+		if (refs.ids.has(id)) {
+			removePending(id); // A chat write committed before a restart.
+			continue;
 		}
+		const body = stat(pendingFile(id, ".body"));
+		const metadata = stat(pendingFile(id, ".json"));
+		const expiresAt = body ? body.mtimeMs + PENDING_MS : pending(id)?.expiresAt ?? (metadata ? metadata.mtimeMs + GRANT_MS : now);
+		if (expiresAt > now) continue;
+		const copy = claimedFile(id);
+		if (stat(copy)) {
+			if (!refs.complete) continue;
+			unlink(copy); // Copy left behind by a pre-commit interruption.
+		}
+		removePending(id);
 	}
 	for (const entry of entries(claimed)) {
 		if (entry.endsWith(".part") && isAttachmentId(entry.slice(0, -5))) {
@@ -289,8 +325,9 @@ export function sweepAttachments(now: number = Date.now()): void {
 			if ((stat(file)?.mtimeMs ?? now) + PARTIAL_MS <= now) unlink(file);
 		}
 	}
+	if (!refs.complete) return;
 	for (const id of deleteIds) {
-		if (refs.has(id)) continue;
+		if (refs.ids.has(id)) continue;
 		unlink(claimedFile(id));
 		unlink(removalFile(id));
 	}
