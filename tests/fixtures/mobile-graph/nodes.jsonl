@@ -1,0 +1,2 @@
+{"id":"n_mobile_positive_root","name":"Positive square root","statement":"For a positive number a, the unique positive number whose square is a is the positive square root of a.","aliases":[],"createdAt":"2026-11-18T00:00:00Z","provenance":[{"chatId":"src_mobile_synthetic","messageId":""}]}
+{"id":"n_mobile_square_four","name":"Square of two","statement":"The square of two equals four.","aliases":[],"createdAt":"2026-11-18T00:00:00Z","provenance":[{"chatId":"src_mobile_synthetic","messageId":""}]}

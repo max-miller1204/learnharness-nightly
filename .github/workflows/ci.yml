@@ -35,6 +35,7 @@ jobs:
       test: ${{ steps.detect.outputs.test }}
       selfhost: ${{ steps.detect.outputs.selfhost }}
       standalone: ${{ steps.detect.outputs.standalone }}
+      mobile: ${{ steps.detect.outputs.mobile }}
     steps:
       # Depth 2 brings the base commit the PR's merge commit is diffed against.
       - uses: actions/checkout@v7
@@ -192,6 +193,32 @@ jobs:
       - run: node scripts/build-server.mjs
       - run: node scripts/smoke-server.mjs --electron
 
+  mobile:
+    name: Mobile
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      EXPO_NO_TELEMETRY: "1"
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - run: npm ci
+      - run: npm run deps:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run export:ios
+      - run: npm run export:android
+
   # The required status check for main. It fails when any other job fails, is
   # cancelled, or is skipped although `changes` said it was needed, so splitting
   # or resharding jobs needs no branch-protection change. Add every new job to
@@ -200,7 +227,7 @@ jobs:
   check:
     name: Check
     if: ${{ always() }}
-    needs: [changes, lint, typecheck, test, selfhost, standalone]
+    needs: [changes, lint, typecheck, test, selfhost, standalone, mobile]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

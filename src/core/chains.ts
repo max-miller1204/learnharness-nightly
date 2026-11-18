@@ -53,6 +53,16 @@ export function chainsForSelection(
 	return included.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
+/** Practice sessions are hidden as sources. A shared premise stays visible
+ *  when a teaching or notes chain still uses it. */
+export function chainsFromVisibleSources(
+	chains: readonly ReasoningChain[],
+	nodes: ReadonlyMap<string, Pick<GraphNode, "provenance">>,
+	hiddenSourceIds: ReadonlySet<string>,
+): ReasoningChain[] {
+	return chains.filter((chain) => !hiddenSourceIds.has(nodes.get(chain.conclusion)?.provenance[0]?.chatId ?? ""));
+}
+
 /** A chain as one world-facing line — the propositions' NAMES joined
  *  by the derivation arrow: "Premise one, Premise two → Conclusion"; a
  *  singleton shows its "(no premises)" marker. Pure + browser-safe.

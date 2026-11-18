@@ -30,7 +30,7 @@ import { createPracticeAgent } from "../src/agent/teacher-agent.ts";
 import { handleChatRequest } from "../src/server/chat-handler.ts";
 import { runningTurn } from "../src/server/turn-runs.ts";
 import { chatStore } from "../src/store/chats.ts";
-import { activeProblemOf, needsContinuation } from "../src/core/index.ts";
+import { activeProblemOf, needsContinuation, projectView } from "../src/core/index.ts";
 import { PATHS } from "../config.ts";
 import { CONCLUDE_ACK_TEXT } from "../src/core/contracts/chat.ts";
 import type { LhMessage } from "../src/core/native-messages.ts";
@@ -170,6 +170,12 @@ describe("practice flow (scripted model)", () => {
 		// The turn continued past conclude to the reveal text.
 		assert.ok(afterConclude.some((m) => (m as { role?: string }).role === "assistant" && JSON.stringify((m as { content?: unknown }).content).includes("Clean proof.")));
 		assert.equal(activeProblemOf(afterConclude), null);
+		const parts = projectView(afterConclude).flatMap(({ parts }) => parts);
+		const poseIndex = parts.findIndex((part) => part.type === "tool-problem" &&
+			part.toolCallId === "call-p1" && part.state === "input-available");
+		const conclusionIndex = parts.findIndex((part) => part.type === "tool-conclude" && part.state === "output-available");
+		assert.ok(poseIndex >= 0 && poseIndex < conclusionIndex, "the transcript still presents the original pose before the conclusion");
+		assert.equal((parts[poseIndex]?.input as { statement: string }).statement, POSE.statement);
 	});
 
 	it("a working-trace submission keeps the problem active", async () => {

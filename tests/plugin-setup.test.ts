@@ -133,14 +133,12 @@ test("contributor and CI entry points prepare plugins before typechecking or bui
 	const root = path.resolve(import.meta.dirname, "..");
 	const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
 	assert.equal(pkg.scripts["plugins:setup"], "node scripts/setup-plugins.mjs");
-	for (const workflow of ["ci.yml", "release.yml"]) {
-		const source = readFileSync(path.join(root, ".github", "workflows", workflow), "utf8");
-		for (const section of source.split("- run: npm ci").slice(1)) {
-			const gate = /- run: npm run (typecheck|build)/.exec(section);
-			if (!gate) continue;
-			const setup = section.indexOf("- run: npm run plugins:setup");
-			assert.ok(setup >= 0 && setup < gate.index, `${workflow}: clean-checkout gates require plugin setup first`);
-		}
+	const release = readFileSync(path.join(root, ".github", "workflows", "release.yml"), "utf8");
+	for (const section of release.split("- run: npm ci").slice(1)) {
+		const gate = /- run: npm run (typecheck|build)/.exec(section);
+		if (!gate) continue;
+		const setup = section.indexOf("- run: npm run plugins:setup");
+		assert.ok(setup >= 0 && setup < gate.index, "release.yml: clean-checkout gates require plugin setup first");
 	}
 	// ci.yml installs through setup-deps: a fresh install runs plugin setup after
 	// npm ci, and a cache hit still regenerates the SDK types.
@@ -152,10 +150,19 @@ test("contributor and CI entry points prepare plugins before typechecking or bui
 	assert.equal(install.if, "steps.restore.outputs.cache-hit != 'true'");
 	const sdk = action.runs.steps.find(step => step.run === "npm run plugins:setup -- --sdk-only");
 	assert.equal(sdk?.if, "steps.restore.outputs.cache-hit == 'true'");
-	const ci = yaml.load(readFileSync(path.join(root, ".github", "workflows", "ci.yml"), "utf8")) as { jobs: Record<string, { steps: Step[] }> };
+	const ci = yaml.load(readFileSync(path.join(root, ".github", "workflows", "ci.yml"), "utf8")) as {
+		jobs: Record<string, { steps: Step[]; defaults?: { run?: { "working-directory"?: string } } }>;
+	};
 	for (const [id, job] of Object.entries(ci.jobs)) {
 		const gate = job.steps.findIndex(step => /^npm run (typecheck|build)$/.test(step.run ?? ""));
 		if (gate < 0) continue;
+		if (id === "mobile") {
+			assert.equal(job.defaults?.run?.["working-directory"], "apps/mobile");
+			const install = job.steps.findIndex(step => step.run === "npm ci");
+			assert.ok(install >= 0 && install < gate, "mobile: isolated npm ci before typechecking");
+			assert.ok(!job.steps.some(step => step.uses === "./.github/actions/setup-deps"), "mobile: omit root dependency setup");
+			continue;
+		}
 		const setup = job.steps.findIndex(step => step.uses === "./.github/actions/setup-deps");
 		assert.ok(setup >= 0 && setup < gate, `ci.yml ${id}: set up dependencies before typechecking or building`);
 	}

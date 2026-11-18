@@ -8,23 +8,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { browserAlreadyPaired, readPairingLocation, redeemBrowserCode } from "@/lib/browser-pair-handoff";
 
 const WRONG_CODE = "That code is wrong, expired or already used. Make a new one.";
 
-/** Take the token out of the URL before anything else can see or keep it. */
-function takeTokenFromUrl(): string | undefined {
-	const url = new URL(window.location.href);
-	const fromHash = new URLSearchParams(url.hash.replace(/^#/, "")).get("token");
-	const fromQuery = url.searchParams.get("token");
-	if (!fromHash && !fromQuery) return undefined;
-	url.hash = "";
-	url.searchParams.delete("token");
-	window.history.replaceState(window.history.state, "", url.pathname + url.search);
-	return fromHash ?? fromQuery ?? undefined;
-}
-
-function enterApp() {
-	if (window.location.pathname === "/pair") window.location.replace("/");
+function enterApp(target?: string) {
+	if (target) window.location.replace(target);
+	else if (window.location.pathname === "/pair") window.location.replace("/");
 	else window.location.reload();
 }
 
@@ -33,19 +23,18 @@ export function PairScreen() {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const started = useRef(false);
+	const target = useRef<string | undefined>(undefined);
+	const handoffCode = useRef<string | undefined>(undefined);
 
 	const submit = async (credential: string) => {
 		setBusy(true);
 		setError(null);
 		try {
-			const res = await fetch("/api/auth/browser-session", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ credential }),
-			});
-			if (res.ok) { enterApp(); return; }
+			const res = await redeemBrowserCode(fetch, credential, target.current);
+			if (!res || res.ok) { enterApp(target.current); return; }
 			// Only a refused code is the code's fault; anything else (a busy or
 			// damaged login store) leaves the code usable.
+			if (res.status === 401) handoffCode.current = undefined;
 			setError(res.status === 401 ? WRONG_CODE : "The server couldn't sign you in right now. Try again in a moment.");
 		} catch {
 			setError("Couldn't reach the LearnHarness server. Try again.");
@@ -56,12 +45,17 @@ export function PairScreen() {
 	useEffect(() => {
 		if (started.current) return;
 		started.current = true;
-		const token = takeTokenFromUrl();
-		if (token) { void submit(token); return; }
-		// Already signed in and no code to spend: nothing to do here.
+		const location = readPairingLocation(window.location.href);
+		if (location.cleanLocation) window.history.replaceState(window.history.state, "", location.cleanLocation);
+		target.current = location.target;
+		if (location.token) {
+			if (location.target) handoffCode.current = location.token;
+			void submit(location.token);
+			return;
+		}
 		if (window.location.pathname === "/pair") {
-			void fetch("/api/auth/session").then((r) => r.json()).then((s: { authenticated?: boolean }) => {
-				if (s.authenticated) window.location.replace("/");
+			void browserAlreadyPaired(fetch).then((paired) => {
+				if (paired) enterApp(target.current);
 			}).catch(() => {});
 		}
 	}, []);
@@ -72,7 +66,8 @@ export function PairScreen() {
 				className="flex w-full max-w-sm flex-col gap-4"
 				onSubmit={(event) => {
 					event.preventDefault();
-					if (code.trim()) void submit(code);
+					const credential = code.trim() || handoffCode.current;
+					if (credential) void submit(credential);
 				}}
 			>
 				<h1 className="text-lg font-medium">Pair this device</h1>
@@ -93,7 +88,7 @@ export function PairScreen() {
 					className="font-mono tracking-widest"
 				/>
 				{error && <p role="alert" data-testid="pair-error" className="text-sm text-destructive">{error}</p>}
-				<Button type="submit" data-testid="pair-submit" disabled={busy || !code.trim()}>
+				<Button type="submit" data-testid="pair-submit" disabled={busy || !(code.trim() || handoffCode.current)}>
 					{busy ? "Pairing…" : "Pair"}
 				</Button>
 			</form>

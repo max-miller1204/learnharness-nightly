@@ -270,3 +270,44 @@ export type AbortTurnResponse = { ok: true } | { ok: false; reason: "not_running
 
 /** One frame of the events stream: its `event:` name and `data:` payload. */
 export type EventFrame = { [T in ServerEventType]: { event: T; data: ServerEvents[T] } }[ServerEventType];
+
+
+/** Optional protocol 1 extensions. Check the descriptor before using them. */
+export const PRACTICE_CONTROLS_V1 = "practice-controls-v1";
+export const BROWSER_HANDOFF_V1 = "browser-handoff-v1";
+
+export const PRACTICE_CONTROL_ROUTES = {
+	propositions: "/api/practice/propositions",
+	dismiss: (chatId: string) => `/api/chats/${segment(chatId)}/dismiss`,
+} as const;
+
+export interface PracticePropositionsResponse {
+	propositions: GraphContextPick[];
+}
+
+export interface PracticeDismissRequest {
+	input: { type: "dismiss-problem"; problemCallId: string };
+}
+
+/** 200 when saved, 202 when parked for the active turn's settlement. */
+export type PracticeDismissResponse = { ok: true; parked?: true };
+
+export const BROWSER_HANDOFF_ROUTES = {
+	/** POST PairingTokenRequest -> PairingTokenResponse. Requires a session. */
+	pairingToken: "/api/auth/pairing-token",
+	/** A relative browser route, never a client-supplied redirect destination. */
+	chat: (chatId: string) => `/chat/${segment(chatId)}`,
+	pair: (chatId: string, credential: string) => `/pair#token=${segment(credential)}&chat=${segment(chatId)}`,
+} as const;
+
+export interface PairingTokenRequest {
+	label?: string;
+}
+
+export interface PairingTokenResponse {
+	id: string;
+	credential: string;
+	expiresAt: string;
+	label?: string;
+	tailscaleOrigin?: string;
+}

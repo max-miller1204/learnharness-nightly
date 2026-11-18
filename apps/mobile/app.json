@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "LearnHarness Nightly",
+    "slug": "learnharness-nightly",
+    "version": "0.1.0",
+    "icon": "../../build/icon.png",
+    "userInterfaceStyle": "automatic",
+    "platforms": ["ios", "android"],
+    "experiments": { "tsconfigPaths": false },
+    "updates": { "enabled": false },
+    "ios": {
+      "bundleIdentifier": "com.learnharness.LearnHarness.Nightly",
+      "supportsTablet": true,
+      "infoPlist": { "ITSAppUsesNonExemptEncryption": false }
+    },
+    "android": {
+      "package": "com.learnharness.learnharness.nightly",
+      "blockedPermissions": ["android.permission.RECORD_AUDIO"]
+    },
+    "plugins": [
+      ["expo-camera", {
+        "cameraPermission": "Allow LearnHarness Nightly to scan a pairing QR code.",
+        "recordAudioAndroid": false
+      }],
+      "expo-secure-store"
+    ]
+  }
+}

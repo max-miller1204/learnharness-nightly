@@ -3,7 +3,7 @@ import { LEDGER_FILES, POSITIONS_FILE } from "../../config.ts";
 import type { GraphSnapshot } from "../core/contracts.ts";
 import type { GraphCostSummary } from "../core/cost-summary.ts";
 import { graphCostSummary } from "../core/cost-summary.ts";
-import { graphSnapshot } from "../core/graph.ts";
+import { getGraph, graphSnapshot } from "../core/graph.ts";
 import { birthSessionPartition } from "../core/session-clusters.ts";
 import {
 	deleteNodeTraces,
@@ -11,6 +11,8 @@ import {
 } from "../core/graph-deletion.ts";
 import { extractionStatuses } from "../agent/subagents/extraction.ts";
 import { stores } from "./stores.ts";
+import { chainsForSelection, chainsFromVisibleSources } from "../core/chains.ts";
+import type { GraphContextPick } from "../client-protocol/index.ts";
 import { callCost } from "./pricing.ts";
 import type { ModelRole } from "../../config.ts";
 import { FACTORY_SETTINGS } from "../core/settings.ts";
@@ -27,6 +29,16 @@ export function graphView(): GraphSnapshot {
 	const organization = stores.sourceOrganizationStore.read();
 	const names = Object.fromEntries(Object.entries(organization.placements).flatMap(([id, p]) => p.name === undefined ? [] : [[id, p.name]]));
 	return graphSnapshot(stores, names);
+}
+
+/** Flatten the same visible source groups as the web practice picker. */
+export function practicePropositions(): GraphContextPick[] {
+	const { nodes, chains } = getGraph(stores.graphStore);
+	const byId = new Map(nodes.map((node) => [node.id, node]));
+	const hidden = new Set(stores.chatStore.listChats().filter((source) => source.kind === "practice").map((source) => source.id));
+	const visible = chainsFromVisibleSources(chainsForSelection(nodes, chains), byId, hidden);
+	const ids = new Set(visible.flatMap((chain) => [...chain.premises, chain.conclusion]));
+	return nodes.filter((node) => ids.has(node.id)).map(({ id, name, statement }) => ({ id, name, statement }));
 }
 
 /** The graph view's cost surface (GET /api/graph/costs — the 2026-09 cost
