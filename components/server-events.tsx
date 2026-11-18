@@ -37,6 +37,19 @@ export interface NotifySource {
 
 export function openEventsChannel(): NotifySource {
 	const es = new EventSource("/api/events");
+	// Signed out while open (a revoked device): the stream fails, the session
+	// check says so, and a reload lands on the pairing screen.
+	// docs/specs/login-pairing.md
+	let checking = false;
+	es.addEventListener("error", () => {
+		if (checking) return;
+		checking = true;
+		void fetch("/api/auth/session", { cache: "no-store" })
+			.then((res) => res.json())
+			.then((state: { authenticated?: boolean }) => { if (state.authenticated === false) window.location.reload(); })
+			.catch(() => { /* server unreachable: EventSource keeps retrying */ })
+			.finally(() => { checking = false; });
+	});
 	return {
 		close: () => es.close(),
 		onOpen: (cb) => {

@@ -27,6 +27,8 @@ const inst = Object.fromEntries(fs.readFileSync(instPath, "utf8").split("\n").fi
 }));
 const OUT = path.join(path.dirname(instPath), "api-check");
 fs.mkdirSync(OUT, { recursive: true });
+import { authHeaders, signIn } from "./sign-in.mjs";
+signIn(inst);
 const APP = inst.APP_URL;
 const turnMs = Number(process.env.TURN_TIMEOUT_S || 60) * 1000;
 const steps = [];
@@ -53,10 +55,10 @@ function shape(value, depth = 0) {
 }
 
 /** Raw request, so the Host header can be forged (fetch won't let us). */
-function raw(method, pathname, { headers = {}, body } = {}) {
+function raw(method, pathname, { headers = {}, body, signedOut = false } = {}) {
 	return new Promise((resolve, reject) => {
 		const url = new URL(pathname, APP);
-		const req = http.request({ host: url.hostname, port: url.port, method, path: url.pathname + url.search, headers: { ...(body ? { "content-type": "application/json", "content-length": Buffer.byteLength(body) } : {}), ...headers } }, (res) => {
+		const req = http.request({ host: url.hostname, port: url.port, method, path: url.pathname + url.search, headers: { ...(body ? { "content-type": "application/json", "content-length": Buffer.byteLength(body) } : {}), ...(signedOut ? {} : authHeaders(inst)), ...headers } }, (res) => {
 			let data = "";
 			res.on("data", (d) => { data += d; });
 			res.on("end", () => resolve({ status: res.statusCode, body: data }));
@@ -87,15 +89,26 @@ try {
 	}
 	step("read routes answer with their expected status", READS.every(([route, , want = 200]) => result.observations.readShapes.some((s) => s.startsWith(`GET ${route} ${want} `))), `${READS.length} routes`);
 
-	const refusals = [
+	// A build with login (docs/specs/login-pairing.md) replaces the Host and
+	// cross-site checks with a credential and T3's cookie Origin rule.
+	const cookie = inst.APP_TOKEN ? { cookie: `lh_session_${inst.APP_PORT}=${inst.APP_TOKEN}` } : {};
+	const refusals = inst.APP_TOKEN ? [
+		["no credential is 401", "GET", "/api/settings", { signedOut: true }, 401],
+		["no credential on a page shows the pairing screen", "GET", "/chat/new", { signedOut: true }, 200],
+		["a forged bearer token is 401", "GET", "/api/settings", { signedOut: true, headers: { authorization: "Bearer forged.token" } }, 401],
+		["foreign Host is allowed with a login", "GET", "/api/settings", { signedOut: true, headers: { host: "evil.example", ...cookie } }, 200],
+		["cross-site Origin write with a cookie is refused", "POST", "/api/chats", { signedOut: true, headers: { origin: "http://evil.example", "sec-fetch-site": "cross-site", ...cookie }, body: "{}" }, 403],
+	] : [
 		["foreign Host is refused", "GET", "/api/health", { headers: { host: "evil.example" } }, 403],
 		["cross-site Origin write is refused", "POST", "/api/chats", { headers: { origin: "http://evil.example" }, body: "{}" }, 403],
 		["cross-site fetch metadata write is refused", "POST", "/api/chats", { headers: { "sec-fetch-site": "cross-site" }, body: "{}" }, 403],
+	];
+	refusals.push(
 		["unknown session is 404", "GET", "/api/chats/chat_zzproveit_00000000", {}, 404],
 		["turn on unknown session is 404", "POST", "/api/chat", { body: JSON.stringify({ chatId: "chat_zzproveit_00000000", input: { type: "text", text: "zz-prove-it" } }) }, 404],
 		["turn with bad JSON is 400", "POST", "/api/chat", { body: "{not json" }, 400],
 		["delete without a mode is 400", "DELETE", "/api/chats/chat_zzproveit_00000000", {}, 400],
-	];
+	);
 	for (const [name, method, route, opts, want] of refusals) {
 		const r = await raw(method, route, opts);
 		result.observations.refusals.push(`${name}: ${r.status}`);

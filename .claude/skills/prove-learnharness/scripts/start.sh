@@ -45,6 +45,12 @@ PROVE_FIXTURE=$FIXTURE setsid nohup node "$PROVE_SCRIPTS/fake-model.mjs" --port 
 echo $! >"$SD/fake-model.pid"
 
 APP_PORT=$(free_port)
+# Login (docs/specs/login-pairing.md): a build that has the login store gets a
+# session written into it, the way `lh` does; a base build from before has none.
+APP_TOKEN=
+if [ -f "$BUILD/selfhost/src/auth-store.ts" ]; then
+	APP_TOKEN=$(node -e 'import(process.argv[1]).then((m) => console.log(m.issueSession(process.argv[2], { method: "cli", client: { label: "prove", deviceType: "bot" } }).token))' "$BUILD/selfhost/src/auth-store.ts" "$SD/data")
+fi
 # env -i: no ambient provider keys, tokens or LH_* settings reach the app.
 # PROVE_MODEL=claude-code keeps your real HOME so the claude CLI finds its login.
 APP_HOME=$SD/home
@@ -64,7 +70,7 @@ if ! wait_for "$BOOT_TIMEOUT_S" curl -sf "$APP_URL/api/health"; then
 fi
 # PROVE_SEED=0: a cold start with no model configured (a break-it probe).
 if [ "${PROVE_SEED:-1}" = 1 ]; then
-	node "$PROVE_SCRIPTS/seed.mjs" "$APP_URL" "$FAKE_URL" "$PROVE_MODEL" "$PROVE_REAL_MODEL_ID" >"$SD/seed.log" 2>&1 || { cat "$SD/seed.log" >&2; die "seeding the model failed"; }
+	APP_TOKEN=$APP_TOKEN node "$PROVE_SCRIPTS/seed.mjs" "$APP_URL" "$FAKE_URL" "$PROVE_MODEL" "$PROVE_REAL_MODEL_ID" >"$SD/seed.log" 2>&1 || { cat "$SD/seed.log" >&2; die "seeding the model failed"; }
 else
 	echo "not seeded (PROVE_SEED=0)" >"$SD/seed.log"
 fi
@@ -74,6 +80,7 @@ cat >"$SD/instance.env" <<EOF
 SIDE=$SIDE
 APP_URL=$APP_URL
 APP_PORT=$APP_PORT
+APP_TOKEN=$APP_TOKEN
 FAKE_URL=$FAKE_URL
 FAKE_CONTROL=http://127.0.0.1:$FAKE_PORT
 BUILD_DIR=$BUILD

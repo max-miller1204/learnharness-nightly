@@ -31,7 +31,6 @@ export const ENV = {
 	feedUrl: "LH_FEED_URL",
 	dataDir: "LH_DATA_DIR",
 	authFile: "LH_AUTH_FILE",
-	allowedHosts: "LH_ALLOWED_HOSTS",
 	chromePath: "CHROME_PATH",
 } as const;
 

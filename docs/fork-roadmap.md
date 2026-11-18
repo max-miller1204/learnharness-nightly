@@ -204,6 +204,8 @@ Codex CLI: **parked, not built** (2026-11-17). A spike ([record](specs/codex-cli
 
 ### 6. Login and pairing
 
+**Status.** **Built** (2026-11-17), T3 Code's model: one-time pairing links and QR codes from `lh pair`, `lh up`, server startup and Settings → Devices; 30 day sessions as an `HttpOnly` cookie or a bearer token; no localhost bypass. See [docs/specs/login-pairing.md](specs/login-pairing.md), which settles the open questions below. The rest of this entry is the original proposal.
+
 **Why.** LearnHarness has no login: anyone who can reach the port can read every chat, change saved keys and start agent turns (`docs/development.md`). That's fine today because the server binds 127.0.0.1 and remote access goes through Tailscale. A login is required before LAN mode (item 5) or any public tunnel.
 
 **Decided.** No login in the first release.

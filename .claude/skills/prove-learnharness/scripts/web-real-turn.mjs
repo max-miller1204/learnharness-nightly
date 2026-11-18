@@ -25,6 +25,8 @@ const GOAL = process.argv[3] ?? "zz-prove-it: I want to understand why the sky i
 const SIDE_DIR = path.dirname(instPath);
 const OUT = path.join(SIDE_DIR, "web-real-turn");
 fs.mkdirSync(OUT, { recursive: true });
+import { signIn, signInPage } from "./sign-in.mjs";
+signIn(inst);
 const APP = inst.APP_URL;
 const REPO = path.resolve(import.meta.dirname, "../../../..");
 const puppeteer = createRequire(path.join(REPO, "package.json"))("puppeteer-core");
@@ -39,6 +41,7 @@ const chromePid = path.join(SIDE_DIR, "chrome-web-real-turn.pid");
 fs.writeFileSync(chromePid, String(browser.process().pid)); // stop.sh ends Chrome if this script dies
 try {
 	const page = await browser.newPage();
+	await signInPage(page, inst);
 	await page.setViewport({ width: 1280, height: 900 });
 	page.on("console", (m) => { if (m.type() === "error") result.consoleErrors.push({ text: m.text().slice(0, 300), url: m.location()?.url ?? null }); });
 	await page.goto(`${APP}/chat/new`, { waitUntil: "domcontentloaded" });

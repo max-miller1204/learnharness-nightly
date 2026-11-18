@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { JetBrains_Mono, Source_Sans_3 } from "next/font/google";
+import { headers } from "next/headers";
 import { connection } from "next/server";
 import "katex/dist/katex.min.css";
 import "./globals.css";
@@ -9,8 +10,9 @@ import { ServerEventsProvider } from "@/components/server-events";
 import { AppearanceProvider } from "@/components/settings/appearance";
 import UpdateBanner from "@/components/update-banner";
 import { PluginsProvider } from "@/components/plugins";
-import { readThemeBoot } from "@/src/server";
 import { SIDEBAR_BOOT_SCRIPT } from "@/components/sidebar-boot";
+import { PairScreen } from "@/components/pair-screen";
+import { authenticate, readThemeBoot } from "@/src/server";
 
 // Chrome = JetBrains Mono, teaching prose = Source Sans 3, titles = CMU
 // Serif (the bundled lh-cmu @font-face in globals.css — no CDN).
@@ -29,6 +31,17 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 	// prerendered route (settings) would bake the BUILD machine's record.
 	await connection();
 	const { appearance, theme, vars } = readThemeBoot();
+	// Signed out (docs/specs/login-pairing.md): proxy.ts already rewrote the
+	// request to /pair. Render only the pairing screen, without the app shell
+	// or its providers, so a signed-out page makes no data calls.
+	const signedIn = authenticate({ headers: (await headers()) as Headers }).ok;
+	if (!signedIn) {
+		return (
+			<html lang="en" className={`${theme.mode} ${ui.variable} ${prose.variable}`} style={vars as React.CSSProperties} suppressHydrationWarning>
+				<body className="min-h-dvh antialiased"><PairScreen /></body>
+			</html>
+		);
+	}
 	return (
 		<html
 			lang="en"

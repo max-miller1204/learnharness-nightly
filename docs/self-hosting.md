@@ -4,7 +4,7 @@ This fork publishes LearnHarness as a self-hosted server on every push to `main`
 
 Because the server runs as you, on your machine, everything the desktop app can use works here too: the **Claude Code** provider finds your installed `claude` CLI and its login, demos are verified in your installed Chrome or Chromium, and subscription sign-ins work.
 
-> **There is no login.** Anyone who can reach the port can read every chat, change saved keys and start agent turns. The server only listens on `127.0.0.1`. Reach it from other devices through Tailscale (below), never by exposing the port.
+> **Every device signs in by pairing.** Each request needs a session. A browser gets one by opening a one-time pairing link from `lh pair` (below). The server only listens on `127.0.0.1`. Reach it from other devices through Tailscale (below), never by exposing the port.
 
 ## Requirements
 
@@ -60,15 +60,33 @@ The launcher itself also updates by itself. An old launcher keeps working with n
 
 `lh rollback` (or `lh use <version>`) switches versions through the same trial. It asks whether to also restore your data from just before that version was replaced; the default is no, because restoring discards everything since.
 
+## Signing in (pairing)
+
+Every request needs a session, even from the server machine itself. `lh up` prints a one-time pairing link and its QR code, and opens the link in a browser on the server machine when it can (`--no-open` skips that). For any other device:
+
+```sh
+lh pair [--label "My phone"]
+```
+
+It prints the Tailscale HTTPS link when Tailscale is on, otherwise `http://127.0.0.1:<port>/pair#token=...`, with a QR code to scan and the 12-character code to type. A code works once and expires after 5 minutes. `lh pair` works even when the server is stopped.
+
+A paired browser stays signed in for 30 days. On a signed-in device, **Settings → Devices** lists every device (label, type, OS, browser, IP, issued, expires, last seen), revokes one or all others, and makes a new pairing link with its QR code. There is no logout button: sign a device out from another one. Lost every device? Run `lh pair` on the server machine.
+
+The login store is `userdata/data/auth/`. Backups skip it and `lh restore` keeps it, so restoring old data never brings back a revoked device. Anyone who can write that folder can sign in, the way `lh pair` does.
+
+**Upgrading from a version without login:** after the update, an open browser shows the pairing screen on its next page load. Run `lh pair` (or `lh up`) on the server machine and open the link. If you only use a phone, you need a shell on the server once, for example over SSH. Until the service next restarts, the previous launcher stays in charge, and backups it takes still contain the login store; nothing to do, it switches over on its own.
+
+Design and trade-offs: [docs/specs/login-pairing.md](specs/login-pairing.md).
+
 ## Access from other devices (Tailscale)
 
 ```sh
 lh up --tailscale
 ```
 
-This runs `tailscale serve --bg --https=8443 http://127.0.0.1:3774` and adds your machine's MagicDNS name to `LH_ALLOWED_HOSTS` (the app refuses unknown host names). Open `https://<machine>.<tailnet>.ts.net:8443` from any device on your tailnet.
+This runs `tailscale serve --bg --https=8443 http://127.0.0.1:3774`. Open `https://<machine>.<tailnet>.ts.net:8443` from any device on your tailnet and pair it with `lh pair`.
 
-- Everyone on your tailnet gets full access. Use Tailscale ACLs to narrow that.
+- Only devices on your tailnet can reach it, and each one still has to pair. A paired device has full access.
 - **Never use Tailscale Funnel** for this: it makes the server public.
 - ChatGPT sign-in finishes in a browser **on the server machine** (its callback listens on `127.0.0.1`). GitHub Copilot and Grok sign-ins use device codes and work from anywhere.
 
@@ -85,6 +103,7 @@ This runs `tailscale serve --bg --https=8443 http://127.0.0.1:3774` and adds you
   userdata/
     config.json               lh's settings: port, Tailscale, Chrome path
     data/                     your learning data (LH_DATA_DIR)
+      auth/                   the login store: signed-in devices and pairing links
     auth.json                 saved API keys (plus subscription credentials beside it)
     backups/<from>-<id>/      data snapshots taken before each switch; the newest 3 are kept
     logs/                     service.log, server.log, update.log (capped at 10 MB each)
@@ -94,7 +113,7 @@ This runs `tailscale serve --bg --https=8443 http://127.0.0.1:3774` and adds you
 
 ### service.env
 
-Put extra environment variables for the server here, one `NAME=value` per line, for example API keys or `CLAUDE_CODE_*` settings. Names the launcher manages (`PATH`, `PORT`, `HOSTNAME`, `LH_DATA_DIR`, `LH_AUTH_FILE`, `LH_HOME` and the other `LH_*` launcher variables) are ignored, and the launcher logs that once. `LH_ALLOWED_HOSTS` is merged with the Tailscale name. Run `lh restart` after editing.
+Put extra environment variables for the server here, one `NAME=value` per line, for example API keys or `CLAUDE_CODE_*` settings. Names the launcher manages (`PATH`, `PORT`, `HOSTNAME`, `LH_DATA_DIR`, `LH_AUTH_FILE`, `LH_HOME` and the other `LH_*` launcher variables) are ignored, and the launcher logs that once. Run `lh restart` after editing.
 
 ## One server per data folder
 

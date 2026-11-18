@@ -185,11 +185,15 @@ state() { node -e "const s=require('$LHH/runtime/service-state.json');console.lo
 health_version() { curl -sf "http://127.0.0.1:$PORT/api/health" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const h=JSON.parse(s);console.log(h.ok?h.version:"unhealthy")})'; }
 on_version() { [ "$(health_version 2>/dev/null)" = "$1" ]; }
 update_status() { state | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const x=JSON.parse(s);console.log(`${x.activeVersion} ${x.update?.targetVersion??""} ${x.update?.status??""}`)})'; }
-server_update_state() { curl -sf "http://127.0.0.1:$PORT/api/updates" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).status))'; }
+# Login (docs/specs/login-pairing.md): mint a session into the install's login
+# store per call, the way `lh` does (a rollback may restore an older store).
+# A version from before login ignores the header.
+auth_header() { printf 'Authorization: Bearer %s' "$(node -e 'import(process.argv[1]).then((m) => console.log(m.issueSession(process.argv[2], { method: "cli", hidden: true, ttlMs: 300000, client: { label: "prove", deviceType: "bot" } }).token))' "$REPO/selfhost/src/auth-store.ts" "$LHH/userdata/data")"; }
+server_update_state() { curl -sf -H "$(auth_header)" "http://127.0.0.1:$PORT/api/updates" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).status))'; }
 seed_session() {
-	curl -sf -X POST "http://127.0.0.1:$PORT/api/chats" -H 'content-type: application/json' -H "origin: http://127.0.0.1:$PORT" -d '{"title":"zz-prove-it selfhost data"}' | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).id))'
+	curl -sf -X POST "http://127.0.0.1:$PORT/api/chats" -H "$(auth_header)" -H 'content-type: application/json' -H "origin: http://127.0.0.1:$PORT" -d '{"title":"zz-prove-it selfhost data"}' | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).id))'
 }
-has_session() { curl -sf "http://127.0.0.1:$PORT/api/chats" | grep -q "$1"; }
+has_session() { curl -sf -H "$(auth_header)" "http://127.0.0.1:$PORT/api/chats" | grep -q "$1"; }
 snap() { # <label>: evidence after a switch
 	# The shim is rewritten during a switch; a failed `lh status` is evidence, not a crash.
 	{ echo "== $1"; lh status || echo "(lh status exited $?)"; echo "state: $(state)"; echo "backups: $(ls "$LHH/userdata/backups" 2>/dev/null | tr '\n' ' ')"; echo; } >>"$SH/status.txt"
