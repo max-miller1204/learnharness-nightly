@@ -171,17 +171,25 @@ const server = http.createServer((req, res) => {
 			}
 			if (out.text !== undefined) {
 				for (const piece of out.text.match(/.{1,40}/gs) ?? [""]) send(chunk(model, { content: piece }));
-				send(chunk(model, {}, "stop"));
+
 			} else {
 				out.toolCalls.forEach((call, index) => {
 					send(chunk(model, { tool_calls: [{ index, id: call.id, type: "function", function: { name: call.function.name, arguments: "" } }] }));
 					send(chunk(model, { tool_calls: [{ index, function: { arguments: call.function.arguments } }] }));
 				});
-				send(chunk(model, {}, "tool_calls"));
+
 			}
-			send({ ...chunk(model, {}), choices: [], usage });
-			res.write("data: [DONE]\n\n");
-			res.end();
+			const finish = () => {
+				if (res.destroyed) return;
+				send(chunk(model, {}, out.text !== undefined ? "stop" : "tool_calls"));
+				send({ ...chunk(model, {}), choices: [], usage });
+				res.write("data: [DONE]\n\n");
+				res.end();
+			};
+			if (Number.isSafeInteger(reply.pauseBeforeDoneMs) && reply.pauseBeforeDoneMs > 0) {
+				const pause = setTimeout(finish, reply.pauseBeforeDoneMs);
+				res.once("close", () => clearTimeout(pause));
+			} else finish();
 		});
 		return;
 	}

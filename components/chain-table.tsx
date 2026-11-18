@@ -66,7 +66,7 @@ import {
 	SearchIcon,
 	XIcon,
 } from "lucide-react";
-import { chainsForSelection, chainSourceDirectory, folderEntryCheck, toggleSourceEntries, formatChainLine, fuzzyScore, sourceFileLabel } from "@/src/core";
+import { chainsForSelection, chainsFromVisibleSources, chainSourceDirectory, folderEntryCheck, toggleSourceEntries, formatChainLine, fuzzyScore, sourceFileLabel } from "@/src/core";
 import type { GraphChain, GraphNode, SourceDirectory, SourceEntry, SourceFolder, SourceEntrySelection } from "@/src/core";
 import { EditableSourceName, SourceDragRow, sourceNameMatches, SourceFolderTree, type OrganizationChange } from "./source-folder-tree";
 import { chainRow, useChainNavigation } from "./chain-navigation";
@@ -193,8 +193,7 @@ export function ChainTableBody({
 	const chains = useMemo(() => chainsForSelection(nodes, storedChains), [nodes, storedChains]);
 	// Filter source groups, not global nodes: shared premises remain visible
 	// in teaching/notes groups. Keep the graph-wide header and pick set intact.
-	const sourceChains = useMemo(() => chains.filter((chain) =>
-		!hiddenSourceIds.has(byId.get(chain.conclusion)?.provenance[0]?.chatId ?? "")), [chains, byId, hiddenSourceIds]);
+	const sourceChains = useMemo(() => chainsFromVisibleSources(chains, byId, hiddenSourceIds), [chains, byId, hiddenSourceIds]);
 	const searching = query.trim() !== "";
 	const allSourceNodes = useMemo(() => {
 		const membership = new Map<string, Set<string>>();

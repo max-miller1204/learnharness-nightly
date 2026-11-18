@@ -9,7 +9,8 @@ import { createPairingLink, formatCode } from "../selfhost/src/auth-store.ts";
 import { browserSession, createPairingToken, listClients, revokeClient, revokeOtherClients, sessionState, tailscaleOrigin, tokenExchange } from "../src/server/auth-routes.ts";
 import { COOKIE_LIFETIME_MS, clientInfo, inferBrowser, inferDeviceType, inferOs } from "../src/server/auth.ts";
 import { printStartupPairingLink } from "../src/server/startup-pairing.ts";
-import { AUTH_TEST_DATA_DIR, cookieName } from "./helpers/auth-data-dir.ts";
+import { readPairingLocation, redeemBrowserCode } from "../lib/browser-pair-handoff.ts";
+import { AUTH_TEST_DATA_DIR, cookieName, mintToken } from "./helpers/auth-data-dir.ts";
 
 const origin = "http://localhost:3000";
 const IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
@@ -57,6 +58,72 @@ describe("browser pairing", () => {
 
 	it("signed out, the session route says so", async () => {
 		assert.deepEqual(await sessionState(new Request(`${origin}/api/auth/session`)).json(), { authenticated: false });
+	});
+});
+
+describe("native-to-browser session handoff", () => {
+	it("strips the fragment, accepting only a safe session ID", () => {
+		assert.deepEqual(readPairingLocation(`${origin}/pair#token=ABCD-EFGH-JKLM&chat=chat_123`), {
+			token: "ABCD-EFGH-JKLM", target: "/chat/chat_123", cleanLocation: "/pair",
+		});
+		for (const target of ["..", "/chat/chat_123", "//evil.example", "https://evil.example", "%2fchat"]) {
+			assert.deepEqual(readPairingLocation(`${origin}/pair#token=secret&chat=${encodeURIComponent(target)}`), {
+				token: undefined, target: undefined, cleanLocation: "/pair",
+			});
+		}
+		assert.deepEqual(readPairingLocation(`${origin}/chat/chat_123`), { token: undefined, target: undefined });
+	});
+
+	it("mints with a native bearer, reuses the browser cookie, and spends the code only when signed out", async () => {
+		const native = { authorization: `Bearer ${mintToken()}` };
+		const mint = () => createPairingToken(post("/api/auth/pairing-token", {}, native));
+		const issued = await mint();
+		assert.equal(issued.status, 200);
+		assert.equal(issued.headers.get("cache-control"), "no-store");
+		const { credential } = await issued.json() as { credential: string };
+		const deviceCount = async () => {
+			const result = await listClients(new Request(origin + "/api/auth/clients", { headers: native }));
+			return (await result.json() as { clients: unknown[] }).clients.length;
+		};
+
+		let cookie = (await pairBrowser()).cookie;
+		const requests: string[] = [];
+		const browser: typeof fetch = async (input, init) => {
+			const route = String(input);
+			requests.push(route);
+			const headers = new Headers(init?.headers);
+			assert.equal(headers.get("authorization"), null, "no native credential reached the browser");
+			if (cookie) headers.set("cookie", cookie);
+			const req = new Request(origin + route, { ...init, headers });
+			return route === "/api/auth/session" ? sessionState(req) : browserSession(req);
+		};
+
+		const before = await deviceCount();
+		assert.equal(await redeemBrowserCode(browser, credential, "/chat/chat_123"), null);
+		assert.deepEqual(requests, ["/api/auth/session"]);
+		assert.equal(await deviceCount(), before);
+
+		cookie = "";
+		requests.length = 0;
+		const paired = await redeemBrowserCode(browser, credential, "/chat/chat_123");
+		assert.equal(paired?.status, 200);
+		assert.deepEqual(requests, ["/api/auth/session", "/api/auth/browser-session"]);
+		assert.equal(await deviceCount(), before + 1);
+		assert.equal((await redeemBrowserCode(browser, credential, "/chat/chat_123"))?.status, 401);
+		const renewed = await mint();
+		assert.equal(renewed.status, 200);
+		cookie = paired?.headers.get("set-cookie")?.split(";")[0] ?? "";
+		assert.equal(await redeemBrowserCode(browser, (await renewed.json() as { credential: string }).credential, "/chat/chat_123"), null);
+		assert.equal(await deviceCount(), before + 1);
+	});
+
+	it("doesn't spend a handoff code when the browser session check fails", async () => {
+		const calls: string[] = [];
+		await assert.rejects(redeemBrowserCode(async (route) => {
+			calls.push(String(route));
+			return Response.json({}, { status: 503 });
+		}, "unused", "/chat/chat_123"), /check this browser/);
+		assert.deepEqual(calls, ["/api/auth/session"]);
 	});
 });
 

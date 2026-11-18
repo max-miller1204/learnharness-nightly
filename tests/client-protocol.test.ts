@@ -34,7 +34,7 @@ import { GET as serverInfoRoute } from "../app/.well-known/learnharness/server/r
 const RECORDED = {
 	protocolVersion: 1,
 	fingerprint: {
-		"src/client-protocol/index.ts": "5e4b8b2ac37e5a53",
+		"src/client-protocol/index.ts": "888114742282289d",
 		"src/core/contracts/chat.ts": "937c52917f863b25",
 		"src/core/contracts/graph.ts": "b84d4803bd0c4acc",
 		"src/core/contracts/plan.ts": "feebc7e5e0e6e8cf",
@@ -139,7 +139,7 @@ describe("server info", () => {
 		assert.equal(info.version, "0.6.1-nightly.1");
 		assert.equal(info.protocolVersion, 1);
 		assert.ok(info.name.length > 0);
-		assert.deepEqual(info.capabilities, []);
+		assert.deepEqual(info.capabilities, ["practice-controls-v1", "browser-handoff-v1"]);
 		assert.deepEqual(info.auth, {
 			required: true,
 			bootstrapMethods: ["one-time-token"],
@@ -185,6 +185,20 @@ describe("version check in proxy.ts", () => {
 				code: "protocol_incompatible",
 				protocolVersion: 1,
 			});
+		}
+	});
+
+	it("gates optional practice routes and the pairing mint with the existing auth and version checks", () => {
+		const token = mintToken();
+		for (const [path, method] of [
+			["/api/practice/propositions", "GET"],
+			["/api/chats/chat_123/dismiss", "POST"],
+			["/api/auth/pairing-token", "POST"],
+		] as const) {
+			const request = (headers: Record<string, string>) => new NextRequest(origin + path, { method, headers });
+			assert.equal(proxy(request({ [PROTOCOL_HEADER]: "1" })).status, 401);
+			assert.equal(proxy(request({ [PROTOCOL_HEADER]: "2" })).status, 426);
+			assert(passes(proxy(request({ [PROTOCOL_HEADER]: "1", authorization: `Bearer ${token}` }))));
 		}
 	});
 

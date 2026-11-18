@@ -1,0 +1,19 @@
+{
+  "cli": { "appVersionSource": "remote" },
+  "build": {
+    "beta": {
+      "distribution": "store",
+      "autoIncrement": true,
+      "android": { "buildType": "app-bundle" }
+    },
+    "android-proof": {
+      "distribution": "internal",
+      "android": { "buildType": "apk" }
+    }
+  },
+  "submit": {
+    "beta": {
+      "android": { "track": "internal" }
+    }
+  }
+}

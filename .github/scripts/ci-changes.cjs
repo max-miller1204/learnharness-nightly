@@ -1,5 +1,5 @@
-// Decides which CI jobs a change needs. Unknown paths run every job, and so
-// does a diff that cannot be read (no --paths). See docs/specs/ci-foundation.md.
+// Decides which CI jobs a change needs. An unreadable diff runs every job.
+// See docs/specs/ci-foundation.md.
 //
 // Adapted from T3 Code's .github/scripts/ci-changes.cjs
 // (https://github.com/pingdotgg/t3code), which carries this notice:
@@ -26,8 +26,8 @@
 //   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 //   SOFTWARE.
 //
-// LearnHarness is one package, not a workspace graph, so T3's package
-// ownership walk is replaced by three path classes.
+// The independently installed mobile app and the web app share source,
+// so path gates follow the source they consume.
 const fs = require("node:fs");
 
 // Docs the app or its plugin-authoring bundle ships, so they are not inert:
@@ -58,10 +58,13 @@ const STANDALONE_TESTS = [
 	/^tests\/(helpers|fixtures)\//,
 ];
 
-const GATES = ["typecheck", "test", "selfhost", "standalone"];
+const WEB_GATES = ["typecheck", "test", "selfhost", "standalone"];
+const GATES = [...WEB_GATES, "mobile"];
+const MOBILE_SHARED = /^(src\/(client-protocol|core)\/|\.github\/|package(-lock)?\.json$|build\/icon\.png$)/;
 
-/** "inert", "tests" or "everything" for one repo-relative path. */
+/** Web gate class for one repo-relative path. */
 function classify(file) {
+	if (file.startsWith("apps/mobile/")) return "mobile";
 	if (SHIPPED_DOCS.some((pattern) => pattern.test(file))) return "everything";
 	// TypeScript anywhere is typechecked (tsconfig includes **/*.ts).
 	if (INERT.some((pattern) => pattern.test(file))) return /\.[cm]?tsx?$/.test(file) ? "tests" : "inert";
@@ -78,11 +81,16 @@ function decide(files, full = false) {
 	}
 	for (const file of files) {
 		const kind = classify(file);
+		// Mobile imports the protocol and its portable core dependencies. CI
+		// configuration and root dependency pins can also change its result.
+		if (kind === "mobile" || (kind !== "inert" && MOBILE_SHARED.test(file))) {
+			outputs.mobile = true;
+		}
 		if (kind === "tests") {
 			outputs.typecheck = true;
 			outputs.test = true;
 		} else if (kind === "everything") {
-			for (const gate of GATES) outputs[gate] = true;
+			for (const gate of WEB_GATES) outputs[gate] = true;
 		}
 	}
 	return outputs;

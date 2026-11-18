@@ -1,0 +1,19 @@
+# Mobile beta proof
+
+Use the [approved mobile beta spec](../../../../../docs/specs/mobile-beta.md) for phone-only behavior and the browser on the same disposable server for transcript and session parity. CI bundle exports cover packaging. This recipe requires installed binaries and observation on devices.
+
+## Setup
+
+1. Record the source SHA, APK or signed EAS build ID and number, OS and device IDs, and server SHAs. Schedule the ThinkPad slot before building the server or Android APK. Use a disposable HTTPS endpoint authorized for the test, with no real records or keys. Prepare a second origin and a server pinned to `bfb1e5d` for core protocol proof.
+2. Follow [the fake-model setup](../agent.md). For observable teaching streaming, copy `scenarios/teach-read.json` to the proof run folder and set `reply.pauseBeforeDoneMs` to 4000 on `probe-acknowledges-answer`. For practice, start a fresh disposable instance with `scenarios/mobile-practice.json`. Seed graph material from the synthetic `tests/fixtures/golden-data/graph` fixture before the graph picker run. Do this only in the disposable server's data directory.
+3. Use T3 `device_list`, `device_open`, the returned `agent-device` command and `device_screenshot`. If a device is unavailable or the emulator cannot scan a virtual QR, record the missing observation. Use the typed or pasted link for the remaining drive. The physical iPhone run still checks both QR generators.
+
+## Drive and compare
+
+- In the installed app, scan each generator's link, check the displayed destination before Connect, and try permission denial and both manual fallbacks. Attempt code reuse. Save two origins, explicitly make one default, switch to the other, then relaunch. Try an unreachable default, revoke the native device, and test descriptor versions below and above 1. Check credentials and the list are isolated by origin.
+- On #246, start a teaching lesson with `zz-prove-it`, submit Blue and observe the reply before completion. Start a turn in the browser while watching the same session on the phone. Background during an active turn or interrupt connectivity, restore access, and compare the settled record to the web transcript. Force a model failure and retry, then use the hang switch to Stop an in-flight turn. Test a lost send response and check there is one saved input. Confirm the optional controls are absent.
+- On the beta server, pick graph material then start practice with `mobile practice`. Record the graph context and verify the displayed equation. Submit `I am stuck`, wait for the hint and verify no solution, then submit `The positive solution is 2`. Compare the saved conclude and original solution with the web session. Tap Next, then Discard. Verify the discard stores a marker without any new model request and the deferred conclusion appears after the following input.
+- Open the exact session in a paired browser and in an unpaired browser. From the unpaired browser, use assisted pairing, verify it returns to the exact session and adds one browser device. Run assisted pairing with the now-paired browser and verify device count stays the same. Check the fragment is removed and the native bearer never enters browser navigation.
+- Have the owner repeat the approved iPhone acceptance on the exact TestFlight build over Tailscale and confirm the Android test-track install. Store account or iPhone access is a separate gate.
+
+Record each observation, the device screenshot or recording, and the saved server or browser evidence in the run receipt. Keep codes and bearers out of receipts. Mark missing steps as blocked or unproven.

@@ -47,7 +47,7 @@ Follow each changed file to the surfaces and flows it reaches. Internal code cou
 | `electron/**` (other) | no | electron dev | [desktop window](references/features/desktop-window.md) |
 | `plugins/**`, `core-plugins.json`, plugin build scripts | yes | web, api, agent | the plugin's view and tools |
 | `package*.json`, `next.config.ts`, `proxy.ts`, `instrumentation.ts`, `config.ts`, `tsconfig.json` | yes: launch config | every surface (smoke) | teaching session, `lh` commands, desktop window |
-| `apps/mobile/**`, `mobile/**` | PLANNED | mobile | none yet: [planned.md](references/planned.md) |
+| `apps/mobile/**` | yes: same server contract | mobile | [mobile beta](references/features/mobile-beta.md) |
 | `app/api/v<N>/**` | PLANNED | protocol, api | none yet: [planned.md](references/planned.md) |
 
 A change that only touches tests, docs or this skill reaches no surface: say so in the receipt and stop. A change to launch config (env vars, ports, dependencies, migrations) reaches every surface: smoke test each one. A path `scope.mjs` calls UNMAPPED: decide by hand, then add a rule to `scope.mjs` and this table in the same change.
@@ -89,7 +89,7 @@ Ladder, best first: 1 an old system that does the same job, 2 a snapshot, 3 an i
 | web budgets | any page driven | console errors (one known), CLS (absolute < 0.1), axe | budget | `budgets.json`, `CLS_MODE` | the user, 2026-11-17 |
 | new flow that copies nothing | new | the spec | 4 | `docs/specs/<item>.md`, found at run time | the user |
 | client protocol (server info, version check, protocol 1 routes) | new | the spec | 4 | `docs/specs/client-protocol.md` | the user |
-| future mobile app | new | parity with the web app and `/api/*` | 1 | [planned.md](references/planned.md) | the web app |
+| mobile beta | new | browser parity and the spec for phone-only flows | 1 + 4 | [mobile beta](references/features/mobile-beta.md) | the web app and the owner |
 
 - **Never edit an answer key to make a check pass.** If the app and the answer key disagree, the verdict is BROKEN; only the user changes an answer key.
 - **Compare against the answer key, not your idea of right.** Where a flow has none, say so on the receipt.

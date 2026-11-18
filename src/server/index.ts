@@ -73,5 +73,5 @@ export * from "./custom-provider.ts";
 export { customProviderGet, customProviderMutation } from "./custom-provider-http.ts";
 export { authenticate } from "./auth.ts";
 export { serverInfo } from "./server-info.ts";
-export type { AbortTurnResponse, ChatListResponse, ChatResponse, CreateChatResponse } from "../client-protocol/index.ts";
+export type { AbortTurnResponse, ChatListResponse, ChatResponse, CreateChatResponse, PracticePropositionsResponse } from "../client-protocol/index.ts";
 export { browserSession, createPairingToken, listClients, revokeClient, revokeOtherClients, sessionState, tokenExchange } from "./auth-routes.ts";
