@@ -322,25 +322,7 @@ What LearnHarness already has toward this: a standalone, versioned, self-updatin
 
 **Why.** Today the desktop paperclip inserts a file or folder **path**, and the agent reads the original in place on the server machine (`docs/getting-started.md`: "This is not an upload"). That only works when the client and the server are the same machine; browsers can't attach local files to a session at all.
 
-**Decided.** Nothing yet.
-
-**Facts.** T3 Code's method (`apps/server/src/assets/AttachmentUpload.ts`, `attachmentStore.ts`, `attachmentPaths.ts`):
-1. The client asks the server for a short-lived, server-signed upload URL whose token names the file, its type and its exact size.
-2. The client streams the bytes. The server writes a temporary `.part` file, hashes it while receiving, checks the exact size, then moves it into the attachments folder under a pending ID.
-3. Sending the message claims the file and renames it to a thread-scoped ID. Unsent pending uploads are deleted after 24 hours, interrupted ones after 1 hour.
-4. IDs must match a strict pattern, and a path check refuses anything outside the attachments folder.
-5. The agent reads the server's copy (T3 adds the attachments folder as an agent working directory). Large things like code aren't uploaded: they live on the machine where the agent runs.
-
-LearnHarness already uploads in two places (the graph's **Extract files** import and learner images) and snapshots displayed images into the session, which can be reused.
-
-**Proposed design (not approved).** Hybrid:
-- Client and server on the **same machine** (desktop with its local server): keep path attachments, so folders and live files keep working.
-- **Remote** clients (phone, browser, desktop pointed at a remote server): T3-style signed uploads into a session-owned attachments folder under the data folder. The message carries a path to that copy, so the existing file tools and file-access guards work unchanged.
-- Advertise it as a capability (item 21). T3's code is MIT, so it can be adapted with its license notice kept.
-
-**Open questions.** Folder attachments: upload as several files, as an archive, or keep folders local-only? Per-file and per-session size limits? When are uploaded copies deleted (with the session, by age)? Should copies count toward the launcher's pre-update snapshot?
-
-**Build outline.** Signing key and upload route, pending store with sweeping, claim-on-send, composer upload UI for remote clients, then tests for size mismatch, traversal attempts and expiry.
+**Decided.** The owner approved two PRs. PR 1 adds individual uploads in paired browsers on opening and later idle-chat sends. PR 2 starts from merged PR 1 and adds remote folders with browsable layout. The [approved remote-safe attachments spec](specs/remote-safe-attachments.md) records the behavior, limits, recovery rules, and pinned T3 references. Live server paths remain in place.
 
 **Touches core.** Yes (new routes, composer, attachment handling).
 
