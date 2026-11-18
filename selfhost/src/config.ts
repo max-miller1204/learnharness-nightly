@@ -78,17 +78,22 @@ export function readServiceEnv(home: string): Record<string, string> {
 
 const CHROME_CANDIDATES = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
 
-/** First Chrome/Chromium on PATH (or a common absolute path), if any. */
-export function detectChrome(searchPath: string = process.env.PATH ?? ""): string | undefined {
-	const dirs = searchPath.split(path.delimiter).filter(Boolean).concat(["/usr/bin", "/usr/local/bin", "/snap/bin"]);
-	for (const name of CHROME_CANDIDATES) {
-		for (const dir of dirs) {
-			const candidate = path.join(dir, name);
-			try {
-				fs.accessSync(candidate, fs.constants.X_OK);
-				return candidate;
-			} catch { /* keep looking */ }
-		}
+/** macOS app bundles, in /Applications and then ~/Applications. */
+const MAC_CHROME_APPS = ["Google Chrome.app/Contents/MacOS/Google Chrome", "Chromium.app/Contents/MacOS/Chromium"];
+
+/** First Chrome/Chromium on PATH (or a common absolute path, or a Mac app), if any. */
+export function detectChrome(
+	searchPath: string = process.env.PATH ?? "",
+	{ platform = process.platform, systemDirs = ["/usr/bin", "/usr/local/bin", "/snap/bin"], appDirs = ["/Applications", path.join(os.homedir(), "Applications")] }: { platform?: string; systemDirs?: string[]; appDirs?: string[] } = {},
+): string | undefined {
+	const dirs = searchPath.split(path.delimiter).filter(Boolean).concat(systemDirs);
+	const candidates = CHROME_CANDIDATES.flatMap((name) => dirs.map((dir) => path.join(dir, name)));
+	if (platform === "darwin") for (const root of appDirs) candidates.push(...MAC_CHROME_APPS.map((app) => path.join(root, app)));
+	for (const candidate of candidates) {
+		try {
+			fs.accessSync(candidate, fs.constants.X_OK);
+			return candidate;
+		} catch { /* keep looking */ }
 	}
 	return undefined;
 }

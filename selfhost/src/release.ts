@@ -46,12 +46,14 @@ export function compareVersions(a: string, b: string): number {
 // ---------------------------------------------------------------------------
 // Platform
 
-export type Arch = "linux-x64" | "linux-arm64";
+/** Every arch the nightly builds. Old launchers read only the keys they know, so adding one is safe. */
+export const ARCHES = ["linux-x64", "linux-arm64", "darwin-arm64"] as const;
+export type Arch = (typeof ARCHES)[number];
 
 export function currentArch(platform: string = process.platform, arch: string = process.arch): Arch | undefined {
-	if (platform !== "linux") return undefined;
-	if (arch === "x64") return "linux-x64";
-	if (arch === "arm64") return "linux-arm64";
+	if (platform === "linux" && arch === "x64") return "linux-x64";
+	if (platform === "linux" && arch === "arm64") return "linux-arm64";
+	if (platform === "darwin" && arch === "arm64") return "darwin-arm64";
 	return undefined;
 }
 
@@ -103,7 +105,7 @@ export function parseFeed(value: unknown): LatestFeed {
 	}
 	if (!isRecord(assets)) throw new Error("latest.json has no assets");
 	const parsed: Partial<Record<Arch, FeedAsset>> = {};
-	for (const arch of ["linux-x64", "linux-arm64"] as const) {
+	for (const arch of ARCHES) {
 		const asset = assets[arch];
 		if (asset === undefined) continue;
 		if (!isRecord(asset) || typeof asset.url !== "string" || typeof asset.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(asset.sha256)) {

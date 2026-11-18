@@ -152,7 +152,9 @@ function assertFenced(rendered: string, text: string) {
 	assert.ok(rendered.includes(`\n${fence}markdown\n${inside}\n${fence}\n`), `expected a ${fence.length}-tilde block holding the text:\n${rendered}`);
 }
 
-describe("mirror-upstream-issues.sh", () => {
+// The script runs only in GitHub's Ubuntu workflows and needs bash 4
+// (mapfile); macOS ships bash 3.2, and the nightly runs these tests on a Mac.
+describe("mirror-upstream-issues.sh", { skip: process.platform === "darwin" ? "needs bash 4; runs only on Ubuntu runners" : false }, () => {
 	it("fences hostile issue and comment text so nothing inside can close the block", () => {
 		fixture(`repos/${UP}/issues/10`, issue(10, "open", HOSTILE));
 		fixture(`repos/${UP}/issues/10/comments?per_page=100`, [{ user: { login: "commenter" }, created_at: "2026-11-02T00:00:00Z", body: `${HOSTILE}\n~~~~~~~~~~~~~~~~~~~~` }]);

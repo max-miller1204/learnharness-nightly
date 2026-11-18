@@ -1,7 +1,7 @@
 /**
  * Assemble one self-hosted archive (CI, nightly.yml):
  *
- *   node selfhost/scripts/package-archive.ts --version V --arch linux-x64 \
+ *   node selfhost/scripts/package-archive.ts --version V --arch linux-x64|linux-arm64|darwin-arm64 \
  *     --node-dir <extracted official node-v26 tarball> --standalone .next/standalone --out dist-selfhost
  *
  * Archive root: node/ (bin/node + LICENSE), server/ (the curated standalone
@@ -15,7 +15,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { parseArgs } from "node:util";
 import { LAUNCHER_PROTOCOL, MIN_LAUNCHER_PROTOCOL } from "../src/protocol.ts";
-import { isExactVersion } from "../src/release.ts";
+import { ARCHES, isExactVersion } from "../src/release.ts";
 
 const { values } = parseArgs({
 	options: {
@@ -29,7 +29,9 @@ const { values } = parseArgs({
 const version = values.version ?? "";
 const arch = values.arch ?? "";
 if (!isExactVersion(version)) throw new Error(`--version must be an exact version, got "${version}"`);
-if (arch !== "linux-x64" && arch !== "linux-arm64") throw new Error(`--arch must be linux-x64 or linux-arm64, got "${arch}"`);
+if (!(ARCHES as readonly string[]).includes(arch)) throw new Error(`--arch must be one of ${ARCHES.join(", ")}, got "${arch}"`);
+// The archive ships the standalone server's native modules, which npm installed for this OS.
+if (arch !== `${process.platform}-${process.arch}`) throw new Error(`build the ${arch} archive on ${arch}, not ${process.platform}-${process.arch}`);
 const nodeDir = path.resolve(values["node-dir"] ?? "");
 const standalone = path.resolve(values.standalone);
 const outDir = path.resolve(values.out);
@@ -59,7 +61,10 @@ try {
 	fs.mkdirSync(outDir, { recursive: true });
 	const name = `learnharness-${version}-${arch}.tar.gz`;
 	const archive = path.join(outDir, name);
-	execFileSync("tar", ["-czf", archive, "--owner=0", "--group=0", "-C", stage, "."], { stdio: "inherit" });
+	// GNU tar on Linux; macOS tar (bsdtar) spells the owner flags differently
+	// and must not add AppleDouble `._` files or extended attributes.
+	const ownerFlags = process.platform === "darwin" ? ["--uid", "0", "--gid", "0", "--uname", "root", "--gname", "wheel", "--no-mac-metadata", "--no-xattrs"] : ["--owner=0", "--group=0"];
+	execFileSync("tar", ["-czf", archive, ...ownerFlags, "-C", stage, "."], { stdio: "inherit", env: { ...process.env, COPYFILE_DISABLE: "1" } });
 	const sha = createHash("sha256").update(fs.readFileSync(archive)).digest("hex");
 	fs.writeFileSync(`${archive}.sha256`, `${sha}  ${name}\n`);
 	process.stdout.write(`${archive}\n${sha}\n`);
