@@ -72,6 +72,7 @@ const ABORT_MESSAGE = "Request was aborted";
 const START_FAILED_MESSAGE = "claude CLI failed to start";
 const NO_STOP_REASON_MESSAGE = "claude CLI ended the message without a stop reason";
 const NOT_SIGNED_IN_ERROR = "authentication_failed";
+const MCP_MISMATCH_MESSAGE = "claude CLI compatibility error: MCP call does not match its streamed tool intent";
 
 export function toEffort(level: ThinkingLevel | undefined): AnthropicEffort {
 	return level ? EFFORTS[level] : "medium";
@@ -418,6 +419,10 @@ class ClaudeProcess implements LiveProcess {
 	private sourceComplete = false;
 	private admitted: PendingToolCall[] = [];
 	private readonly cancelledIds = new Set<string>();
+	/** Calls the CLI refused for bad input before MCP; they never ran and can never be admitted. */
+	private readonly invalidInputIds = new Set<string>();
+	/** Where the current CLI message's intents begin in the turn's intents. */
+	private messageIntentStart = 0;
 	private pendingError: string | undefined;
 	private contextWindow: number | undefined;
 	private contextProbe: ContextWindowProbe | undefined;
@@ -522,14 +527,19 @@ class ClaudeProcess implements LiveProcess {
 
 	/** Only authenticated MCP requests, never stdout intent alone, admit side effects. */
 	flushAdmissions(): void {
-		if (this.stopping || this.turn.finished || !this.sourceComplete) return;
+		if (this.stopping || this.turn.finished) return;
 		const pending = this.bridge.getPendingToolCalls();
+		if (pending.some((call) => this.invalidInputIds.has(call.id))) {
+			this.fail(MCP_MISMATCH_MESSAGE);
+			return;
+		}
+		if (!this.sourceComplete) return;
 		if (pending.length === 0) return;
 		const calls: ToolCall[] = [];
 		for (const call of pending) {
 			const intent = this.sourceCalls.find((candidate) => candidate.id === call.id);
 			if (!intent || intent.name !== call.name || !isDeepStrictEqual(intent.arguments, call.arguments)) {
-				this.fail("claude CLI compatibility error: MCP call does not match its streamed tool intent");
+				this.fail(MCP_MISMATCH_MESSAGE);
 				return;
 			}
 			calls.push(intent);
@@ -561,9 +571,22 @@ class ClaudeProcess implements LiveProcess {
 		const event = parseCliLine(line);
 		if (!event) return;
 		if (event.type === "toolResults") {
-			if (event.ids.some((id) => this.sourceCalls.some((call) => call.id === id))) {
+			// The CLI may answer a call itself before message_stop, while its intent is not
+			// yet in sourceCalls, so match the current message's intents too.
+			const unadmitted = (id: string) => !this.cancelledIds.has(id)
+				&& (this.sourceCalls.some((call) => call.id === id) || (!this.turn.finished && this.turn.getIntents().some((call) => call.id === id)));
+			const refused = event.ids.filter(unadmitted);
+			const invalidInput = refused.filter((id) => event.invalidInputIds.includes(id));
+			if (invalidInput.length < refused.length) {
 				this.fail("claude CLI refused a harness tool call before MCP admission");
+				return;
 			}
+			// Input the CLI could not use (such as malformed JSON): it never reached MCP and the
+			// model sees the error. Drop the call and wait for the retry, as for bare names.
+			for (const id of invalidInput) this.invalidInputIds.add(id);
+			this.sourceCalls = this.sourceCalls.filter((call) => !this.invalidInputIds.has(call.id));
+			// An MCP request already held for a rejected call must fail now, not wait.
+			if (invalidInput.length > 0) this.flushAdmissions();
 			return;
 		}
 		// Moving on before held calls were answered means the CLI did not
@@ -576,18 +599,27 @@ class ClaudeProcess implements LiveProcess {
 			this.fail("claude CLI moved on without admitting its harness tool calls");
 			return;
 		}
-		if (event.type === "messageStart") this.contextProbe?.refresh();
+		if (event.type === "messageStart") {
+			this.contextProbe?.refresh();
+			this.messageIntentStart = this.turn.getIntents().length;
+			// Nothing is waiting here (checked just above): the new message's calls must not be
+			// matched against an earlier message's emptied batch, even when MCP is early.
+			this.sourceComplete = false;
+		}
 		this.turn.handle(event);
 		if (this.turn.finished) { this.kill(); return; }
 		if (event.type === "messageStop" && this.turn.waitingForAdmission) {
 			const intents = this.turn.getIntents();
-			// Only rejected bare calls: keep the turn open for the model's retry in its next message.
-			if (intents.length === 0 && this.turn.skippedBareCall) return;
-			if (intents.length === 0 || new Set(intents.map((call) => call.id)).size !== intents.length) {
+			const messageIntents = intents.slice(this.messageIntentStart);
+			const usable = messageIntents.filter((call) => !this.invalidInputIds.has(call.id));
+			// Only calls the CLI rejected (bare names, unusable input): keep the turn open for the
+			// model's retry in its next message.
+			if (usable.length === 0 && (this.turn.skippedBareCall || messageIntents.length > 0)) return;
+			if (messageIntents.length === 0 || new Set(intents.map((call) => call.id)).size !== intents.length) {
 				this.fail("claude CLI emitted an invalid tool batch");
 				return;
 			}
-			this.sourceCalls = intents.filter((call) => !this.cancelledIds.has(call.id));
+			this.sourceCalls = usable.filter((call) => !this.cancelledIds.has(call.id));
 			this.sourceComplete = true;
 			this.flushAdmissions();
 		}

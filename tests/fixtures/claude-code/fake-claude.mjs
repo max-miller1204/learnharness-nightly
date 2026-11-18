@@ -8,6 +8,7 @@
  *   {"fake":"start-call",...}                start the same request without waiting for its result
  *   {"fake":"cancel-call","id":"toolu_..."} cancel an individual pending MCP request
  *   {"fake":"checkpoint"}                   notify the parent after previous sends finish
+ *   {"fake":"sleep","ms":200}                pause, so a started MCP request reaches the bridge before the next line
  *   {"fake":"wait-for-message"}              pause until the test releases the child over IPC
  *   {"fake":"ignore-term"}                   ignore SIGTERM to exercise kill escalation
  *   {"fake":"reply"}                         stream one assistant message whose text is every result so far, joined by " | "
@@ -94,6 +95,11 @@ for (const line of lines) {
 		cancelled.add(directive.id);
 		controllers.get(directive.id)?.abort("cancelled by fake CLI");
 		await lastSend;
+		continue;
+	}
+	if (directive.fake === "sleep") {
+		await lastSend;
+		await new Promise((resolve) => setTimeout(resolve, directive.ms));
 		continue;
 	}
 	if (directive.fake === "checkpoint") {
