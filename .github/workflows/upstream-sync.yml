@@ -70,7 +70,7 @@ jobs:
           if git rev-parse -q --verify "refs/remotes/origin/${MIRROR_BRANCH}" >/dev/null; then
             base="refs/remotes/origin/${MIRROR_BRANCH}"
           else
-            base=$(git merge-base origin/main "$upstream")
+            base=$(git merge-base origin/main "$upstream") || { echo "::error::No ${MIRROR_BRANCH} branch and no history shared with upstream to compare .github/ against."; exit 1; }
           fi
           changes=$(git diff --no-renames --name-only "$base" "$upstream" -- .github)
           if [ -n "$changes" ] && [ "${ALLOW_GITHUB_CHANGES:-}" != true ]; then

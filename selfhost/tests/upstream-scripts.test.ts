@@ -53,12 +53,18 @@ beforeEach(() => {
 	const stub = (name: string, text: string) => fs.writeFileSync(path.join(dir, "bin", name), text, { mode: 0o755 });
 	stub("gh", GH_STUB);
 	stub("jq", JQ_WRAPPER);
-	// git logs argv to gitcalls/<n> and answers `diff` from git-diff.txt (the
-	// files an imported PR changes).
+	// git logs argv to gitcalls/<n> and answers a three-dot `diff` from
+	// git-diff.txt (the files an imported PR changes) and a two-ref one from
+	// git-diff-tree.txt (how its .github/ differs from upstream-main).
 	stub("git", `#!/usr/bin/env bash
 n=$(( $(find "$STUB_DIR/gitcalls" -type f | wc -l) + 1 ))
 printf '%s\\0' "$@" >"$STUB_DIR/gitcalls/$n"
-if [ "$1" = diff ] && [ -f "$STUB_DIR/git-diff.txt" ]; then cat "$STUB_DIR/git-diff.txt"; fi
+if [ "$1" = diff ]; then
+	case "$*" in
+		*...*) [ -f "$STUB_DIR/git-diff.txt" ] && cat "$STUB_DIR/git-diff.txt" ;;
+		*) [ -f "$STUB_DIR/git-diff-tree.txt" ] && cat "$STUB_DIR/git-diff-tree.txt" ;;
+	esac
+fi
 exit 0
 `);
 	stub("sleep", "#!/usr/bin/env bash\nexit 0\n");
@@ -299,16 +305,32 @@ describe("import-upstream-pr.sh", () => {
 		assert.match(refused.stderr, /re-run with allow_github_changes/);
 		assert.ok(!refused.calls.some((c) => c.args[0] === "pr"), JSON.stringify(refused.calls));
 		const git = gitCalls();
-		assert.deepEqual(git.map((args) => args[0]), ["fetch", "diff"]);
+		assert.deepEqual(git.map((args) => args[0]), ["fetch", "fetch", "diff", "diff"]);
 		assert.deepEqual(git[0]?.slice(-2), ["+refs/pull/7/head:refs/remotes/upstream-pr/7", "+refs/heads/main:refs/remotes/upstream-base/7"]);
-		assert.deepEqual(git[1], ["diff", "--no-renames", "--name-only", "refs/remotes/upstream-base/7...refs/remotes/upstream-pr/7", "--", ".github"]);
+		assert.deepEqual(git[1]?.slice(-2), [`https://github.com/${FORK}.git`, "+refs/heads/upstream-main:refs/remotes/upstream-reviewed/main"]);
+		assert.deepEqual(git[2], ["diff", "--no-renames", "--name-only", "refs/remotes/upstream-base/7...refs/remotes/upstream-pr/7", "--", ".github"]);
+		assert.deepEqual(git[3], ["diff", "--no-renames", "--name-only", "refs/remotes/upstream-reviewed/main", "refs/remotes/upstream-pr/7", "--", ".github"]);
 		for (const allow of ["1", "true"]) {
 			fs.rmSync(path.join(dir, "gitcalls"), { recursive: true });
 			fs.mkdirSync(path.join(dir, "gitcalls"));
 			const allowed = run("import-upstream-pr.sh", ["7"], { ALLOW_GITHUB_CHANGES: allow });
 			assert.equal(allowed.status, 0, allowed.stderr);
-			assert.deepEqual(gitCalls().map((args) => args.slice(0, 2)), [["fetch", "--no-tags"], ["diff", "--no-renames"], ["push", "--force"]]);
+			assert.deepEqual(gitCalls().map((args) => args.slice(0, 2)), [["fetch", "--no-tags"], ["fetch", "--no-tags"], ["diff", "--no-renames"], ["diff", "--no-renames"], ["push", "--force"]]);
 		}
+	});
+
+	it("refuses a branch whose .github/ differs from upstream-main, even when the PR doesn't touch it", () => {
+		fixture(`repos/${UP}/pulls/7`, pr("desc"));
+		fs.writeFileSync(path.join(dir, "git-diff-tree.txt"), ".github/workflows/new-upstream.yml\n");
+		const refused = run("import-upstream-pr.sh", ["7"]);
+		assert.equal(refused.status, 1);
+		assert.doesNotMatch(refused.stderr, /Upstream PR 7 changes \.github\//);
+		assert.match(refused.stderr, /Upstream PR 7's branch has a \.github\/ that differs from upstream-main [^\n]*:\n {2}\.github\/workflows\/new-upstream\.yml\n/);
+		assert.ok(!gitCalls().some((args) => args[0] === "push"));
+		assert.ok(!refused.calls.some((c) => c.args[0] === "pr"));
+		const allowed = run("import-upstream-pr.sh", ["7"], { ALLOW_GITHUB_CHANGES: "1" });
+		assert.equal(allowed.status, 0, allowed.stderr);
+		assert.ok(gitCalls().some((args) => args[0] === "push"));
 	});
 
 	it("fences a hostile description so nothing inside can close the block", () => {

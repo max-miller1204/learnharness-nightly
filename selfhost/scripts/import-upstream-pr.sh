@@ -38,14 +38,26 @@ description=$(jq -r -L "$here" 'include "fence"; .body | fence("(none)")' <<<"$i
 git fetch --no-tags "https://github.com/${UPSTREAM_REPO}.git" \
 	"+refs/pull/${N}/head:refs/remotes/upstream-pr/${N}" \
 	"+refs/heads/${base_ref}:refs/remotes/upstream-base/${N}"
-# What the PR changes, checked on the exact commit pushed below. This covers
-# the PR's own changes only: the rest of the branch's .github/ is upstream's at
-# the PR's base, which today runs nothing with secrets on a branch push or PR.
+# The fork's reviewed upstream: what the upstream sync last pushed to
+# upstream-main (it pauses on unreviewed upstream .github/ changes).
+git fetch --no-tags "https://github.com/${FORK_REPO}.git" \
+	"+refs/heads/upstream-main:refs/remotes/upstream-reviewed/main"
+# Checked on the exact commit pushed below: the PR's own .github/ changes, and
+# any other way the pushed branch's .github/ differs from upstream-main (say,
+# upstream changed it on main after the sync paused). The branch's workflows
+# run here as soon as it's pushed.
 github_changes=$(git diff --no-renames --name-only "refs/remotes/upstream-base/${N}...refs/remotes/upstream-pr/${N}" -- .github)
-if [ -n "$github_changes" ] && [ "${ALLOW_GITHUB_CHANGES:-}" != 1 ] && [ "${ALLOW_GITHUB_CHANGES:-}" != true ]; then
+unreviewed=$(git diff --no-renames --name-only "refs/remotes/upstream-reviewed/main" "refs/remotes/upstream-pr/${N}" -- .github)
+if { [ -n "$github_changes" ] || [ -n "$unreviewed" ]; } && [ "${ALLOW_GITHUB_CHANGES:-}" != 1 ] && [ "${ALLOW_GITHUB_CHANGES:-}" != true ]; then
 	{
-		echo "Upstream PR ${N} changes .github/:"
-		sed 's/^/  /' <<<"$github_changes"
+		if [ -n "$github_changes" ]; then
+			echo "Upstream PR ${N} changes .github/:"
+			sed 's/^/  /' <<<"$github_changes"
+		fi
+		if [ -n "$unreviewed" ]; then
+			echo "Upstream PR ${N}'s branch has a .github/ that differs from upstream-main (upstream changes the sync hasn't taken yet, or ones its older base lacks):"
+			sed 's/^/  /' <<<"$unreviewed"
+		fi
 		echo "Its workflows would run here with this repository's secrets. Read its diff (${url}/files), then re-run with allow_github_changes (ALLOW_GITHUB_CHANGES=1 locally)."
 	} >&2
 	exit 1

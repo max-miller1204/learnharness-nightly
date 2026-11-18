@@ -8,7 +8,8 @@ Status: approved by the owner on 2026-11-17 (the hardening lane, rescoped by the
 2. **The App key is main-only.** `FORK_BOT_CLIENT_ID` and `FORK_BOT_PRIVATE_KEY` move into one environment, `fork-bot`, whose deployment branch rule allows `main` only. The four jobs that mint the App token use it: upstream sync (schedule, dispatch), import (dispatch), issue mirror (schedule, dispatch), Dependabot auto-merge (`pull_request_target`, which GitHub evaluates against the default branch). A workflow on any other branch, including an upstream branch the bot pushed, can't read the key. Cost: these workflows can't be test-run from a branch any more.
 3. **The sync pauses on upstream `.github/` changes.** When upstream main's `.github/` differs from the fork's current `upstream-main`, the hourly run pushes nothing and doesn't touch the Sync PR. It ends red, listing the files and how to approve. After reading the diff, run **Actions → Upstream sync** with **allow_github_changes** ticked (as for the import).
 4. **`OPENROUTER_API_KEY` stays a repository secret** (accepted risk). The owner puts a spending cap on the key at OpenRouter. PR-Agent is unchanged.
-5. Everything else from the hardening list is dropped (no `Fixes #N` scan, no low items).
+5. **Added after the review round:** the PR import also refuses a branch whose `.github/` differs from the fork's `upstream-main` (`git diff --name-only upstream-main <PR head> -- .github`), not only the PR's own `.github/` changes. Otherwise an import based on upstream changes the paused sync is holding back would push them. Same `allow_github_changes` flag. Real upstream PRs: 757 passes, 729 is refused.
+6. Everything else from the hardening list is dropped (no `Fixes #N` scan, no low items).
 
 ## Small choices (veto any)
 
