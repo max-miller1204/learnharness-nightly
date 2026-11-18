@@ -44,7 +44,7 @@ import { enableLinger, lingerEnabled, repointService, serviceManager, shimPath, 
 import { Supervisor, type UpdateRequestMarker } from "./src/supervisor.ts";
 import { serveOff, serveOn, tailscaleAvailable, tailscaleSelf } from "./src/tailscale.ts";
 import { pruneVersions } from "./src/versions.ts";
-import { PREVIEW_START, parsePrNumber, previewConfig, previewFeedUrl, previewHome, previewLockPath, previewPidPath, previewServeMarker } from "./src/preview.ts";
+import { PREVIEW_START, isPreviewServer, parsePrNumber, processStartTime, previewConfig, previewFeedUrl, previewHome, previewLockPath, previewPidPath, previewServeMarker } from "./src/preview.ts";
 import { QrCode } from "./src/qr.ts";
 
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -634,15 +634,18 @@ async function previewCommand(flags: Flags): Promise<void> {
 	const pidFile = previewPidPath(home, pr);
 	/**
 	 * A preview server whose launcher died (OOM, kill -9) keeps running. Stop
-	 * it before its folder goes. It's ours only if its environment names this
-	 * preview's home (Next renames the process, so not its command line).
+	 * it before its folder goes, but only if it is still this preview's server
+	 * (isPreviewServer), never a process that reused its pid.
 	 */
 	const stopOrphan = async () => {
 		let pid: number;
-		try { pid = Number(fs.readFileSync(pidFile, "utf8").trim()); } catch { return; }
-		const ours = () => {
-			try { return fs.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(`LH_HOME=${pHome}`); } catch { return false; }
-		};
+		let started: string | undefined;
+		try {
+			const lines = fs.readFileSync(pidFile, "utf8").split("\n");
+			pid = Number(lines[0]?.trim());
+			started = lines[1]?.trim() || undefined;
+		} catch { return; }
+		const ours = () => isPreviewServer(pid, pHome, started);
 		const valid = Number.isInteger(pid) && pid > 1;
 		const stopped = valid && ours();
 		if (stopped) {
@@ -757,7 +760,9 @@ async function previewCommand(flags: Flags): Promise<void> {
 	child.stdin?.on("error", () => { /* the child exit handler reports startup errors */ });
 	if (child.pid) {
 		try {
-			fs.writeFileSync(pidFile, `${child.pid}\n`, { mode: 0o600, flush: true });
+			// The server waits for "start", so it is still the process we spawned.
+			const started = process.platform === "linux" ? undefined : processStartTime(child.pid);
+			fs.writeFileSync(pidFile, `${child.pid}\n${started ? `${started}\n` : ""}`, { mode: 0o600, flush: true });
 			child.stdin?.end("start");
 		} catch (error) {
 			return abort(`Could not record the preview server's PID: ${error instanceof Error ? error.message : String(error)}`);
