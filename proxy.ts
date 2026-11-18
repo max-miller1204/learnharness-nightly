@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { authDataDir, authenticate, CREDENTIAL_HEADERS } from "./src/server/auth.ts";
-import { touchLastSeen } from "./selfhost/src/auth-store.ts";
+import { authDataDir, authenticate, CREDENTIAL_HEADERS, sessionCookie } from "./src/server/auth.ts";
+import { NEVER_EXPIRES, touchLastSeen } from "./selfhost/src/auth-store.ts";
 
 /** Paths anyone may load: the pairing screen, the credential exchanges, and
  * the health check that already-installed launchers call without a
@@ -19,13 +19,24 @@ export function proxy(request: NextRequest) {
 	if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
 	const result = authenticate(request);
 	if (result.ok) {
-		try { touchLastSeen(authDataDir(), result.session.id); } catch { /* last-seen is best effort */ }
-		return NextResponse.next();
+		let seen = false;
+		try { seen = touchLastSeen(authDataDir(), result.session.id); } catch { /* last-seen is best effort */ }
+		const response = NextResponse.next();
+		// Sessions never expire but browsers drop a cookie after at most 400
+		// days, so a cookie in use is set again, as often as last seen is.
+		if (seen && result.via === "cookie" && result.session.expiresAt === NEVER_EXPIRES) {
+			response.headers.append("Set-Cookie", sessionCookie(request, result.token));
+		}
+		return response;
 	}
 	if (isApiPath(pathname)) {
 		return NextResponse.json({ error: result.error }, { status: result.status, headers: CREDENTIAL_HEADERS });
 	}
+	// Next normalizes the loopback hostname to localhost. If its router
+	// sees a different origin, it fetches the rewrite over the network.
+	// That hop uses the local HTTP listener, even behind a TLS proxy.
 	const pair = request.nextUrl.clone();
+	pair.protocol = "http:";
 	pair.pathname = "/pair";
 	pair.search = "";
 	return NextResponse.rewrite(pair);
