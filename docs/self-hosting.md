@@ -62,7 +62,7 @@ The launcher itself also updates by itself. An old launcher keeps working with n
 
 ## Signing in (pairing)
 
-Every request needs a session, even from the server machine itself. `lh up` prints a one-time pairing link and its QR code, and opens the link in a browser on the server machine when it can. For any other device:
+Every request needs a session, even from the server machine itself. `lh up` prints a one-time pairing link and its QR code, and opens the link in a browser on the server machine when it can (`--no-open` skips that). For any other device:
 
 ```sh
 lh pair [--label "My phone"]
@@ -74,7 +74,7 @@ A paired browser stays signed in for 30 days. On a signed-in device, **Settings 
 
 The login store is `userdata/data/auth/`. Backups skip it and `lh restore` keeps it, so restoring old data never brings back a revoked device. Anyone who can write that folder can sign in, the way `lh pair` does.
 
-**Upgrading from a version without login:** after the update, an open browser shows the pairing screen on its next page load. Run `lh pair` (or `lh up`) on the server machine and open the link. If you only use a phone, you need a shell on the server once, for example over SSH.
+**Upgrading from a version without login:** after the update, an open browser shows the pairing screen on its next page load. Run `lh pair` (or `lh up`) on the server machine and open the link. If you only use a phone, you need a shell on the server once, for example over SSH. Until the service next restarts, the previous launcher stays in charge, and backups it takes still contain the login store; nothing to do, it switches over on its own.
 
 Design and trade-offs: [docs/specs/login-pairing.md](specs/login-pairing.md).
 

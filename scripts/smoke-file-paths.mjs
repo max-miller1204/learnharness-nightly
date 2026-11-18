@@ -12,6 +12,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import puppeteer from "puppeteer-core";
+import { signFetch, smokeToken } from "./lib/smoke-auth.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "lh-file-paths-"));
@@ -208,14 +209,16 @@ try {
 	const fonts = Object.fromEntries(["JetBrains Mono", "Source Sans 3"].map(family => [getGoogleFontsUrl(family, getFontAxes(family, ["variable"], ["normal"]), "swap"), `@font-face { font-family: '${family}'; src: local('Arial'); font-weight: 100 900; }`]));
 	fs.writeFileSync(path.join(home, "fonts.cjs"), `module.exports = ${JSON.stringify(fonts)};\n`);
 	const port = await freePort(); origin = `http://127.0.0.1:${port}`;
-	const env = { PATH: process.env.PATH, HOME: home, TMPDIR: home, NODE_ENV: "development", LH_DATA_DIR: path.join(home, "data"), LH_AUTH_FILE: path.join(home, "auth.json"), LH_IGNORE_ENV_KEYS: "1", NEXT_TELEMETRY_DISABLED: "1", NEXT_FONT_GOOGLE_MOCKED_RESPONSES: path.join(home, "fonts.cjs") };
+	// Every request needs a login (docs/specs/login-pairing.md).
+	const token = smokeToken(path.join(home, "data")); signFetch(origin, token);
+	const env = { PATH: process.env.PATH, HOME: home, TMPDIR: home, PORT: String(port), NODE_ENV: "development", LH_DATA_DIR: path.join(home, "data"), LH_AUTH_FILE: path.join(home, "auth.json"), LH_IGNORE_ENV_KEYS: "1", NEXT_TELEMETRY_DISABLED: "1", NEXT_FONT_GOOGLE_MOCKED_RESPONSES: path.join(home, "fonts.cjs") };
 	const server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "dev", "--hostname", "127.0.0.1", "--port", String(port)], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] }); children.push(server);
 	const captureServer = data => { serverLogs = (serverLogs + data).slice(-28000); };
 	server.stdout.on("data", captureServer); server.stderr.on("data", captureServer);
 	await startup(server, () => serverLogs, /Ready in/);
 	if (!process.argv.includes("--desktop-only")) {
 	const chrome = await puppeteer.launch({ executablePath: process.env.LH_TEST_CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: true, userDataDir: path.join(home, "chrome-profile"), env, args: ["--disable-background-networking", "--disable-sync", "--no-first-run", "--disable-default-apps"] }); browsers.push(chrome);
-	page = await chrome.newPage(); await page.setViewport({ width: 1280, height: 900 }); await instrument(page);
+	page = await chrome.newPage(); await page.setExtraHTTPHeaders({ authorization: `Bearer ${token}` }); await page.setViewport({ width: 1280, height: 900 }); await instrument(page);
 	await chrome.defaultBrowserContext().overridePermissions(origin, ["clipboard-read", "clipboard-write", "clipboard-sanitized-write"]);
 	const token = "`/synthetic/course notes.pdf`";
 	for (const route of ["/", "/chat/new"]) {
@@ -381,6 +384,8 @@ try {
 	const endpoint = electronLogs.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1];
 	const desktop = await puppeteer.connect({ browserWSEndpoint: endpoint }); browsers.push(desktop);
 	const desktopPage = await desktop.waitForTarget(target => target.type() === "page").then(target => target.page());
+	// desktop:dev has no launch secret, so its window pairs like a browser: give it the session cookie.
+	await desktopPage.setCookie({ name: `lh_session_${port}`, value: token, url: origin, httpOnly: true, sameSite: "Lax" });
 	await instrument(desktopPage); page = desktopPage;
 	await open(desktopPage, "/chat/new");
 	assert.equal(await desktopPage.evaluate(() => typeof window.lh?.getPathForFile), "function");

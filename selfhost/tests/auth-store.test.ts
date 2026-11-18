@@ -123,6 +123,26 @@ describe("sessions", () => {
 	});
 });
 
+describe("lock and damage handling", () => {
+	it("last-seen never waits on a held lock (it's on the request path)", () => {
+		const { session } = issueSession(data, { method: "pairing", client });
+		fs.writeFileSync(path.join(authDir(data), ".lock"), "999999\n");
+		const started = Date.now();
+		touchLastSeen(data, session.id);
+		assert.ok(Date.now() - started < 1000, "returned at once");
+		assert.equal(listSessions(data)[0]?.lastSeenAt, undefined, "skipped this time");
+		fs.rmSync(path.join(authDir(data), ".lock"));
+	});
+
+	it("a damaged sessions.json fails closed without burning the code", () => {
+		const link = createPairingLink(data);
+		fs.writeFileSync(path.join(authDir(data), "sessions.json"), "{ not json");
+		assert.throws(() => claimPairingCode(data, link.code, client));
+		fs.rmSync(path.join(authDir(data), "sessions.json"));
+		assert.ok(claimPairingCode(data, link.code, client).ok, "the code still works once the file is fixed");
+	});
+});
+
 describe("backups and the login store", () => {
 	it("snapshots skip data/auth and a restore keeps the live one", () => {
 		const dirs = layout(home);

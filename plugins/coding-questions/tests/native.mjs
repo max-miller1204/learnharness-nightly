@@ -13,6 +13,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer-core";
+import { signFetch, smokeToken } from "../../../scripts/lib/smoke-auth.mjs";
 
 const pluginRoot = fileURLToPath(new URL("../", import.meta.url));
 const checkout = path.resolve(pluginRoot, "../..");
@@ -194,6 +195,8 @@ try {
   const guard = path.join(scratch, "imports.mjs");
   fs.writeFileSync(guard, `import {registerHooks} from 'node:module';import {realpathSync} from 'node:fs';import {fileURLToPath} from 'node:url';import path from 'node:path';\nconst roots=${JSON.stringify([standalone, path.join(data, "plugins")])};registerHooks({resolve(specifier,context,next){const result=next(specifier,context);if(result.url.startsWith('file:')){const file=realpathSync(fileURLToPath(result.url));if(!roots.some(root=>file===root||file.startsWith(root+path.sep)))throw Error('Import escaped disposable payload: '+file)}return result}});\n`);
   const serverLog = fs.openSync(path.join(scratch, "server.log"), "w");
+  // Every request needs a login (docs/specs/login-pairing.md).
+  const authorization = `Bearer ${smokeToken(data)}`; signFetch(base, authorization.slice(7));
   child = spawn(runtime, ["--import", guard, path.join(standalone, "server.js")], { cwd: standalone, env: { ...cleanEnv, ELECTRON_RUN_AS_NODE: "1", HOSTNAME: "127.0.0.1", PORT: String(port) }, stdio: ["ignore", serverLog, serverLog] });
   fs.closeSync(serverLog);
   child.on("error", error => { fixtureError = error; });
@@ -220,7 +223,7 @@ try {
   assert.equal((await api("/api/custom-provider")).payload.authMode, "keyless");
   evidence.assertions.push("Public discovery defaults disabled; built product enabled; ETag/keyless provider uses loopback models endpoint only.");
   browser = await puppeteer.launch({ executablePath: chrome, headless: true, userDataDir: path.join(scratch, "chrome-profile"), env: cleanEnv, args: ["--disable-background-networking", "--disable-sync", "--no-first-run", "--no-default-browser-check"] });
-  page = await browser.newPage(); page.setDefaultTimeout(30_000);
+  page = await browser.newPage(); await page.setExtraHTTPHeaders({ authorization }); page.setDefaultTimeout(30_000);
   await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
   // Passive tripwire only: never click a microphone, acquire media, or exercise IME.
   await page.evaluateOnNewDocument(() => {

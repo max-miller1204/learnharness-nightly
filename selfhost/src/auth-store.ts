@@ -33,7 +33,8 @@ export const CLI_SESSION_TTL_MS = 5 * 60_000;
 export const LAST_SEEN_INTERVAL_MS = 60_000;
 const PRUNE_AFTER_MS = 30 * 24 * 60 * 60_000;
 const LOCK_STALE_MS = 10_000;
-const LOCK_WAIT_MS = 5_000;
+/** Longer than LOCK_STALE_MS, so a writer always outlasts a crashed one's lock. */
+const LOCK_WAIT_MS = 12_000;
 
 export type DeviceType = "desktop" | "mobile" | "tablet" | "bot" | "unknown";
 export type SessionMethod = "pairing" | "desktop" | "cli";
@@ -147,8 +148,23 @@ function readPairingFile(dataDir: string): PairingFile {
 
 const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-/** Run `fn` holding auth/.lock. A lock older than 10 seconds is stale. */
-function withLock<T>(dataDir: string, fn: () => T): T {
+/** Take over a stale lock: move it aside under a unique name, and put it
+ * back if it turned out to be a fresh one another writer just took. */
+function breakStaleLock(lock: string): void {
+	const aside = `${lock}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.stale`;
+	try { fs.renameSync(lock, aside); } catch { return; }
+	try {
+		if (Date.now() - fs.statSync(aside).mtimeMs <= LOCK_STALE_MS) {
+			try { fs.linkSync(aside, lock); } catch { /* another writer holds it now */ }
+		}
+	} finally {
+		fs.rmSync(aside, { force: true });
+	}
+}
+
+/** Run `fn` holding auth/.lock. A lock older than 10 seconds is stale. With
+ * `wait: false` it gives up at once (undefined) when the lock is held. */
+function withLock<T>(dataDir: string, fn: () => T, options: { wait?: boolean } = {}): T {
 	const f = files(dataDir);
 	ensureDir(f.dir);
 	const deadline = Date.now() + LOCK_WAIT_MS;
@@ -158,21 +174,26 @@ function withLock<T>(dataDir: string, fn: () => T): T {
 			fd = fs.openSync(f.lock, "wx", 0o600);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-			try {
-				if (Date.now() - fs.statSync(f.lock).mtimeMs > LOCK_STALE_MS) { fs.rmSync(f.lock, { force: true }); continue; }
-			} catch { continue; }
+			let age = 0;
+			try { age = Date.now() - fs.statSync(f.lock).mtimeMs; } catch { continue; }
+			if (age > LOCK_STALE_MS) { breakStaleLock(f.lock); continue; }
+			if (options.wait === false) throw new LockBusy();
 			if (Date.now() > deadline) throw new Error(`The login store is locked (${f.lock}).`);
 			sleepSync(15);
 		}
 	}
+	const held = fs.fstatSync(fd).ino;
 	try {
 		fs.writeSync(fd, `${process.pid}\n`);
 		return fn();
 	} finally {
 		fs.closeSync(fd);
-		fs.rmSync(f.lock, { force: true });
+		// Only remove our own lock, never one a later writer took over.
+		try { if (fs.statSync(f.lock).ino === held) fs.rmSync(f.lock, { force: true }); } catch { /* already gone */ }
 	}
 }
+
+class LockBusy extends Error {}
 
 function writeSessions(dataDir: string, sessions: SessionRecord[], now: number): void {
 	const kept = sessions.filter((s) => {
@@ -305,6 +326,8 @@ export function claimPairingCode(dataDir: string, input: string, client: ClientI
 	const hash = hashCode(code);
 	return withLock(dataDir, () => {
 		const links = readPairingFile(dataDir).links;
+		// Read sessions first: a damaged sessions.json must not burn the code.
+		const sessions = readSessionsFile(dataDir).sessions;
 		const link = links.find((l) => l.codeHash.length === hash.length && crypto.timingSafeEqual(Buffer.from(l.codeHash), Buffer.from(hash)));
 		if (!link) return { ok: false, reason: "invalid" } as const;
 		if (link.consumedAt) return { ok: false, reason: "used" } as const;
@@ -312,7 +335,7 @@ export function claimPairingCode(dataDir: string, input: string, client: ClientI
 		writePairing(dataDir, links.map((l) => (l === link ? { ...l, consumedAt: new Date(now).toISOString() } : l)), now);
 		const label = client.label ?? link.label;
 		const session = newSession("pairing", { ...client, ...(label ? { label } : {}) }, now, SESSION_TTL_MS);
-		writeSessions(dataDir, [...readSessionsFile(dataDir).sessions, session], now);
+		writeSessions(dataDir, [...sessions, session], now);
 		return { ok: true, token: mintToken(dataDir, session), session } as const;
 	});
 }
@@ -395,15 +418,18 @@ export function revokeOthers(dataDir: string, currentId: string, options: { now?
 	});
 }
 
-/** Record that a session was used, at most once a minute. */
+/** Record that a session was used, at most once a minute. On the request
+ * path, so it never waits for the lock: a busy store just skips this time. */
 export function touchLastSeen(dataDir: string, id: string, options: { now?: number } = {}): void {
 	const now = options.now ?? Date.now();
 	const fresh = (s: SessionRecord | undefined) => !s || (s.lastSeenAt !== undefined && now - Date.parse(s.lastSeenAt) < LAST_SEEN_INTERVAL_MS);
 	if (fresh(readSessionsFile(dataDir).sessions.find((s) => s.id === id))) return;
-	withLock(dataDir, () => {
+	try { withLock(dataDir, () => {
 		const sessions = readSessionsFile(dataDir).sessions;
 		const target = sessions.find((s) => s.id === id);
 		if (fresh(target) || !target || !active(target, now)) return;
 		writeSessions(dataDir, sessions.map((s) => (s === target ? { ...s, lastSeenAt: new Date(now).toISOString() } : s)), now);
-	});
+	}, { wait: false }); } catch (error) {
+		if (!(error instanceof LockBusy)) throw error;
+	}
 }
