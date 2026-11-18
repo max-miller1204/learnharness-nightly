@@ -105,8 +105,7 @@ function Part({ part, context }: { part: LhViewPart; context: PartContext }) {
   if (part.state === "output-available") {
     const answer = part.output as Partial<QuestionAnswerData> | undefined;
     if (answer?.questionText && (answer.kind === "quiz" || answer.kind === "ask" || answer.kind === "explain")) {
-      const response = answer.dismissed ? "Skipped" : answer.dontKnow ? "I don’t know" :
-        [answer.text, ...answer.answers?.map(({ label }) => label) ?? [], answer.other].filter(Boolean).join(", ");
+      const status = answer.dismissed ? "Skipped" : answer.dontKnow ? "I don’t know" : "";
       const thinking = answer.thinking ?? answer.note;
       return (
         <View style={{ gap: space.sm }}>
@@ -114,7 +113,11 @@ function Part({ part, context }: { part: LhViewPart; context: PartContext }) {
           {!answer.dismissed && !!answer.readingThinking && <ThinkingRow label="Your thinking" text={answer.readingThinking} />}
           <View style={s.card}>
             <Markdown text={answer.questionText} />
-            {!!response && <Text selectable style={s.prose}>{response}</Text>}
+            {!!status && <Text selectable style={s.prose}>{status}</Text>}
+            {/* The learner's own words stay plain; the chosen options render math like the question (answered-card.tsx). */}
+            {!status && !!answer.text && <Text selectable style={s.prose}>{answer.text}</Text>}
+            {!status && answer.answers?.map(({ label }, index) => <Markdown key={index} text={label} />)}
+            {!status && !!answer.other && <Text selectable style={s.prose}>{answer.other}</Text>}
             {typeof answer.correct === "boolean" && !answer.dismissed && !answer.dontKnow &&
               <Text style={[s.label, { color: answer.correct ? c.success : c.error }]}>{answer.correct ? "Correct" : "Incorrect"}</Text>}
             {!!answer.explanation && <Markdown text={answer.explanation} />}

@@ -109,6 +109,14 @@ test("only parsed math opts a message into the WebView", () => {
   assert.equal(parseMarkdown("> Display math:\n> \\[x=2\\]").hasMath, true);
 });
 
+test("a quiz choice label from the TestFlight report renders its math", () => {
+  const parsed = parseMarkdown("No, $P\\to Q$ is blocked.");
+  assert.equal(parsed.hasMath, true);
+  const html = renderMarkdown(parsed);
+  assert.match(html, /<math/);
+  assert.doesNotMatch(html, /\$/);
+});
+
 test("only HTTPS links leave the transcript through the confirmation handler", () => {
   const parsed = parseMarkdown("https://example.test/source [HTTP](http://example.test) [local](/chat/one) [email](mailto:me@example.test)");
   const hrefs = parsed.tokens.flatMap(({ children }) => children ?? [])

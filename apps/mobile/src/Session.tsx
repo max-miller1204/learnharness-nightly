@@ -13,6 +13,7 @@ import { Transcript } from "./Transcript";
 import { Button, Label, Notice } from "./ui";
 import { fonts, radius, space, useTheme } from "./theme";
 import { revealOffset } from "./reveal";
+import { openSettle } from "./open-settle";
 import { checkNeedsReveal, livePlan, PHASE_LABEL, sessionPhase, skipAnswer, skipParked } from "./lesson";
 import { PlanScreen } from "./PlanScreen";
 import { useJobs } from "./use-jobs";
@@ -52,6 +53,9 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const started = useRef(false);
   const scroller = useRef<ComponentRef<typeof ScrollView>>(null);
   const nearBottom = useRef(true);
+  // On open the transcript stays hidden until its first layout settles at the bottom.
+  const [opened, setOpened] = useState(false);
+  const settling = useRef<ReturnType<typeof openSettle> | null>(null);
   const messages = record?.messages ?? EMPTY;
   const problem = activeProblemOf(messages);
   const question = pendingQuestionOf(messages);
@@ -80,6 +84,19 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const { refresh, submit } = session;
   const jobsSettled = useCallback(() => refresh(), [refresh]);
   const jobs = useJobs(api, id, active && lessonView, jobsRef, jobsSettled, connectionFault);
+
+  const loaded = !!record;
+  useEffect(() => {
+    if (!loaded || opened) return;
+    const settler = openSettle(() => {
+      scroller.current?.scrollToEnd({ animated: false });
+      nearBottom.current = true;
+      setOpened(true);
+    });
+    settling.current = settler;
+    return () => { settler.cancel(); settling.current = null; };
+  }, [loaded, opened]);
+  const hidden = loaded && !opened;
 
   useEffect(() => {
     reloadRef.current = refresh;
@@ -176,12 +193,20 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
           <Text style={[s.ui, { fontSize: 16 }]}>…</Text>
         </Button>}
       </View>
-      <ScrollView ref={scroller} style={{ flex: 1 }} contentContainerStyle={[s.section, { gap: space.lg }]}
+      {hidden && (
+        <View pointerEvents="none" style={[s.section, { position: "absolute", top: barHeight, left: 0, right: 0 }]}>
+          <Text style={s.muted}>Loading session…</Text>
+        </View>
+      )}
+      <ScrollView ref={scroller} style={{ flex: 1, opacity: hidden ? 0 : 1 }} contentContainerStyle={[s.section, { gap: space.lg }]}
         keyboardShouldPersistTaps="handled" scrollEventThrottle={100}
         onScroll={({ nativeEvent: { contentOffset, layoutMeasurement, contentSize } }) => {
-          nearBottom.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 100;
+          if (!settling.current) nearBottom.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 100;
         }}
-        onContentSizeChange={() => { if (nearBottom.current) scroller.current?.scrollToEnd({ animated: false }); }}>
+        onContentSizeChange={() => {
+          if (settling.current || nearBottom.current) scroller.current?.scrollToEnd({ animated: false });
+          settling.current?.changed();
+        }}>
         {session.loading && <Text style={s.muted}>Loading session…</Text>}
         <Transcript settled={settledView} tail={session.tail} api={api} chatId={id} jobs={jobs} liveHelpers={lessonView} openPlan={() => setPlanOpen(true)} />
         {busy && <Text accessibilityLiveRegion="polite" style={s.muted}>Reply in progress…</Text>}

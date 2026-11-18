@@ -54,26 +54,28 @@ function ConfidenceRail({ value, disabled, onChange }: { value: number; disabled
   );
 }
 
-/** The web dock's option row: a radio dot or check box, then the label. */
+/** The web dock's option row: a radio dot or check box, then the label,
+ *  rendered as markdown with math like the question (question-dock.tsx). */
 function Option({ label, multi, selected, disabled, onPress }: {
   label: string; multi: boolean; selected: boolean; disabled: boolean; onPress: () => void;
 }) {
-  const { c, s } = useTheme();
+  const { c } = useTheme();
   return (
-    <Pressable accessibilityRole="button" accessibilityState={{ disabled, selected }} disabled={disabled} onPress={onPress}
+    <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled, selected }} disabled={disabled} onPress={onPress}
       style={({ pressed }) => ({
         flexDirection: "row", alignItems: "flex-start", gap: space.md, paddingHorizontal: space.md, paddingVertical: space.sm,
         borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: selected ? c.primary : c.border,
         backgroundColor: selected || pressed ? c.hover : "transparent", opacity: disabled ? 0.5 : 1,
       })}>
       <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{
-        marginTop: 3, width: 16, height: 16, alignItems: "center", justifyContent: "center", borderWidth: 1,
+        marginTop: 4, width: 16, height: 16, alignItems: "center", justifyContent: "center", borderWidth: 1,
         borderRadius: multi ? radius.sm : 8, borderColor: selected ? c.primary : c.rail, backgroundColor: selected ? c.primary : "transparent",
       }}>
         {selected && (multi ? <Text style={{ color: c.onPrimary, fontSize: 12, lineHeight: 14 }}>✓</Text>
           : <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: c.onPrimary }} />)}
       </View>
-      <Text style={[s.prose, { flex: 1, fontSize: 14, lineHeight: 20 }]}>{label}</Text>
+      {/* The math view would take the tap, so the whole row stays the button. */}
+      <View pointerEvents="none" style={{ flex: 1 }}><Markdown text={label} /></View>
     </Pressable>
   );
 }
