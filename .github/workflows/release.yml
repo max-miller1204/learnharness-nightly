@@ -136,30 +136,30 @@ jobs:
       - run: node scripts/build-server.mjs
       - run: node scripts/smoke-server.mjs --electron
       - name: Validate macOS release secrets
+        id: mac_secrets
         if: github.event_name == 'push' && runner.os == 'macOS'
         env:
-          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
-            if [[ -z "${!name}" ]]; then
-              echo "::error::Missing signing/notarization secret: $name"
-              exit 1
-            fi
-          done
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_PEM: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: bash .github/scripts/prepare-macos-notary-key.sh
       - name: Signed and notarized macOS release → draft
         if: github.event_name == 'push' && runner.os == 'macOS'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ steps.mac_secrets.outputs.key_path }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: npx electron-builder ${{ matrix.builder_args }} --publish always -c.forceCodeSigning=true
+      - name: Remove the temporary notarization key
+        if: always() && steps.mac_secrets.outputs.key_path != ''
+        env:
+          KEY_PATH: ${{ steps.mac_secrets.outputs.key_path }}
+        run: rm -f -- "$KEY_PATH"
       - name: Windows/Linux release → draft
         if: github.event_name == 'push' && runner.os != 'macOS'
         env:
