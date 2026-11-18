@@ -33,6 +33,8 @@ test("shared search uses the bound OAuth account, preserves native sources, and 
 	};
 	let revision = 1;
 	let leases = 0;
+	let catalog = ["gpt-5", "gpt-6.2-astra", "gpt-5.6-luna", "gpt-6-luna"];
+	let expectedModel = "gpt-6-luna";
 	let beforeLease: (() => void) | undefined;
 	configureWebSubscriptionRuntime(async <T>(channel: string, op: string, fields: Record<string, unknown>) => {
 		assert.equal(channel, "lh:chatgpt");
@@ -41,12 +43,14 @@ test("shared search uses the bound OAuth account, preserves native sources, and 
 			case "status":
 				return { ...stamp, status: structuredClone(status) } as T;
 			case "models":
-				return { ...stamp, status: structuredClone(status), accountId: status.activeId, models: [{ id: "gpt-5", name: "Scratch model" }] } as T;
+				return { ...stamp, status: structuredClone(status), accountId: status.activeId, models: catalog.map((id) => ({
+					id, name: id, contextWindow: 500_000, input: ["text"], reasoningLevels: ["low"],
+				})) } as T;
 			case "lease":
 				leases++;
 				assert.equal(fields.background, true);
 				assert.equal(fields.expectedAccountId, first.id);
-				assert.equal(fields.selectedModelId, "gpt-5");
+				assert.equal(fields.selectedModelId, expectedModel);
 				beforeLease?.();
 				return { ...stamp, accountId: status.activeId, accessToken: "scratch-oauth-only" } as T;
 			default:
@@ -73,7 +77,8 @@ test("shared search uses the bound OAuth account, preserves native sources, and 
 		assert.equal(request.headers.get("authorization"), "Bearer scratch-oauth-only");
 		assert.equal(request.redirect, "error");
 		const body = await request.json();
-		assert.equal(body.model, "gpt-5");
+		assert.equal(body.model, expectedModel);
+		assert.equal(body.reasoning?.effort, "low");
 		assert.equal(body.store, false);
 		assert.equal(body.stream, true);
 		assert.deepEqual(body.tools, [{ type: "web_search", search_context_size: "low" }]);
@@ -136,11 +141,20 @@ test("shared search uses the bound OAuth account, preserves native sources, and 
 	assert.equal(urls.length, 5, "stale settings block even after the lease was requested");
 
 	select("selection-a-again");
+	beforeLease = undefined;
+	catalog = ["gpt-6.2-astra", "gpt-5", "gpt-5.6-luna"];
+	expectedModel = "gpt-5.6-luna";
+	revision++;
+	event = complete([native, cited]);
+	assert.deepEqual(await search(), [{ ...source, snippet: "Evidence" }], "the next smallest eligible model is selected when the best model is absent from the catalog");
+	catalog = ["gpt-5"];
+	revision++;
+	await assert.rejects(search, /No ChatGPT search model/);
 	first.connected = false;
 	status.activeId = null;
 	revision++;
 	await assert.rejects(search, /Connect ChatGPT/);
 	writeSettings({ version: 1, agent: { search: { engine: "xai-subscription" } } });
 	await assert.rejects(search, /Grok OAuth connection/);
-	assert.equal(urls.length, 5, "no failure may send a fallback request");
+	assert.equal(urls.length, 6, "no failure may send a fallback request");
 });

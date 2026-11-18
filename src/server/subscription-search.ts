@@ -1,3 +1,4 @@
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { chatGPTConnected, chatGPTModels, chatGPTStatus, refreshChatGPTStatus } from "../agent/chatgpt-bridge.ts";
 import { searchChatGPT } from "../agent/chatgpt-search.ts";
 import {
@@ -13,6 +14,22 @@ import { effectiveSettings } from "./stores.ts";
 const RESELECT = "The ChatGPT account selection changed. Reselect ChatGPT in Settings → Agent → Tools.";
 const BACKGROUND = "ChatGPT background use is off. Enable Allow background use for all ChatGPT accounts in Providers to use subscription search.";
 const CATALOG = "No ChatGPT search model is available for this account. Check the ChatGPT connection in Providers and retry.";
+
+// Account-visible models with documented Responses web search. Order by
+// OpenAI's published standard output token rate as a proxy for efficiency.
+// The OAuth catalog has no per-tool capability or plan usage ranking.
+const CHATGPT_SEARCH_MODELS = [
+	"gpt-6-luna",
+	"gpt-5.6-luna",
+	"gpt-6.1-terra",
+	"gpt-6.2-sol",
+	"gpt-6.1-sol",
+	"gpt-6-sol",
+	"gpt-5.6-terra",
+	"gpt-5.6-sol",
+	"gpt-6.2-astra",
+	"gpt-6-astra",
+];
 
 function chatGPTOption(): SubscriptionSearchOption {
 	const { activeId, accountSelection, accounts, available, allowBackgroundUse } = chatGPTStatus();
@@ -77,9 +94,13 @@ export function subscriptionSearchProvider(settings: SearchSettings & { engine: 
 				await refreshingCatalog;
 			}
 			requireSelection(accountId);
-			// Use the existing account catalog's provider order. Never try a
-			// different model, account, or billing route after a failed search.
-			const model = chatGPTModels().find(({ input }) => input.includes("text"));
+			const models = chatGPTModels();
+			let model: (typeof models)[number] | undefined;
+			for (const id of CHATGPT_SEARCH_MODELS) {
+				model = models.find((entry) =>
+					entry.id === id && entry.input.includes("text") && getSupportedThinkingLevels(entry).includes("low"));
+				if (model) break;
+			}
 			if (!model) throw new Error(CATALOG);
 			try {
 				return await searchChatGPT(model, query, count, (admittedAccountId) => {

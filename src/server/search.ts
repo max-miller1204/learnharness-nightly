@@ -277,8 +277,8 @@ export function resolveSearchEngineFor(
  *  mid-session activates on the next check (no restart). */
 export function searchStatus(): SearchStatus {
 	const search = effectiveSettings().agent.search;
-	const pin = search?.engine;
-	if (search && isSubscriptionSearchEngineId(pin)) {
+	const pin = search.engine;
+	if (isSubscriptionSearchEngineId(pin)) {
 		const reason = subscriptionSearchReason(search);
 		return reason
 			? { available: false, engine: null, reason }
