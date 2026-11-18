@@ -1,0 +1,101 @@
+{
+	"_comment": "Remote folder upload: the prober browses an uploaded folder through its opaque reference with ls, find, grep and read. Used by the remote-attachments recipe. Upload a folder holding week1/intro.md with the line PROVE-FOLDER-SKY and send a message containing 'zz-prove-it folder'.",
+	"models": [
+		"prove-strong",
+		"prove-cheap",
+		"prove-vision"
+	],
+	"rules": [
+		{
+			"id": "folder-ls",
+			"match": {
+				"lastRole": "user",
+				"lastIncludes": "zz-prove-it folder",
+				"hasTool": "ls"
+			},
+			"times": 1,
+			"reply": {
+				"toolCalls": [
+					{
+						"name": "ls",
+						"arguments": {
+							"path": "{{attachmentRef}}"
+						}
+					}
+				]
+			}
+		},
+		{
+			"id": "folder-find",
+			"match": {
+				"lastRole": "tool",
+				"lastIncludes": "week1/",
+				"hasTool": "find"
+			},
+			"times": 1,
+			"reply": {
+				"toolCalls": [
+					{
+						"name": "find",
+						"arguments": {
+							"path": "{{attachmentRef}}",
+							"pattern": "*.md"
+						}
+					}
+				]
+			}
+		},
+		{
+			"id": "folder-grep",
+			"match": {
+				"lastRole": "tool",
+				"lastIncludes": "week1/intro.md",
+				"hasTool": "grep"
+			},
+			"times": 1,
+			"reply": {
+				"toolCalls": [
+					{
+						"name": "grep",
+						"arguments": {
+							"path": "{{attachmentRef}}",
+							"pattern": "PROVE-FOLDER"
+						}
+					}
+				]
+			}
+		},
+		{
+			"id": "folder-read",
+			"match": {
+				"lastRole": "tool",
+				"lastIncludes": "PROVE-FOLDER",
+				"hasTool": "read"
+			},
+			"times": 1,
+			"reply": {
+				"toolCalls": [
+					{
+						"name": "read",
+						"arguments": {
+							"path": "{{attachmentRef}}/week1/intro.md"
+						}
+					}
+				]
+			}
+		},
+		{
+			"id": "folder-answer",
+			"match": {
+				"lastRole": "tool"
+			},
+			"times": 1,
+			"reply": {
+				"text": "zz-prove-it folder answer: {{lastText}}"
+			}
+		}
+	],
+	"fallback": {
+		"text": "zz-prove-it fallback reply."
+	}
+}

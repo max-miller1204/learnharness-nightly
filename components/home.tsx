@@ -257,7 +257,7 @@ export function Home({
 						void start();
 					}}
 				>
-					<DraftAttachmentChips draft={attachments} />
+					<DraftAttachmentChips draft={attachments} disabled={busy} />
 					<div className="flex items-end gap-1.5 p-1.5">
 					<PathInput
 						ref={topicInputRef}
@@ -288,7 +288,7 @@ export function Home({
 						autoFocus
 						className="field-sizing-content lh-input max-h-48 min-h-10 flex-1 resize-none bg-transparent px-2.5 py-2 outline-none placeholder:text-muted-foreground"
 					/>
-					<AttachFilesButton editorRef={topicInputRef} upload={attachments.enabled ? attachments.select : undefined} uploadDisabled={busy} />
+					<AttachFilesButton editorRef={topicInputRef} upload={attachments.enabled ? attachments.select : undefined} uploadFolder={attachments.folders ? attachments.selectFolder : undefined} uploadDisabled={busy} />
 					{/* No tooltip on the start square — the ↵ glyph is the
 					    affordance (owner, subtlety round 2026-09-25). */}
 					<button

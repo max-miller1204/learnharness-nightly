@@ -53,6 +53,7 @@ export interface ProtocolIncompatibleResponse {
 
 /** Public, no credential. A client reads it before pairing and on every connect. */
 export const ATTACHMENT_UPLOADS = "attachment-uploads-v1";
+export const ATTACHMENT_FOLDERS = "attachment-folders-v1";
 
 export const SERVER_INFO_PATH = "/.well-known/learnharness/server";
 
@@ -124,6 +125,8 @@ export const PROTOCOL_ROUTES = {
 	/** attachment-uploads-v1 */
 	attachments: "/api/attachments",
 	removeAttachment: (id: string) => `/api/attachments/${segment(id)}`,
+	/** attachment-folders-v1: POST renews grants for a pending folder's missing files. */
+	renewAttachmentFolder: (id: string) => `/api/attachments/${segment(id)}`,
 	startWithAttachments: "/api/attachments/start",
 	/** GET -> ImageSnapshot. */
 	image: (chatId: string, snapshotId: string) => `/api/chats/${segment(chatId)}/images/${segment(snapshotId)}`,
@@ -207,6 +210,21 @@ export interface AttachmentGrantResponse {
 	id: string;
 	uploadUrl: string;
 	expiresAt: number;
+}
+
+/** attachment-folders-v1: one folder, POSTed to `attachments`. Each path is
+ * relative to the folder root and excludes `name`. */
+export type AttachmentFolderRequest = AttachmentTarget & {
+	name: string;
+	files: { path: string; mimeType: string; size: number }[];
+};
+
+/** `files` lists the files still to PUT, each with its own upload URL. The
+ * folder's `id` goes in `attachmentUploadIds` like a file's. */
+export interface AttachmentFolderGrantResponse {
+	id: string;
+	expiresAt: number;
+	files: { path: string; uploadUrl: string }[];
 }
 
 export interface AttachmentSend {

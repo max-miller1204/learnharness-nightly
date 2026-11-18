@@ -16,6 +16,7 @@ import {
 	WALK_TIMEOUT_MS,
 } from "./fs-shared.ts";
 import { resolvePolicy } from "./file-access.ts";
+import { isAttachmentSource, resolveLearnerFile, type ResolveAttachment } from "./learner-file.ts";
 
 /**
  * The grep tool — sources v1 (2026-09-19): pi's dist/core/tools/grep.js
@@ -47,126 +48,133 @@ const grepInput = Type.Object({
 	limit: Type.Optional(Type.Integer({ minimum: 1, description: "Maximum number of matches to return (default: 100)" })),
 });
 
-export const grepTool: AgentTool<typeof grepInput> = {
-	name: "grep",
-	label: "grep",
-	description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers; default searches of allowed folders use absolute paths. Use ls without a path to discover allowed roots. Ignores node_modules, .git, and Library directories, and skips known sensitive locations (e.g. ~/.ssh, ~/.aws, ~/.claude, browser profiles and LearnHarness credential stores), plus .env/.env.* files. Output is truncated to ${DEFAULT_LIMIT} matches or ${formatSize(MAX_OUTPUT_BYTES)} (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
-	parameters: grepInput,
-	execute: serverExecute("grep", grepInput, async (input, ctx) => {
-		if (ctx?.signal?.aborted) return "Operation aborted";
-		const policy = resolvePolicy();
-		const { roots, notices, multiRoot } = sourceSearchRoots(input.path, policy);
+/** `resolveAttachment` lets `path` name an uploaded folder of the current
+ * chat, or a file inside it; results stay relative to it. */
+export function createGrepTool(resolveAttachment?: ResolveAttachment): AgentTool<typeof grepInput> {
+	return {
+		name: "grep",
+		label: "grep",
+		description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers; default searches of allowed folders use absolute paths. Use ls without a path to discover allowed roots. Ignores node_modules, .git, and Library directories, and skips known sensitive locations (e.g. ~/.ssh, ~/.aws, ~/.claude, browser profiles and LearnHarness credential stores), plus .env/.env.* files. Output is truncated to ${DEFAULT_LIMIT} matches or ${formatSize(MAX_OUTPUT_BYTES)} (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
+		parameters: grepInput,
+		execute: serverExecute("grep", grepInput, async (input, ctx) => {
+			if (ctx?.signal?.aborted) return "Operation aborted";
+			const policy = resolvePolicy();
+			const upload = isAttachmentSource(input.path) ? resolveLearnerFile(input.path, resolveAttachment) : undefined;
+			const { roots, notices, multiRoot } = upload ? { roots: [upload.filename], notices: [], multiRoot: false } : sourceSearchRoots(input.path, policy);
 
-		const regex = new RegExp(
-			input.literal ? input.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : input.pattern,
-			input.ignoreCase ? "i" : undefined,
-		);
-		const contextValue = input.context && input.context > 0 ? input.context : 0;
-		const effectiveLimit = Math.max(1, input.limit ?? DEFAULT_LIMIT);
+			const regex = new RegExp(
+				input.literal ? input.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : input.pattern,
+				input.ignoreCase ? "i" : undefined,
+			);
+			const contextValue = input.context && input.context > 0 ? input.context : 0;
+			const effectiveLimit = Math.max(1, input.limit ?? DEFAULT_LIMIT);
 
-		// One collection budget for the entire union, not 10s per root.
-		const files: { filePath: string; searchPath: string; isDirectory: boolean }[] = [];
-		const deadline = Date.now() + WALK_TIMEOUT_MS;
-		let timedOut = false;
-		let aborted = false;
-		for (const searchPath of roots) {
-			let stat;
-			try { stat = await fs.stat(searchPath); }
-			catch { throw new Error(`Path not found: ${searchPath}`); }
-			const isDirectory = stat.isDirectory();
-			if (!isDirectory) files.push({ filePath: searchPath, searchPath, isDirectory });
-			else {
-				const result = await walkFiles(searchPath, (filePath) => {
-					if (input.glob && !matchGlob(path.relative(searchPath, filePath).split(path.sep).join("/"), input.glob)) return false;
-					files.push({ filePath, searchPath, isDirectory });
-					return false;
-				}, ctx?.signal, { policy, deadline });
-				timedOut ||= result.timedOut;
-				aborted ||= result.aborted;
+			// One collection budget for the entire union, not 10s per root.
+			const files: { filePath: string; searchPath: string; isDirectory: boolean }[] = [];
+			const deadline = Date.now() + WALK_TIMEOUT_MS;
+			let timedOut = false;
+			let aborted = false;
+			for (const searchPath of roots) {
+				let stat;
+				try { stat = await fs.stat(searchPath); }
+				catch { throw new Error(`Path not found: ${upload?.source ?? searchPath}`); }
+				const isDirectory = stat.isDirectory();
+				if (!isDirectory) files.push({ filePath: searchPath, searchPath, isDirectory });
+				else {
+					const result = await walkFiles(searchPath, (filePath) => {
+						if (input.glob && !matchGlob(path.relative(searchPath, filePath).split(path.sep).join("/"), input.glob)) return false;
+						files.push({ filePath, searchPath, isDirectory });
+						return false;
+					}, ctx?.signal, { policy, deadline, claimed: Boolean(upload) });
+					timedOut ||= result.timedOut;
+					aborted ||= result.aborted;
+				}
+				if (timedOut || aborted) break;
 			}
-			if (timedOut || aborted) break;
-		}
 
-		const outLines: string[] = [];
-		let matchCount = 0;
-		let limitReached = false;
-		let linesTruncated = false;
-		// The scan phase is bounded too (2026-09-19): the walk's 10s deadline
-		// bounds COLLECTION, but reading every collected file was unbounded —
-		// the grep that outlived its turn by minutes. Same budget, checked per
-		// file; abort lands mid-scan with partial results.
-		const scanDeadline = Date.now() + WALK_TIMEOUT_MS;
-		let scanTimedOut = false;
+			const outLines: string[] = [];
+			let matchCount = 0;
+			let limitReached = false;
+			let linesTruncated = false;
+			// The scan phase is bounded too (2026-09-19): the walk's 10s deadline
+			// bounds COLLECTION, but reading every collected file was unbounded —
+			// the grep that outlived its turn by minutes. Same budget, checked per
+			// file; abort lands mid-scan with partial results.
+			const scanDeadline = Date.now() + WALK_TIMEOUT_MS;
+			let scanTimedOut = false;
 
-		for (const { filePath, searchPath, isDirectory } of files) {
-			if (ctx?.signal?.aborted) {
-				aborted = true;
-				break;
-			}
-			if (Date.now() > scanDeadline) {
-				scanTimedOut = true;
-				break;
-			}
-			if (matchCount >= effectiveLimit) {
-				limitReached = true;
-				break;
-			}
-			let fileStat;
-			try {
-				fileStat = await fs.stat(filePath);
-			} catch {
-				continue;
-			}
-			if (fileStat.size > MAX_FILE_BYTES) continue; // rg-style silent skip of huge files
-			if (await isBinaryFile(filePath).catch(() => true)) continue;
+			for (const { filePath, searchPath, isDirectory } of files) {
+				if (ctx?.signal?.aborted) {
+					aborted = true;
+					break;
+				}
+				if (Date.now() > scanDeadline) {
+					scanTimedOut = true;
+					break;
+				}
+				if (matchCount >= effectiveLimit) {
+					limitReached = true;
+					break;
+				}
+				let fileStat;
+				try {
+					fileStat = await fs.stat(filePath);
+				} catch {
+					continue;
+				}
+				if (fileStat.size > MAX_FILE_BYTES) continue; // rg-style silent skip of huge files
+				if (await isBinaryFile(filePath).catch(() => true)) continue;
 
-			let content: string;
-			try {
-				content = await fs.readFile(filePath, "utf-8");
-			} catch {
-				continue;
-			}
-			const lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-			const rel = multiRoot ? filePath : isDirectory
-				? path.relative(searchPath, filePath).split(path.sep).join("/")
-				: path.basename(filePath);
+				let content: string;
+				try {
+					content = await fs.readFile(filePath, "utf-8");
+				} catch {
+					continue;
+				}
+				const lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+				const rel = multiRoot ? filePath : isDirectory
+					? path.relative(searchPath, filePath).split(path.sep).join("/")
+					: upload?.name ?? path.basename(filePath);
 
-			for (let i = 0; i < lines.length; i++) {
-				if (regex.test(lines[i]!)) {
-					if (matchCount >= effectiveLimit) {
-						limitReached = true;
-						break;
-					}
-					matchCount++;
-					const start = contextValue > 0 ? Math.max(1, i + 1 - contextValue) : i + 1;
-					const end = contextValue > 0 ? Math.min(lines.length, i + 1 + contextValue) : i + 1;
-					for (let current = start; current <= end; current++) {
-						const { text, wasTruncated } = truncateGrepLine(lines[current - 1] ?? "");
-						if (wasTruncated) linesTruncated = true;
-						// pi's format: ':' for match lines, '-' for context lines.
-						outLines.push(current === i + 1 ? `${rel}:${current}: ${text}` : `${rel}-${current}- ${text}`);
+				for (let i = 0; i < lines.length; i++) {
+					if (regex.test(lines[i]!)) {
+						if (matchCount >= effectiveLimit) {
+							limitReached = true;
+							break;
+						}
+						matchCount++;
+						const start = contextValue > 0 ? Math.max(1, i + 1 - contextValue) : i + 1;
+						const end = contextValue > 0 ? Math.min(lines.length, i + 1 + contextValue) : i + 1;
+						for (let current = start; current <= end; current++) {
+							const { text, wasTruncated } = truncateGrepLine(lines[current - 1] ?? "");
+							if (wasTruncated) linesTruncated = true;
+							// pi's format: ':' for match lines, '-' for context lines.
+							outLines.push(current === i + 1 ? `${rel}:${current}: ${text}` : `${rel}-${current}- ${text}`);
+						}
 					}
 				}
+				if (limitReached) break;
 			}
-			if (limitReached) break;
-		}
 
-		const finish = (body: string): string => notices.length ? `${body}\n\n[${notices.join(". ")}]` : body;
-		if (aborted) {
-			return finish(outLines.length > 0
-				? `${capOutput(outLines).content}\n\n[search aborted — partial results]`
-				: "Search aborted before any results.");
-		}
-		if (outLines.length === 0) {
-			return finish(timedOut || scanTimedOut
-				? `Search timed out after 10s with no matches yet. Narrow the search to a subdirectory.`
-				: "No matches found");
-		}
-		const { content, truncated } = capOutput(outLines);
-		if (limitReached || matchCount >= effectiveLimit) notices.push(`${effectiveLimit} matches limit reached`);
-		if (linesTruncated) notices.push(`Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`);
-		if (truncated) notices.push(`${formatSize(MAX_OUTPUT_BYTES)} limit reached`);
-		if (timedOut || scanTimedOut) notices.push("search timed out after 10s — partial results, narrow the directory");
-		return finish(content);
-	}),
-};
+			const finish = (body: string): string => notices.length ? `${body}\n\n[${notices.join(". ")}]` : body;
+			if (aborted) {
+				return finish(outLines.length > 0
+					? `${capOutput(outLines).content}\n\n[search aborted — partial results]`
+					: "Search aborted before any results.");
+			}
+			if (outLines.length === 0) {
+				return finish(timedOut || scanTimedOut
+					? `Search timed out after 10s with no matches yet. Narrow the search to a subdirectory.`
+					: "No matches found");
+			}
+			const { content, truncated } = capOutput(outLines);
+			if (limitReached || matchCount >= effectiveLimit) notices.push(`${effectiveLimit} matches limit reached`);
+			if (linesTruncated) notices.push(`Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`);
+			if (truncated) notices.push(`${formatSize(MAX_OUTPUT_BYTES)} limit reached`);
+			if (timedOut || scanTimedOut) notices.push("search timed out after 10s — partial results, narrow the directory");
+			return finish(content);
+		}),
+	};
+}
+
+export const grepTool = createGrepTool();

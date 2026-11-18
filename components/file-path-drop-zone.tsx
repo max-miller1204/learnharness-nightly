@@ -5,8 +5,21 @@ import { FileSymlinkIcon, XIcon } from "lucide-react";
 import { directoryReferencePath, quoteFilePath } from "@/src/core";
 import { appendToPrimaryInput } from "@/components/dictation";
 import { INSERT_FILE_PATHS_EVENT } from "@/components/path-input";
+import { ATTACHMENT_DROP_EVENT } from "@/components/attachment-draft";
 
 export const BROWSER_NOTICE = "Local file paths can only be attached in the desktop app. You can paste a full path instead.";
+const UPLOAD_DROP = "Drop to upload files or a folder";
+
+/** Without the desktop bridge, a page composer that can upload takes drops:
+ * the focused one, else the first. */
+function uploadTarget(root: HTMLElement | null): HTMLElement | null {
+	if (window.lh?.getPathForFile || !root) return null;
+	const targets = Array.from(root.querySelectorAll<HTMLElement>("[data-attachment-upload]"));
+	return targets.find(target => target.closest("[data-attachment-composer]")?.contains(document.activeElement)) ?? targets[0] ?? null;
+}
+
+/** While a turn runs the composer takes no uploads: no overlay, and a drop does nothing. */
+const busy = (target: HTMLElement | null) => target?.getAttribute("data-attachment-upload") === "busy";
 
 /** The content area only: the sidebar is deliberately outside this zone.
  * Existing files stay where they are; only quoted path strings enter drafts. */
@@ -22,6 +35,7 @@ export function FilePathDropZone({ children, className, onContentRoot }: {
 	}, [onContentRoot]);
 	const depth = useRef(0);
 	const [dragging, setDragging] = useState(false);
+	const [uploading, setUploading] = useState(false);
 	const [notice, setNotice] = useState("");
 	const hasFiles = (event: React.DragEvent) => Array.from(event.dataTransfer.types).includes("Files");
 	const clearDrag = () => { depth.current = 0; setDragging(false); };
@@ -48,7 +62,9 @@ export function FilePathDropZone({ children, className, onContentRoot }: {
 				if (!hasFiles(event)) return;
 				event.preventDefault();
 				depth.current++;
-				setDragging(true);
+				const upload = uploadTarget(root.current);
+				setDragging(!busy(upload));
+				setUploading(Boolean(upload));
 				setNotice("");
 			}}
 			onDragOver={(event) => {
@@ -68,6 +84,24 @@ export function FilePathDropZone({ children, className, onContentRoot }: {
 				event.stopPropagation();
 				clearDrag();
 				const resolve = window.lh?.getPathForFile;
+				const upload = uploadTarget(root.current);
+				if (busy(upload)) { setNotice(""); return; }
+				if (upload) {
+					// Entries must be read during the drop event; walking happens later.
+					const entries: FileSystemEntry[] = [];
+					const files: File[] = [];
+					const items = Array.from(event.dataTransfer.items).filter((item) => item.kind === "file");
+					for (const [index, item] of items.entries()) {
+						let entry: FileSystemEntry | null = null;
+						try { entry = item.webkitGetAsEntry?.() ?? null; } catch { /* Fall back to the plain file. */ }
+						const file = event.dataTransfer.files[index];
+						if (entry) entries.push(entry);
+						else if (file) files.push(file);
+					}
+					upload.dispatchEvent(new CustomEvent(ATTACHMENT_DROP_EVENT, { detail: { entries, files } }));
+					setNotice("");
+					return;
+				}
 				if (!resolve) { setNotice(BROWSER_NOTICE); return; }
 				// Inspect only the dropped item's type, never traverse its entries.
 				// Positively known directories get a durable trailing separator.
@@ -104,7 +138,7 @@ export function FilePathDropZone({ children, className, onContentRoot }: {
 				<div data-testid="file-path-drop-indicator" className="pointer-events-none absolute inset-2 z-50 flex items-center justify-center rounded-xl border-2 border-dashed border-primary bg-background/85 p-6 text-center backdrop-blur-sm">
 					<div className="flex max-w-md flex-col items-center gap-3">
 						<FileSymlinkIcon className="size-8 text-primary" aria-hidden />
-						<span className="font-ui text-sm">{window.lh?.getPathForFile ? "Drop to attach file paths" : BROWSER_NOTICE}</span>
+						<span className="font-ui text-sm">{window.lh?.getPathForFile ? "Drop to attach file paths" : uploading ? UPLOAD_DROP : BROWSER_NOTICE}</span>
 					</div>
 				</div>
 			)}
