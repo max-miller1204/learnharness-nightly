@@ -82,9 +82,10 @@ export function updateControlTooltip(state: UpdateState, kind: UpdateControlKind
 /** The second tooltip line of "unavailable" (T3's getDesktopUpdateDisabledReason fallback). */
 export const unavailableDetail = (state: UpdateState) => state.message?.trim() || UNAVAILABLE_DETAIL;
 
-/** Any message box on the page holding text that hasn't been sent. */
+/** Any message box on the page holding text that hasn't been sent: the chat
+ *  composer, the home topic box, answer and thinking fields (every PathInput). */
 export function hasUnsentMessage(root: ParentNode = document): boolean {
-	return Array.from(root.querySelectorAll('[data-testid="composer"] [role="textbox"]')).some((box) => (box.textContent ?? "").trim().length > 0);
+	return Array.from(root.querySelectorAll('[role="textbox"][contenteditable]')).some((box) => (box.textContent ?? "").trim().length > 0);
 }
 
 /** T3's check-spin latch rule: show the spinning icon while checking, or while a started turn finishes. */

@@ -283,7 +283,7 @@ describe("General update rows", () => {
 		await click(pill()); assert.equal(reloads, 1, "no unsent text: reloads at once");
 
 		const composer = document.createElement("div"); composer.setAttribute("data-testid", "composer");
-		composer.innerHTML = '<div role="textbox">half a question</div>'; document.body.append(composer);
+		composer.innerHTML = '<div role="textbox" contenteditable="true">half a question</div>'; document.body.append(composer);
 		try {
 			await click(pill());
 			assert.equal(reloads, 1, "asks first");

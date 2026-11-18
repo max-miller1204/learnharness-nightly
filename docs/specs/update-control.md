@@ -15,7 +15,7 @@ One round button (`size-8 rounded-full`, 16 px glyph) at the right end of the si
 
 | State | Icon | Tooltip | Click |
 |---|---|---|---|
-| reload (server newer than the page) | RotateCw with check badge | "Updated to X. Click to reload." | reload, confirming first when a message box has unsent text: "You have an unsent message. Reload anyway?" (Cancel / Reload) |
+| reload (server newer than the page) | RotateCw with check badge | "Updated to X. Click to reload." | reload, confirming first when a message box (any typed-text box: the chat composer, the home topic box, answer fields) has unsent text: "You have an unsent message. Reload anyway?" (Cancel / Reload) |
 | checking | RefreshCw, spinning, disabled | "Checking for updates…" | nothing |
 | downloading | download arrow, no ring (no progress is measured), disabled | "Downloading update" | nothing |
 | downloaded | RotateCw with check badge | "Update X downloaded. Click to restart and install." | the install confirm dialog |
