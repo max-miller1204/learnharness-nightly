@@ -55,7 +55,7 @@ Code extensions: c, h, cc, cpp, cxx, hpp, hh, hxx, cs, go, rs, java, kt, kts, sc
 
 ### Image description
 
-- A new model role `imageReader` on the Vision slot (like `pdfReader`: not a per-role override in Settings). Its usage is recorded on the source's import job under role `imageReader`, so it shows in the activity dock and the source's cost. In the graph cost pill it is part of the Extraction stage; an unpriced or subscription Vision step marks that run's extraction cost as incomplete (`—`), counted once per run (owner, 2026-11-17, after the prove run).
+- A new model role `imageReader` on the Vision slot (like `pdfReader`: not a per-role override in Settings). Its usage is recorded on the source's import job under role `imageReader`, so it shows in the activity dock and the source's cost. In the graph cost pill it is part of the Extraction stage: an unpriced Vision step marks that run's extraction cost as incomplete (`—`), and a subscription one shows the plan label (for example `ChatGPT`), as subscription extractor runs already do. Each run counts once (owner, 2026-11-17, after prove rounds 1 and 2).
 - Prompt (system), for owner approval:
 
 > You turn one image from a learner's study material into text, so its content can be added to their knowledge graph. Transcribe all legible text exactly, in reading order, as Markdown (headings, lists, tables). Write equations in LaTeX. Describe each diagram, chart or figure: what it shows, its labels, and the relationships or values it conveys. Transcribe handwriting; mark words you can't read as [illegible]. Do not add knowledge the image doesn't contain. If the image has nothing to learn from, reply with one sentence saying what it shows.
