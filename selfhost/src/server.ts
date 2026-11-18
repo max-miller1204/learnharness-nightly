@@ -43,8 +43,9 @@ export function spawnServerChild(home: string, version: string, role: ChildRole,
 	return handle;
 }
 
-export async function fetchHealth(port: number, timeoutMs = 5_000): Promise<{ ok: boolean; idle?: boolean; version?: string; update?: unknown; selfhost?: boolean }> {
-	const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
+export async function fetchHealth(port: number, timeoutMs = 5_000, authorization?: string): Promise<{ ok: boolean; idle?: boolean; version?: string; update?: unknown; selfhost?: boolean }> {
+	// With a session (`lh status`) the answer includes update error text.
+	const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(timeoutMs), ...(authorization ? { headers: { Authorization: authorization } } : {}) });
 	if (!response.ok) return { ok: false };
 	const body = (await response.json()) as { ok?: unknown; idle?: unknown; version?: unknown; update?: unknown; selfhost?: unknown };
 	return {

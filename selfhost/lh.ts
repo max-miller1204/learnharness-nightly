@@ -489,7 +489,8 @@ async function statusCommand(): Promise<void> {
 	const state = requireState(home);
 	const config = readConfig(home);
 	const service = serviceManager();
-	const h = await health(config);
+	// Signed in, so a failed update's error text is included.
+	const h = await withCliSession(home, (authorization) => fetchHealth(config.port, 5_000, authorization)).catch(() => health(config));
 	out(`Home:      ${home}`);
 	out(`Service:   ${service.displayName} (${service.state()})`);
 	out(`Active:    ${state.activeVersion}`);

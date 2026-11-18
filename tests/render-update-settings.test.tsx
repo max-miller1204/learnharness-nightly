@@ -12,7 +12,7 @@ import { installModalDom } from "./modal-dom.ts";
 import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
 import { UpdateSettings, updateStatusText, MANUAL_UPDATE_HINT, AUTO_UPDATE_HINT, type UpdateState } from "../components/settings/update-settings.tsx";
-import { SidebarUpdatePill } from "../components/sidebar-update-pill.tsx";
+import { hasUnsentMessage, SidebarUpdatePill } from "../components/sidebar-update-pill.tsx";
 import { ServerEventsProvider } from "../components/server-events.tsx";
 import { ReleaseNoteSections } from "../components/release-notes-view.tsx";
 import WhatsNewDialog, { WhatsNewBody } from "../components/whats-new-dialog.tsx";
@@ -163,7 +163,7 @@ describe("General update rows", () => {
 		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "install");
 		body = state({ status: "up-to-date", revision: 1, instance: "new" });
 		await act(async () => { handlers.get("update-changed")!("{}"); await new Promise((resolve) => setTimeout(resolve, 0)); });
-		assert.equal(q(host, "update-pill"), null, "the new server's lower revision is accepted");
+		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "check", "the new server's lower revision is accepted");
 	});
 
 	it("an undismissed rollback stays explained in Settings after a later check clears the message", () => {
@@ -217,20 +217,114 @@ describe("General update rows", () => {
 		assert.equal(b.calls.check, 0);
 	});
 
-	it("the pill shows only when there is something to act on, and stays until acted on", async () => {
+	it("the update control follows T3's states: check, unavailable, then download, downloading, install", async () => {
 		const b = bridge(); const host = await mount(<SidebarUpdatePill />);
-		for (const [revision, status] of [[1, "idle"], [2, "checking"], [3, "up-to-date"], [4, "error"], [5, "disabled"]] as const) {
+		const pill = () => q(host, "update-pill")!;
+		for (const [revision, status] of [[1, "idle"], [2, "up-to-date"], [3, "error"]] as const) {
 			await b.push(state({ status, revision }));
-			assert.equal(q(host, "update-pill"), null, status);
+			assert.equal(pill().getAttribute("data-action"), "check", status);
+			assert.equal(pill().getAttribute("aria-label"), "Check for updates", status);
+			assert.equal(pill().getAttribute("aria-disabled"), null, status);
 		}
+		await b.push(state({ status: "disabled", revision: 4 }));
+		assert.equal(pill().getAttribute("data-action"), "unavailable");
+		assert.equal(pill().getAttribute("aria-label"), "Updates unavailable: Automatic updates are not available in this build.");
+		assert.equal(pill().getAttribute("aria-disabled"), "true");
+		assert.match(pill().className, /opacity-60/);
+		await click(pill()); assert.equal(b.calls.check, 0, "unavailable does nothing");
 		await b.push(state({ status: "available", version: "0.3.8", revision: 6 }));
-		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "download");
-		await click(q(host, "update-pill")); assert.equal(b.calls.download, 1);
+		assert.equal(pill().getAttribute("data-action"), "download");
+		assert.equal(pill().getAttribute("aria-label"), "Update 0.3.8 ready to download");
+		await click(pill()); assert.equal(b.calls.download, 1);
 		await b.push(state({ status: "downloading", version: "0.3.8", revision: 7 }));
-		assert.equal(q(host, "update-pill")!.getAttribute("aria-disabled"), "true");
-		await click(q(host, "update-pill")); assert.equal(b.calls.download, 1);
+		assert.equal(pill().getAttribute("data-action"), "downloading");
+		assert.equal(pill().getAttribute("aria-label"), "Downloading update");
+		assert.equal(pill().getAttribute("aria-disabled"), "true");
+		await click(pill()); assert.equal(b.calls.download, 1);
 		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 8 }));
-		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "install");
+		assert.equal(pill().getAttribute("data-action"), "install");
+		assert.equal(b.calls.check, 0, "nothing here checked on its own");
+	});
+
+	it("clicking checks only, and the spin lasts at least one full turn, then stops at a turn boundary once the check ends", async () => {
+		const b = bridge(); const host = await mount(<SidebarUpdatePill />);
+		const pill = () => q(host, "update-pill")!;
+		const icon = () => q(host, "update-control-refresh-icon")!;
+		const turn = async () => { await act(async () => { icon().dispatchEvent(new window.Event("animationiteration", { bubbles: true })); }); };
+		await click(pill());
+		assert.equal(b.calls.check, 1); assert.equal(b.calls.download, 0); assert.equal(b.calls.install, 0);
+		assert.equal(pill().getAttribute("data-action"), "checking", "a check that ends at once still spins its first turn");
+		assert.equal(pill().getAttribute("aria-label"), "Checking for updates…");
+		assert.equal(pill().getAttribute("aria-disabled"), "true");
+		assert.equal(icon().getAttribute("data-spinning"), "true");
+		assert.match(icon().getAttribute("class") ?? "", /motion-safe:animate-spin/);
+		await click(pill()); assert.equal(b.calls.check, 1, "disabled while spinning");
+		await turn();
+		assert.equal(pill().getAttribute("data-action"), "check", "stops at the turn boundary");
+		assert.equal(icon().getAttribute("data-spinning"), null);
+
+		await b.push(state({ status: "checking", revision: 2 }));
+		await turn();
+		assert.equal(icon().getAttribute("data-spinning"), "true", "keeps turning while the check runs");
+		await b.push(state({ status: "up-to-date", revision: 3 }));
+		assert.equal(icon().getAttribute("data-spinning"), "true", "finishes the turn it is in");
+		await turn();
+		assert.equal(pill().getAttribute("data-action"), "check");
+		assert.equal(pill().getAttribute("aria-label"), "Check for updates");
+	});
+
+	it("a server newer than the page offers a reload, and unsent text asks first", async () => {
+		const b = bridge(state({ status: "up-to-date", revision: 1, runningVersion: "0.6.1-nightly.20261118.65" }));
+		let reloads = 0;
+		const host = await mount(<SidebarUpdatePill pageVersion="0.6.1-nightly.20261118.64" reload={() => { reloads++; }} />);
+		const pill = () => q(host, "update-pill")!;
+		assert.equal(pill().getAttribute("data-action"), "reload");
+		assert.equal(pill().getAttribute("aria-label"), "Updated to 0.6.1-nightly.20261118.65. Click to reload.");
+		await click(pill()); assert.equal(reloads, 1, "no unsent text: reloads at once");
+
+		const composer = document.createElement("div"); composer.setAttribute("data-testid", "composer");
+		composer.innerHTML = '<div role="textbox" contenteditable="true">half a question</div>'; document.body.append(composer);
+		try {
+			await click(pill());
+			assert.equal(reloads, 1, "asks first");
+			assert.equal(q(document, "reload-confirm-title")!.textContent, "You have an unsent message. Reload anyway?");
+			await click(q(document, "reload-confirm-cancel")); assert.equal(reloads, 1);
+			assert.equal(q(document, "reload-confirm-dialog"), null);
+			await click(pill()); await click(q(document, "reload-confirm-reload")); assert.equal(reloads, 2);
+		} finally { composer.remove(); }
+		assert.equal(b.calls.check, 0);
+
+		await b.push(state({ status: "up-to-date", revision: 2, runningVersion: "0.6.1-nightly.20261118.64" }));
+		assert.equal(pill().getAttribute("data-action"), "check", "same version as the page: no reload");
+	});
+
+	it("after a rollback (server older than the page) it offers a reload too, with its own wording", async () => {
+		bridge(state({ status: "error", revision: 1, runningVersion: "0.6.1-nightly.20261118.64" }));
+		let reloads = 0;
+		const host = await mount(<SidebarUpdatePill pageVersion="0.6.1-nightly.20261118.65" reload={() => { reloads++; }} />);
+		const pill = q(host, "update-pill")!;
+		assert.equal(pill.getAttribute("data-action"), "reload");
+		assert.equal(pill.getAttribute("aria-label"), "Server is on 0.6.1-nightly.20261118.64. Click to reload.");
+		await click(pill); assert.equal(reloads, 1);
+	});
+
+	it("unsent text in any editable text field asks first; read-only, disabled, hidden and search boxes don't", () => {
+		const box = document.createElement("div");
+		const field = (html: string) => { box.innerHTML = html; return hasUnsentMessage(box); };
+		assert.equal(field('<textarea aria-label="Side question">why?</textarea>'), true, "the side-question box (a textarea)");
+		assert.equal(field('<textarea>  </textarea>'), false, "whitespace only");
+		assert.equal(field('<input type="text" value="a comment">'), true, "a text input");
+		assert.equal(field('<input value="no type is text">'), true);
+		assert.equal(field('<div role="textbox" contenteditable="true">a draft</div>'), true, "a PathInput");
+		assert.equal(field('<textarea readonly>shown text</textarea>'), false, "read-only");
+		assert.equal(field('<input type="text" disabled value="x">'), false, "disabled");
+		assert.equal(field('<div hidden><textarea>x</textarea></div>'), false, "hidden");
+		assert.equal(field('<input type="text" placeholder="Search…" value="algebra">'), false, "a search box");
+		assert.equal(field('<input placeholder="Find in session…" value="x">'), false, "a find box");
+		assert.equal(field('<input type="search" value="x">'), false, "type=search");
+		assert.equal(field('<input type="checkbox" value="on">'), false, "not a text field");
+		assert.equal(field('<input type="number" value="3">'), false);
+		assert.equal(field('<div role="textbox" contenteditable="false">x</div>'), false);
 	});
 
 	it("the pill's hover shows T3-style notes: What's changed, Changes in X, Read more", async () => {
@@ -322,6 +416,43 @@ describe("install confirm and What's new", () => {
 		await click(q(document, "whats-new-done"));
 		assert.equal(q(document, "whats-new-dialog"), null);
 		assert.deepEqual(posts, [{ version: "0.3.9" }]);
+	});
+});
+
+describe("What's new waits for the reload", () => {
+	it("is held back while the server runs a newer version than the page, without marking it seen, and shows once on the page that runs it", async () => {
+		const posts: unknown[] = [];
+		let seen = false;
+		globalThis.fetch = async (input, init) => {
+			if (String(input) === "/api/whats-new/seen") { seen = true; posts.push(JSON.parse(String(init?.body))); return new Response(null, { status: 204 }); }
+			assert.equal(String(input), "/api/whats-new");
+			return Response.json(seen ? null : { version: "0.6.1-nightly.20261118.65", releaseNotes: [], omittedReleaseCount: 0 });
+		};
+		const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		// The old tab: page code .64, server .65. Nothing shows, nothing is recorded.
+		await mount(<WhatsNewDialog pageVersion="0.6.1-nightly.20261118.64" />);
+		await settle();
+		assert.equal(q(document, "whats-new-dialog"), null, "held back: the reload button stays visible");
+		assert.deepEqual(posts, [], "not marked seen while held back");
+		for (const { root, host } of roots.splice(0)) { await act(async () => { root.unmount(); }); host.remove(); }
+		// After the reload (or the next time the app opens): page code .65. Shows once.
+		await mount(<WhatsNewDialog pageVersion="0.6.1-nightly.20261118.65" />);
+		await settle();
+		assert.equal(q(document, "whats-new-title")!.textContent, "What's new in 0.6.1-nightly.20261118.65");
+		await click(q(document, "whats-new-done"));
+		assert.deepEqual(posts, [{ version: "0.6.1-nightly.20261118.65" }]);
+		for (const { root, host } of roots.splice(0)) { await act(async () => { root.unmount(); }); host.remove(); }
+		// Another load later: already seen on the server, so never again.
+		await mount(<WhatsNewDialog pageVersion="0.6.1-nightly.20261118.65" />);
+		await settle();
+		assert.equal(q(document, "whats-new-dialog"), null, "exactly once");
+	});
+
+	it("a page as new as the server, or a build without an exact version, shows it as before", async () => {
+		globalThis.fetch = async () => Response.json({ version: "0.6.1-nightly.20261118.65", releaseNotes: [], omittedReleaseCount: 0 });
+		await mount(<WhatsNewDialog pageVersion="" />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		assert.ok(q(document, "whats-new-dialog"), "no exact page version: never held back");
 	});
 });
 

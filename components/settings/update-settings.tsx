@@ -26,6 +26,8 @@ export type UpdateState = {
 	revision: number;
 	/** Self-hosted only: the server process; a restarted server counts revisions from 0 again. */
 	instance?: string;
+	/** Self-hosted only: the version the server runs. Newer than this page's APP_VERSION means the page should reload. */
+	runningVersion?: string;
 	message?: string | null;
 	notice?: UpdateNotice | null;
 	/** Newest first: versions newer than the running one up to the offered one. */
@@ -63,7 +65,8 @@ async function fetchWebState(path: string, method: "GET" | "POST"): Promise<Upda
  * Desktop: the Electron bridge (window.lh). Self-hosted / browser: the
  * server's GET /api/updates, refetched on the "update-changed" event and on
  * every reconnect of the events channel. A browser build that isn't
- * self-hosted answers "disabled", which hides every update control. */
+ * self-hosted answers "disabled": Settings shows the version only, and the
+ * sidebar update control shows its dimmed "Updates unavailable" state. */
 export function useUpdateState() {
 	const [state, setState] = useState<UpdateState | null>(null);
 	const [failed, setFailed] = useState(false);

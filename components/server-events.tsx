@@ -12,6 +12,8 @@
  * Auto-reconnect is EventSource's own — never fought, always exploited:
  * every (re)open fires the resync callbacks, so a reconnect heals with
  * one ordinary fetch per consumer (a dev-server restart self-heals here).
+ * The one gap, a source that gave up after an HTTP error from a proxy, is
+ * filled by opening a new source (openEventsChannel).
  *
  * Shape: the provider holds a hub (window-local fan-out — the client twin
  * of the server bus; per-window, NOT globalThis: each window's connection
@@ -35,27 +37,98 @@ export interface NotifySource {
 	onEvent(name: string, cb: (data: string) => void): void;
 }
 
-export function openEventsChannel(): NotifySource {
-	const es = new EventSource("/api/events");
+/** A closed channel waits this long before opening a new one, doubling per
+ *  failed try up to REOPEN_MAX_MS (T3's connection supervisor:
+ *  packages/client-runtime/src/connection/supervisor.ts). */
+export const REOPEN_INITIAL_MS = 1_000;
+export const REOPEN_MAX_MS = 5 * 60_000;
+
+export interface EventsChannelDeps {
+	create(url: string): EventSource;
+	checkSession(): Promise<{ authenticated?: boolean }>;
+	reload(): void;
+	setTimeout(cb: () => void, ms: number): unknown;
+	clearTimeout(handle: unknown): void;
+	isHidden(): boolean;
+	/** Calls cb whenever the tab becomes visible; returns the unsubscribe. */
+	onVisible(cb: () => void): () => void;
+}
+
+const browserDeps = (): EventsChannelDeps => ({
+	create: (url) => new EventSource(url),
+	checkSession: () => fetch("/api/auth/session", { cache: "no-store" }).then((res) => res.json()),
+	reload: () => window.location.reload(),
+	setTimeout: (cb, ms) => window.setTimeout(cb, ms),
+	clearTimeout: (handle) => window.clearTimeout(handle as number),
+	isHidden: () => document.visibilityState === "hidden",
+	onVisible: (cb) => {
+		const listener = () => { if (document.visibilityState === "visible") cb(); };
+		document.addEventListener("visibilitychange", listener);
+		return () => document.removeEventListener("visibilitychange", listener);
+	},
+});
+
+/** EventSource retries a dropped connection on its own, but gives up for
+ *  good when a retry gets an HTTP error. A proxy in front of a restarting
+ *  server does exactly that (Tailscale Serve answers 502 while an update
+ *  restarts it), so a closed source is replaced: after REOPEN_INITIAL_MS,
+ *  doubling up to REOPEN_MAX_MS while it keeps failing, never while the tab
+ *  is hidden, and at once when it shows again. A new source's open fires the
+ *  resync callbacks like any reconnect. */
+export function openEventsChannel(deps: EventsChannelDeps = browserDeps()): NotifySource {
+	const listeners: Array<[string, (data: string) => void]> = [];
+	let onOpen: (() => void) | undefined;
+	let closed = false;
+	let reopenTimer: unknown;
+	let delay = REOPEN_INITIAL_MS;
+	let es: EventSource;
 	// Signed out while open (a revoked device): the stream fails, the session
 	// check says so, and a reload lands on the pairing screen.
 	// docs/specs/login-pairing.md
 	let checking = false;
-	es.addEventListener("error", () => {
-		if (checking) return;
-		checking = true;
-		void fetch("/api/auth/session", { cache: "no-store" })
-			.then((res) => res.json())
-			.then((state: { authenticated?: boolean }) => { if (state.authenticated === false) window.location.reload(); })
-			.catch(() => { /* server unreachable: EventSource keeps retrying */ })
-			.finally(() => { checking = false; });
-	});
+	const reopenNow = () => {
+		if (reopenTimer !== undefined) deps.clearTimeout(reopenTimer);
+		reopenTimer = undefined;
+		if (!closed) connect();
+	};
+	const scheduleReopen = () => {
+		if (closed || reopenTimer !== undefined || deps.isHidden()) return; // hidden: onVisible reopens
+		const wait = delay;
+		delay = Math.min(delay * 2, REOPEN_MAX_MS);
+		reopenTimer = deps.setTimeout(() => {
+			reopenTimer = undefined;
+			if (!closed && !deps.isHidden()) connect();
+		}, wait);
+	};
+	const connect = () => {
+		const source = deps.create("/api/events");
+		es = source;
+		source.onopen = () => { delay = REOPEN_INITIAL_MS; onOpen?.(); };
+		for (const [name, cb] of listeners) source.addEventListener(name, (ev) => cb((ev as MessageEvent).data));
+		source.addEventListener("error", () => {
+			if (source.readyState === 2 /* CLOSED */ && source === es) scheduleReopen();
+			if (checking) return;
+			checking = true;
+			void deps.checkSession()
+				.then((state) => { if (state.authenticated === false) deps.reload(); })
+				.catch(() => { /* server unreachable: the channel keeps retrying */ })
+				.finally(() => { checking = false; });
+		});
+	};
+	connect();
+	const offVisible = deps.onVisible(() => { if (es.readyState === 2) reopenNow(); });
 	return {
-		close: () => es.close(),
+		close: () => {
+			closed = true;
+			offVisible();
+			if (reopenTimer !== undefined) deps.clearTimeout(reopenTimer);
+			es.close();
+		},
 		onOpen: (cb) => {
-			es.onopen = () => cb();
+			onOpen = cb;
 		},
 		onEvent: (name, cb) => {
+			listeners.push([name, cb]);
 			es.addEventListener(name, (ev) => cb((ev as MessageEvent).data));
 		},
 	};

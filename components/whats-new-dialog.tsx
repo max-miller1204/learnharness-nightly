@@ -7,13 +7,20 @@
  * dismissal marks the running version seen (POST /api/whats-new/seen), which
  * emits "whats-new-changed", so the popup closes on every other open device
  * too. Mounted once in the root layout, inside the events provider.
+ *
+ * Held back while the server runs a newer version than this page's code
+ * (docs/specs/update-control.md): the old page shows the sidebar's "Updated
+ * to X. Click to reload." button instead, and the popup shows on the first
+ * page that runs X (after the reload, or the next time the app opens). It is
+ * not marked seen while held back, so it is neither lost nor shown twice.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { HostDialog } from "@/components/host-dialog";
 import { ReleaseNoteSections, releaseUrl } from "@/components/release-notes-view";
 import { useNotifyHub } from "@/components/server-events";
-import { HOMEPAGE } from "@/components/settings/update-settings";
+import { APP_VERSION, HOMEPAGE } from "@/components/settings/update-settings";
+import { isNewerVersion } from "@/selfhost/src/version-order.ts";
 import type { ReleaseNoteGroup } from "@/src/core";
 
 export type WhatsNew = {
@@ -67,7 +74,7 @@ export function WhatsNewBody({ whatsNew, homepage, onDone, doneRef }: {
 	);
 }
 
-export default function WhatsNewDialog() {
+export default function WhatsNewDialog({ pageVersion = APP_VERSION }: { pageVersion?: string } = {}) {
 	const [whatsNew, setWhatsNew] = useState<WhatsNew | null>(null);
 	const hub = useNotifyHub();
 	const doneRef = useRef<HTMLButtonElement>(null);
@@ -97,7 +104,8 @@ export default function WhatsNewDialog() {
 		}).catch(() => { /* shows again on the next load */ });
 	}, [whatsNew]);
 
-	if (!whatsNew) return null;
+	// The server's running version is whatsNew.version: newer than this page's code means reload first.
+	if (!whatsNew || isNewerVersion(whatsNew.version, pageVersion)) return null;
 	return (
 		<HostDialog
 			open

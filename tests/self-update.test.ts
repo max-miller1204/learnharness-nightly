@@ -12,7 +12,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { CHECK_INTERVAL_MS, createSelfUpdater, type SelfUpdaterDeps } from "../src/server/self-update.ts";
+import { CHECK_AFTER_COMMIT_MS, CHECK_INTERVAL_MS, createSelfUpdater, healthIdle, publicUpdateState, type SelfUpdaterDeps } from "../src/server/self-update.ts";
 import type { ReleaseNoteGroup } from "../src/core/release-notes.ts";
 import { dataLockPath, tryAcquireDataLock } from "../src/server/data-lock.ts";
 import type { ChildMessage } from "../selfhost/src/protocol.ts";
@@ -89,6 +89,7 @@ describe("self-hosted updater", () => {
 		assert.equal(u.state().version, NEXT);
 		assert.deepEqual(f.flags.staged, [NEXT]);
 		assert.equal(CHECK_INTERVAL_MS, 4 * 60 * 60 * 1000, "every 4 hours");
+		assert.equal(u.state().runningVersion, CURRENT, "the page compares its own version with this");
 		assert.deepEqual(f.timers.map((t) => t.ms), [CHECK_INTERVAL_MS], "only the check timer: no idle apply loop");
 		f.run(CHECK_INTERVAL_MS);
 		await settle();
@@ -184,6 +185,7 @@ describe("self-hosted updater", () => {
 
 	it("as a trial child, says prepared once serving; committed says so without a notice (What's new replaces it)", async () => {
 		const f = fake({ trialUpdateId: "u-1" });
+		f.flags.auto = false; // the check that follows a commit is the next test
 		const u = createSelfUpdater(f.deps);
 		u.start();
 		await settle();
@@ -192,6 +194,33 @@ describe("self-hosted updater", () => {
 		assert.equal(u.state().status, "up-to-date");
 		assert.equal(u.state().message, `Updated to version ${CURRENT}.`);
 		assert.equal(u.state().notice, null);
+	});
+
+	it("a trial child checks 15 s after its commit, not before (the startup check it skipped)", async () => {
+		const f = fake({ trialUpdateId: "u-1" });
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		await settle();
+		assert.deepEqual(f.flags.staged, [], "no check during the trial");
+		f.toParent({ type: "committed", updateId: "u-1" });
+		await settle();
+		assert.deepEqual(f.flags.staged, [], "not at once: the launcher prunes *.tmp version folders right after the commit");
+		assert.equal(CHECK_AFTER_COMMIT_MS, 15_000);
+		f.run(CHECK_AFTER_COMMIT_MS);
+		await settle();
+		assert.equal(u.state().status, "downloaded");
+		assert.equal(u.state().version, NEXT);
+		assert.deepEqual(f.flags.staged, [NEXT]);
+		assert.deepEqual(f.sent, [{ type: "prepared", updateId: "u-1" }], "downloaded, never applied");
+
+		const off = fake({ trialUpdateId: "u-2" });
+		off.flags.auto = false;
+		createSelfUpdater(off.deps).start();
+		await settle();
+		off.toParent({ type: "committed", updateId: "u-2" });
+		off.run(CHECK_AFTER_COMMIT_MS);
+		await settle();
+		assert.deepEqual(off.flags.staged, [], "the toggle still gates it");
 	});
 
 	it("adopts a rollback recorded by the launcher at boot", () => {
@@ -213,6 +242,82 @@ describe("self-hosted updater", () => {
 		assert.equal(again.state().notice, null, "a dismissed notice is not adopted again at boot");
 		assert.equal(again.state().message, null, "nor its text (Settings shows it only while undismissed)");
 		assert.notEqual(again.state().instance, u.state().instance, "each server process has its own instance id");
+	});
+});
+
+describe("GET /api/health's update fields", () => {
+	it("callers that aren't signed in learn that an update failed, but not the error text", async () => {
+		const f = fake();
+		f.flags.auto = false;
+		f.flags.state = { protocol: 1, activeVersion: CURRENT, badVersions: [NEXT], update: { id: "u", fromVersion: CURRENT, targetVersion: NEXT, status: "rolled-back", reason: "ENOSPC: /home/someone/.learnharness", at: 5 } };
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		const full = u.state();
+		assert.match(full.message ?? "", /ENOSPC/, "signed in: the details");
+		const open = publicUpdateState(full);
+		assert.equal(open.status, "error", "still says it failed");
+		assert.equal(open.message, null);
+		assert.equal(open.notice?.kind, "rolled-back");
+		assert.equal(open.notice?.text, `Update to version ${NEXT} failed to start and was rolled back.`);
+		assert.doesNotMatch(JSON.stringify(open), /ENOSPC|someone/);
+		assert.equal(open.runningVersion, CURRENT, "runningVersion stays public");
+
+		// A rejected install request: error text from the launcher.
+		const g = fake();
+		const v = createSelfUpdater(g.deps);
+		v.start();
+		await settle();
+		await v.install();
+		g.toParent({ type: "update-rejected", reason: "Not enough disk space under /home/someone" });
+		assert.match(v.state().message ?? "", /disk space/);
+		assert.equal(publicUpdateState(v.state()).message, null);
+		assert.equal(publicUpdateState(v.state()).status, "error");
+		// Non-error messages are not error details.
+		assert.equal(publicUpdateState({ ...v.state(), status: "downloaded", message: "Restarting to install version x…" }).message, "Restarting to install version x…");
+	});
+
+	it("is not idle while an update check or download runs, even with a ready version still offered", async () => {
+		// The independent proof's sequence: an update is already staged, then another check
+		// finds a newer one and downloads it while the state keeps showing the ready one.
+		let releaseStage: () => void = () => {};
+		const f = fake({
+			stage: async (feed) => {
+				if (feed.version === NEWER) await new Promise<void>((resolve) => { releaseStage = resolve; });
+				f.flags.staged.push(feed.version);
+			},
+		});
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		await settle();
+		assert.equal(u.state().status, "downloaded");
+		assert.equal(u.busy(), false);
+		assert.equal(healthIdle(true, u.busy()), true, "ready and nothing running: idle");
+
+		f.flags.latest = NEWER;
+		f.run(CHECK_INTERVAL_MS);
+		await settle();
+		assert.equal(u.state().status, "downloaded", "the ready version stays offered");
+		assert.equal(u.state().version, NEXT);
+		assert.equal(u.busy(), true, "the newer one is downloading");
+		assert.equal(healthIdle(true, u.busy()), false, "so health is not idle");
+
+		releaseStage();
+		await settle(); await settle();
+		assert.equal(u.state().version, NEWER);
+		assert.equal(u.busy(), false);
+		assert.equal(healthIdle(true, u.busy()), true);
+
+		// A manual check while ready, and the plain checking/downloading case, count too.
+		let releaseFetch: () => void = () => {};
+		const g = fake({ fetchLatest: async () => { await new Promise<void>((resolve) => { releaseFetch = resolve; }); return feed(NEXT); } });
+		const v = createSelfUpdater(g.deps);
+		const pending = v.check();
+		assert.equal(v.state().status, "checking");
+		assert.equal(healthIdle(true, v.busy()), false, "fetching the feed");
+		releaseFetch();
+		await pending;
+		assert.equal(healthIdle(true, v.busy()), true);
+		assert.equal(healthIdle(false, false), false, "running work still counts");
 	});
 });
 

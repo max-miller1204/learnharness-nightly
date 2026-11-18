@@ -14,7 +14,8 @@
  *
  * T3 style (docs/specs/t3-style-updates.md): check at start and every 4
  * hours, download in the background, and apply ONLY when the user clicks
- * Install (the confirm dialog lists runningWork()). Checks keep running
+ * Install (the confirm dialog lists runningWork()). A server started by an
+ * update checks 15 s after the launcher commits it. Checks keep running
  * while a version is ready, so a newer nightly replaces it; install()
  * re-checks first. Applying = asking the launcher over IPC
  * ("request-update"). The launcher owns runtime/service-state.json; this
@@ -59,6 +60,8 @@ export interface SelfUpdateState {
 	revision: number;
 	/** This server process. A restarted server counts revisions from 0 again, so clients reset their revision guard when it changes. */
 	instance: string;
+	/** The version this server runs. A page built from an older one offers a reload (the sidebar update control). */
+	runningVersion: string;
 	/** Detail for the Settings row (errors, rejections, progress). */
 	message: string | null;
 	/** A rolled-back switch until dismissed. */
@@ -69,6 +72,8 @@ export interface SelfUpdateState {
 }
 
 export const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+/** A server started by an update checks this long after the launcher commits it. */
+export const CHECK_AFTER_COMMIT_MS = 15_000;
 
 export const noticeId = (notice: UpdateNotice) => `${notice.kind}:${notice.version}:${notice.at}`;
 
@@ -99,9 +104,10 @@ export interface SelfUpdaterDeps {
 
 export function createSelfUpdater(deps: SelfUpdaterDeps) {
 	let state: SelfUpdateState = {
-		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, instance: globalThis.crypto.randomUUID(), message: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
+		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, instance: globalThis.crypto.randomUUID(), runningVersion: deps.currentVersion, message: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
 	};
 	let checkTimer: unknown;
+	let commitCheckTimer: unknown;
 	let checking: Promise<void> | undefined;
 	let requested = false;
 	let started = false;
@@ -190,6 +196,10 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			set({ status: "error", message: message.reason });
 		} else if (message.type === "committed") {
 			set({ status: "up-to-date", version: null, message: `Updated to version ${deps.currentVersion}.`, releaseNotes: [], omittedReleaseCount: 0 });
+			// A trial skips the startup check; once it is the active server it checks like any other
+			// start, after a pause: the launcher prunes leftover *.tmp version folders right after the
+			// commit, which would delete a download being unpacked (T3 also waits 15 s after launch).
+			commitCheckTimer = deps.setTimeout(() => { if (deps.autoUpdateEnabled()) void check(); }, CHECK_AFTER_COMMIT_MS);
 		}
 	};
 
@@ -210,6 +220,9 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 
 	return {
 		state: (): SelfUpdateState => state,
+		/** A check (feed fetch, and any download it starts) is running. True even while a ready
+		 *  version stays offered as "downloaded" during a look for a newer one. */
+		busy: (): boolean => checking !== undefined,
 		check,
 		/** Install / POST /api/updates/install: re-check first (a download can be hours old), then apply the ready version. */
 		async install(): Promise<void> {
@@ -242,6 +255,7 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		},
 		stop(): void {
 			if (checkTimer !== undefined) deps.clearTimeout(checkTimer);
+			if (commitCheckTimer !== undefined) deps.clearTimeout(commitCheckTimer);
 		},
 	};
 }
@@ -340,13 +354,35 @@ export function selfUpdater(): SelfUpdater {
 	return updater;
 }
 
-/** GET /api/health: what the launcher's health check and `lh status` read. */
-export function healthSnapshot(): { ok: true; version: string; selfhost: boolean; idle: boolean; update: SelfUpdateState } {
+/** Health's `idle`: nothing running, and no update check or download in
+ *  flight, whatever the state shows (a ready version stays "downloaded" while
+ *  a newer one is fetched). The launcher's relaunch waits for idle, and
+ *  stopping the server mid-download would waste it. */
+export function healthIdle(appIdle: boolean, updateBusy: boolean): boolean {
+	return appIdle && !updateBusy;
+}
+
+/** The update state for callers that aren't signed in (the launcher, `lh status`
+ *  of an old launcher, anyone who can reach the port): it still says an update
+ *  failed (status "error", the rollback notice), but not the error text. */
+export function publicUpdateState(state: SelfUpdateState): SelfUpdateState {
+	return {
+		...state,
+		message: state.status === "error" ? null : state.message,
+		notice: state.notice ? { ...state.notice, text: `Update to version ${state.notice.version} failed to start and was rolled back.` } : null,
+	};
+}
+
+/** GET /api/health: what the launcher's health check and `lh status` read.
+ *  `details` (a signed-in or paired caller) includes update error text. */
+export function healthSnapshot({ details = false }: { details?: boolean } = {}): { ok: true; version: string; selfhost: boolean; idle: boolean; update: SelfUpdateState } {
+	const updater = selfUpdater();
+	const update = updater.state();
 	return {
 		ok: true,
 		version: process.env.LH_VERSION ?? "",
 		selfhost: selfhostEnabled(),
-		idle: appIsIdle(),
-		update: selfUpdater().state(),
+		idle: healthIdle(appIsIdle(), updater.busy()),
+		update: details ? update : publicUpdateState(update),
 	};
 }
