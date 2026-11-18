@@ -9,12 +9,12 @@
     "experiments": { "tsconfigPaths": false },
     "updates": { "enabled": false },
     "ios": {
-      "bundleIdentifier": "com.learnharness.LearnHarness.Nightly",
+      "bundleIdentifier": "com.maxmiller.learnharness.nightly",
       "supportsTablet": true,
       "infoPlist": { "ITSAppUsesNonExemptEncryption": false }
     },
     "android": {
-      "package": "com.learnharness.learnharness.nightly",
+      "package": "com.maxmiller.learnharness.nightly",
       "blockedPermissions": ["android.permission.RECORD_AUDIO"]
     },
     "plugins": [
