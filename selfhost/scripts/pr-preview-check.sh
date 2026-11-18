@@ -27,6 +27,14 @@ current_label() {
     sort -k1,1n | tail -n 1
 }
 
+iso_seconds() {
+  node -e '
+    const ms = Date.parse(process.argv[1]);
+    if (!Number.isFinite(ms)) process.exit(1);
+    console.log(Math.floor(ms / 1000));
+  ' "$1"
+}
+
 owner_label() {
   local event labeler latest
   [ "$labeled" = true ] || skip "PR #$pr has no \`preview\` label."
@@ -71,12 +79,13 @@ if [ "$author" = "$OWNER" ]; then
 else
   [ "$ACTOR" = "$OWNER" ] || skip "Only $OWNER can request an outside PR preview."
   owner_label
-  label_time=$(date -u -d "$label_at" +%s)
+  label_time=$(iso_seconds "$label_at")
   # Match the current label application. Timing only identifies the request;
   # the commit must be recorded by the trusted, label-only workflow.
   matches_label() {
-    local delta
-    delta=$(( $(date -u -d "$1" +%s) - label_time ))
+    local timestamp delta
+    timestamp=$(iso_seconds "$1") || return 1
+    delta=$(( timestamp - label_time ))
     [ "$delta" -ge -5 ] && [ "$delta" -le 60 ]
   }
   matches_label "$RUN_CREATED_AT" || skip "This build did not run for the current preview label."
