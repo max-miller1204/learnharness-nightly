@@ -114,6 +114,15 @@ describe("generate-release-notes", () => {
 		assert.deepEqual(parseHighlights('{"highlights":[]}'), []);
 	});
 
+	it("reads commit numbers the model wrote as strings (real shapes from claude-haiku-5.5 runs)", () => {
+		assert.deepEqual(parseHighlights('{"highlights":[{"label":"A","detail":"B","commits":["8"]}]}'), [{ label: "A", detail: "B", commits: [8] }]);
+		assert.deepEqual(parseHighlights('{"highlights":[{"label":"A","detail":"B","commits":["[8]", 3]}]}'), [{ label: "A", detail: "B", commits: [8, 3] }]);
+		assert.equal(parseHighlights('{"highlights":[{"label":"A","detail":"B","commits":["eight"]}]}'), null);
+		assert.equal(parseHighlights('{"highlights":[{"label":"A","detail":"B","commits":[1.5]}]}'), null);
+		const parsed = parseHighlights('{"highlights":[{"label":"A","detail":"B","commits":["[9]"]}]}')!;
+		assert.equal(formatItems(subjects, parsed), null, "a string number outside the input is still rejected");
+	});
+
 	it("feeds numbered subjects and trimmed PR prose to the model", () => {
 		const input = buildSummaryInput(["feat: x (#3)", "fix: y"], new Map([[3, "Adds x.\n\n![img](u)\n## Testing\nran it"]]));
 		assert.equal(input, "[1] feat: x (#3)\n  > Adds x.\n[2] fix: y");

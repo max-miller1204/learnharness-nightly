@@ -119,6 +119,17 @@ export function buildSummaryInput(subjects: readonly string[], bodies: ReadonlyM
 		.join("\n");
 }
 
+/**
+ * A commit number as the model wrote it: 8, or the strings "8" and "[8]"
+ * (seen from anthropic/claude-haiku-5.5 in real runs). Anything else is not one.
+ */
+export function commitNumber(value: unknown): number | null {
+	if (Number.isInteger(value)) return value as number;
+	if (typeof value !== "string") return null;
+	const match = /^\s*\[?\s*(\d+)\s*\]?\s*$/.exec(value);
+	return match ? Number(match[1]) : null;
+}
+
 /** Parse the model's JSON; null when it is not the promised shape. */
 export function parseHighlights(text: string): Highlight[] | null {
 	const json = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
@@ -131,8 +142,10 @@ export function parseHighlights(text: string): Highlight[] | null {
 		if (typeof entry !== "object" || entry === null) return null;
 		const { label, detail, commits } = entry as Record<string, unknown>;
 		if (typeof label !== "string" || !label.trim() || typeof detail !== "string" || !detail.trim()) return null;
-		if (!Array.isArray(commits) || commits.length === 0 || !commits.every((n) => Number.isInteger(n))) return null;
-		highlights.push({ label: label.trim(), detail: detail.trim(), commits: commits as number[] });
+		if (!Array.isArray(commits) || commits.length === 0) return null;
+		const numbers = commits.map(commitNumber);
+		if (numbers.some((n) => n === null)) return null;
+		highlights.push({ label: label.trim(), detail: detail.trim(), commits: numbers as number[] });
 	}
 	return highlights;
 }
