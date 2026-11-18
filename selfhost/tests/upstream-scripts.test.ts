@@ -4,7 +4,8 @@
  * and a `jq` wrapper can inject a failure. Covers the hardening in
  * docs/specs/fix-upstream-hardening.md: copied text can't close its code
  * block, only the fork bot's issues count as mirrors, writes happen only in
- * the workflow, and a jq error fails the run.
+ * the workflow, and a jq error fails the run. Both bodies link the upstream
+ * item by URL (docs/specs/simplify-upstream-intake.md).
  */
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -154,7 +155,7 @@ describe("mirror-upstream-issues.sh", () => {
 		const created = calls.filter((c) => c.args[0] === "issue" && c.args[1] === "create");
 		assert.equal(created.length, 1);
 		const body = created[0]?.body ?? "";
-		assert.ok(body.startsWith(`<!-- upstream-issue: ${UP}#10 -->\n`));
+		assert.ok(body.startsWith(`<!-- upstream-issue: ${UP}#10 -->\nMirrored from https://github.com/${UP}/issues/10, opened by \``), body);
 		assertFenced(body, HOSTILE);
 		assertFenced(body, `${HOSTILE}\n~~~~~~~~~~~~~~~~~~~~`);
 		assert.match(body, /\n~{21}markdown\n/); // one longer than the comment's 20-tilde run
@@ -280,12 +281,13 @@ describe("import-upstream-pr.sh", () => {
 		title: "A PR", user: { login: "author" }, html_url: `https://github.com/${UP}/pull/7`, state: "open", merged: false, body, base: { ref: "main" },
 	});
 
-	it("starts the body with the Upstream: line, as code", () => {
+	it("starts the body with the upstream PR's URL and the author as code", () => {
 		fixture(`repos/${UP}/pulls/7`, pr("desc"));
 		const { status, stderr, calls } = run("import-upstream-pr.sh", ["7"]);
 		assert.equal(status, 0, stderr);
 		const create = calls.find((c) => c.args[0] === "pr" && c.args[1] === "create");
-		assert.ok(create?.body?.startsWith(`Upstream: \`${UP}#7\`\n\nImported from \`${UP}#7\``), create?.body);
+		assert.ok(create?.body?.startsWith(`Imported from https://github.com/${UP}/pull/7 by \`author\` (upstream state: open).\n`), create?.body);
+		assert.ok(!create?.body?.includes("Upstream:"), create?.body);
 	});
 
 	it("refuses a PR that changes .github/ unless allowed, before pushing anything", () => {
@@ -334,183 +336,5 @@ describe("import-upstream-pr.sh", () => {
 		assert.equal(status, 0, stderr);
 		const create = calls.find((c) => c.args[0] === "pr" && c.args[1] === "create");
 		assert.match(create?.body ?? "", /\n~~~~markdown\n\(none\)\n~~~~\n\n<\/details>\n$/);
-	});
-});
-
-describe("upstream-refs.jq", () => {
-	const parse = (body: string) =>
-		JSON.parse(execFileSync(REAL_JQ, ["-Rs", "-c", "-L", SCRIPTS, `include "upstream-refs"; upstream_numbers("${UP}")`], { input: body, encoding: "utf8" }));
-
-	it("reads Upstream: lines at the top only, in every accepted form", () => {
-		assert.deepEqual(parse(`\n\nUpstream: \`${UP}#3\`\r\nUpstream: ${UP}#1\nUpstream: https://github.com/${UP}/issues/2\nUpstream: https://github.com/UP-OWNER/up-repo/pull/4/\nUpstream: other/repo#9\nUpstream: \`${UP}#3\`\n\nUpstream: \`${UP}#5\``), [1, 2, 3, 4]);
-		assert.deepEqual(parse(`Summary first\nUpstream: \`${UP}#1\``), []);
-		assert.deepEqual(parse(`Upstream: see ${UP}#1 and more\nUpstream: https://github.com/${UP}/issues/2#issuecomment-1`), []);
-		assert.deepEqual(parse(""), []);
-	});
-});
-
-describe("notify-upstream.sh", () => {
-	const ME = "owner-login";
-	const forkPr = (body: string, extra: Record<string, unknown> = {}) => ({
-		number: 40, html_url: `https://github.com/${FORK}/pull/40`, merged_at: "2026-11-18T00:00:00Z", base: { ref: "main" },
-		merge_commit_sha: "a".repeat(40), body, ...extra,
-	});
-	const upIssue = (n: number, extra: Record<string, unknown> = {}) => ({ number: n, state: "open", state_reason: null, html_url: `https://github.com/${UP}/issues/${n}`, ...extra });
-	const upPr = (n: number) => ({ ...upIssue(n), html_url: `https://github.com/${UP}/pull/${n}`, pull_request: { url: "x" } });
-	const MIRRORS = `repos/${FORK}/issues?state=all&creator=learnharness-nightly-bot%5Bbot%5D&per_page=100`;
-	const notice = `\n\n<!-- learnharness-nightly-notice -->\n`;
-
-	function setup(body: string) {
-		fixture(`repos/${FORK}/pulls/40`, forkPr(body));
-		fixture("user", { login: ME });
-		fixture(MIRRORS, [forkIssue(70, BOT, 10), forkIssue(71, "mallory", 11)]);
-		fixture(`repos/${UP}/issues/10`, upIssue(10));
-		fixture(`repos/${UP}/issues/11`, upIssue(11));
-		fixture(`repos/${UP}/issues/20`, upPr(20));
-		fixture(`repos/${UP}/pulls/20`, { merged: false });
-		fixture(`repos/${FORK}/pulls?state=all&head=fork-owner:upstream-pr/20&per_page=100`, [{ user: { login: BOT }, head: { ref: "upstream-pr/20", repo: { full_name: FORK } } }]);
-		fixture(`repos/${UP}/issues/10/comments`, { html_url: `https://github.com/${UP}/issues/10#issuecomment-1` });
-		fixture(`repos/${UP}/issues/20/comments`, { html_url: `https://github.com/${UP}/pull/20#issuecomment-2` });
-	}
-	const posts = (calls: ReturnType<typeof run>["calls"]) => calls.filter((c) => c.args[0] === "api" && c.args.includes("POST"));
-
-	it("finds the PR a merge commit merged and counts its items, read-only", () => {
-		const sha = "a".repeat(40);
-		fixture(`repos/${FORK}/commits/${sha}/pulls`, [forkPr("x", { number: 39, merge_commit_sha: "b".repeat(40) }), forkPr(`Upstream: \`${UP}#10\`\nUpstream: \`${UP}#10\`\nUpstream: \`${UP}#20\``)]);
-		const found = run("notify-upstream.sh", ["find", sha], { GITHUB_ACTIONS: "" });
-		assert.equal(found.status, 0, found.stderr);
-		assert.equal(found.stdout, "pr=40\ncount=2\n");
-		assert.ok(found.calls.every((c) => c.args[0] === "api" && !c.args.includes("POST")));
-		fixture(`repos/${FORK}/pulls/41`, forkPr(`Upstream: \`${UP}#10\``, { number: 41, merged_at: null }));
-		assert.equal(run("notify-upstream.sh", ["find", "41"]).stdout, "pr=\ncount=0\n");
-		fixture(`repos/${FORK}/pulls/42`, forkPr(`Upstream: \`${UP}#10\``, { number: 42, base: { ref: "other" } }));
-		assert.equal(run("notify-upstream.sh", ["find", "42"]).stdout, "pr=\ncount=0\n");
-	});
-
-	it("posts one factual comment per picked item, links them and leaves a receipt", () => {
-		setup(`Upstream: \`${UP}#10\`\nUpstream: \`${UP}#20\`\n\nFixes the thing for @someone.\n`);
-		const { status, stderr, stdout, calls } = run("notify-upstream.sh", ["40"]);
-		assert.equal(status, 0, stderr);
-		const posted = posts(calls);
-		assert.deepEqual(posted.map((c) => c.args.at(-1)), [`repos/${UP}/issues/10/comments`, `repos/${UP}/issues/20/comments`]);
-		assert.deepEqual(posted.map((c) => JSON.parse(c.body ?? "{}").body), [
-			`This is fixed in the LearnHarness nightly fork (${FORK}): https://github.com/${FORK}/pull/40${notice}`,
-			`This PR is merged into the LearnHarness nightly fork (${FORK}): https://github.com/${FORK}/pull/40${notice}`,
-		]);
-		const edit = calls.find((c) => c.args[0] === "pr" && c.args[1] === "edit");
-		assert.equal(edit?.body, `Upstream: \`${UP}#10\`\nUpstream: \`${UP}#20\`\n\nFixes the thing for @someone.\n\nUpstream link: https://github.com/${UP}/issues/10\nUpstream link: https://github.com/${UP}/pull/20\n`);
-		const receipt = calls.find((c) => c.args[0] === "pr" && c.args[1] === "comment");
-		assert.equal(receipt?.body, `Upstream notice for this merge (\`notify-upstream.yml\`):\n\n- \`${UP}#10\`: posted \`https://github.com/${UP}/issues/10#issuecomment-1\`.\n- \`${UP}#20\`: posted \`https://github.com/${UP}/pull/20#issuecomment-2\`.\n`);
-		assert.match(stdout, /2 upstream notice\(s\) posted\./);
-		for (const c of posted) assert.doesNotMatch(c.body ?? "", /@/);
-	});
-
-	it("never posts twice for an item, but still adds a missing link once", () => {
-		setup(`Upstream: \`${UP}#10\`\n\nUpstream link: https://github.com/${UP}/issues/10\r\n`);
-		fixture(`repos/${UP}/issues/10/comments?per_page=100`, [
-			{ user: { login: "someone-else" }, body: "copycat <!-- learnharness-nightly-notice -->", html_url: "u0" },
-			{ user: { login: ME }, body: `earlier${notice}`, html_url: `https://github.com/${UP}/issues/10#issuecomment-9` },
-		]);
-		const { status, stderr, calls } = run("notify-upstream.sh", ["40"]);
-		assert.equal(status, 0, stderr);
-		assert.deepEqual(posts(calls), []);
-		assert.ok(!calls.some((c) => c.args[0] === "pr" && c.args[1] === "edit"), "the link line is already there (CRLF)");
-		assert.match(calls.find((c) => c.args[1] === "comment")?.body ?? "", /already told upstream earlier \(`https:\/\/github\.com\/up-owner\/up-repo\/issues\/10#issuecomment-9`\)/);
-
-		// Someone else's marker doesn't count.
-		fixture(`repos/${UP}/issues/10/comments?per_page=100`, [{ user: { login: "someone-else" }, body: `x${notice}`, html_url: "u0" }]);
-		assert.equal(posts(run("notify-upstream.sh", ["40"]).calls).length, 1);
-	});
-
-	it("skips items the owner didn't pick and items upstream already finished", () => {
-		setup([10, 11, 20, 30, 31].map((n) => `Upstream: \`${UP}#${n}\``).join("\n"));
-		fixture(`repos/${UP}/issues/10`, upIssue(10, { state: "closed", state_reason: "completed" })); // picked, done upstream
-		fixture(`repos/${UP}/pulls/20`, { merged: true }); // picked, merged upstream
-		fixture(`repos/${UP}/issues/30`, upPr(30)); // never imported
-		fixture(`repos/${UP}/issues/31`, upIssue(31, { state: "closed", state_reason: "not_planned" })); // not mirrored
-		const { status, stderr, calls } = run("notify-upstream.sh", ["40"]);
-		assert.equal(status, 0, stderr);
-		assert.deepEqual(posts(calls), []);
-		assert.ok(!calls.some((c) => c.args[0] === "pr" && c.args[1] === "edit"));
-		const receipt = calls.find((c) => c.args[1] === "comment")?.body ?? "";
-		assert.match(receipt, /#10`: skipped, upstream already closed it as completed/);
-		assert.match(receipt, /#11`: skipped, not picked: no fork bot mirror of it/); // mallory's fake mirror
-		assert.match(receipt, /#20`: skipped, upstream already merged it/);
-		assert.match(receipt, /#30`: skipped, not picked: no fork bot PR from upstream-pr\/30/);
-		assert.match(receipt, /#31`: skipped, not picked/);
-	});
-
-	it("still posts on an issue closed as not planned", () => {
-		setup(`Upstream: \`${UP}#10\``);
-		fixture(`repos/${UP}/issues/10`, upIssue(10, { state: "closed", state_reason: "not_planned" }));
-		assert.equal(posts(run("notify-upstream.sh", ["40"]).calls).length, 1);
-	});
-
-	it("goes on past a failed post and fails the run", () => {
-		setup(`Upstream: \`${UP}#10\`\nUpstream: \`${UP}#20\``);
-		fs.writeFileSync(path.join(dir, "fail", `repos/${UP}/issues/10/comments`.replace(/[^A-Za-z0-9]/g, "_")), "");
-		const { status, calls } = run("notify-upstream.sh", ["40"]);
-		assert.equal(status, 1);
-		assert.equal(posts(calls).length, 2); // the second item was still tried
-		assert.match(calls.find((c) => c.args[1] === "edit")?.body ?? "", /Upstream link: https:\/\/github\.com\/up-owner\/up-repo\/pull\/20\n$/);
-		assert.doesNotMatch(calls.find((c) => c.args[1] === "edit")?.body ?? "", /issues\/10/);
-		assert.match(calls.find((c) => c.args[1] === "comment")?.body ?? "", /#10`: failed to post/);
-	});
-
-	it("fails with an error naming the secret when the token is missing", () => {
-		setup(`Upstream: \`${UP}#10\``);
-		const { status, stdout, calls } = run("notify-upstream.sh", ["40"], { GH_TOKEN: "" });
-		assert.equal(status, 1);
-		assert.match(stdout, /::error::Add the UPSTREAM_COMMENT_TOKEN secret to the upstream-notify environment/);
-		assert.deepEqual(calls, []);
-	});
-
-	it("goes on past a failed read, links what was posted and fails the run", () => {
-		setup(`Upstream: \`${UP}#10\`\nUpstream: \`${UP}#20\``);
-		fs.writeFileSync(path.join(dir, "fail", `repos/${UP}/pulls/20`.replace(/[^A-Za-z0-9]/g, "_")), "");
-		const { status, calls } = run("notify-upstream.sh", ["40"]);
-		assert.equal(status, 1);
-		assert.deepEqual(posts(calls).map((c) => c.args.at(-1)), [`repos/${UP}/issues/10/comments`]);
-		assert.match(calls.find((c) => c.args[1] === "edit")?.body ?? "", /Upstream link: https:\/\/github\.com\/up-owner\/up-repo\/issues\/10\n$/);
-		assert.match(calls.find((c) => c.args[1] === "comment")?.body ?? "", /#20`: failed, couldn't read the upstream PR\./);
-	});
-
-	it("retries a merge commit GitHub hasn't linked to its PR yet", () => {
-		const sha = "c".repeat(40);
-		const { status, stdout, calls } = run("notify-upstream.sh", ["find", sha]);
-		assert.equal(status, 0);
-		assert.equal(stdout, "pr=\ncount=0\n");
-		assert.equal(calls.filter((c) => c.args.at(-1) === `repos/${FORK}/commits/${sha}/pulls`).length, 4);
-	});
-
-	it("does nothing for an unmerged PR or one without Upstream: lines", () => {
-		fixture(`repos/${FORK}/pulls/40`, forkPr(`Upstream: \`${UP}#10\``, { merged_at: null }));
-		const open = run("notify-upstream.sh", ["40"]);
-		assert.equal(open.status, 0);
-		assert.match(open.stdout, /isn't merged into main/);
-		fixture(`repos/${FORK}/pulls/40`, forkPr("Plain PR, mentions amosblomqvist/learnharness#10 in passing.\nUpstream: x/y#1"));
-		const none = run("notify-upstream.sh", ["40"]);
-		assert.equal(none.status, 0);
-		assert.match(none.stdout, /no Upstream: line/);
-		assert.ok(none.calls.every((c) => c.args[0] === "api" && !c.args.includes("POST")));
-	});
-
-	it("writes only in the workflow; a dry run prints the exact comment and writes nothing", () => {
-		setup(`Upstream: \`${UP}#20\``);
-		const local = run("notify-upstream.sh", ["40"], { GITHUB_ACTIONS: "", FORK_REPO: "" });
-		assert.equal(local.status, 1);
-		assert.match(local.stderr, /run locally with DRY_RUN=1/);
-		assert.deepEqual(local.calls, []);
-		assert.equal(run("notify-upstream.sh", ["40"], { BODY_FILE: "/dev/null" }).status, 1);
-
-		const bodyFile = path.join(dir, "body.md");
-		fs.writeFileSync(bodyFile, `Upstream: \`${UP}#10\`\n`);
-		const dry = run("notify-upstream.sh", ["40"], { GITHUB_ACTIONS: "", DRY_RUN: "1", BODY_FILE: bodyFile });
-		assert.equal(dry.status, 0, dry.stderr);
-		assert.ok(dry.calls.every((c) => c.args[0] === "api" && !c.args.includes("POST")), JSON.stringify(dry.calls));
-		assert.ok(dry.stdout.includes(`Comment for ${UP}#10 (https://github.com/${UP}/issues/10):\n    This is fixed in the LearnHarness nightly fork (${FORK}): https://github.com/${FORK}/pull/40\n    \n    <!-- learnharness-nightly-notice -->\n`), dry.stdout);
-		assert.match(dry.stdout, /DRY_RUN: would post that comment on up-owner\/up-repo#10 as owner-login\./);
-		assert.match(dry.stdout, /DRY_RUN: gh pr edit 40/);
-		assert.match(dry.stdout, /DRY_RUN: gh pr comment 40/);
 	});
 });

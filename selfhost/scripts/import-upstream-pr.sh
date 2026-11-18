@@ -7,12 +7,11 @@
 # Pushes the PR's exact head commits to `upstream-pr/<N>` (unchanged, so
 # commit IDs match upstream) and opens or updates a fork PR into main that
 # names the original and credits its author. Uses your `gh` login locally,
-# the fork bot App token in CI. Upstream references are written as code and the
-# copied description sits in a code block it can't close (see fence.jq), so the
-# import never pings anyone or adds a "mentioned this" entry to upstream's PR
-# timeline. The body's first line, `Upstream: `<repo>#<N>``, tells
-# notify-upstream.sh which upstream PR to tell about this one once it merges
-# (docs/specs/upstream-handpicked.md).
+# the fork bot App token in CI. The body links the upstream PR by URL, so its
+# timeline shows a "mentioned this" entry pointing here
+# (docs/specs/simplify-upstream-intake.md). The author is written as code and
+# the copied description sits in a code block it can't close (see fence.jq), so
+# the import @mentions no one.
 #
 # An upstream PR that changes anything under .github/ is refused unless
 # ALLOW_GITHUB_CHANGES=1 (the workflow's allow_github_changes checkbox): the
@@ -54,9 +53,7 @@ fi
 git push --force origin "refs/remotes/upstream-pr/${N}:refs/heads/${BRANCH}"
 
 {
-	echo "Upstream: \`${UPSTREAM_REPO}#${N}\`"
-	echo
-	echo "Imported from \`${UPSTREAM_REPO}#${N}\` (\`${url}\`) by \`${author}\` (upstream state: ${state}$([ "$merged" = "true" ] && echo ", merged"))."
+	echo "Imported from ${url} by \`${author}\` (upstream state: ${state}$([ "$merged" = "true" ] && echo ", merged"))."
 	echo
 	echo "The branch \`${BRANCH}\` holds the PR's exact commits. Merge with **Create a merge commit**, never squash, so a later upstream version of this work merges cleanly. Re-run the import to pick up new upstream pushes."
 	echo
