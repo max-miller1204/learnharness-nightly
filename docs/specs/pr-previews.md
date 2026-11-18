@@ -45,7 +45,7 @@ The repository's secrets never reach PR code:
 ## Cleanup
 
 - When a PR is no longer open, its `preview-pr-<N>` release and tag are deleted: the publish workflow sweeps on every run, daily, and on a manual run. It deletes one only when GitHub says its PR is `closed`, so an API error never deletes an open PR's preview.
-- On the server, nothing stays behind: the preview folder goes when it stops, and a folder left by a crash is cleared on the next `lh preview <N>`.
+- On the server, nothing stays behind: the preview folder goes when it stops, and a folder, Tailscale port or server left by a crash (even of the launcher itself) is cleared on the next `lh preview <N>`.
 
 ## Chosen by the implementer (veto any)
 

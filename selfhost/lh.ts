@@ -44,7 +44,7 @@ import { enableLinger, hasSystemd, lingerEnabled, repointService, shimPath, syst
 import { Supervisor, type UpdateRequestMarker } from "./src/supervisor.ts";
 import { serveOff, serveOn, tailscaleAvailable, tailscaleSelf } from "./src/tailscale.ts";
 import { pruneVersions } from "./src/versions.ts";
-import { parsePrNumber, previewConfig, previewFeedUrl, previewHome, previewLockPath, previewServeMarker } from "./src/preview.ts";
+import { parsePrNumber, previewConfig, previewFeedUrl, previewHome, previewLockPath, previewPidPath, previewServeMarker } from "./src/preview.ts";
 import { QrCode } from "./src/qr.ts";
 
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -609,6 +609,28 @@ async function previewCommand(flags: Flags): Promise<void> {
 	const serveMarker = previewServeMarker(home, pr);
 	let child: ReturnType<typeof spawn> | undefined;
 	let stopping = false;
+	const pidFile = previewPidPath(home, pr);
+	/**
+	 * A preview server whose launcher died (OOM, kill -9) keeps running. Stop
+	 * it before its folder goes. It's ours only if its environment names this
+	 * preview's home (Next renames the process, so not its command line).
+	 */
+	const stopOrphan = async () => {
+		let pid: number;
+		try { pid = Number(fs.readFileSync(pidFile, "utf8").trim()); } catch { return; }
+		const ours = () => {
+			try { return fs.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(`LH_HOME=${pHome}`); } catch { return false; }
+		};
+		if (Number.isInteger(pid) && pid > 1 && ours()) {
+			say(`Stopping the PR #${pr} preview server a crashed \`lh preview\` left running (pid ${pid}).`);
+			try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
+			const deadline = Date.now() + 15_000;
+			while (ours() && Date.now() < deadline) await sleep(200);
+			if (ours()) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
+			while (ours()) await sleep(100);
+		}
+		fs.rmSync(pidFile, { force: true });
+	};
 	/** Turn off the Tailscale port the marker names, and delete the preview's folder. */
 	const clearPreview = () => {
 		try {
@@ -616,6 +638,7 @@ async function previewCommand(flags: Flags): Promise<void> {
 			if (Number.isInteger(servedPort) && servedPort > 0) serveOff(servedPort);
 		} catch { /* not served */ }
 		fs.rmSync(serveMarker, { force: true });
+		fs.rmSync(pidFile, { force: true });
 		fs.rmSync(pHome, { recursive: true, force: true });
 	};
 	const cleanup = () => {
@@ -646,7 +669,8 @@ async function previewCommand(flags: Flags): Promise<void> {
 		setTimeout(() => child?.kill("SIGKILL"), 15_000).unref();
 	};
 	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, stop);
-	// Leftovers of a preview that died without cleaning up (the lock proves none runs).
+	// Leftovers of a preview whose launcher died (the lock proves none is still in charge).
+	await stopOrphan();
 	clearPreview();
 	if (!(await portFree(config.port))) abort(`Port ${config.port} is in use. Pick another with --port.`);
 
@@ -681,6 +705,7 @@ async function previewCommand(flags: Flags): Promise<void> {
 	const log = fs.openSync(dirs.serverLog, "a");
 	child = spawn(p.node, [p.serverEntry], { cwd: p.serverDir, env: buildChildEnv({ home: pHome, config, serviceEnv: {} }), stdio: ["ignore", log, log] });
 	fs.closeSync(log);
+	if (child.pid) writeFileDurably(pidFile, `${child.pid}\n`);
 	child.once("error", (error) => { if (!stopping) abort(`Could not start the preview server: ${error.message}`); });
 	child.once("exit", (code, signal) => {
 		if (stopping) return;

@@ -15,7 +15,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { DEFAULT_CONFIG, writeConfig } from "../src/config.ts";
 import { layout } from "../src/paths.ts";
-import { parsePrNumber, previewConfig, previewFeedUrl, previewHome, previewLockPath, previewServeMarker } from "../src/preview.ts";
+import { parsePrNumber, previewConfig, previewFeedUrl, previewHome, previewLockPath, previewPidPath, previewServeMarker } from "../src/preview.ts";
 
 const LH = path.join(import.meta.dirname, "..", "lh.ts");
 const VERSION = "0.6.1-preview.20261117.42";
@@ -211,6 +211,36 @@ describe("lh preview", { skip: process.platform !== "linux" }, () => {
 		assert.equal(fs.existsSync(previewHome(home, 7)), false);
 		assert.equal(fs.existsSync(previewServeMarker(home, 7)), false);
 		assert.equal(fs.existsSync(previewLockPath(home, 7)), false);
+	});
+
+	it("stops a preview server whose launcher died, then starts fresh", async () => {
+		const feedUrl = buildFeed(work);
+		const port = await freePort();
+		const start = async () => {
+			let output = "";
+			const child = spawn(process.execPath, [LH, "preview", "7", "--port", String(port), "--feed-url", feedUrl], {
+				env: { ...process.env, LH_HOME: home, STUB_ENV_OUT: path.join(work, "env.json"), DISPLAY: "", WAYLAND_DISPLAY: "" },
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			child.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+			child.stderr?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+			await waitFor(child, /Ctrl\+C stops the preview/, () => output);
+			return { child, output: () => output };
+		};
+		const first = await start();
+		const orphan = Number(fs.readFileSync(previewPidPath(home, 7), "utf8").trim());
+		first.child.kill("SIGKILL");
+		await new Promise((resolve) => first.child.once("exit", resolve));
+		assert.equal((await (await fetch(`http://127.0.0.1:${port}/api/health`)).json() as { ok: boolean }).ok, true, "the orphan still serves");
+
+		const second = await start();
+		assert.match(second.output(), new RegExp(`crashed \`lh preview\` left running \\(pid ${orphan}\\)`));
+		assert.throws(() => process.kill(orphan, 0), "the orphan is gone");
+		assert.notEqual(Number(fs.readFileSync(previewPidPath(home, 7), "utf8").trim()), orphan);
+		second.child.kill("SIGINT");
+		assert.equal(await new Promise((resolve) => second.child.once("exit", resolve)), 0);
+		assert.equal(fs.existsSync(previewHome(home, 7)), false);
+		assert.equal(fs.existsSync(previewPidPath(home, 7)), false);
 	});
 
 	it("clears what a crashed preview left, including its Tailscale port", async () => {

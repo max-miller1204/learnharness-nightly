@@ -33,6 +33,11 @@ export function previewLockPath(home: string, pr: number): string {
 	return path.join(home, "previews", `pr-${pr}.lock`);
 }
 
+/** The running preview server's pid, so the next run can stop a server whose launcher died. */
+export function previewPidPath(home: string, pr: number): string {
+	return path.join(home, "previews", `pr-${pr}.pid`);
+}
+
 /** The Tailscale Serve port a preview turned on, so a preview that died can have it turned off by the next run. */
 export function previewServeMarker(home: string, pr: number): string {
 	return path.join(home, "previews", `pr-${pr}.serve`);
