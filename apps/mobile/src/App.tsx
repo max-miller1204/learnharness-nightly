@@ -203,7 +203,9 @@ export function App() {
     <SafeAreaProvider>
       <StatusBar style={c.mode === "dark" ? "light" : "dark"} />
       <SafeAreaView style={s.page}>
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={process.env.EXPO_OS === "ios" ? "padding" : undefined}>
+        {/* Expo apps are edge-to-edge on Android, so the window no longer resizes for the
+            keyboard there: both platforms need padding to keep the docked controls visible. */}
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
           {/* A font that fails to load falls back to the system face. */}
           {(fontsLoaded || fontError) && <Mobile />}
         </KeyboardAvoidingView>

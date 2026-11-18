@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject, type ComponentRef } from "react";
-import { Alert, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { Alert, Keyboard, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
   BROWSER_HANDOFF_ROUTES, BROWSER_HANDOFF_V1, PRACTICE_CONTROLS_V1, hasCapability,
   type LhMessage, type PairingTokenResponse, type ServerInfo,
@@ -11,6 +11,7 @@ import { BuiltinQuestion } from "./BuiltinQuestion";
 import { Transcript } from "./Transcript";
 import { Button, Label, Notice } from "./ui";
 import { fonts, radius, space, useTheme } from "./theme";
+import { revealOffset } from "./reveal";
 
 const EMPTY: LhMessage[] = [];
 
@@ -25,6 +26,9 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const [browserError, setBrowserError] = useState("");
   const [openingBrowser, setOpeningBrowser] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [barHeight, setBarHeight] = useState(60);
+  const dock = useRef<ComponentRef<typeof ScrollView>>(null);
+  const dockState = useRef({ offset: 0, viewport: 0 });
   const browserScope = useRef<AbortController | null>(null);
   const started = useRef(false);
   const scroller = useRef<ComponentRef<typeof ScrollView>>(null);
@@ -57,6 +61,24 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
     if (record.messages.some((message) => message.role !== "custom")) return;
     void submit({ type: "text", text: initialText }, () => setDraft(""));
   }, [blocked, busy, initialText, record, sendInitialText, submit]);
+
+  // The keyboard shrinks the question dock; keep the field being typed in on screen.
+  // While a question is pending, the dock holds the only text fields on the screen.
+  function revealFocusedField() {
+    const input = TextInput.State.currentlyFocusedInput();
+    const content = dock.current?.getInnerViewRef();
+    if (!input || !content) return;
+    input.measureLayout(content, (_x, y, _width, height) => {
+      const target = revealOffset({ y, height }, dockState.current.viewport, dockState.current.offset);
+      if (target !== null) dock.current?.scrollTo({ y: target, animated: true });
+    }, () => {});
+  }
+
+  useEffect(() => {
+    if (!question) return;
+    const subscription = Keyboard.addListener("keyboardDidShow", () => requestAnimationFrame(revealFocusedField));
+    return () => subscription.remove();
+  }, [question]);
 
   async function openBrowser(pair: boolean) {
     if (browserScope.current) return;
@@ -94,7 +116,7 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const thinkingLabel = problem ? "Your thinking" : "Message";
   // Browser handoff lives in the top bar's menu until the phone handles these flows itself.
   const browserItem = (label: string, pair: boolean) => (
-    <Pressable accessibilityRole="button" accessibilityState={{ disabled: openingBrowser }} disabled={openingBrowser}
+    <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled: openingBrowser }} disabled={openingBrowser}
       onPress={() => { setMenuOpen(false); void openBrowser(pair); }}
       style={({ pressed }) => ({ paddingHorizontal: 10, paddingVertical: space.sm, borderRadius: radius.md, borderCurve: "continuous",
         backgroundColor: pressed ? c.hover : "transparent", opacity: openingBrowser ? 0.5 : 1 })}>
@@ -103,8 +125,7 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   );
   return (
     <View style={{ flex: 1 }}>
-      <View style={{ zIndex: 2 }}>
-      <View style={s.bar}>
+      <View style={[s.bar, { zIndex: 2 }]} onLayout={({ nativeEvent }) => setBarHeight(nativeEvent.layout.height)}>
         <Button variant="ghost" label="Sessions" onPress={back} style={{ width: 36, paddingHorizontal: 0 }}>
           <Text style={[s.ui, { fontSize: 20, lineHeight: 24 }]}>‹</Text>
         </Button>
@@ -116,17 +137,6 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
           <Text style={[s.ui, { fontSize: 16 }]}>…</Text>
         </Button>}
       </View>
-      {menuOpen && record && (
-        <View style={{ position: "absolute", top: "100%", right: space.md, marginTop: space.xs, minWidth: 200, padding: space.xs,
-          borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: c.border, backgroundColor: c.card,
-          boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.25)" }}>
-          {browserItem("Open in browser", false)}
-          {assisted && browserItem("Pair phone browser", true)}
-        </View>
-      )}
-      </View>
-      {menuOpen && <Pressable accessibilityLabel="Close menu" onPress={() => setMenuOpen(false)}
-        style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0, zIndex: 1 }} />}
       <ScrollView ref={scroller} style={{ flex: 1 }} contentContainerStyle={[s.section, { gap: space.lg }]}
         keyboardShouldPersistTaps="handled" scrollEventThrottle={100}
         onScroll={({ nativeEvent: { contentOffset, layoutMeasurement, contentSize } }) => {
@@ -155,7 +165,13 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
       {question && !pendingPlugin && (
         <View style={{ paddingHorizontal: space.md, paddingBottom: space.md, maxHeight: "55%" }}>
           <View style={[s.dock, { flexShrink: 1, overflow: "hidden" }]}>
-            <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: space.lg }}>
+            <ScrollView ref={dock} keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: space.lg }} scrollEventThrottle={16}
+              onScroll={({ nativeEvent }) => { dockState.current.offset = nativeEvent.contentOffset.y; }}
+              onLayout={({ nativeEvent }) => {
+                const shrank = nativeEvent.layout.height < dockState.current.viewport;
+                dockState.current.viewport = nativeEvent.layout.height;
+                if (shrank) revealFocusedField();
+              }}>
               <BuiltinQuestion key={question.key} question={question} disabled={blocked || busy} submit={(input) => void submit(input)} />
             </ScrollView>
           </View>
@@ -184,6 +200,18 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
               </Button>
             </View>
           </View>
+        </View>
+      )}
+      {menuOpen && <Pressable accessibilityLabel="Close menu" onPress={() => setMenuOpen(false)}
+        style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0, zIndex: 1 }} />}
+      {/* A child of the full-height screen, not of the bar: Android's accessibility tree
+          clips views to their parent's bounds, so a menu hanging below the bar had none. */}
+      {menuOpen && record && (
+        <View style={{ position: "absolute", top: barHeight + space.xs, right: space.md, zIndex: 3, minWidth: 200, padding: space.xs,
+          borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: c.border, backgroundColor: c.card,
+          boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.25)" }}>
+          {browserItem("Open in browser", false)}
+          {assisted && browserItem("Pair phone browser", true)}
         </View>
       )}
     </View>
