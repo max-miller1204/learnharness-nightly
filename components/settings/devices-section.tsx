@@ -19,7 +19,8 @@ type Client = {
 	browser?: string;
 	ip?: string;
 	issuedAt: string;
-	expiresAt: string;
+	/** null: never expires (every paired device; revoke signs it out). */
+	expiresAt: string | null;
 	lastSeenAt: string | null;
 	current: boolean;
 };
@@ -193,7 +194,7 @@ export function DevicesSection() {
 								</p>
 								<p className="text-xs text-muted-foreground">{[c.deviceType, c.os, c.browser, c.ip].filter(Boolean).join(" · ")}</p>
 								<p className="text-xs text-muted-foreground">
-									Issued {when(c.issuedAt)} · Expires {when(c.expiresAt)} · {c.lastSeenAt ? `Last seen ${when(c.lastSeenAt)}` : "Not seen yet"}
+									Issued {when(c.issuedAt)} · {c.expiresAt ? `Expires ${when(c.expiresAt)}` : "Never expires"} · {c.lastSeenAt ? `Last seen ${when(c.lastSeenAt)}` : "Not seen yet"}
 								</p>
 							</div>
 							{!c.current && (

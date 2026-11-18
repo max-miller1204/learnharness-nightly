@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { authDataDir, authenticate, CREDENTIAL_HEADERS } from "./src/server/auth.ts";
-import { touchLastSeen } from "./selfhost/src/auth-store.ts";
+import { authDataDir, authenticate, CREDENTIAL_HEADERS, sessionCookie } from "./src/server/auth.ts";
+import { NEVER_EXPIRES, touchLastSeen } from "./selfhost/src/auth-store.ts";
 import { SERVER_INFO_PATH } from "./src/client-protocol/index.ts";
 import { protocolRefusal } from "./src/server/server-info.ts";
 
@@ -27,13 +27,29 @@ export function proxy(request: NextRequest) {
 	if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
 	const result = authenticate(request);
 	if (result.ok) {
-		try { touchLastSeen(authDataDir(), result.session.id); } catch { /* last-seen is best effort */ }
-		return NextResponse.next();
+		let seen = false;
+		try { seen = touchLastSeen(authDataDir(), result.session.id); } catch { /* last-seen is best effort */ }
+		const response = NextResponse.next();
+		// Sessions never expire but browsers drop a cookie after at most 400
+		// days, so a cookie in use is set again, as often as last seen is.
+		if (seen && result.via === "cookie" && result.session.expiresAt === NEVER_EXPIRES) {
+			response.headers.append("Set-Cookie", sessionCookie(request, result.token));
+			response.headers.set("Cache-Control", CREDENTIAL_HEADERS["Cache-Control"]);
+		}
+		return response;
 	}
 	if (isApiPath(pathname)) {
 		return NextResponse.json({ error: result.error }, { status: result.status, headers: CREDENTIAL_HEADERS });
 	}
+	// Next normalizes the loopback hostname to localhost. If its router
+	// sees a different origin, it fetches the rewrite over the network.
+	// That hop uses the local HTTP listener, even behind a TLS proxy.
 	const pair = request.nextUrl.clone();
+	// URL omits 443 from an HTTPS URL. Preserve the listener port when
+	// switching schemes so an HTTP listener on 443 still works.
+	const port = pair.port || (pair.protocol === "https:" ? "443" : "");
+	pair.protocol = "http:";
+	pair.port = port;
 	pair.pathname = "/pair";
 	pair.search = "";
 	return NextResponse.rewrite(pair);

@@ -12,6 +12,7 @@ import {
 	issueSession,
 	listSessions,
 	LockBusy,
+	NEVER_EXPIRES,
 	revokeOthers,
 	revokeSession,
 	type SessionRecord,
@@ -22,6 +23,9 @@ import type { OAuthErrorResponse, SessionStateResponse, TokenExchangeResponse } 
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
 	Response.json(body, { status, headers: { ...CREDENTIAL_HEADERS, ...extra } });
+
+/** { expiresAt } for a session that expires (`lh`'s), nothing for the rest. */
+const sessionExpiry = (session: SessionRecord) => (session.expiresAt === NEVER_EXPIRES ? {} : { expiresAt: session.expiresAt });
 
 const BUSY = Symbol("busy");
 const LOCK_RETRY_MS = 12_000;
@@ -56,7 +60,7 @@ async function jsonBody(request: Request): Promise<Record<string, unknown>> {
 export function sessionState(request: Request): Response {
 	const result = authenticate(request);
 	if (!result.ok) return json({ authenticated: false } satisfies SessionStateResponse);
-	return json({ authenticated: true, sessionId: result.session.id, expiresAt: result.session.expiresAt } satisfies SessionStateResponse);
+	return json({ authenticated: true, sessionId: result.session.id, ...sessionExpiry(result.session) } satisfies SessionStateResponse);
 }
 
 /** POST /api/auth/browser-session (public): body { credential } -> session cookie. */
@@ -67,9 +71,9 @@ export async function browserSession(request: Request): Promise<Response> {
 	if (claimed === BUSY) return busy();
 	if (!claimed.ok) return json({ error: "That code is wrong, expired or already used. Make a new one.", reason: claimed.reason }, 401);
 	return json(
-		{ authenticated: true, expiresAt: claimed.session.expiresAt },
+		{ authenticated: true, ...sessionExpiry(claimed.session) },
 		200,
-		{ "Set-Cookie": sessionCookie(request, claimed.token, claimed.session.expiresAt) },
+		{ "Set-Cookie": sessionCookie(request, claimed.token) },
 	);
 }
 
@@ -126,12 +130,8 @@ export async function tokenExchange(request: Request): Promise<Response> {
 		default:
 			return oauthError("invalid_request", `subject_token_type must be ${PAIRING_CODE_TOKEN_TYPE}.`);
 	}
-	return json({
-		access_token: issued.token,
-		issued_token_type: ACCESS_TOKEN_TYPE,
-		token_type: "Bearer",
-		expires_in: Math.max(0, Math.floor((Date.parse(issued.session.expiresAt) - Date.now()) / 1000)),
-	} satisfies TokenExchangeResponse);
+	// No expires_in: these sessions never expire (RFC 6749 makes it optional).
+	return json({ access_token: issued.token, issued_token_type: ACCESS_TOKEN_TYPE, token_type: "Bearer" } satisfies TokenExchangeResponse);
 }
 
 /** The launcher's Tailscale HTTPS address, read from its config.json. */
@@ -172,7 +172,7 @@ export function listClients(request: Request): Response {
 		...(s.browser ? { browser: s.browser } : {}),
 		...(s.ip ? { ip: s.ip } : {}),
 		issuedAt: s.issuedAt,
-		expiresAt: s.expiresAt,
+		expiresAt: s.expiresAt === NEVER_EXPIRES ? null : s.expiresAt,
 		lastSeenAt: s.lastSeenAt ?? null,
 		current: s.id === result.session.id,
 	}));

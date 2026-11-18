@@ -71,7 +71,7 @@ export function readCredential(request: HeaderSource): Credential | "refused" | 
 }
 
 export type AuthResult =
-	| { ok: true; session: SessionRecord; via: Credential["via"] }
+	| { ok: true; session: SessionRecord; via: Credential["via"]; token: string }
 	| { ok: false; status: 401 | 403; error: string };
 
 export const SIGN_IN_REQUIRED = "Sign in required: pair this device with a pairing link (run `lh pair` on the server machine).";
@@ -82,7 +82,7 @@ export function authenticate(request: HeaderSource, dataDir: string = authDataDi
 	if (!credential) return { ok: false, status: 401, error: SIGN_IN_REQUIRED };
 	const session = verifyToken(dataDir, credential.token);
 	if (!session) return { ok: false, status: 401, error: SIGN_IN_REQUIRED };
-	return { ok: true, session, via: credential.via };
+	return { ok: true, session, via: credential.via, token: credential.token };
 }
 
 /** For handlers that check for themselves (the streamed documents route). */
@@ -97,12 +97,16 @@ function isHttps(request: HeaderSource): boolean {
 	try { return request.url ? new URL(request.url).protocol === "https:" : false; } catch { return false; }
 }
 
-/** HttpOnly, Path=/, SameSite=Lax, Secure over https, Expires = the session's expiry. */
-export function sessionCookie(request: HeaderSource, token: string, expiresAt: string): string {
+/** The longest cookie life browsers keep (Chrome caps Expires at 400 days).
+ * Sessions never expire, so proxy.ts sets the cookie again as it is used. */
+export const COOKIE_LIFETIME_MS = 400 * 24 * 60 * 60_000;
+
+/** HttpOnly, Path=/, SameSite=Lax, Secure over https, Expires 400 days on. */
+export function sessionCookie(request: HeaderSource, token: string, now = Date.now()): string {
 	return [
 		`${sessionCookieName()}=${token}`,
 		"Path=/",
-		`Expires=${new Date(expiresAt).toUTCString()}`,
+		`Expires=${new Date(now + COOKIE_LIFETIME_MS).toUTCString()}`,
 		"HttpOnly",
 		"SameSite=Lax",
 		...(isHttps(request) ? ["Secure"] : []),

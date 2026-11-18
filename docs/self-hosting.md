@@ -81,9 +81,9 @@ Every request needs a session, even from the server machine itself. `lh up` prin
 lh pair [--label "My phone"]
 ```
 
-It prints the Tailscale HTTPS link when Tailscale is on, otherwise `http://127.0.0.1:<port>/pair#token=...`, with a QR code to scan and the 12-character code to type. A code works once and expires after 5 minutes. `lh pair` works even when the server is stopped.
+It prints the loopback link first for use on the server machine. When Tailscale is on, the QR code uses the Tailscale HTTPS link, which appears just above the 12-character code under **From your other devices**. A code works once and expires after 5 minutes. `lh pair` works even when the server is stopped.
 
-A paired browser stays signed in for 30 days. On a signed-in device, **Settings → Devices** lists every device (label, type, OS, browser, IP, issued, expires, last seen), revokes one or all others, and makes a new pairing link with its QR code. There is no logout button: sign a device out from another one. Lost every device? Run `lh pair` on the server machine.
+A paired session stays valid until revoked. Browser cookies renew as you use the app, subject to browser storage limits. On a signed-in device, **Settings → Devices** lists every device (label, type, OS, browser, IP, issued, expires, last seen), revokes one or all others, and makes a new pairing link with its QR code. There is no logout button: sign a device out from another one. Lost every device? Run `lh pair` on the server machine.
 
 The login store is `userdata/data/auth/`. Backups skip it and `lh restore` keeps it, so restoring old data never brings back a revoked device. Anyone who can write that folder can sign in, the way `lh pair` does.
 

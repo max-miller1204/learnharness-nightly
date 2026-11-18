@@ -141,12 +141,11 @@ export interface TokenExchangeRequest {
 	client_os?: string;
 }
 
+/** Paired bearer tokens remain active until revoked. */
 export interface TokenExchangeResponse {
 	access_token: string;
 	issued_token_type: "urn:ietf:params:oauth:token-type:access_token";
 	token_type: "Bearer";
-	/** Seconds. */
-	expires_in: number;
 }
 
 /** OAuth's error body, status 400 (503 `temporarily_unavailable` when the login store is busy). */
@@ -157,7 +156,8 @@ export interface OAuthErrorResponse {
 
 export type SessionStateResponse =
 	| { authenticated: false }
-	| { authenticated: true; sessionId: string; expiresAt: string };
+	// Paired sessions omit expiresAt. Launcher sessions still expire.
+	| { authenticated: true; sessionId: string; expiresAt?: string };
 
 export interface ChatListResponse {
 	chats: ChatListItem[];

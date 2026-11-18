@@ -34,7 +34,7 @@ import { GET as serverInfoRoute } from "../app/.well-known/learnharness/server/r
 const RECORDED = {
 	protocolVersion: 1,
 	fingerprint: {
-		"src/client-protocol/index.ts": "64a553c1743bd329",
+		"src/client-protocol/index.ts": "5e4b8b2ac37e5a53",
 		"src/core/contracts/chat.ts": "937c52917f863b25",
 		"src/core/contracts/graph.ts": "b84d4803bd0c4acc",
 		"src/core/contracts/plan.ts": "feebc7e5e0e6e8cf",
