@@ -111,6 +111,17 @@ jobs:
         env:
           KEY_PATH: ${{ steps.mac_secrets.outputs.key_path }}
         run: rm -f -- "$KEY_PATH"
+      # The installer turns Next's linked packages into plain copies, which
+      # dist/win-unpacked does not show. Smoke what users actually install.
+      - name: Install the Windows package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem dist -Filter '*-setup.exe')
+          if ($installers.Count -ne 1) { throw "expected one installer, found $($installers.Count)" }
+          Start-Process -Wait -FilePath $installers[0].FullName -ArgumentList '/S'
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\learnharness-nightly\LearnHarness Nightly.exe'
+          if (-not (Test-Path $app)) { throw "installed app missing: $app" }
       - name: Exercise the packaged server and browser runtime
         run: |
           case "$RUNNER_OS" in
@@ -121,8 +132,9 @@ jobs:
               runner=()
               ;;
             Windows)
-              payload="dist/win-unpacked/resources/server/standalone"
-              runtime="dist/win-unpacked/LearnHarness Nightly.exe"
+              app="$LOCALAPPDATA/Programs/learnharness-nightly"
+              payload="$app/resources/server/standalone"
+              runtime="$app/LearnHarness Nightly.exe"
               runner=()
               ;;
             Linux)
@@ -134,6 +146,8 @@ jobs:
           node scripts/smoke-provider-runtime.mjs --standalone "$payload"
           node scripts/smoke-provider-runtime.mjs --standalone "$payload" --runtime "$runtime"
           "${runner[@]}" node scripts/smoke-demo-runtime.mjs --standalone "$payload" --runtime "$runtime" --browser
+          # Signed-in page routes, not just /api/health (2026-11-18: Windows `/` was 500).
+          node scripts/smoke-server.mjs --standalone "$payload" --runtime "$runtime"
       - name: Save installers and update metadata
         uses: actions/upload-artifact@v7
         with:
