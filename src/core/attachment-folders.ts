@@ -60,8 +60,12 @@ export function folderPathError(folder: string, files: readonly FolderFile[]): s
 	}
 }
 
+export function folderFileCountError(folder: string): string {
+	return `${folder} has more than 100 files. Attach up to 100 files per folder.`;
+}
+
 export function folderLimitError(folder: string, files: readonly FolderFile[]): string | undefined {
-	if (files.length > MAX_FOLDER_FILES) return "Attach up to 100 files per folder.";
+	if (files.length > MAX_FOLDER_FILES) return folderFileCountError(folder);
 	if (files.reduce((total, { size }) => total + size, 0) > MAX_FOLDER_BYTES) return `${folder} exceeds the 256 MiB per-folder limit.`;
 	return attachmentLimitError(folderFilesAsAttachments(files));
 }

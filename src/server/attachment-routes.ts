@@ -2,7 +2,7 @@ import type { CreateChatResponse } from "../client-protocol/index.ts";
 import { isAttachmentId } from "../core/attachments.ts";
 import { titleFromPrompt } from "../core/contracts.ts";
 import { ChatInputError, parseChatInput } from "../core/input-events.ts";
-import { MAX_FOLDER_FILES } from "../core/attachment-folders.ts";
+import { folderFileCountError, MAX_FOLDER_FILES } from "../core/attachment-folders.ts";
 import { AttachmentError, discardAttachment, receiveAttachment, renewAttachmentFolder, reserveAttachment, reserveAttachmentFolder } from "../store/attachments.ts";
 import { newChatRecord } from "../store/chats.ts";
 import { assertAttachmentOwner, attachmentOperation, attachmentSubmission, openingAttachmentChatId } from "./attachment-submissions.ts";
@@ -21,7 +21,7 @@ export function reserveAttachmentRequest(request: Request) {
 		let target: { chatId: string } | { draftId: string };
 		const folder = files !== undefined;
 		if (folder) {
-			if (Array.isArray(files) && files.length > MAX_FOLDER_FILES) throw new AttachmentError(413, "Attach up to 100 files per folder.");
+			if (validName && Array.isArray(files) && files.length > MAX_FOLDER_FILES) throw new AttachmentError(413, folderFileCountError(name));
 			if (!validName || !Array.isArray(files) || !files.every(file => typeof file?.path === "string" && validFile(file.mimeType, file.size))) {
 				throw new AttachmentError(400, "Provide a folder name and each file's path, media type and exact size.");
 			}

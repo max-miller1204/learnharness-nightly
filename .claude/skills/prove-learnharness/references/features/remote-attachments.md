@@ -56,7 +56,7 @@ Evidence: screenshots of the chip, skipped line and alerts, the network log of a
 
 - `scenarios/attachment-folder.json` needs the message to contain `zz-prove-it folder` and the folder to hold `week1/intro.md` with `PROVE-FOLDER`; `{{attachmentRef}}` is the first `attachment:<id>` the app sent the model.
 - Chromium sends folder picks as File objects whose `webkitRelativePath` starts with the folder name; the composer strips it, so manifest paths never include `Notes/`.
-- The composer renews grants on its own 30 seconds before they expire, so a slow upload shows one or more extra `POST /api/attachments/:id` calls without a failure.
 - Uploads are refused while a turn runs, for the button and for drops alike: during a turn the drop overlay does not appear at all.
 - Grant timing follows the server's `Date` header: set the browser's clock an hour ahead or behind (for example with a `Date.now` override injected before load) and uploads and Retry still behave.
-- Names that only start with two dots (`..notes.txt`, `..config/`) are ordinary names and must upload and send.
+- Names that only start with two dots (`..notes.txt`, `..config/`) are hidden names: the composer skips them and lists them in the skipped line. A manifest sent straight to `POST /api/attachments` with them is accepted, claimed into `claimed/<id>/` and readable by the agent.
+- The composer stops starting new files 30 seconds before a grant's deadline, lets running PUTs finish, then renews: expect `POST /api/attachments/:id` between batches on a slow link, and no PUT that starts after its grant expired.

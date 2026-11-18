@@ -66,7 +66,7 @@ test("unsafe paths reject the whole folder and name the entry", () => {
 });
 
 test("folder limits count every contained file", () => {
-	assert.equal(folderLimitError("Big", Array.from({ length: 101 }, (_, index) => file(`f${index}.txt`))), "Attach up to 100 files per folder.");
+	assert.equal(folderLimitError("Big", Array.from({ length: 101 }, (_, index) => file(`f${index}.txt`))), "Big has more than 100 files. Attach up to 100 files per folder.");
 	assert.equal(folderLimitError("Big", Array.from({ length: 6 }, (_, index) => file(`f${index}.bin`, 45 * MiB))), "Big exceeds the 256 MiB per-folder limit.");
 	assert.equal(folderLimitError("Big", [file("huge.bin", 51 * MiB)]), "huge.bin exceeds the 50 MiB per-file limit.");
 	assert.equal(folderLimitError("Big", [file("photo.png", 11 * MiB, "image/png")]), "photo.png exceeds the 10 MiB per-image limit.");
@@ -115,6 +115,7 @@ test("the server validates the whole manifest before creating any upload", async
 	assert.match((await unsafe.json()).error, /"Notes\/\.\.\/escape\.md" is not a safe file path/);
 	const many = await reserveFolder({ draftId }, "Notes", Array.from({ length: 101 }, (_, index) => file(`f${index}.txt`)));
 	assert.equal(many.status, 413);
+	assert.equal((await many.json()).error, "Notes has more than 100 files. Attach up to 100 files per folder.");
 	const big = await reserveFolder({ draftId }, "Notes", Array.from({ length: 6 }, (_, index) => file(`f${index}.bin`, 45 * MiB)));
 	assert.equal(big.status, 413);
 	assert.deepEqual(pendingEntries(), before);
