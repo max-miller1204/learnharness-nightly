@@ -15,10 +15,9 @@
  */
 
 import { isSubscriptionSearchEngineId, SEARCH_ENGINES, SUBSCRIPTION_SEARCH_ENGINES, type KeyedSearchEngineId, type SearchHit, type SearchPickerStatus, type SearchProvider, type SearchStatus } from "../core/search.ts";
-import { refreshChatGPTStatus } from "../agent/chatgpt-bridge.ts";
 import { keyValue } from "./keys.ts";
 import { effectiveSettings } from "./stores.ts";
-import { subscriptionSearchOptions, subscriptionSearchProvider, subscriptionSearchReason } from "./subscription-search.ts";
+import { refreshSubscriptionSearch, subscriptionSearchOptions, subscriptionSearchProvider, subscriptionSearchReason } from "./subscription-search.ts";
 
 /** The wire-callable shape the adapters close over (tests inject a stub). */
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
@@ -281,16 +280,17 @@ export function searchStatus(): SearchStatus {
 	if (isSubscriptionSearchEngineId(pin)) {
 		const reason = subscriptionSearchReason(search);
 		const label = SUBSCRIPTION_SEARCH_ENGINES.find(({ id }) => id === pin)!.label;
+		const option = subscriptionSearchOptions().find(({ id }) => id === pin);
 		return reason
 			? { available: false, engine: null, reason }
-			: { available: true, engine: pin, reason: `Search can use plan allowance or credits from your ${label}.` };
+			: { available: true, engine: pin, reason: `Search engine: ${label}. ${option?.reason ?? ""}`.trim() };
 	}
 	const { available, engine, reason } = resolveSearchEngineFor(pin, engineKeys());
 	return { available, engine, reason };
 }
 
 export async function searchPickerStatus(): Promise<SearchPickerStatus> {
-	await refreshChatGPTStatus().catch(() => { /* runtime connection changes are reflected by the bridge */ });
+	await refreshSubscriptionSearch();
 	return { ...searchStatus(), subscriptions: subscriptionSearchOptions() };
 }
 

@@ -37,7 +37,7 @@ export const SEARCH_ENGINES = [
 
 export const SUBSCRIPTION_SEARCH_ENGINES = [
 	{ id: "chatgpt", label: "ChatGPT subscription" },
-	{ id: "claude-code", label: "Claude Code subscription" },
+	{ id: "claude-code", label: "Claude Code" },
 	{ id: "xai-subscription", label: "Grok subscription" },
 	{ id: "github-copilot-subscription", label: "GitHub Copilot subscription" },
 ] as const;
