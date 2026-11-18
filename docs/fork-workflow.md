@@ -28,6 +28,15 @@ The nightly starts only after CI passes on a push to `main`, and builds that exa
 
 `.github/workflows/pr-agent.yml` runs [PR-Agent](https://github.com/The-PR-Agent/pr-agent) on every PR: an AI review and code suggestions as comments, on open and on each push. It's advisory and never blocks a merge. People with write access can also comment `/review`, `/improve`, `/describe` or `/ask ...` on a PR. It uses the `OPENROUTER_API_KEY` secret and the model in the `OPENROUTER_MODEL` repository variable (a bare OpenRouter ID such as `anthropic/claude-haiku-5.5`, which is also the default when the variable is unset). It runs with low reasoning effort.
 
+## PR previews
+
+Every PR can have a preview build to try on your server with `lh preview <N>` before merging (design: [specs/pr-previews.md](specs/pr-previews.md); running one: [self-hosting](self-hosting.md#trying-a-pr-previews)).
+
+- **Which PRs build one.** Yours (author is the repository owner) on open, push and reopen. Anyone else's, including upstream imports and Dependabot, only when you add the **`preview`** label; it's removed once the preview is published, so add it again after reading new pushes. PRs that change only `docs/` or Markdown build nothing.
+- **What you get.** A `preview-pr-<N>` prerelease (both arches, `.sha256` files, its own `latest.json`), replaced by each build and never part of the `nightly` feed, plus one bot comment on the PR naming the commit and the command.
+- **How it stays safe.** `.github/workflows/pr-preview.yml` builds on `pull_request` with a read-only token and no secrets, through the nightly's own `selfhost-bundle.yml`. `.github/workflows/pr-preview-publish.yml` (on `workflow_run`, so always `main`'s copy) never runs PR code. It publishes only when the PR is open, its head is the built commit, the build was started by someone with write access and the PR is yours or labeled, and it uses only the built-in token. A fork PR can edit its own copy of the build workflow, which is why the publish side checks all of this itself. Approving or re-running a workflow run on a labeled PR counts as asking for its preview.
+- **Cleanup.** Previews of PRs that are no longer open are deleted on every publish run, daily (07:23 UTC), and on a manual run of **PR preview publish**.
+
 ## Importing an upstream PR
 
 Run **Actions → Import upstream PR** with the PR number, or locally:
@@ -163,6 +172,8 @@ gh api repos/max-miller1204/learnharness-nightly/automated-security-fixes   # {"
 | `.github/workflows/ci-runner-retry.yml`, `.github/scripts/ci-runner-retry.cjs` | Re-runs CI jobs GitHub cancelled for lack of a hosted runner |
 | `.github/workflows/pr-agent.yml` | Advisory AI review on PRs |
 | `.github/workflows/nightly.yml`, `feed-check.yml` | Build, publish and verify nightlies |
+| `.github/workflows/selfhost-bundle.yml` | The server archive build and gates, shared by the nightly and PR previews |
+| `.github/workflows/pr-preview.yml`, `pr-preview-publish.yml` | PR preview builds, their publishing and cleanup (`lh preview` in `selfhost/src/preview.ts`) |
 | `.github/workflows/upstream-sync.yml`, `import-upstream-pr.yml`, `mirror-upstream-issues.yml` | Upstream feed, picked PR imports and picked issue mirrors (scripts in `selfhost/scripts/`) |
 | `.github/workflows/notify-upstream.yml` | One upstream comment when a fork PR for a picked item merges (`selfhost/scripts/notify-upstream.sh`, `upstream-refs.jq`) |
 | `.github/dependabot.yml`, `.github/workflows/dependabot-auto-merge.yml` | Dependency update PRs and their auto-merge |

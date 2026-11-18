@@ -5,6 +5,7 @@
  *
  *   lh up | pair | status | update [--now] | rollback | use <version> | restart
  *   lh restore <backup> | versions | logs [server|service|update] [-f]
+ *   lh preview <PR> [--port N]
  *   lh down | uninstall [--keep-data] | help
  *
  * Internal: __service (the systemd entry point), __install, __selftest,
@@ -43,6 +44,7 @@ import { enableLinger, hasSystemd, lingerEnabled, repointService, shimPath, syst
 import { Supervisor, type UpdateRequestMarker } from "./src/supervisor.ts";
 import { serveOff, serveOn, tailscaleAvailable, tailscaleSelf } from "./src/tailscale.ts";
 import { pruneVersions } from "./src/versions.ts";
+import { parsePrNumber, previewConfig, previewFeedUrl, previewHome, previewLockPath } from "./src/preview.ts";
 import { QrCode } from "./src/qr.ts";
 
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -140,6 +142,14 @@ function freePort(): Promise<number> {
 			const port = typeof address === "object" && address ? address.port : 0;
 			server.close(() => resolve(port));
 		});
+	});
+}
+
+function portFree(port: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		const server = net.createServer();
+		server.once("error", () => resolve(false));
+		server.listen(port, "127.0.0.1", () => server.close(() => resolve(true)));
 	});
 }
 
@@ -569,6 +579,116 @@ async function uninstallCommand(flags: Flags): Promise<void> {
 	out(keepData ? `Removed. Your data is still in ${layout(home).userdata}.` : "Removed.");
 }
 
+// ---------------------------------------------------------------------------
+// lh preview <N> (docs/specs/pr-previews.md)
+
+/**
+ * Run PR <N>'s preview build in the foreground beside the real server, in a
+ * home of its own with fresh, empty data. Ctrl+C stops it and deletes it.
+ * Not supervised: no IPC channel, so the in-app updater stays off.
+ */
+async function previewCommand(flags: Flags): Promise<void> {
+	const pr = parsePrNumber(flags._[1]) ?? fail("usage: lh preview <PR number> [--port N]");
+	const home = lhHome();
+	const real = readConfig(home);
+	let port: number | undefined;
+	if (typeof flags.port === "string") {
+		port = Number(flags.port);
+		if (!Number.isInteger(port) || port <= 0 || port >= 65536) fail(`invalid --port ${flags.port}`);
+	}
+	const config = previewConfig(real, port);
+	if (config.port === real.port) fail(`Port ${config.port} is your real server's port. Pick another with --port.`);
+	const arch = currentArch() ?? fail("this platform has no self-hosted builds");
+	const lockPath = previewLockPath(home, pr);
+	const lock = tryAcquireLock(lockPath) ?? fail(`A preview of PR #${pr} is already running.`);
+	const pHome = previewHome(home, pr);
+	const dirs = layout(pHome);
+	let served = false;
+	let child: ReturnType<typeof spawn> | undefined;
+	const cleanup = () => {
+		if (served) serveOff(config.tailscale.port);
+		served = false;
+		fs.rmSync(pHome, { recursive: true, force: true });
+		fs.rmSync(lockPath, { force: true });
+		lock.close();
+	};
+	const logTail = () => {
+		try { return fs.readFileSync(dirs.serverLog, "utf8").split("\n").slice(-40).join("\n"); } catch { return ""; }
+	};
+	const abort = (message: string): never => {
+		if (child && child.exitCode === null) child.kill("SIGKILL");
+		cleanup();
+		return fail(message);
+	};
+	// A folder left by a crash: the lock above proves nothing runs from it.
+	fs.rmSync(pHome, { recursive: true, force: true });
+	if (!(await portFree(config.port))) abort(`Port ${config.port} is in use. Pick another with --port.`);
+
+	const feedUrl = typeof flags["feed-url"] === "string" ? flags["feed-url"] : previewFeedUrl(pr, real.feedUrl ?? DEFAULT_FEED_URL);
+	let feed: Awaited<ReturnType<typeof fetchLatest>>;
+	try {
+		feed = await fetchLatest(feedUrl);
+	} catch (error) {
+		return abort(`No preview build for PR #${pr} (${error instanceof Error ? error.message : String(error)}). Your PRs build one on every push; anyone else's when you add the \`preview\` label.`);
+	}
+	out(`Downloading the PR #${pr} preview ${feed.version} (${feed.sha.slice(0, 12)}).`);
+	try {
+		await stageVersion(pHome, feed, arch);
+	} catch (error) {
+		abort(`Could not download the preview: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	if (config.tailscale.enabled) {
+		const ts = tailscaleAvailable() ? serveOn(config.tailscale.port, config.port) : { ok: false, output: "tailscale is not running" };
+		if (ts.ok) served = true;
+		else {
+			out(`Tailscale Serve on port ${config.tailscale.port} failed (${ts.output}); the preview is local only.`);
+			config.tailscale = { enabled: false, port: config.tailscale.port };
+		}
+	}
+	writeConfig(pHome, config);
+
+	const p = versionPaths(pHome, feed.version);
+	fs.mkdirSync(dirs.logs, { recursive: true });
+	const log = fs.openSync(dirs.serverLog, "a");
+	child = spawn(p.node, [p.serverEntry], { cwd: p.serverDir, env: buildChildEnv({ home: pHome, config, serviceEnv: {} }), stdio: ["ignore", log, log] });
+	fs.closeSync(log);
+	let stopping = false;
+	child.once("exit", (code, signal) => {
+		if (stopping) return;
+		process.stderr.write(`${logTail()}\n`);
+		abort(`The preview server exited (${signal ?? `code ${code}`}).`);
+	});
+	const stop = () => {
+		if (stopping) return;
+		stopping = true;
+		out("\nStopping the preview and deleting its folder.");
+		const done = () => { cleanup(); process.exit(0); };
+		if (!child || child.exitCode !== null) return done();
+		child.once("exit", done);
+		child.kill("SIGTERM");
+		setTimeout(() => child?.kill("SIGKILL"), 15_000).unref();
+	};
+	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, stop);
+
+	const deadline = Date.now() + 120_000;
+	while (!stopping && !(await fetchHealth(config.port, 3_000).catch(() => undefined))?.ok) {
+		if (Date.now() > deadline) {
+			process.stderr.write(`${logTail()}\n`);
+			abort("The preview never became healthy within 120s.");
+		}
+		await sleep(500);
+	}
+	if (stopping) return;
+	out("");
+	out(`PR #${pr} preview ${feed.version} (${feed.sha.slice(0, 12)}) is running, with fresh, empty data:`);
+	for (const url of urls(config)) out(`  ${url}`);
+	out("");
+	printPairingLink(pHome, config, `PR #${pr} preview`);
+	out(`Server log: ${dirs.serverLog}`);
+	out("Your real server, its data and its updates are untouched. Ctrl+C stops the preview and deletes it.");
+	setInterval(() => { /* stay up until Ctrl+C */ }, 1 << 30);
+}
+
 const HELP = `lh: run LearnHarness as a self-hosted server
 
   lh up [--port N] [--tailscale|--no-tailscale] [--tailscale-port N] [--chrome-path P] [--no-linger] [--no-open] [--yes]
@@ -581,6 +701,7 @@ const HELP = `lh: run LearnHarness as a self-hosted server
   lh restore [<backup>]          list backups, or restore one
   lh versions                    installed versions
   lh logs [server|service|update] [-f]
+  lh preview <PR> [--port N]     run a PR's preview build beside your server (fresh data; Ctrl+C deletes it)
   lh down                        stop and disable the service
   lh uninstall [--keep-data]`;
 
@@ -615,6 +736,7 @@ async function main(): Promise<void> {
 			return;
 		}
 		case "logs": return logsCommand(flags);
+		case "preview": return previewCommand(flags);
 		case "down": return downCommand();
 		case "uninstall": return uninstallCommand(flags);
 		case "help":

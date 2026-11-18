@@ -38,6 +38,7 @@ Then open `http://127.0.0.1:3774` on that machine, or the Tailscale address on o
 | `lh use <version>` | Switch to any installed version (`lh versions` lists them) |
 | `lh restore [<backup>]` | List data snapshots, or restore one |
 | `lh logs [server\|service\|update] [-f]` | Show (or follow) a log |
+| `lh preview <PR> [--port N]` | Run a PR's preview build beside your server (below) |
 | `lh up [...]` | Change settings and (re)install the service |
 | `lh restart` | Restart the service. Never required |
 | `lh down` | Stop the service and don't start it at login |
@@ -60,6 +61,16 @@ The launcher itself also updates by itself. An old launcher keeps working with n
 ### Rolling back by hand
 
 `lh rollback` (or `lh use <version>`) switches versions through the same trial. It asks whether to also restore your data from just before that version was replaced; the default is no, because restoring discards everything since.
+
+## Trying a PR (previews)
+
+A PR with a preview build has a bot comment saying so (design: [specs/pr-previews.md](specs/pr-previews.md)). Your own PRs build one on every push; anyone else's PR (upstream imports, outside PRs) only when you add the `preview` label, and the label comes off once it's published. Adding it means you've read the diff: a preview runs that PR's code as you.
+
+```sh
+lh preview 123
+```
+
+It downloads PR #123's build, checks its SHA-256 and runs it in the foreground beside your server: port 3775 (`--port N`), plus `https://<machine>:8444` when Tailscale is on, with a pairing link and QR code. It has its own folder (`~/.learnharness/previews/pr-123/`) with fresh, empty data: none of your learning data, saved API keys or `service.env`. The Claude Code provider still works, through this machine's `claude` login. It never offers updates. **Ctrl+C stops it and deletes its folder**; your real server, its data and its updates are never touched. `lh preview` needs a launcher from a version that has it, so update first if `lh` says the command is unknown.
 
 ## Signing in (pairing)
 

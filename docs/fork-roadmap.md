@@ -24,7 +24,7 @@ Rows are in build order. **Order** is the planned sequence, after the self-hosti
 | Order | # | Item | Group | Depends on | Touches core |
 |---|---|---|---|---|---|
 | 1 | 20 | Gemini CLI and Codex CLI providers (both parked) | Providers | none | Moderate (new provider folders, Settings rows) |
-| 2 | 12 | Preview builds of PRs | Review workflow | none | Small |
+| Done | 12 | Preview builds of PRs | Review workflow | none | No |
 | 3 | 6 | Login and pairing | Access + security | none | Yes |
 | 4 | 1 | Electron desktop nightlies | Desktop + distribution | none | Small (`electron/main.cjs`) |
 | Later | 2 | Removing Electron | Desktop + distribution | none | Yes (deletions) |
@@ -424,20 +424,7 @@ Where things stand, so the entries below start from facts:
 
 ### 12. Preview builds of PRs
 
-**Why.** The fork exists to review and merge upstream PRs. Running a PR on your real server before merging is the most direct review.
-
-**Decided.** Not in the first release. T3 has a manual-only "preview" channel whose builds stay as draft releases, carry no update feed, and are never offered to installs automatically. Owner decisions (2026-11-17): previews run on fresh, empty data; the owner's PRs build automatically, upstream and outside PRs only when the owner adds a label.
-
-**Proposed design (not approved).**
-- A `pr-preview.yml` workflow runs on a `preview` label or a manual dispatch with a PR number. It reuses the nightly bundle job and publishes a `preview-pr-<N>` prerelease (`<version>-preview.pr<N>.<run>`) that never touches `latest.json`, then comments the install command on the PR.
-- `lh use pr-<N>` downloads it, snapshots data, switches and **pins** the install so `self-update.ts` stops auto-updating. Settings → Updates shows "Pinned to PR #N preview" with a "Back to nightly" button. `lh use nightly` does the same.
-- Delete preview releases when their PR closes.
-
-**Open questions.** Should previews share your real data (realistic, but a PR could rewrite records) or run as a separate instance with a copy of the data (needs item 10)? Who can trigger previews for outside PRs?
-
-**Build outline.** Turn the nightly bundle job into a reusable workflow, add `pr-preview.yml`, add pinning to `service-state.json` and the update UI, add `lh use pr-<N>` / `lh use nightly`, and add cleanup.
-
-**Touches core.** Small (pin state in the update UI).
+**Done.** Your PRs build a preview on every push, anyone else's when you add the `preview` label (removed once published). Each is a `preview-pr-<N>` prerelease outside the nightly feed, and `lh preview <N>` runs it in the foreground beside your server with fresh, empty data, deleting it on Ctrl+C. Previews of closed PRs are deleted. Switching the real install to a PR build (`lh use pr-<N>`, pinning) was left out. Spec: [specs/pr-previews.md](specs/pr-previews.md).
 
 ### 28. Offering fork fixes upstream
 
