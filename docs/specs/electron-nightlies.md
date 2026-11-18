@@ -8,6 +8,8 @@ The desktop app is **LearnHarness Nightly**, with bundle ID `com.learnharness.Le
 
 The packaged app uses `learnharness-nightly` for the Windows per-user install folder and `learnharness-nightly-updater` for the updater cache. Its Linux executable and desktop entry are `learnharness-nightly` and `learnharness-nightly.desktop`. Development keeps the `LearnHarness-dev` profile.
 
+The nightly installs side by side with upstream stable LearnHarness. Uninstalling either app must not remove or break the other's files or data. Known exception on Windows: uninstalling upstream stable while the nightly is running closes the nightly, because stable's uninstaller closes running apps by folder-name prefix, and `learnharness` also matches `learnharness-nightly`. The nightly's files and data are unaffected, and it can be reopened.
+
 ## Build and publication
 
 The fork ships desktop packages through the nightly workflow. The inherited tagged desktop workflow's gate only allows the upstream repository.

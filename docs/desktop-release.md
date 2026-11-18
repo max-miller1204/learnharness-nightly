@@ -55,6 +55,8 @@ npx electron-builder --linux --x64 --publish never # Linux
 
 For this fork, use the [nightly release workflow and artifact-only rehearsal](specs/electron-nightlies.md). The tagged release workflow and runbook below describe the inherited upstream path.
 
+**Nightly beside stable on Windows:** close LearnHarness Nightly before you uninstall the stable LearnHarness app. Stable's uninstaller also closes a running nightly. The nightly's files and data stay safe, and you can reopen it afterward.
+
 [CI](../.github/workflows/ci.yml) runs typecheck/tests/lint on Ubuntu, plus standalone/native checks on macOS, Windows, and Linux. Its `macos-15` job does not compile the release icon.
 
 [Desktop release](../.github/workflows/release.yml) has two modes:
