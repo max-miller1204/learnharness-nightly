@@ -12,7 +12,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, describe, it } from "node:test";
 import { createCanvas } from "@napi-rs/canvas";
-import { readTool } from "../src/agent/tools/read.ts";
+import { readTool, withHeader } from "../src/agent/tools/read.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "lh-read-test-"));
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -226,6 +226,14 @@ describe("read tool: documents", () => {
 		fs.writeFileSync(huge, "");
 		fs.truncateSync(huge, 16 * 1024 * 1024 + 1);
 		await assert.rejects(() => run({ path: huge }), { message: "huge.xlsx is larger than 16 MiB, the limit for converting documents." });
+	});
+
+	it("an oversized OLE file named like OOXML gets the password-protected message, and a sheetless workbook says none (item 26)", async () => {
+		const locked = path.join(tmp, "locked.docx");
+		fs.writeFileSync(locked, Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]));
+		fs.truncateSync(locked, 16 * 1024 * 1024 + 1);
+		await assert.rejects(() => run({ path: locked }), { message: "locked.docx is password-protected or encrypted, so its text can't be read." });
+		assert.equal(withHeader("[Skipped document part: workbook]", "xlsx"), "[Converted from xlsx to text. Sheets: none]\n\n[Skipped document part: workbook]");
 	});
 
 	it("shows an rtf or ipynb that doesn't parse as raw text", async () => {

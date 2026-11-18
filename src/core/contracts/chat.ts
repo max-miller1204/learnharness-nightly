@@ -98,6 +98,8 @@ export interface ExtractionRunUsage {
 	stages: {
 		extractor: ExtractionStageUsage;
 		auditor: ExtractionStageUsage;
+		/** Extract files images (item 26): the Vision call that described the image. */
+		imageReader?: ExtractionStageUsage;
 	};
 }
 

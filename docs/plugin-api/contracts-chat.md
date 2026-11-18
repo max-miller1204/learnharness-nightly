@@ -474,6 +474,7 @@ export interface ExtractionRunUsage {
     stages: {
         extractor: ExtractionStageUsage;
         auditor: ExtractionStageUsage;
+        imageReader?: ExtractionStageUsage;
     };
 }
 ```
@@ -489,6 +490,7 @@ export interface ExtractionRunUsage {
 - [stages](#extractionrunusage-stages)
 - [stages.extractor](#extractionrunusage-stagesextractor)
 - [stages.auditor](#extractionrunusage-stagesauditor)
+- [stages.imageReader](#extractionrunusage-stagesimagereader)
 
 ### ExtractionRunUsage startedAt
 
@@ -527,6 +529,7 @@ no model call, no entry).
 stages: {
     extractor: ExtractionStageUsage;
     auditor: ExtractionStageUsage;
+    imageReader?: ExtractionStageUsage;
 };
 ```
 
@@ -540,6 +543,14 @@ extractor: ExtractionStageUsage;
 
 ```ts
 auditor: ExtractionStageUsage;
+```
+
+### ExtractionRunUsage stages.imageReader
+
+Extract files images (item 26): the Vision call that described the image.
+
+```ts
+imageReader?: ExtractionStageUsage;
 ```
 
 ## ExtractionStageUsage

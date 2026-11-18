@@ -947,6 +947,26 @@ describe("convertDocument: worker, cache, limits", () => {
 		assert.equal((await convertDocument(docx("Still alive"), "docx")).text, "Still alive");
 	});
 
+	it("logs failed and timed-out conversions with the converter's stderr tail (item 26)", async () => {
+		const logged: string[] = [];
+		const realError = console.error;
+		console.error = (...args: unknown[]) => { logged.push(args.map(String).join(" ")); };
+		try {
+			documentLimits.heapMb = 8;
+			assert.equal(await reason(convertDocument(new Uint8Array(Buffer.from(`{"cells":[${Array(400_000).fill("{}").join(",")}]}`)), "ipynb")), "failed");
+			documentLimits.heapMb = 192;
+			documentLimits.timeoutMs = 1;
+			assert.equal(await reason(convertDocument(docx("Logged slow"), "docx")), "timeout");
+		} finally {
+			documentLimits.heapMb = 192;
+			documentLimits.timeoutMs = 15_000;
+			console.error = realError;
+		}
+		assert.match(logged[0]!, /^\[documents\] ipynb conversion failed: converter exited/);
+		assert.match(logged[0]!, /heap|memory/i, "the child's stderr tail is in the log");
+		assert.match(logged[1]!, /^\[documents\] docx conversion timeout: timed out/);
+	});
+
 	it("stops a conversion at the timeout and does not cache it", async () => {
 		documentLimits.timeoutMs = 1;
 		const bytes = docx("Slow");

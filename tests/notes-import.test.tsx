@@ -7,7 +7,7 @@ import { renderWithInteractionLayers as renderToStaticMarkup } from "./interacti
 import { parseHTML } from "linkedom";
 import { InteractionLayersProvider } from "../components/interaction-layers.tsx";
 import { installModalDom } from "./modal-dom.ts";
-import { IMPORT_EXTENSIONS } from "../lib/notes-import-limits.ts";
+import { isImportable } from "../lib/notes-import-limits.ts";
 import { MAX_IMPORT_BYTES, NotesImportControl, NotesImportErrors, NotesImportNotices, parseNotesImportResults, postNotesImport, useNotesImport, type NotesImportResult } from "../components/notes-import.tsx";
 
 const dom = parseHTML("<html><body></body></html>");
@@ -146,12 +146,12 @@ it("25 MiB is per file, not per selection; oversized files fail locally while sm
 });
 it("picker stays enabled during imports, offers Files/Folder, and keeps PDF support", () => {
 	const html = renderToStaticMarkup(<NotesImportControl importing onImportFiles={() => {}} />);
-	assert.match(html, /webkitdirectory/); assert.match(html, /accept=".txt,.md,.markdown,.rst,.org,.adoc,.tex,.pdf"/); assert.doesNotMatch(html, /disabled/);
+	assert.match(html, /webkitdirectory/); assert.match(html, /accept=".txt,.md,.markdown,.rst,.org,.adoc,.tex,.pdf,.docx,.pptx,.odt,.odp,.rtf,.epub,.ipynb,.jpg,.jpeg,.png,.gif,.webp,.bmp,.heic,.heif,.c,/); assert.doesNotMatch(html, /disabled/);
 });
 it("the Files picker's accept lists only types the queue takes, in any letter case", () => {
 	const accepted = renderToStaticMarkup(<NotesImportControl importing={false} onImportFiles={() => {}} />).match(/accept="([^"]*)"/)![1]!.split(",");
-	for (const extension of accepted) assert.ok(IMPORT_EXTENSIONS.test(`NOTES${extension.toUpperCase()}`), extension);
-	assert.ok(!IMPORT_EXTENSIONS.test("README") && !IMPORT_EXTENSIONS.test("notes.md.bak") && !IMPORT_EXTENSIONS.test("notes.docx"));
+	for (const extension of accepted) assert.ok(isImportable(`NOTES${extension.toUpperCase()}`), extension);
+	assert.ok(!isImportable("README") && !isImportable("notes.md.bak") && !isImportable("data.xlsx") && !isImportable("data.ods") && !isImportable("data.csv"));
 });
 it("graph menu clearly distinguishes extraction from lesson material, above unchanged Files/Folder choices", async () => {
 	const selected: unknown[] = [];

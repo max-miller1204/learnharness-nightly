@@ -112,7 +112,7 @@ async function readHead(absolute: string, length: number): Promise<Buffer> {
 }
 
 /** The header line `read` puts above converted text; spreadsheets list their sheets. */
-function withHeader(text: string, format: DocumentFormat): string {
+export function withHeader(text: string, format: DocumentFormat): string {
 	if (format !== "xlsx" && format !== "ods") return `[Converted from ${format} to text.]\n\n${text}`;
 	const lines = text.split("\n");
 	const sheets: Array<{ name: string; line: number; rows: number }> = [];
@@ -121,7 +121,7 @@ function withHeader(text: string, format: DocumentFormat): string {
 		else if (sheets.length && line.trim() && !line.startsWith("[Extracted text truncated") && !line.startsWith("[Skipped document part")) sheets.at(-1)!.rows++;
 	}
 	const count = (n: number) => n.toLocaleString("en-US");
-	const index = sheets.map((sheet) => `${sheet.name} (${count(sheet.rows)} ${sheet.rows === 1 ? "row" : "rows"}, line ${count(sheet.line)})`).join(", ");
+	const index = sheets.map((sheet) => `${sheet.name} (${count(sheet.rows)} ${sheet.rows === 1 ? "row" : "rows"}, line ${count(sheet.line)})`).join(", ") || "none";
 	return `[Converted from ${format} to text. Sheets: ${index}]\n\n${text}`;
 }
 
@@ -164,8 +164,11 @@ export function createReadTool(model?: ReadModel): AgentTool<typeof readInput> {
 			const mime = await detectSupportedImageMimeTypeFromFile(absolute);
 			const named = mime ? undefined : documentFormatFromName(name);
 			if (named && (await fs.stat(absolute)).size > MAX_DOCUMENT_BYTES) {
-				// The PDF check comes first (spec read flow step 2), even for a large file.
-				if (isPdf(await readHead(absolute, 8))) throw new Error(PDF_MESSAGE);
+				// The PDF check comes first (spec read flow step 2), even for a large file; then a
+				// password-protected OOXML file (an OLE container) says so rather than too large (item 26).
+				const head = await readHead(absolute, 8);
+				if (isPdf(head)) throw new Error(PDF_MESSAGE);
+				if (isOleCompound(head) && (named === "docx" || named === "xlsx" || named === "pptx")) throw new Error(conversionFailureMessage(name, named, "encrypted"));
 				throw new Error(conversionFailureMessage(name, named, "too-large"));
 			}
 			const buffer = await fs.readFile(absolute, { signal });

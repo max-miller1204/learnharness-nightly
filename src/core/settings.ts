@@ -332,6 +332,8 @@ export const ROLE_SLOT: Readonly<Record<ModelRole, ModelSlotName>> = {
 	auditor: "cheap",
 	visualMaker: "vision",
 	pdfReader: "vision",
+	// Extract files image descriptions (item 26): the Vision slot, no per-role override, like pdfReader.
+	imageReader: "vision",
 	sideQuestion: "strong", // the conversation chain, like prober/teacher (resolveSideQuestionSpec)
 };
 

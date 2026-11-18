@@ -54,6 +54,7 @@ export type ModelRole =
 	| "demoBuilder"
 	| "visualMaker"
 	| "pdfReader"
+	| "imageReader"
 	| "extractor"
 	| "auditor"
 	| "sideQuestion";
