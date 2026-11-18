@@ -1,6 +1,6 @@
 # Upstream issue mirror
 
-Status: approved by the owner on 2026-11-17. Hardened the same day ([fix-upstream-hardening.md](fix-upstream-hardening.md)): the copied-text fence, bot-only mirror matching and workflow-only writes below replace the first version's rules.
+Status: approved by the owner on 2026-11-17. **Superseded in part on 2026-11-18 by [upstream-handpicked.md](upstream-handpicked.md):** nothing is mirrored automatically any more (each issue is picked and mirrored by a dispatch with its number; the backfill, `NEW_AFTER` and `MAX_NEW` are gone), close tracking runs daily and reads each mirror's upstream issue directly, and a fork PR for a picked item tells upstream once at merge, so "nothing ever pings upstream" no longer holds there. The rest is kept as history. Hardened the same day ([fix-upstream-hardening.md](fix-upstream-hardening.md)): the copied-text fence, bot-only mirror matching and workflow-only writes below replace the first version's rules.
 
 Goal: roadmap item 13. A scheduled job copies upstream issues (`amosblomqvist/learnharness`) into the fork as fork issues, once each, and labels a mirror `upstream-closed` while its upstream issue is closed. Nothing ever pings upstream.
 
