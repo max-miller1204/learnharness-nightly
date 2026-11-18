@@ -165,7 +165,7 @@ export function Composer({
 	const editorRef = inputRef ?? ownInputRef;
 	return (
 		<>
-		{attachments && <DraftAttachmentChips draft={attachments} />}
+		{attachments && <DraftAttachmentChips draft={attachments} disabled={busy} />}
 		<form
 			data-testid="composer"
 			className="flex items-end gap-1.5 p-1.5"
@@ -205,7 +205,7 @@ export function Composer({
 				autoFocus={autoFocus}
 				className="field-sizing-content lh-input max-h-48 min-h-10 flex-1 resize-none bg-transparent px-2.5 py-2 outline-none placeholder:text-muted-foreground"
 			/>
-			<AttachFilesButton editorRef={editorRef} upload={attachments?.enabled ? attachments.select : undefined} uploadDisabled={busy} />
+			<AttachFilesButton editorRef={editorRef} upload={attachments?.enabled ? attachments.select : undefined} uploadFolder={attachments?.folders ? attachments.selectFolder : undefined} uploadDisabled={busy} />
 			{/* The button follows the text (owner report 2026-10-03): while
 				 a turn runs WITH text typed it stays the SEND affordance
 				 (click = steer — steering must be clickable, not Enter-only);

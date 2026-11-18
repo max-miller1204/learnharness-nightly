@@ -81,14 +81,19 @@ function AttachmentPopup({ anchorRef, rootRef, open, close, children }: {
  * folder choice returns the directory itself, including an empty directory.
  * aria-disabled, not disabled, so the tooltip still shows.
  */
-export function AttachFilesButton({ editorRef, upload, uploadDisabled }: {
+export function AttachFilesButton({ editorRef, upload, uploadFolder, uploadDisabled }: {
 	editorRef: React.RefObject<HTMLDivElement | null>;
 	upload?: (files: File[]) => void;
+	/** Browser uploads: a folder input pick, on every device. */
+	uploadFolder?: (files: File[]) => void;
 	uploadDisabled?: boolean;
 }) {
 	const controller = useOptionalInteractionLayers();
 	const pickerRef = useRef<HTMLInputElement>(null);
+	const folderPickerRef = useRef<HTMLInputElement>(null);
 	const desktop = useDesktopPaths();
+	const uploadMenu = !desktop && Boolean(upload && uploadFolder);
+	const menu = desktop || uploadMenu;
 	const buttonRef = useRef<HTMLButtonElement>(null);
 	const popupRef = useRef<HTMLDivElement>(null);
 	const choosingFolder = useRef(false);
@@ -134,6 +139,7 @@ export function AttachFilesButton({ editorRef, upload, uploadDisabled }: {
 		const choose = window.lh?.chooseAttachmentFolder;
 		setOpen(false);
 		setNotice("");
+		if (uploadMenu) { folderPickerRef.current?.click(); return; }
 		if (!choose) { setNotice(BROWSER_NOTICE); return; }
 		choosingFolder.current = true;
 		try {
@@ -162,16 +168,31 @@ export function AttachFilesButton({ editorRef, upload, uploadDisabled }: {
 					e.currentTarget.value = ""; // allow re-picking the same file
 				}}
 			/>
-			<Hint label={desktop ? "Attach files or a folder" : upload ? "Attach files" : BROWSER_NOTICE}>
+			{uploadMenu && <input
+				ref={folderPickerRef}
+				type="file"
+				{...{ webkitdirectory: "" }}
+				hidden
+				data-testid="attach-folder-input"
+				onChange={(e) => {
+					const files = Array.from(e.currentTarget.files ?? []);
+					if (!uploadDisabled) uploadFolder?.(files);
+					e.currentTarget.value = "";
+				}}
+			/>}
+			<Hint label={menu ? "Attach files or a folder" : upload ? "Attach files" : BROWSER_NOTICE}>
 				<button
 					ref={buttonRef}
 					type="button"
 					aria-label="Attach files"
 					aria-disabled={!desktop && (!upload || uploadDisabled)}
-					aria-haspopup={desktop ? "menu" : undefined}
-					aria-expanded={desktop ? open : undefined}
+					aria-haspopup={menu ? "menu" : undefined}
+					aria-expanded={menu ? open : undefined}
 					data-testid="attach-files"
-					onClick={() => { if (desktop) { setNotice(""); setOpen(!open); } else if (upload && !uploadDisabled) pickerRef.current?.click(); }}
+					onClick={() => {
+						if (desktop || (uploadMenu && !uploadDisabled)) { setNotice(""); setOpen(!open); }
+						else if (upload && !uploadDisabled) pickerRef.current?.click();
+					}}
 					className="flex size-10 shrink-0 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground aria-disabled:cursor-default aria-disabled:opacity-40 aria-disabled:hover:bg-transparent aria-disabled:hover:text-muted-foreground"
 				>
 					<PaperclipIcon className="size-4" />

@@ -2,7 +2,8 @@ import type { CreateChatResponse } from "../client-protocol/index.ts";
 import { isAttachmentId } from "../core/attachments.ts";
 import { titleFromPrompt } from "../core/contracts.ts";
 import { ChatInputError, parseChatInput } from "../core/input-events.ts";
-import { AttachmentError, discardAttachment, receiveAttachment, reserveAttachment } from "../store/attachments.ts";
+import { MAX_FOLDER_FILES } from "../core/attachment-folders.ts";
+import { AttachmentError, discardAttachment, receiveAttachment, renewAttachmentFolder, reserveAttachment, reserveAttachmentFolder } from "../store/attachments.ts";
 import { newChatRecord } from "../store/chats.ts";
 import { assertAttachmentOwner, attachmentOperation, attachmentSubmission, openingAttachmentChatId } from "./attachment-submissions.ts";
 import { initialChatSettings, initialGraphContext } from "./chat-creation.ts";
@@ -13,17 +14,31 @@ export function reserveAttachmentRequest(request: Request) {
 	return attachmentOperation(request, async owner => {
 		const body = await request.json().catch(() => null);
 		assertAttachmentOwner(request, owner);
-		const { name, mimeType, size, draftId, chatId } = body ?? {};
-		if (typeof name !== "string" || !name.trim() || name.length > 255 || /[\x00-\x1f\x7f]/.test(name) ||
-			typeof mimeType !== "string" || mimeType.length > 255 || typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) {
+		const { name, mimeType, size, files, draftId, chatId } = body ?? {};
+		const validName = typeof name === "string" && !!name.trim() && name.length <= 255 && !/[\x00-\x1f\x7f]/.test(name);
+		const validFile = (type: unknown, bytes: unknown) => typeof type === "string" && type.length <= 255 &&
+			typeof bytes === "number" && Number.isSafeInteger(bytes) && bytes >= 0;
+		let target: { chatId: string } | { draftId: string };
+		const folder = files !== undefined;
+		if (folder) {
+			if (Array.isArray(files) && files.length > MAX_FOLDER_FILES) throw new AttachmentError(413, "Attach up to 100 files per folder.");
+			if (!validName || !Array.isArray(files) || !files.every(file => typeof file?.path === "string" && validFile(file.mimeType, file.size))) {
+				throw new AttachmentError(400, "Provide a folder name and each file's path, media type and exact size.");
+			}
+		} else if (!validName || !validFile(mimeType, size)) {
 			throw new AttachmentError(400, "Provide a filename, media type and exact file size.");
 		}
 		if (chatId !== undefined && draftId === undefined && typeof chatId === "string" && /^[\w-]+$/.test(chatId)) {
 			if (!stores.chatStore.getChat(chatId)) throw new AttachmentError(404, "Unknown chat.");
-			return Response.json(reserveAttachment(owner, { name, mimeType, size, chatId }), { status: 201 });
+			target = { chatId };
+		} else if (chatId !== undefined || !isAttachmentId(draftId)) {
+			throw new AttachmentError(400, "Provide an opening draft ID or an existing chat ID.");
+		} else target = { draftId };
+		if (folder) {
+			const manifest = (files as { path: string; mimeType: string; size: number }[]).map(({ path, mimeType, size }) => ({ path, mimeType, size }));
+			return Response.json(reserveAttachmentFolder(owner, { ...target, name, files: manifest }), { status: 201 });
 		}
-		if (chatId !== undefined || !isAttachmentId(draftId)) throw new AttachmentError(400, "Provide an opening draft ID or an existing chat ID.");
-		return Response.json(reserveAttachment(owner, { name, mimeType, size, draftId }), { status: 201 });
+		return Response.json(reserveAttachment(owner, { ...target, name, mimeType, size }), { status: 201 });
 	});
 }
 
@@ -42,6 +57,14 @@ export function discardAttachmentRequest(request: Request, params: Promise<{ id:
 		assertAttachmentOwner(request, owner);
 		discardAttachment(id, owner);
 		return new Response(null, { status: 204 });
+	});
+}
+
+export function renewAttachmentFolderRequest(request: Request, params: Promise<{ id: string }>) {
+	return attachmentOperation(request, async owner => {
+		const { id } = await params;
+		assertAttachmentOwner(request, owner);
+		return Response.json(renewAttachmentFolder(id, owner));
 	});
 }
 

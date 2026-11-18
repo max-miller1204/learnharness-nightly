@@ -1,6 +1,8 @@
 export interface AttachmentReference {
 	id: string;
 	name: string;
+	/** Present only on an uploaded folder: the number of files inside it. */
+	fileCount?: number;
 }
 
 export const ATTACHMENT_PREFIX = "attachment:";

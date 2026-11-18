@@ -13,9 +13,9 @@ import { parseHTML } from "linkedom";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PluginSubmissionRunner } from "../components/plugin-submission-runner.ts";
 import type { PluginSubmissionTarget } from "../src/core/index.ts";
-import { useAttachmentDraft, type AttachmentDraft } from "../components/attachment-draft.tsx";
+import { DraftAttachmentChips, useAttachmentDraft, type AttachmentDraft } from "../components/attachment-draft.tsx";
 import { Composer } from "../components/composer.tsx";
-import { attachmentPopupPlacement, pathsForFiles } from "../components/attach-files-button.tsx";
+import { AttachFilesButton, attachmentPopupPlacement, pathsForFiles } from "../components/attach-files-button.tsx";
 import { restorePathSelection } from "../components/path-input-dom.ts";
 import { quoteFilePath } from "../src/core/file-paths.ts";
 import { InteractionLayersProvider, useInteractionLayers, type InteractionLayersController } from "../components/interaction-layers.tsx";
@@ -401,4 +401,66 @@ it("releases the existing-chat submission when a file fails or is removed while 
 			retry.cancel();
 		}
 	}
+});
+
+it("browser uploads offer Files and Folder on every device; the folder input is webkitdirectory", () => {
+	const editorRef = { current: null };
+	const html = renderToStaticMarkup(<AttachFilesButton editorRef={editorRef} upload={() => {}} uploadFolder={() => {}} />);
+	assert.match(html, /aria-haspopup="menu"/);
+	assert.match(html, /data-testid="attach-folder-input"[^>]*webkitdirectory=""|webkitdirectory=""[^>]*data-testid="attach-folder-input"/);
+	assert.doesNotMatch(renderToStaticMarkup(<AttachFilesButton editorRef={editorRef} upload={() => {}} />), /attach-folder-input/);
+});
+
+it("a folder uploads as one chip, reports skipped entries, and Retry renews only the missing files", async t => {
+	const calls: { method: string; url: string; body?: unknown }[] = [];
+	const puts: string[] = [];
+	t.mock.method(globalThis, "fetch", async (url: string, init?: RequestInit) => {
+		if (!init?.method) return Response.json({ capabilities: ["attachment-uploads-v1", "attachment-folders-v1"] });
+		calls.push({ method: init.method, url, body: init.body ? JSON.parse(String(init.body)) : undefined });
+		if (init.method === "POST" && url === "/api/attachments") {
+			return Response.json({ id: "folder", expiresAt: Date.now() + 600_000, files: [{ path: "a.md", uploadUrl: "/upload/a" }, { path: "sub/b.md", uploadUrl: "/upload/b" }] }, { status: 201 });
+		}
+		if (init.method === "POST") return Response.json({ id: "folder", expiresAt: Date.now() + 600_000, files: puts.includes("/upload/b2") ? [] : [{ path: "sub/b.md", uploadUrl: "/upload/b2" }] });
+		return new Response(null, { status: 204 });
+	});
+	class ScriptedUpload {
+		upload = {};
+		status = 204;
+		url = "";
+		onload?: () => void;
+		onerror?: () => void;
+		open(_method: string, url: string) { this.url = url; }
+		send() {
+			puts.push(this.url);
+			queueMicrotask(() => { if (this.url === "/upload/b") this.onerror?.(); else this.onload?.(); });
+		}
+	}
+	const descriptor = Object.getOwnPropertyDescriptor(globalThis, "XMLHttpRequest");
+	Object.defineProperty(globalThis, "XMLHttpRequest", { value: ScriptedUpload, configurable: true });
+	t.after(() => {
+		if (descriptor) Object.defineProperty(globalThis, "XMLHttpRequest", descriptor);
+		else Reflect.deleteProperty(globalThis, "XMLHttpRequest");
+	});
+	let draft!: AttachmentDraft;
+	await fixture({ desktop: false, onDraft: value => { draft = value; } });
+	assert.equal(draft.folders, true);
+	const picked = (relativePath: string) => Object.assign(new File(["x"], relativePath.split("/").at(-1)!, { type: "text/markdown" }), { webkitRelativePath: relativePath });
+	await act(async () => { draft.selectFolder([picked("Notes/a.md"), picked("Notes/sub/b.md"), picked("Notes/.DS_Store")]); });
+	await act(async () => { await draft.files[0]?.work; });
+	assert.deepEqual(calls[0], { method: "POST", url: "/api/attachments", body: { draftId: draft.getDraftId(), name: "Notes", files: [{ path: "a.md", mimeType: "text/markdown", size: 1 }, { path: "sub/b.md", mimeType: "text/markdown", size: 1 }] } });
+	assert.equal(draft.files.length, 1);
+	assert.match(draft.files[0]!.error!, /Upload interrupted/);
+	const chips = renderToStaticMarkup(<DraftAttachmentChips draft={draft} />);
+	assert.match(chips, /Notes · 2 files/);
+	assert.match(chips, /Skipped 1 hidden or system file in Notes: \.DS_Store/);
+	await act(async () => { draft.retry(draft.files[0]!); });
+	await act(async () => { await draft.files[0]?.work; });
+	assert.deepEqual(calls.slice(1).map(call => `${call.method} ${call.url}`), ["POST /api/attachments/folder", "POST /api/attachments/folder"]);
+	assert.deepEqual(puts.sort(), ["/upload/a", "/upload/b", "/upload/b2"]);
+	assert.equal(draft.files[0]!.ready, true);
+	assert.deepEqual((await draft.prepare("draft"))?.attachmentUploadIds, ["folder"]);
+	// An old phone's folder input returns plain files: nothing uploads.
+	await act(async () => { draft.selectFolder([new File(["x"], "plain.md")]); });
+	assert.equal(draft.validation, "This browser can't attach folders. Attach individual files instead.");
+	assert.equal(draft.files.length, 1);
 });

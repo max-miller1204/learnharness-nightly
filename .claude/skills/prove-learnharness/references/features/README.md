@@ -18,7 +18,8 @@ One recipe per user feature. A recipe says how to reach and drive the feature; t
 | Extract files: files, folders, documents, images, code, estimate | web, api, agent | [extract-files.md](extract-files.md) |
 | Client protocol: server info, version check, native client pairing and chat flow | api | [client-protocol.md](client-protocol.md) |
 | Subscription search: ChatGPT, Claude Code and Grok in the Search engine picker, research job sources | web, api, agent | [subscription-search.md](subscription-search.md) |
+| Remote attachments: file and folder uploads, skip rules, limits, unsafe paths, drag and drop, agent browsing | web, api, agent, electron | [remote-attachments.md](remote-attachments.md) |
 
 ## Gaps (no recipe yet: write one, run it, then list it above)
 
-Practice sessions, the knowledge graph (view, import), plan view, side chats, settings pages (providers, models, prompts, themes, file access), plugins (install, enable, plugin views and questions), dictation, file attachments and path chips, research and demo jobs, compaction, session search and markdown export, subscription sign-ins (ChatGPT, Copilot, Grok).
+Practice sessions, the knowledge graph (view, import), plan view, side chats, settings pages (providers, models, prompts, themes, file access), plugins (install, enable, plugin views and questions), dictation, local file path chips, research and demo jobs, compaction, session search and markdown export, subscription sign-ins (ChatGPT, Copilot, Grok).

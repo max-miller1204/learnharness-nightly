@@ -5,7 +5,7 @@
  * heavier modules.
  */
 import { hostname } from "node:os";
-import { ATTACHMENT_UPLOADS, CLIENT_PROTOCOL_VERSION, PROTOCOL_HEADER, PROTOCOL_INCOMPATIBLE, PROTOCOL_QUERY_PARAM, PROTOCOL_ROUTES, type ProtocolIncompatibleResponse, type ServerInfo } from "../client-protocol/index.ts";
+import { ATTACHMENT_FOLDERS, ATTACHMENT_UPLOADS, CLIENT_PROTOCOL_VERSION, PROTOCOL_HEADER, PROTOCOL_INCOMPATIBLE, PROTOCOL_QUERY_PARAM, PROTOCOL_ROUTES, type ProtocolIncompatibleResponse, type ServerInfo } from "../client-protocol/index.ts";
 import { CREDENTIAL_HEADERS, sessionCookieName } from "./auth.ts";
 
 export function serverInfo(env: Record<string, string | undefined> = process.env): ServerInfo {
@@ -22,7 +22,7 @@ export function serverInfo(env: Record<string, string | undefined> = process.env
 			sessionCookieName: sessionCookieName(env),
 			tokenEndpoint: PROTOCOL_ROUTES.token,
 		},
-		capabilities: [ATTACHMENT_UPLOADS],
+		capabilities: [ATTACHMENT_UPLOADS, ATTACHMENT_FOLDERS],
 	};
 }
 

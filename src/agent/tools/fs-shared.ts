@@ -191,16 +191,19 @@ export function resolveSourcePath(p?: string, policy?: ResolvedFileAccessPolicy)
 
 /** The caller already verified an opaque reference against the current
  * chat's record. Keep mandatory named/canonical checks, and also reject a
- * symlink out of the private copy store. */
-export function resolveClaimedAttachment(file: string, name: string, source: string): string {
+ * symlink out of the private copy store, or out of an uploaded folder's root
+ * (`within`) for an entry inside it. A folder and its subfolders are directories. */
+export function resolveClaimedAttachment(file: string, name: string, source: string, within?: string): string {
 	const root = path.join(/* turbopackIgnore: true */ PATHS.attachments, "claimed");
 	const denied = sourcePathCheck(os.homedir(), true);
 	const canonical = checkedSourcePath(file, denied, source);
 	if (denied(path.join(root, path.basename(name.replaceAll("\\", "/"))))) {
 		throw new Error("Access denied: the uploaded filename identifies a protected file.");
 	}
+	const entry = fsSync.lstatSync(file);
 	if (!fsSync.lstatSync(PATHS.attachments).isDirectory() || !fsSync.lstatSync(root).isDirectory() ||
-		!isWithin(canonical, protectedRealPath(root)) || !fsSync.lstatSync(file).isFile()) {
+		!isWithin(canonical, protectedRealPath(root)) || (within !== undefined && !isWithin(canonical, within)) ||
+		!(entry.isFile() || entry.isDirectory())) {
 		throw new Error("Access denied: invalid claimed attachment location.");
 	}
 	// Validate the live file-access configuration even though this individual
@@ -319,16 +322,19 @@ export async function walkFiles(
 	root: string,
 	visit: (filePath: string) => boolean | Promise<boolean>,
 	signal?: AbortSignal,
-	options: { policy?: ResolvedFileAccessPolicy; deadline?: number } = {},
+	/** `claimed`: the root is an already-resolved uploaded folder of the
+	 * current chat, readable in restricted mode with mandatory denials kept. */
+	options: { policy?: ResolvedFileAccessPolicy; deadline?: number; claimed?: boolean } = {},
 ): Promise<{ timedOut: boolean; aborted: boolean }> {
 	const deadline = options.deadline ?? Date.now() + WALK_TIMEOUT_MS;
 	let timedOut = false;
 	let aborted = false;
 	if (signal?.aborted) return { timedOut: false, aborted: true };
-	const denied = sourcePathCheck();
+	const denied = sourcePathCheck(os.homedir(), options.claimed);
 	// A caller may supply an alias of home as its root. Start from the real
 	// root and compare descendants against the same canonical protected roots.
-	const realRoot = guardSourcePath(checkedSourcePath(path.resolve(root), denied), options.policy);
+	const checkedRoot = checkedSourcePath(path.resolve(root), denied);
+	const realRoot = options.claimed ? checkedRoot : guardSourcePath(checkedRoot, options.policy);
 
 	const walkDir = async (dir: string): Promise<boolean> => {
 		if (Date.now() > deadline) {
