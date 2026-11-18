@@ -117,6 +117,18 @@ it("waits a cold 500ms, opens focus immediately, and never creates an interactio
 	assert.equal(content()?.dataset.state, "instant-open");
 });
 
+it("focus that is not focus-visible (a dialog returning focus after a click) never opens the hint", async () => {
+	const f = fixture();
+	await f.render(<TooltipProvider>{hint()}</TooltipProvider>);
+	const trigger = element("[data-testid='trigger-one']");
+	const matches = trigger.matches.bind(trigger);
+	trigger.matches = (selector: string) => selector === ":focus-visible" ? false : matches(selector);
+	await f.focus(trigger); assert.equal(content(), null, "the Settings hint stays closed after Settings closes");
+	trigger.blur();
+	trigger.matches = matches;
+	await f.focus(trigger); assert.equal(content()?.dataset.state, "instant-open", "keyboard focus still opens it");
+});
+
 it("shares the 300ms warm window and returns to cold delay after scroll and outside close", async () => {
 	const f = fixture();
 	await f.render(<TooltipProvider>{hint("one")}{hint("two")}</TooltipProvider>);

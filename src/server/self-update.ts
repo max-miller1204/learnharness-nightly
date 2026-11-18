@@ -14,7 +14,8 @@
  *
  * T3 style (docs/specs/t3-style-updates.md): check at start and every 4
  * hours, download in the background, and apply ONLY when the user clicks
- * Install (the confirm dialog lists runningWork()). Checks keep running
+ * Install (the confirm dialog lists runningWork()). A server started by an
+ * update checks once the launcher commits it. Checks keep running
  * while a version is ready, so a newer nightly replaces it; install()
  * re-checks first. Applying = asking the launcher over IPC
  * ("request-update"). The launcher owns runtime/service-state.json; this
@@ -59,6 +60,8 @@ export interface SelfUpdateState {
 	revision: number;
 	/** This server process. A restarted server counts revisions from 0 again, so clients reset their revision guard when it changes. */
 	instance: string;
+	/** The version this server runs. A page built from an older one offers a reload (the sidebar update control). */
+	runningVersion: string;
 	/** Detail for the Settings row (errors, rejections, progress). */
 	message: string | null;
 	/** A rolled-back switch until dismissed. */
@@ -99,7 +102,7 @@ export interface SelfUpdaterDeps {
 
 export function createSelfUpdater(deps: SelfUpdaterDeps) {
 	let state: SelfUpdateState = {
-		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, instance: globalThis.crypto.randomUUID(), message: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
+		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, instance: globalThis.crypto.randomUUID(), runningVersion: deps.currentVersion, message: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
 	};
 	let checkTimer: unknown;
 	let checking: Promise<void> | undefined;
@@ -190,6 +193,8 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			set({ status: "error", message: message.reason });
 		} else if (message.type === "committed") {
 			set({ status: "up-to-date", version: null, message: `Updated to version ${deps.currentVersion}.`, releaseNotes: [], omittedReleaseCount: 0 });
+			// A trial skips the startup check; once it is the active server it checks like any other start.
+			if (deps.autoUpdateEnabled()) void check();
 		}
 	};
 

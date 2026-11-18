@@ -163,7 +163,7 @@ describe("General update rows", () => {
 		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "install");
 		body = state({ status: "up-to-date", revision: 1, instance: "new" });
 		await act(async () => { handlers.get("update-changed")!("{}"); await new Promise((resolve) => setTimeout(resolve, 0)); });
-		assert.equal(q(host, "update-pill"), null, "the new server's lower revision is accepted");
+		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "check", "the new server's lower revision is accepted");
 	});
 
 	it("an undismissed rollback stays explained in Settings after a later check clears the message", () => {
@@ -217,20 +217,85 @@ describe("General update rows", () => {
 		assert.equal(b.calls.check, 0);
 	});
 
-	it("the pill shows only when there is something to act on, and stays until acted on", async () => {
+	it("the update control follows T3's states: check, unavailable, then download, downloading, install", async () => {
 		const b = bridge(); const host = await mount(<SidebarUpdatePill />);
-		for (const [revision, status] of [[1, "idle"], [2, "checking"], [3, "up-to-date"], [4, "error"], [5, "disabled"]] as const) {
+		const pill = () => q(host, "update-pill")!;
+		for (const [revision, status] of [[1, "idle"], [2, "up-to-date"], [3, "error"]] as const) {
 			await b.push(state({ status, revision }));
-			assert.equal(q(host, "update-pill"), null, status);
+			assert.equal(pill().getAttribute("data-action"), "check", status);
+			assert.equal(pill().getAttribute("aria-label"), "Check for updates", status);
+			assert.equal(pill().getAttribute("aria-disabled"), null, status);
 		}
+		await b.push(state({ status: "disabled", revision: 4 }));
+		assert.equal(pill().getAttribute("data-action"), "unavailable");
+		assert.equal(pill().getAttribute("aria-label"), "Updates unavailable: Automatic updates are not available in this build.");
+		assert.equal(pill().getAttribute("aria-disabled"), "true");
+		assert.match(pill().className, /opacity-60/);
+		await click(pill()); assert.equal(b.calls.check, 0, "unavailable does nothing");
 		await b.push(state({ status: "available", version: "0.3.8", revision: 6 }));
-		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "download");
-		await click(q(host, "update-pill")); assert.equal(b.calls.download, 1);
+		assert.equal(pill().getAttribute("data-action"), "download");
+		assert.equal(pill().getAttribute("aria-label"), "Update 0.3.8 ready to download");
+		await click(pill()); assert.equal(b.calls.download, 1);
 		await b.push(state({ status: "downloading", version: "0.3.8", revision: 7 }));
-		assert.equal(q(host, "update-pill")!.getAttribute("aria-disabled"), "true");
-		await click(q(host, "update-pill")); assert.equal(b.calls.download, 1);
+		assert.equal(pill().getAttribute("data-action"), "downloading");
+		assert.equal(pill().getAttribute("aria-label"), "Downloading update");
+		assert.equal(pill().getAttribute("aria-disabled"), "true");
+		await click(pill()); assert.equal(b.calls.download, 1);
 		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 8 }));
-		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "install");
+		assert.equal(pill().getAttribute("data-action"), "install");
+		assert.equal(b.calls.check, 0, "nothing here checked on its own");
+	});
+
+	it("clicking checks only, and the spin lasts at least one full turn, then stops at a turn boundary once the check ends", async () => {
+		const b = bridge(); const host = await mount(<SidebarUpdatePill />);
+		const pill = () => q(host, "update-pill")!;
+		const icon = () => q(host, "update-control-refresh-icon")!;
+		const turn = async () => { await act(async () => { icon().dispatchEvent(new window.Event("animationiteration", { bubbles: true })); }); };
+		await click(pill());
+		assert.equal(b.calls.check, 1); assert.equal(b.calls.download, 0); assert.equal(b.calls.install, 0);
+		assert.equal(pill().getAttribute("data-action"), "checking", "a check that ends at once still spins its first turn");
+		assert.equal(pill().getAttribute("aria-label"), "Checking for updates…");
+		assert.equal(pill().getAttribute("aria-disabled"), "true");
+		assert.equal(icon().getAttribute("data-spinning"), "true");
+		assert.match(icon().getAttribute("class") ?? "", /motion-safe:animate-spin/);
+		await click(pill()); assert.equal(b.calls.check, 1, "disabled while spinning");
+		await turn();
+		assert.equal(pill().getAttribute("data-action"), "check", "stops at the turn boundary");
+		assert.equal(icon().getAttribute("data-spinning"), null);
+
+		await b.push(state({ status: "checking", revision: 2 }));
+		await turn();
+		assert.equal(icon().getAttribute("data-spinning"), "true", "keeps turning while the check runs");
+		await b.push(state({ status: "up-to-date", revision: 3 }));
+		assert.equal(icon().getAttribute("data-spinning"), "true", "finishes the turn it is in");
+		await turn();
+		assert.equal(pill().getAttribute("data-action"), "check");
+		assert.equal(pill().getAttribute("aria-label"), "Check for updates");
+	});
+
+	it("a server newer than the page offers a reload, and unsent text asks first", async () => {
+		const b = bridge(state({ status: "up-to-date", revision: 1, runningVersion: "0.6.1-nightly.20261118.65" }));
+		let reloads = 0;
+		const host = await mount(<SidebarUpdatePill pageVersion="0.6.1-nightly.20261118.64" reload={() => { reloads++; }} />);
+		const pill = () => q(host, "update-pill")!;
+		assert.equal(pill().getAttribute("data-action"), "reload");
+		assert.equal(pill().getAttribute("aria-label"), "Updated to 0.6.1-nightly.20261118.65. Click to reload.");
+		await click(pill()); assert.equal(reloads, 1, "no unsent text: reloads at once");
+
+		const composer = document.createElement("div"); composer.setAttribute("data-testid", "composer");
+		composer.innerHTML = '<div role="textbox">half a question</div>'; document.body.append(composer);
+		try {
+			await click(pill());
+			assert.equal(reloads, 1, "asks first");
+			assert.equal(q(document, "reload-confirm-title")!.textContent, "You have an unsent message. Reload anyway?");
+			await click(q(document, "reload-confirm-cancel")); assert.equal(reloads, 1);
+			assert.equal(q(document, "reload-confirm-dialog"), null);
+			await click(pill()); await click(q(document, "reload-confirm-reload")); assert.equal(reloads, 2);
+		} finally { composer.remove(); }
+		assert.equal(b.calls.check, 0);
+
+		await b.push(state({ status: "up-to-date", revision: 2, runningVersion: "0.6.1-nightly.20261118.64" }));
+		assert.equal(pill().getAttribute("data-action"), "check", "same version as the page: no reload");
 	});
 
 	it("the pill's hover shows T3-style notes: What's changed, Changes in X, Read more", async () => {

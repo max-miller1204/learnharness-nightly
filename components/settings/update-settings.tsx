@@ -26,6 +26,8 @@ export type UpdateState = {
 	revision: number;
 	/** Self-hosted only: the server process; a restarted server counts revisions from 0 again. */
 	instance?: string;
+	/** Self-hosted only: the version the server runs. Newer than this page's APP_VERSION means the page should reload. */
+	runningVersion?: string;
 	message?: string | null;
 	notice?: UpdateNotice | null;
 	/** Newest first: versions newer than the running one up to the offered one. */

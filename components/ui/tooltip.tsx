@@ -164,6 +164,10 @@ function Tooltip({ children, open: openProp, defaultOpen, onOpenChange, delayDur
   return <Popper.Root><TooltipContext.Provider value={value}>{children}</TooltipContext.Provider></Popper.Root>
 }
 
+function focusVisible(element: Element) {
+  try { return element.matches(":focus-visible") } catch { return true }
+}
+
 function setRef<T>(ref: React.Ref<T> | undefined, node: T | null) {
   if (typeof ref === "function") return ref(node)
   if (ref) ref.current = node
@@ -197,7 +201,9 @@ const TooltipTrigger = React.forwardRef<HTMLButtonElement, React.ComponentPropsW
       pointerDown.current = true
       document.addEventListener("pointerup", pointerUp, { once: true })
     }}
-    onFocus={event => { onFocus?.(event); if (!event.defaultPrevented && !pointerDown.current) context.immediate() }}
+    // Keyboard focus only: a dialog handing focus back to its opener after a
+    // click (Settings closing) must not leave the hint up until a re-hover.
+    onFocus={event => { onFocus?.(event); if (!event.defaultPrevented && !pointerDown.current && focusVisible(event.currentTarget)) context.immediate() }}
     onBlur={event => { onBlur?.(event); if (!event.defaultPrevented) context.close() }}
     onClick={event => { onClick?.(event); if (!event.defaultPrevented) context.close() }}
   /></Popper.Anchor>

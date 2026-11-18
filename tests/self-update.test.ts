@@ -89,6 +89,7 @@ describe("self-hosted updater", () => {
 		assert.equal(u.state().version, NEXT);
 		assert.deepEqual(f.flags.staged, [NEXT]);
 		assert.equal(CHECK_INTERVAL_MS, 4 * 60 * 60 * 1000, "every 4 hours");
+		assert.equal(u.state().runningVersion, CURRENT, "the page compares its own version with this");
 		assert.deepEqual(f.timers.map((t) => t.ms), [CHECK_INTERVAL_MS], "only the check timer: no idle apply loop");
 		f.run(CHECK_INTERVAL_MS);
 		await settle();
@@ -184,6 +185,7 @@ describe("self-hosted updater", () => {
 
 	it("as a trial child, says prepared once serving; committed says so without a notice (What's new replaces it)", async () => {
 		const f = fake({ trialUpdateId: "u-1" });
+		f.flags.auto = false; // the check that follows a commit is the next test
 		const u = createSelfUpdater(f.deps);
 		u.start();
 		await settle();
@@ -192,6 +194,28 @@ describe("self-hosted updater", () => {
 		assert.equal(u.state().status, "up-to-date");
 		assert.equal(u.state().message, `Updated to version ${CURRENT}.`);
 		assert.equal(u.state().notice, null);
+	});
+
+	it("a trial child checks once committed, not before (the startup check it skipped)", async () => {
+		const f = fake({ trialUpdateId: "u-1" });
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		await settle();
+		assert.deepEqual(f.flags.staged, [], "no check during the trial");
+		f.toParent({ type: "committed", updateId: "u-1" });
+		await settle();
+		assert.equal(u.state().status, "downloaded");
+		assert.equal(u.state().version, NEXT);
+		assert.deepEqual(f.flags.staged, [NEXT]);
+		assert.deepEqual(f.sent, [{ type: "prepared", updateId: "u-1" }], "downloaded, never applied");
+
+		const off = fake({ trialUpdateId: "u-2" });
+		off.flags.auto = false;
+		createSelfUpdater(off.deps).start();
+		await settle();
+		off.toParent({ type: "committed", updateId: "u-2" });
+		await settle();
+		assert.deepEqual(off.flags.staged, [], "the toggle still gates it");
 	});
 
 	it("adopts a rollback recorded by the launcher at boot", () => {
