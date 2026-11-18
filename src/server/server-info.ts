@@ -11,7 +11,9 @@ import { CREDENTIAL_HEADERS, sessionCookieName } from "./auth.ts";
 export function serverInfo(env: Record<string, string | undefined> = process.env): ServerInfo {
 	return {
 		name: hostname() || "LearnHarness",
-		version: env.LH_VERSION ?? "",
+		// next.config.ts bakes LH_VERSION in only where the code says
+		// process.env.LH_VERSION literally, so that is the fallback.
+		version: env.LH_VERSION ?? process.env.LH_VERSION ?? "",
 		protocolVersion: CLIENT_PROTOCOL_VERSION,
 		auth: {
 			required: true,

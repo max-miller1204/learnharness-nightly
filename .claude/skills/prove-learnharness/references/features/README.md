@@ -16,6 +16,7 @@ One recipe per user feature. A recipe says how to reach and drive the feature; t
 | Self-hosted update and rollback, update pill, What's new | selfhost, api, web | [update-rollback.md](update-rollback.md) |
 | Desktop window and desktop updater | electron | [desktop-window.md](desktop-window.md) |
 | Extract files: files, folders, documents, images, code, estimate | web, api, agent | [extract-files.md](extract-files.md) |
+| Client protocol: server info, version check, native client pairing and chat flow | api | [client-protocol.md](client-protocol.md) |
 
 ## Gaps (no recipe yet: write one, run it, then list it above)
 

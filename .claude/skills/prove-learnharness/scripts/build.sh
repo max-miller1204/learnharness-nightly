@@ -71,7 +71,19 @@ build_head() {
 		say "[head] building $version"
 		# next build rewrites the tracked next-env.d.ts; put the builder's copy back.
 		saved=$(mktemp); cp "$REPO/next-env.d.ts" "$saved"
-		next_build "$REPO" "$version" "$log" 5 head || { cp "$saved" "$REPO/next-env.d.ts"; rm -f "$saved"; record_time "$RUN" "head build (FAILED)" "$tstart" 1; tail -40 "$log" >&2; die "head build failed (log: $log)"; }
+		# A repo data/ folder (the dev server's, or one a test run left behind)
+		# is traced into .next/standalone through instrumentation and the proxy,
+		# and build-server.mjs then refuses the build. Set it aside for the
+		# build (same filesystem: a rename) and always put it back.
+		local aside=$RUN/repo-data-aside
+		if [ -e "$REPO/data" ]; then
+			[ ! -e "$aside" ] || die "$aside already exists; put it back at $REPO/data by hand"
+			mv "$REPO/data" "$aside"
+			say "[head] set the repo's data/ aside during the build (back after: $aside)"
+		fi
+		restore_data() { if [ -e "$aside" ]; then if [ -e "$REPO/data" ]; then say "[head] WARNING: $REPO/data reappeared during the build; the original is kept at $aside"; else mv "$aside" "$REPO/data"; fi; fi; }
+		next_build "$REPO" "$version" "$log" 5 head || { restore_data; cp "$saved" "$REPO/next-env.d.ts"; rm -f "$saved"; record_time "$RUN" "head build (FAILED)" "$tstart" 1; tail -40 "$log" >&2; die "head build failed (log: $log)"; }
+		restore_data
 		cp "$saved" "$REPO/next-env.d.ts"; rm -f "$saved"
 		printf '%s\n' "$want" >"$stamp"
 		say "[head] built in $((SECONDS - t0))s"

@@ -10,8 +10,6 @@ Not built yet. A diff that reaches one of these is BLOCKED for that surface unti
 - Answer key: parity with the web app on the same server (same session through the phone and the browser, same stored record), plus the spec for phone-only flows.
 - Script slot: `scripts/mobile.sh <RUN>` (boot or reuse the emulator, install the build, point it at `$APP_URL`), and a drive that writes `result.json` in the same format so `compare.mjs` can diff phone and browser.
 
-## Client protocol (`/api/v<N>`, server info, capabilities)
+## Client protocol
 
-- Where it will live: `app/api/v<N>/**` plus a server-info route (roadmap item 21). `scope.mjs` maps `app/api/v<N>/**` to `protocol` and `api`.
-- Answer keys: frozen-shape fixtures (rung 2 snapshots in `.prove-it/snapshots/protocol/v<N>/`, written from the version the user approves, never by the builder) and parity with the internal route each one wraps (rung 1).
-- Script slot: extend `api-check.mjs` (or a sibling `protocol-check.mjs`) to call every v<N> route, diff its full body shape against the frozen fixture, and check that a capability the server does not advertise is hidden by the client.
+Built (roadmap item 21, `docs/specs/client-protocol.md`): server info at `/.well-known/learnharness/server`, an exact version match through the `X-LearnHarness-Protocol` header on the existing routes (no `/api/v<N>` paths), and the contract in `src/client-protocol/`. It is driven as part of the API surface: recipe [features/client-protocol.md](features/client-protocol.md), script `scripts/protocol-check.mjs`. The `app/api/v<N>/**` rule in `scope.mjs` stays PLANNED in case a versioned path is ever added.

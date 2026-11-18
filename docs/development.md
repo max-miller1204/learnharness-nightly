@@ -100,7 +100,7 @@ A few routes form a contract for clients released separately from the server (th
 - If it breaks a client built against the old contract, bump `CLIENT_PROTOCOL_VERSION`.
 - If a client can live without it, add a capability string to `serverInfo()` in `src/server/server-info.ts` instead.
 
-`tests/client-protocol.test.ts` fingerprints the contract, the type declarations it imports and the pinned pi versions, so it fails on any such change until you make that call and record the new fingerprint.
+`tests/client-protocol.test.ts` fingerprints the contract, every repo declaration it reaches and the pinned pi versions, so it fails on any such change until you make that call and record the new fingerprint.
 
 ## Debugging
 

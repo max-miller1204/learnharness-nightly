@@ -19,55 +19,85 @@ import { GET as serverInfoRoute } from "../app/.well-known/learnharness/server/r
 
 /**
  * THE TRIPWIRE. When this fails, the protocol contract changed: the
- * contract file, a type declaration in a file it imports from, or a pinned
- * pi version (the turn stream is pi's event shape). Decide:
+ * contract file, a declaration it reaches in the repo (followed through the
+ * type checker, however many files deep), or a pinned pi version (the turn
+ * stream is pi's event shape). Decide:
  * - It breaks a client built against the old contract: bump
  *   CLIENT_PROTOCOL_VERSION in src/client-protocol/index.ts.
  * - A client can live without it: add a capability string to serverInfo()
  *   instead, and leave the version alone.
- * - It changes no shape a client sees (a rename of an unrelated type in the
- *   same file, say): neither.
+ * - It changes no shape a client sees (a TypeScript upgrade that prints the
+ *   same declarations differently, say): neither.
  * Then record the new fingerprint below.
  */
-const RECORDED = { protocolVersion: 1, fingerprint: "e5996e4f19cbfb514dcd6d28b5708d4ca4d57ec958e3818f39bca93355923037" };
+const RECORDED = { protocolVersion: 1, fingerprint: "870948b1ae63910d45aa6b0758393f09d8e54f2e7e7a447ada7a63c2a109c7e3" };
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const CONTRACT = path.join(ROOT, "src/client-protocol/index.ts");
 const printer = ts.createPrinter({ removeComments: true });
 
-function parse(file: string): ts.SourceFile {
-	return ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
-}
-
-/** The contract's own text without comments, then every type declaration of
- * each repo file it imports from, then the pinned pi versions. */
-function contractFingerprint(): string {
-	const contract = parse(CONTRACT);
-	const parts = [printer.printFile(contract)];
-	const sources = contract.statements
-		.filter(ts.isImportDeclaration)
-		.map((statement) => (statement.moduleSpecifier as ts.StringLiteral).text)
-		.filter((specifier) => specifier.startsWith("."))
-		.map((specifier) => path.resolve(path.dirname(CONTRACT), specifier))
-		.sort();
-	for (const file of sources) {
-		const source = parse(file);
-		const declarations = source.statements.filter((statement) => ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement) || ts.isEnumDeclaration(statement));
-		parts.push(`// ${path.relative(ROOT, file).split(path.sep).join("/")}`, ...declarations.map((statement) => printer.printNode(ts.EmitHint.Unspecified, statement, source)));
+/** Every top-level declaration the contract reaches in repo files (not
+ * node_modules), printed without comments; functions keep only their
+ * signature. Then the pinned pi versions. */
+function contractFingerprint(): { fingerprint: string; files: string[] } {
+	const config = ts.getParsedCommandLineOfConfigFile(path.join(ROOT, "tsconfig.json"), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => {} });
+	assert.ok(config, "tsconfig.json did not parse");
+	const program = ts.createProgram([CONTRACT], { ...config.options, noEmit: true });
+	const checker = program.getTypeChecker();
+	const inRepo = (file: ts.SourceFile) => !file.fileName.includes("/node_modules/") && path.resolve(file.fileName).startsWith(ROOT + path.sep);
+	const reached = new Set<ts.Statement>();
+	const queue: ts.Statement[] = [];
+	const enqueue = (node: ts.Node) => {
+		let statement: ts.Node = node;
+		while (statement.parent && !ts.isSourceFile(statement.parent)) statement = statement.parent;
+		if (!statement.parent || !inRepo(statement.parent) || ts.isImportDeclaration(statement) || reached.has(statement as ts.Statement)) return;
+		reached.add(statement as ts.Statement);
+		queue.push(statement as ts.Statement);
+	};
+	const follow = (node: ts.Node): void => {
+		if (ts.isIdentifier(node)) {
+			let symbol = checker.getSymbolAtLocation(node);
+			if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
+			for (const declaration of symbol?.declarations ?? []) enqueue(declaration);
+		}
+		ts.forEachChild(node, follow);
+	};
+	const contract = program.getSourceFile(CONTRACT);
+	assert.ok(contract, "the contract did not load");
+	for (const statement of contract.statements) enqueue(statement);
+	while (queue.length) {
+		const statement = queue.shift()!;
+		if (ts.isFunctionDeclaration(statement)) [...(statement.typeParameters ?? []), ...statement.parameters, ...(statement.type ? [statement.type] : [])].forEach(follow);
+		else follow(statement);
 	}
+	const entries = [...reached].map((statement) => {
+		const source = statement.getSourceFile();
+		const shape = ts.isFunctionDeclaration(statement)
+			? ts.factory.updateFunctionDeclaration(statement, statement.modifiers, statement.asteriskToken, statement.name, statement.typeParameters, statement.parameters, statement.type, undefined)
+			: statement;
+		return `${path.relative(ROOT, source.fileName).split(path.sep).join("/")}\n${printer.printNode(ts.EmitHint.Unspecified, shape, source)}`;
+	}).sort();
 	const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")) as { dependencies: Record<string, string> };
-	parts.push(...Object.entries(pkg.dependencies).filter(([name]) => name.startsWith("@earendil-works/pi-")).sort().map(([name, version]) => `${name}@${version}`));
-	return createHash("sha256").update(parts.join("\n")).digest("hex");
+	entries.push(...Object.entries(pkg.dependencies).filter(([name]) => name.startsWith("@earendil-works/pi-")).sort().map(([name, version]) => `${name}@${version}`));
+	const files = [...new Set([...reached].map((statement) => path.relative(ROOT, statement.getSourceFile().fileName).split(path.sep).join("/")))].sort();
+	return { fingerprint: createHash("sha256").update(entries.join("\n")).digest("hex"), files };
 }
 
 describe("shape fingerprint", () => {
 	it("the contract matches the recorded fingerprint (see RECORDED to update it)", () => {
 		assert.equal(CLIENT_PROTOCOL_VERSION, RECORDED.protocolVersion, "CLIENT_PROTOCOL_VERSION changed: update RECORDED.protocolVersion and the fingerprint together.");
 		assert.equal(
-			contractFingerprint(),
+			contractFingerprint().fingerprint,
 			RECORDED.fingerprint,
 			"The client protocol contract changed. Breaking for an old client: bump CLIENT_PROTOCOL_VERSION. Additive: add a capability instead. Then update RECORDED in tests/client-protocol.test.ts.",
 		);
+	});
+
+	it("follows types past the files the contract imports", () => {
+		const { files } = contractFingerprint();
+		// ChatRecord.phase is Phase3 from phases.ts, which the contract never imports.
+		for (const file of ["src/client-protocol/index.ts", "src/core/contracts/chat.ts", "src/core/phases.ts", "src/core/contracts/plan.ts"]) assert.ok(files.includes(file), file);
+		assert.ok(!files.some((file) => file.startsWith("src/server/")), "the contract reaches no server code");
 	});
 
 	it("comments don't count, so documenting the contract never trips it", () => {

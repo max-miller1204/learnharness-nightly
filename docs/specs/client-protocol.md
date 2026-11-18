@@ -68,7 +68,7 @@ These routes keep today's shapes. The only server change is that their handlers 
 
 ## Keeping it honest
 
-- **Shape fingerprint test** (`tests/client-protocol.test.ts`), the roadmap's "frozen-shape fixture" in the style of `selfhost/tests`: it hashes the exported type declarations of the contract file and of the core files it re-exports from, plus the pinned `@earendil-works/pi-*` versions (the turn stream is pi's event shape). When the hash changes, the test fails and says: breaking for an old client, bump `CLIENT_PROTOCOL_VERSION`; additive, add a capability; then update the recorded hash. Function bodies and comments don't count, so ordinary refactors don't trip it.
+- **Shape fingerprint test** (`tests/client-protocol.test.ts`), the roadmap's "frozen-shape fixture" in the style of `selfhost/tests`: it follows the contract through the TypeScript checker to every declaration it reaches in the repo, however many files deep (so `ChatRecord.phase` reaches `src/core/phases.ts`), and hashes those declarations plus the pinned `@earendil-works/pi-*` versions (the turn stream is pi's event shape). When the hash changes, the test fails and says: breaking for an old client, bump `CLIENT_PROTOCOL_VERSION`; additive, add a capability; then update the recorded hash. Function bodies and comments don't count, so ordinary refactors don't trip it.
 - **Server-info test**: exact keys and values, public without a credential.
 - **Proxy tests**: a mismatched header or query gets 426 before the login check; a matching one and no header pass through; server info is public.
 

@@ -17,8 +17,8 @@
  * and the TypeScript is erasable, so any client bundler can import it. The
  * record types are the server's own (src/core), re-exported, so the two
  * can't drift apart. tests/client-protocol.test.ts fingerprints this file,
- * the type declarations of the files it imports from, and the pinned pi
- * versions (the turn stream is pi's event shape): when that test fails,
+ * every repo declaration it reaches through the type checker, and the
+ * pinned pi versions (the turn stream is pi's event shape): when that test fails,
  * decide bump or capability, then update the recorded fingerprint.
  */
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
@@ -174,14 +174,15 @@ export interface CreateChatResponse {
 	title: string;
 }
 
-/** One session: the record with its messages verbatim, plus live state. */
+/** One session: the record with its messages verbatim, plus live state.
+ * Optional keys are absent from the JSON when there is nothing to report. */
 export type ChatResponse = Omit<ChatRecord, "imageSnapshots"> & {
-	pluginQuestionAvailability: { questionId: string; status: "available" | "unavailable" } | undefined;
-	pluginProblemAvailability: { problemId: string; status: "available" | "unavailable" } | undefined;
+	pluginQuestionAvailability?: { questionId: string; status: "available" | "unavailable" } | undefined;
+	pluginProblemAvailability?: { problemId: string; status: "available" | "unavailable" } | undefined;
 	pricing: SessionPricing;
 	/** A turn is running: attach to turnStream to watch it. */
 	turnInFlight: boolean;
-	turnError: string | undefined;
+	turnError?: string;
 	compacting: boolean;
 	coverage: SessionCoverage | null;
 };

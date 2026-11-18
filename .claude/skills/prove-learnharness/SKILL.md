@@ -35,6 +35,7 @@ Follow each changed file to the surfaces and flows it reaches. Internal code cou
 | Changed path | Shared? | Reaches | Flows |
 |---|---|---|---|
 | `app/**` (not api), `components/**`, `public/**` | no | web | [teaching session](references/features/teaching-session.md) and the page the file renders |
+| `src/client-protocol/**`, `app/.well-known/**` | yes: the client protocol contract and server info | api, web, agent | [client protocol](references/features/client-protocol.md) |
 | `app/api/chat/**`, `app/api/chats/**` | yes: turns and sessions | api, web, agent | [teaching session](references/features/teaching-session.md) |
 | `app/api/**` (other) | no | api, web | the route's callers; [api.md](references/api.md) |
 | `app/api/updates/**`, `app/api/health/**`, `src/server/self-update.ts` | yes: update protocol | api, web, selfhost A+B | [update and rollback](references/features/update-rollback.md) |
@@ -87,7 +88,8 @@ Ladder, best first: 1 an old system that does the same job, 2 a snapshot, 3 an i
 | update, failed trial, rollback | existing | the launcher's documented behaviour, driven on the base build (A) to the change (B) and back | 1 + 4 | `scripts/selfhost-b.sh`, `docs/self-hosting.md` | the base launcher, the owner |
 | web budgets | any page driven | console errors (one known), CLS (absolute < 0.1), axe | budget | `budgets.json`, `CLS_MODE` | the user, 2026-11-17 |
 | new flow that copies nothing | new | the spec | 4 | `docs/specs/<item>.md`, found at run time | the user |
-| future mobile app, client protocol | new | parity with the web app and `/api/*` | 1 | [planned.md](references/planned.md) | the web app |
+| client protocol (server info, version check, protocol 1 routes) | new | the spec | 4 | `docs/specs/client-protocol.md` | the user |
+| future mobile app | new | parity with the web app and `/api/*` | 1 | [planned.md](references/planned.md) | the web app |
 
 - **Never edit an answer key to make a check pass.** If the app and the answer key disagree, the verdict is BROKEN; only the user changes an answer key.
 - **Compare against the answer key, not your idea of right.** Where a flow has none, say so on the receipt.
@@ -189,7 +191,7 @@ One section per surface. `/prove-it` adds a section when the app gains a surface
 
 ### Planned surfaces
 
-The Expo mobile app (Android emulator on this machine) and the versioned client protocol have no scripts yet. A diff that reaches them is BLOCKED for that surface until `/prove-it` builds its section. Extension points: [references/planned.md](references/planned.md).
+The Expo mobile app (Android emulator on this machine) has no scripts yet, and neither do `/api/v<N>` paths. A diff that reaches them is BLOCKED for that surface until `/prove-it` builds its section. The client protocol itself (server info, the version header, the protocol 1 routes) is driven with the API: [client-protocol recipe](references/features/client-protocol.md). Extension points: [references/planned.md](references/planned.md).
 
 ### Varies by and deliberate
 
