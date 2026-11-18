@@ -320,16 +320,22 @@ describe("workflow action versions", () => {
 	for (const [filename, { path: source, expected, npmCache }] of Object.entries(sources)) {
 		it(`${filename} uses supported Action runtimes without changing the app's Node 26`, () => {
 			const parsed = yaml.load(readFileSync(new URL(source, import.meta.url), "utf8")) as Workflow & { runs?: { steps: Step[] } };
-			const stepLists = parsed.runs ? [parsed.runs.steps] : Object.values(parsed.jobs).map(job => job.steps);
+			const jobs = parsed.runs ? [["composite", parsed.runs] as const] : Object.entries(parsed.jobs);
 			const observed = new Set<string>();
-			for (const steps of stepLists) {
+			for (const [id, { steps }] of jobs) {
 				for (const step of steps) {
 					if (!step.uses) continue;
 					assert.ok(expected.includes(step.uses), `unexpected Action reference: ${step.uses}`);
 					observed.add(step.uses);
 					if (step.uses === "actions/setup-node@v7") {
-						assert.equal(step.with?.["node-version"], "26");
-						assert.equal(step.with?.cache, npmCache ? "npm" : undefined);
+						if (filename === "ci.yml" && id === "mobile") {
+							assert.equal(step.with?.["node-version"], "22");
+							assert.equal(step.with?.cache, "npm");
+							assert.equal(step.with?.["cache-dependency-path"], "apps/mobile/package-lock.json");
+						} else {
+							assert.equal(step.with?.["node-version"], "26");
+							assert.equal(step.with?.cache, npmCache ? "npm" : undefined);
+						}
 					}
 					if (step.uses === "actions/upload-artifact@v7") {
 						assert.equal(step.with?.archive ?? true, true, "multi-file installers remain zipped artifacts");
