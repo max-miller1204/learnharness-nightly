@@ -205,11 +205,14 @@ describe("self-hosted updater", () => {
 		assert.match(u.state().notice?.text ?? "", /rolled back/);
 		u.dismissNotice();
 		assert.equal(u.state().notice, null);
+		assert.equal(u.state().message, null, "dismissing also clears the Settings text");
+		assert.equal(u.state().status, "idle");
 		assert.equal(f.flags.dismissed, `rolled-back:${NEXT}:5`, "recorded per server");
 		const again = createSelfUpdater(f.deps);
 		again.start();
 		assert.equal(again.state().notice, null, "a dismissed notice is not adopted again at boot");
-		assert.match(again.state().message ?? "", /rolled back/, "the Settings row still says so");
+		assert.equal(again.state().message, null, "nor its text (Settings shows it only while undismissed)");
+		assert.notEqual(again.state().instance, u.state().instance, "each server process has its own instance id");
 	});
 });
 

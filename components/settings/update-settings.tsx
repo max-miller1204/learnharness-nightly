@@ -24,6 +24,8 @@ export type UpdateState = {
 	status: "idle" | "checking" | "available" | "downloading" | "up-to-date" | "downloaded" | "error" | "disabled";
 	version: string | null;
 	revision: number;
+	/** Self-hosted only: the server process; a restarted server counts revisions from 0 again. */
+	instance?: string;
 	message?: string | null;
 	notice?: UpdateNotice | null;
 	/** Newest first: versions newer than the running one up to the offered one. */
@@ -68,7 +70,13 @@ export function useUpdateState() {
 	const [transport, setTransport] = useState<UpdateTransport | null>(null);
 	const hub = useNotifyHub();
 	const revisionRef = useRef(-1);
+	const instanceRef = useRef<string | undefined>(undefined);
 	const accept = useCallback((next: UpdateState) => {
+		// A restarted server (new instance) starts its revisions over: its first state wins.
+		if (next.instance !== instanceRef.current) {
+			instanceRef.current = next.instance;
+			revisionRef.current = -1;
+		}
 		if (next.revision < revisionRef.current) return;
 		revisionRef.current = next.revision;
 		setState(next);

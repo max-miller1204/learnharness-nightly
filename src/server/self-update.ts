@@ -57,6 +57,8 @@ export interface SelfUpdateState {
 	status: SelfUpdateStatus;
 	version: string | null;
 	revision: number;
+	/** This server process. A restarted server counts revisions from 0 again, so clients reset their revision guard when it changes. */
+	instance: string;
 	/** Detail for the Settings row (errors, rejections, progress). */
 	message: string | null;
 	/** A rolled-back switch until dismissed. */
@@ -97,7 +99,7 @@ export interface SelfUpdaterDeps {
 
 export function createSelfUpdater(deps: SelfUpdaterDeps) {
 	let state: SelfUpdateState = {
-		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, message: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
+		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, instance: globalThis.crypto.randomUUID(), message: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
 	};
 	let checkTimer: unknown;
 	let checking: Promise<void> | undefined;
@@ -200,7 +202,9 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			const notice: UpdateNotice = { kind: "rolled-back", version: update.targetVersion, text, at: update.at };
 			let dismissed: string | undefined;
 			try { dismissed = deps.dismissedNotice(); } catch { dismissed = undefined; }
-			set({ status: "error", version: null, message: text, notice: dismissed === noticeId(notice) ? null : notice });
+			// A notice dismissed on any browser of this server stays gone, text included.
+			if (dismissed === noticeId(notice)) return;
+			set({ status: "error", version: null, message: text, notice });
 		}
 	};
 
@@ -217,7 +221,8 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		dismissNotice(): void {
 			if (!state.notice) return;
 			try { deps.recordDismissedNotice(noticeId(state.notice)); } catch { /* still hide it for this run */ }
-			set({ notice: null });
+			const text = state.notice.text;
+			set({ notice: null, ...(state.message === text ? { message: null } : {}), ...(state.status === "error" && state.message === text ? { status: "idle" as const } : {}) });
 		},
 		start(): void {
 			if (!deps.enabled || started) return;

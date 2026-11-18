@@ -15,5 +15,5 @@ Parity answer key: `compare.mjs "$RUN/head/web-teach/result.json" "$RUN/electron
 
 ## Not covered on this machine
 
-- macOS and Windows builds, signing, notarization, AppImage/deb installs and electron-updater moving between versions (unpacked dir builds have no update feed: the log says "not an AppImage").
+- macOS and Windows builds, signing, notarization and deb installs. `electron.sh` builds unpacked `dir` builds, which have no update feed (the log says "not an AppImage"); electron-updater moving between versions is driven by hand with AppImages: see [features/desktop-window.md](features/desktop-window.md) step 4.
 - The renderer sandbox (`--no-sandbox`). Unlock: `sudo chown root:root node_modules/electron/dist/chrome-sandbox && sudo chmod 4755 node_modules/electron/dist/chrome-sandbox`, then `ELECTRON_NO_SANDBOX=0`.

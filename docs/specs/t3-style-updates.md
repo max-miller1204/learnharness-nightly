@@ -22,7 +22,7 @@ Answers to my questions: the rollback notice becomes a pill warning state (hover
 ### 1. Shared shapes
 
 - `ReleaseNoteGroup = { version: string; releasedAt?: string; items: string[] }`. `items` are plain sentences; an item shaped `**Label.** detail` renders the label bold (T3's convention). At most 8 items per group, each at most 220 characters (T3's limits).
-- `UpdateState` (desktop and web) gains `"available"` in `status` (desktop only: found, not downloaded), `releaseNotes: ReleaseNoteGroup[]` (newest first, versions newer than the running one up to the offered one, at most 6 groups) and `omittedReleaseCount: number` (groups beyond 6). Both default to empty.
+- `UpdateState` (desktop and web) gains `"available"` in `status` (desktop only: found, not downloaded), `releaseNotes: ReleaseNoteGroup[]` (newest first, versions newer than the running one up to the offered one, at most 6 groups) and `omittedReleaseCount: number` (groups beyond 6). Both default to empty. The self-hosted state also carries `instance`, an id of the server process: a restarted server counts revisions from 0 again, so a client that sees a new `instance` resets its revision guard instead of ignoring the new server (prove round 1 finding).
 
 ### 2. Notes at release time (nightly.yml, `scripts/generate-release-notes.ts`)
 
@@ -42,7 +42,7 @@ Answers to my questions: the rollback notice becomes a pill warning state (hover
 - No automatic apply: the idle loop (`IDLE_POLL_MS`, `scheduleIdleApply`) is removed. Applying happens only through `install()` (the Install button, POST `/api/updates/install`, `lh update --now`).
 - Checks keep running while a version is ready: a newer nightly is downloaded and then replaces the ready one (the older one stays offered until the newer one is fully staged). `install()` first re-checks the feed (T3's "a download can be hours old" rule), installs the newer version if one appears and stages, and otherwise installs the ready one; a failed re-check installs the ready one.
 - Notes: on each successful check the state's `releaseNotes` and `omittedReleaseCount` come from the feed's `notes`, filtered to versions newer than the running one and not newer than the feed's version. Each check also merges the feed's notes into the notes cache (section 6).
-- Notices: the "updated" notice and `UPDATED_NOTICE_MS` go (What's new replaces them). The rolled-back notice stays and is now dismissible per server: POST `/api/updates/notice/dismiss` records its id (`rolled-back:<version>:<at>`) in the updates record (section 6); a dismissed notice is not adopted again at boot.
+- Notices: the "updated" notice and `UPDATED_NOTICE_MS` go (What's new replaces them). The rolled-back notice stays and is now dismissible per server: POST `/api/updates/notice/dismiss` records its id (`rolled-back:<version>:<at>`) in the updates record (section 6); a dismissed notice is not adopted again at boot, and dismissing clears its text from the Settings row too.
 - `appIsIdle()` and `/api/health`'s `idle` stay (the launcher's own protocol hand-off and `lh status` use them).
 - New `runningWork()` (the same sources as `appIsIdle`) and GET `/api/updates/running` → `{ items: [{ kind, title }] }` with kind `turn`, `compaction`, `job`, `plugin-worker` or `extraction`, and the chat, job, worker or extraction title.
 - `lh update` (no `--now`) text: "It installs when you click Install in the app, or run `lh update --now`."

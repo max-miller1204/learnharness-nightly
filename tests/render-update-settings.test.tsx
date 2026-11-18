@@ -13,6 +13,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
 import { UpdateSettings, updateStatusText, MANUAL_UPDATE_HINT, AUTO_UPDATE_HINT, type UpdateState } from "../components/settings/update-settings.tsx";
 import { SidebarUpdatePill } from "../components/sidebar-update-pill.tsx";
+import { ServerEventsProvider } from "../components/server-events.tsx";
 import { ReleaseNoteSections } from "../components/release-notes-view.tsx";
 import WhatsNewDialog, { WhatsNewBody } from "../components/whats-new-dialog.tsx";
 import { InstallUpdateDialog } from "../components/install-update-dialog.tsx";
@@ -149,6 +150,20 @@ describe("General update rows", () => {
 		assert.equal(b.calls.install, 0, "Install confirms first");
 		assert.equal(q(document, "install-update-title")!.textContent, "Install update 0.3.8 and restart LearnHarness?");
 		await click(q(document, "install-update-confirm")); assert.equal(b.calls.install, 1);
+	});
+
+	it("a restarted self-hosted server (new instance) is not ignored for counting revisions from 0 again", async () => {
+		let body: UpdateState = state({ status: "downloaded", version: "0.3.8", revision: 9, instance: "old" });
+		const handlers = new Map<string, (data: string) => void>();
+		const source = { close() {}, onOpen() {}, onEvent: (name: string, cb: (data: string) => void) => { handlers.set(name, cb); } };
+		const connect = () => source;
+		globalThis.fetch = async () => Response.json(body);
+		const host = await mount(<ServerEventsProvider connect={connect}><SidebarUpdatePill /></ServerEventsProvider>);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "install");
+		body = state({ status: "up-to-date", revision: 1, instance: "new" });
+		await act(async () => { handlers.get("update-changed")!("{}"); await new Promise((resolve) => setTimeout(resolve, 0)); });
+		assert.equal(q(host, "update-pill"), null, "the new server's lower revision is accepted");
 	});
 
 	it("an undismissed rollback stays explained in Settings after a later check clears the message", () => {
