@@ -268,7 +268,8 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 		return json(TOKEN, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body: new URLSearchParams({ ...fields, resource: RESOURCE }), signal });
 	}
 
-	async function login(accountId, desktopRedirectPort = undefined) {
+	/** @param {number} [desktopRedirectPort] */
+	async function login(accountId, desktopRedirectPort) {
 		await ready();
 		if (pending) throw fail("pending");
 		if (paused) throw fail("disconnected");

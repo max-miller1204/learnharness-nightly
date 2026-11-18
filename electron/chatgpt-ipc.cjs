@@ -28,7 +28,8 @@ function trustedSender(event, origin, BrowserWindow) {
 		return !!win && event.senderFrame === event.sender.mainFrame && new URL(event.senderFrame.url).origin === origin;
 	} catch { return false; }
 }
-async function chatGPTControl(command, connection, desktopRedirectPort = undefined) {
+/** @param {number} [desktopRedirectPort] */
+async function chatGPTControl(command, connection, desktopRedirectPort) {
 	try {
 		if (command?.op === "status") return await connection.status();
 		if (command?.op === "login" && (command.id === undefined || typeof command.id === "string")) return await connection.login(command.id, desktopRedirectPort);
