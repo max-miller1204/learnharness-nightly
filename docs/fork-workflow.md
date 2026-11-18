@@ -19,6 +19,8 @@ Upstream often lands a reworked version of a PR you already merged here, so conf
 `.github/workflows/ci.yml` runs on every PR and every push to `main` (design: [specs/ci-foundation.md](specs/ci-foundation.md)). A first `Changes` job reads the PR's diff and skips jobs it can't affect: a docs-only PR runs only lint, and a tests-only PR skips the three standalone builds. Pushes to `main` always run everything. The last job, **`Check`**, passes only when every other job passed or was skipped for that reason.
 
 `main` requires `Check`: a PR merges only when its `Check` is green, and **direct pushes to `main` must now pass `Check` too.** Push to a branch and open a PR instead. A new push to a PR cancels its older CI run.
+
+When GitHub cancels a job because no hosted runner picked it up (the macOS arm64 queue under capacity constraints), `.github/workflows/ci-runner-retry.yml` re-runs the run's failed jobs and `Check` on its own, up to 3 times per run. Real failures and cancels by a newer push or a person are left alone (design: [specs/ci-runner-retry.md](specs/ci-runner-retry.md)).
 Repository admins can bypass the required `Check` (GitHub's default; the rule doesn't enforce it for admins).
 
 The nightly starts only after CI passes on a push to `main`, and builds that exact commit.
@@ -128,6 +130,7 @@ gh api repos/max-miller1204/learnharness-nightly/automated-security-fixes   # {"
 | `src/server/self-update.ts`, `app/api/updates`, `app/api/health` | The in-app updater and the launcher's health check |
 | `src/server/data-lock.ts` | One server per data folder |
 | `.github/workflows/ci.yml`, `.github/scripts/ci-changes.cjs`, `.github/actions/setup-deps/` | CI, its affected-only gating, and the cached install |
+| `.github/workflows/ci-runner-retry.yml`, `.github/scripts/ci-runner-retry.cjs` | Re-runs CI jobs GitHub cancelled for lack of a hosted runner |
 | `.github/workflows/pr-agent.yml` | Advisory AI review on PRs |
 | `.github/workflows/nightly.yml`, `feed-check.yml` | Build, publish and verify nightlies |
 | `.github/workflows/upstream-sync.yml`, `import-upstream-pr.yml`, `mirror-upstream-issues.yml` | Upstream feed, PR intake and issue mirror (scripts in `selfhost/scripts/`) |
