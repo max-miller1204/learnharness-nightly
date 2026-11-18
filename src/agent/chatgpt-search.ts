@@ -26,7 +26,7 @@ interface ResponsesOutput {
 
 /** Canonical sources come from the provider annotations on a completed native
  * search. Free-form model links and an interrupted stream cannot supply hits. */
-function citedSearchHits(parts: OutputText[], count: number): SearchHit[] {
+function citedSearchHits(parts: OutputText[], count: number, provider: string): SearchHit[] {
 	const hits = new Map<string, SearchHit>();
 	for (const part of parts) {
 		if (part.type !== "output_text") continue;
@@ -47,17 +47,13 @@ function citedSearchHits(parts: OutputText[], count: number): SearchHit[] {
 			}
 		}
 	}
-	if (!hits.size) throw new Error("ChatGPT completed web search without cited sources. Try a more specific search query.");
+	if (!hits.size) throw new Error(`${provider} completed web search without cited sources. Try a more specific search query.`);
 	return [...hits.values()].slice(0, count);
 }
 
-export async function searchChatGPT(
-	model: Model<"openai-responses">,
-	query: string,
-	count: number,
-	checkSelection: (accountId: string) => void,
-	signal?: AbortSignal,
-): Promise<SearchHit[]> {
+/** Collects a Responses web search from raw stream events: completion and
+ * url_citation annotations, whether sent whole or as individual events. */
+export function responsesSearchCollector(provider: string) {
 	let searched = false;
 	const parts: OutputText[] = [];
 	const streamedText = new Map<string, { type: "output_text"; text: string; annotations: Citation[] }>();
@@ -65,20 +61,8 @@ export async function searchChatGPT(
 		if (item.type === "web_search_call" && item.status === "completed") searched = true;
 		if (item.type === "message" && item.content) parts.push(...item.content);
 	};
-	const stream = chatGPTStream(() => true, {
-		captured: ({ accountId }) => checkSelection(accountId),
-		beforeDispatch: ({ accountId }) => checkSelection(accountId),
-		noDispatch: () => {},
-	}, true);
-	const result = await stream(model, normalizeContext({
-		systemPrompt: `Search the web for the user's query. Return up to ${count} relevant sources, with short descriptions and a native source citation for each.`,
-		messages: [{ role: "user", content: query, timestamp: Date.now() }],
-	}), {
-		identity: APP_IDENTITY,
-		cacheRetention: "none",
-		reasoning: "low",
-		signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(45_000)]) : AbortSignal.timeout(45_000),
-		onProviderStreamEvent(raw) {
+	return {
+		onProviderStreamEvent(raw: unknown) {
 			const event = raw as {
 				type?: string; response?: { output?: ResponsesOutput[] }; item?: ResponsesOutput;
 				part?: OutputText; item_id?: string; content_index?: number; annotation?: Citation | null; text?: string;
@@ -97,10 +81,38 @@ export async function searchChatGPT(
 				streamedText.set(key, part);
 			}
 		},
+		hits(count: number, notSearched: string): SearchHit[] {
+			if (!searched) throw new Error(notSearched);
+			return citedSearchHits([...parts, ...streamedText.values()], count, provider);
+		},
+	};
+}
+
+export async function searchChatGPT(
+	model: Model<"openai-responses">,
+	query: string,
+	count: number,
+	checkSelection: (accountId: string) => void,
+	signal?: AbortSignal,
+): Promise<SearchHit[]> {
+	const collector = responsesSearchCollector("ChatGPT");
+	const stream = chatGPTStream(() => true, {
+		captured: ({ accountId }) => checkSelection(accountId),
+		beforeDispatch: ({ accountId }) => checkSelection(accountId),
+		noDispatch: () => {},
+	}, true);
+	const result = await stream(model, normalizeContext({
+		systemPrompt: `Search the web for the user's query. Return up to ${count} relevant sources, with short descriptions and a native source citation for each.`,
+		messages: [{ role: "user", content: query, timestamp: Date.now() }],
+	}), {
+		identity: APP_IDENTITY,
+		cacheRetention: "none",
+		reasoning: "low",
+		signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(45_000)]) : AbortSignal.timeout(45_000),
+		onProviderStreamEvent: collector.onProviderStreamEvent,
 	}).result();
 	if (result.stopReason === "error" || result.stopReason === "aborted") {
 		throw new Error(result.errorMessage ?? "ChatGPT search was interrupted. Retry when ready.");
 	}
-	if (!searched) throw new Error("ChatGPT did not complete a native web search. Check the account’s search policy or try again.");
-	return citedSearchHits([...parts, ...streamedText.values()], count);
+	return collector.hits(count, "ChatGPT did not complete a native web search. Check the account’s search policy or try again.");
 }

@@ -17,6 +17,7 @@ One recipe per user feature. A recipe says how to reach and drive the feature; t
 | Desktop window and desktop updater | electron | [desktop-window.md](desktop-window.md) |
 | Extract files: files, folders, documents, images, code, estimate | web, api, agent | [extract-files.md](extract-files.md) |
 | Client protocol: server info, version check, native client pairing and chat flow | api | [client-protocol.md](client-protocol.md) |
+| Subscription search: ChatGPT, Claude Code and the Grok probe in the Search engine picker, research job sources | web, api, agent | [subscription-search.md](subscription-search.md) |
 
 ## Gaps (no recipe yet: write one, run it, then list it above)
 
