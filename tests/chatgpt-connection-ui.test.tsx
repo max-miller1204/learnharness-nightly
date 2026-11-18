@@ -601,7 +601,7 @@ test("desktop sign-in folds paste-back; a wrong address keeps the attempt pendin
  await click(byTest("chatgpt-paste-reveal"));
  assert(byTest("chatgpt-paste").textContent?.includes(CHATGPT_PASTE_COPY.remote));
  const field = pasteField();
- assert.equal(field.getAttribute("type"), "password"); assert.equal(field.getAttribute("autocomplete"), "off");
+ assert.equal(field.getAttribute("type"), "text", "plain text: no password-manager save prompt"); assert.equal(field.getAttribute("autocomplete"), "off");
  assert.equal((byTest("chatgpt-paste-submit") as HTMLButtonElement).disabled, true);
  await typeInto(field, "http://127.0.0.1:1/auth/callback?state=wrong&code=x");
  assert.equal((byTest("chatgpt-paste-submit") as HTMLButtonElement).disabled, false);
@@ -644,6 +644,55 @@ test("web sign-in from another device shows paste-back open and finishes over th
   assert.deepEqual(posts.at(-1), { providerId: "chatgpt", op: "complete", url: " http://127.0.0.1:5555/auth/callback?state=s&code=c " });
   assert(!document.querySelector('[data-testid="chatgpt-account-dialog"]'));
   assert(button("Manage…"));
+ } finally {
+  if (original) Object.defineProperty(window, "location", original); else delete (window as unknown as { location?: unknown }).location;
+  window.open = originalOpen;
+ }
+});
+
+test("a paste-completed sign-in applies the background-use draft like the redirect does", async () => {
+ const f = fixture(disconnected(true)); await mount(); await click(byTest("chatgpt-login")); await click(toggle()); await click(byTest("chatgpt-proceed"));
+ await click(byTest("chatgpt-paste-reveal")); await typeInto(pasteField(), "http://127.0.0.1:1/auth/callback?state=s&code=c"); await submitPaste();
+ assert.deepEqual(f.calls.consent, [false]); assert.equal(f.status.allowBackgroundUse, false);
+ assert(!document.querySelector('[data-testid="chatgpt-account-dialog"]'));
+});
+
+test("after a reload, Connect reopens a pending sign-in with paste-back and a working Cancel", async () => {
+ const pending = { ...disconnected(), pending: true };
+ const f = fixture(pending); await mount();
+ assert.equal((byTest("chatgpt-login") as HTMLButtonElement).disabled, false, "a page that did not start the sign-in can still reach it");
+ await click(byTest("chatgpt-login"));
+ assert(document.body.textContent?.includes("Waiting for browser sign-in"));
+ assert.equal((byTest("chatgpt-proceed") as HTMLButtonElement).disabled, true, "no second sign-in while one is pending");
+ await click(byTest("chatgpt-paste-reveal")); assert(byTest("chatgpt-paste"));
+ await click(button("Cancel", byTest("chatgpt-account-dialog")));
+ assert.equal(f.calls.cancel, 1); assert.equal(f.calls.login.length, 0);
+ assert(!document.querySelector('[data-testid="chatgpt-account-dialog"]'));
+ await act(async () => root!.unmount()); host?.remove(); root = undefined;
+ const g = fixture(pending); await mount();
+ await click(byTest("chatgpt-login")); await click(byTest("chatgpt-paste-reveal"));
+ await typeInto(pasteField(), "http://127.0.0.1:1/auth/callback?state=s&code=c"); await submitPaste();
+ assert.equal(g.calls.complete.length, 1);
+ assert(!document.querySelector('[data-testid="chatgpt-account-dialog"]'), "an adopted sign-in completes and closes");
+ assert(button("Manage…"));
+});
+
+test("web page on a loopback host folds paste-back", async () => {
+ const original = Object.getOwnPropertyDescriptor(window, "location");
+ Object.defineProperty(window, "location", { configurable: true, value: { hostname: "127.0.0.1" } });
+ const originalOpen = window.open;
+ (window as unknown as { open: () => unknown }).open = () => ({ opener: {}, closed: false, location: { href: "" }, close() {} });
+ let status: ChatGPTStatus = disconnected();
+ globalThis.fetch = async (_input, init) => {
+  if (!init?.method) return Response.json({ chatgpt: status, native: [] });
+  status = { ...status, pending: true };
+  return Response.json({ value: status, browserAction: "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000000" });
+ };
+ try {
+  await mount(); await begin();
+  assert(document.body.textContent?.includes("Waiting for browser sign-in"));
+  assert.equal(byTest("chatgpt-paste-reveal").textContent, CHATGPT_PASTE_COPY.reveal);
+  assert(!document.querySelector('[data-testid="chatgpt-paste"]'));
  } finally {
   if (original) Object.defineProperty(window, "location", original); else delete (window as unknown as { location?: unknown }).location;
   window.open = originalOpen;

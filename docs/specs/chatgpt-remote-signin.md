@@ -33,6 +33,15 @@ Adopt T3's paste-back. Today's one-click flow is unchanged when the browser is o
 - `src/server/web-subscription-http.ts`: add `complete` to the ChatGPT op allowlist on the existing `POST /api/subscriptions`. Everything else there stays: the same-origin checks, the custom header, the 16 KB body cap, and item 6's auth when it lands. No new route.
 - `electron/preload.cjs` and `ChatGPTControlBridge` (`src/core/contracts/chatgpt.ts`): add `complete(callbackUrl)`. The web bridge (`components/settings/subscription-client.ts`) posts `{ providerId: "chatgpt", op: "complete", url }`. The pasted URL is never logged and never put in status, events or SSE.
 
+### Sign-in tab over plain http (decided by the user on 2026-11-17)
+
+Found during the live proof, and also present on main: browsers send Fetch Metadata (`Sec-Fetch-Site`) only to secure contexts. A page at `http://<LAN or Tailscale address>` is not one, so its sign-in tab's one-use step, `GET /api/subscriptions/browser?id=…`, arrives without the header and was refused with 403 "Open sign-in from LearnHarness." before reaching OpenAI.
+
+- `src/server/web-subscription-http.ts` accepts a **missing** `Sec-Fetch-Site` on that GET **only** when the request origin is plain `http:` and not loopback (`localhost`, `*.localhost`, `127.0.0.0/8`, `[::1]`). There, browsers never send the header.
+- A present value other than `same-origin` is still refused everywhere. `https:` and loopback origins still require `same-origin`.
+- The action id stays a random one-use capability bound to the requesting origin and returned only to a same-origin control request. The POST form of that route is unchanged.
+- This route is shared, so GitHub Copilot and Grok sign-in tabs benefit too.
+
 ### UI (`components/settings/chatgpt-connection.tsx`)
 
 While a sign-in is pending ("Waiting for browser sign-in…"), the connect dialog shows a paste panel:
@@ -42,15 +51,18 @@ While a sign-in is pending ("Waiting for browser sign-in…"), the connect dialo
   >
   > [ field: "Sign-in tab address", placeholder `http://127.0.0.1:…/auth/callback?…` ] [ Finish sign-in ]
 - **Same machine** (loopback page, or the desktop app's own bridge): the panel is folded behind a quiet text button, "Sign-in tab didn't come back?", which opens the same panel.
-- The field is a password-type input with autocomplete off (T3's choice, so the code isn't shown on a shared screen). "Finish sign-in" is disabled while the field is empty or a paste is being submitted.
+- The field is a plain text input with autocomplete, autocorrect, autocapitalize and spellcheck off. **Deviation from T3** (decided by the user on 2026-11-17, open to veto): T3 uses a password-type field so the code isn't shown on a shared screen, but Chrome then offers "Save password?" for the pasted address. The code is one-time and useless without the server's verifier. "Finish sign-in" is disabled while the field is empty or a paste is being submitted.
 - A rejected paste shows its error under the field; the sign-in stays pending and the field keeps its text, so the user can fix it or keep waiting. A paste that completes the sign-in follows today's path (background-use draft applied, dialog closes).
 - Privacy notice in the web dialog: drops "Complete ChatGPT sign-in in a browser on that same machine." The rest is unchanged ("…on the machine running LearnHarness").
+- **Reopening a pending sign-in** (decided by the user on 2026-11-17): while a sign-in is pending on the server, the ChatGPT row's action stays clickable (previously disabled) and opens the connect dialog in its waiting state: "Waiting for browser sign-in…", the paste panel (open or folded as above), and Cancel, which cancels that sign-in. "Continue with ChatGPT" stays disabled. This covers a page that reloaded (a phone browser dropping a background tab, an accidental refresh) or a different tab.
+- A late paste reply never changes a newer attempt, and paste text and errors reset when a new attempt starts.
 - The browser tab still opens through today's one-use same-origin action (`/api/subscriptions/browser?id=…`), which already works from a remote device.
 
 ### Not changed
 
 - Native subscription sign-ins (Copilot, Grok, etc. in `electron/subscriptions.cjs`).
 - The authorize URL parameters, token exchange, identity checks and credential storage.
+- Every other request check (the controls route's same-origin rules, proxy host and origin checks).
 - The listener's checks and behaviour.
 
 ## Small choices (open to veto)
@@ -59,7 +71,7 @@ While a sign-in is pending ("Waiting for browser sign-in…"), the connect dialo
 2. "Remote" is decided in the browser from the page's own hostname (T3's `isLoopbackHost` rule). It only decides whether the panel starts open; the server accepts a valid paste either way.
 3. Timeout 3 to 5 minutes. The one-use browser action stays at 3 minutes (it is used right away).
 4. Pasted text limit 8192 characters; scheme-less paste accepted.
-5. Password-type field.
+5. Plain text field (a deviation from T3, see UI).
 6. Wording above.
 
 ## Follow-ups (not in this change)
@@ -78,5 +90,6 @@ While a sign-in is pending ("Waiting for browser sign-in…"), the connect dialo
   - no pending attempt is refused;
   - pasted URL and code never appear in status;
   - HTTP: `complete` is reachable only through the existing same-origin checks;
+  - sign-in tab navigation: a missing `Sec-Fetch-Site` is accepted only on plain-http non-loopback origins; a present non-same-origin value is refused; the action stays one-use;
   - UI: the panel starts open on a non-loopback host and folded on loopback, a rejected paste keeps the attempt pending and shows the error, and a successful paste closes the dialog.
 - Live (prove-learnharness): run the self-hosted server and drive the web UI from a non-loopback address on this machine (Tailscale or LAN IP). Start ChatGPT sign-in, finish the real OpenAI page (the user clicks through if a real account login is needed), let the redirect fail, paste the address, and see the account connected. Also confirm the loopback one-click flow still completes without pasting.

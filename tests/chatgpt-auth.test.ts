@@ -807,3 +807,26 @@ test("IPC complete op returns a public error envelope for a wrong address and st
 		assert.equal(status.pending, false);
 	} finally { f.service.close(); }
 });
+
+test("while an exchange is in flight, a second paste or a paste after the redirect is refused without a second exchange", async () => {
+	for (const first of ["paste", "redirect"] as const) {
+		const release = deferred(); const started = deferred();
+		let exchanges = 0;
+		const f = fixture({ token: async (form, url) => {
+			exchanges++; started.resolve(); await release.promise;
+			return Response.json({ access_token: "scratch-oauth-token", refresh_token: "scratch-refresh", id_token: await signed(form.get("client_id")!, url.searchParams.get("nonce")!), token_type: "Bearer", expires_in: 3600, scope: SCOPES.join(" ") });
+		} });
+		try {
+			await f.service.login();
+			const pasted = first === "paste" ? f.service.completeLogin(pasteFor(f).toString()) : undefined;
+			if (first === "redirect") assert.equal((await f.callback()).status, 200);
+			await started.promise;
+			assert.equal((await f.service.status()).pending, true, "attempt is still pending during the exchange");
+			await assert.rejects(f.service.completeLogin(pasteFor(f).toString()), /inactive/, first);
+			release.resolve();
+			if (pasted) assert.equal((await pasted).error, null); else await f.changed.promise;
+			assert.equal(exchanges, 1, first);
+			assert.equal(f.saved.registrations.length, 1);
+		} finally { release.resolve(); f.service.close(); }
+	}
+});
