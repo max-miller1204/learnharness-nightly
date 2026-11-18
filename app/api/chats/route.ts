@@ -2,6 +2,7 @@ import { chainsForSelection, formatChainLine } from "@/src/core";
 import { newGraphContextMessage, type GraphContextPick } from "@/src/core";
 import { compactionInFlight, createChat, isTurnRunning, listChats, readSettingsRecord, stores, titleFromPrompt } from "@/src/server";
 import type { ChatListItem } from "@/src/core";
+import type { ChatListResponse, CreateChatResponse } from "@/src/server";
 
 /** The session picker's list: record-derived summaries (phase, pending
  *  question) + live liveness — a running turn marks the session busy
@@ -16,7 +17,7 @@ export async function GET() {
 		busy: isTurnRunning(c.id),
 		compacting: compactionInFlight(c.id),
 	}));
-	return Response.json({ chats });
+	return Response.json({ chats } satisfies ChatListResponse);
 }
 
 export async function POST(req: Request) {
@@ -67,5 +68,5 @@ export async function POST(req: Request) {
 		);
 		stores.chatStore.saveMessages(chat.id, [newGraphContextMessage(picks, chainLines)]);
 	}
-	return Response.json({ id: chat.id, title: chat.title });
+	return Response.json({ id: chat.id, title: chat.title } satisfies CreateChatResponse);
 }

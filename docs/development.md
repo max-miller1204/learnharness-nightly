@@ -93,6 +93,15 @@ Do not commit `.env.local`, credentials, or learning records. Do not copy a pers
 
 Read the relevant installed Next guide under `node_modules/next/dist/docs/` before framework-facing changes. The import restrictions live in `eslint.config.mjs`; they do not enforce every architectural convention. [Architecture's code map](architecture.md#code-boundaries) and [prompt composition](../src/agent/prompts/README.md) identify the main entry points. For plugins, start with the [authoring/capability map](plugin-authoring.md), [host source map and verification](plugin-architecture.md), [`examples/plugins/`](../examples/plugins/) templates and [`plugins/`](../plugins/) feature sources.
 
+## Client protocol
+
+A few routes form a contract for clients released separately from the server (the phone app, the desktop app pointed at a remote server): server info at `/.well-known/learnharness/server`, the token exchange, and the core chat flow. The contract is [`src/client-protocol/index.ts`](../src/client-protocol/index.ts), and the list of routes is in [the spec](specs/client-protocol.md). Client and server must speak the same `CLIENT_PROTOCOL_VERSION` exactly. When you change one of these routes or a type they return:
+
+- If it breaks a client built against the old contract, bump `CLIENT_PROTOCOL_VERSION`.
+- If a client can live without it, add a capability string to `serverInfo()` in `src/server/server-info.ts` instead.
+
+`tests/client-protocol.test.ts` fingerprints the contract, every repo declaration it reaches and the pinned pi versions, so it fails on any such change until you make that call and record the new fingerprint.
+
 ## Debugging
 
 - `LH_PROVIDER_EVENTS=1` saves raw provider events under the selected data root. They may contain private lesson/provider content.

@@ -19,6 +19,7 @@ import {
 } from "../../selfhost/src/auth-store.ts";
 import { layout } from "../../selfhost/src/paths.ts";
 import { authDataDir, authenticate, clientInfo, CREDENTIAL_HEADERS, sessionCookie } from "./auth.ts";
+import type { OAuthErrorResponse, SessionStateResponse, TokenExchangeResponse } from "../client-protocol/index.ts";
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
 	Response.json(body, { status, headers: { ...CREDENTIAL_HEADERS, ...extra } });
@@ -58,8 +59,8 @@ async function jsonBody(request: Request): Promise<Record<string, unknown>> {
 /** GET /api/auth/session (public). */
 export function sessionState(request: Request): Response {
 	const result = authenticate(request);
-	if (!result.ok) return json({ authenticated: false });
-	return json({ authenticated: true, sessionId: result.session.id, ...sessionExpiry(result.session) });
+	if (!result.ok) return json({ authenticated: false } satisfies SessionStateResponse);
+	return json({ authenticated: true, sessionId: result.session.id, ...sessionExpiry(result.session) } satisfies SessionStateResponse);
 }
 
 /** POST /api/auth/browser-session (public): body { credential } -> session cookie. */
@@ -81,7 +82,7 @@ export const DESKTOP_BOOTSTRAP_TOKEN_TYPE = "urn:learnharness:params:oauth:token
 const TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token-exchange";
 const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
 
-const oauthError = (error: string, description: string) => json({ error, error_description: description }, 400);
+const oauthError = (error: string, description: string) => json({ error, error_description: description } satisfies OAuthErrorResponse, 400);
 
 function desktopSecretMatches(supplied: string, env: Record<string, string | undefined> = process.env): boolean {
 	const expected = env.LH_DESKTOP_API_SECRET;
@@ -130,7 +131,7 @@ export async function tokenExchange(request: Request): Promise<Response> {
 			return oauthError("invalid_request", `subject_token_type must be ${PAIRING_CODE_TOKEN_TYPE}.`);
 	}
 	// No expires_in: these sessions never expire (RFC 6749 makes it optional).
-	return json({ access_token: issued.token, issued_token_type: ACCESS_TOKEN_TYPE, token_type: "Bearer" });
+	return json({ access_token: issued.token, issued_token_type: ACCESS_TOKEN_TYPE, token_type: "Bearer" } satisfies TokenExchangeResponse);
 }
 
 /** The launcher's Tailscale HTTPS address, read from its config.json. */

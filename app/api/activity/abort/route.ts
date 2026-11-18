@@ -18,6 +18,7 @@
  * flight is success — the blob is gone either way) -> 200.
  */
 import { abortExtraction, abortJob, abortPluginWorkerActivity, abortTurn } from "@/src/server";
+import type { AbortTurnResponse } from "@/src/server";
 
 export async function POST(req: Request) {
 	let body: unknown;
@@ -48,8 +49,8 @@ export async function POST(req: Request) {
 	}
 	if (kind === "turn") {
 		const outcome = abortTurn(id);
-		if (!outcome.ok) return Response.json({ ok: false, reason: outcome.reason }, { status: 409 });
-		return Response.json({ ok: true });
+		if (!outcome.ok) return Response.json({ ok: false, reason: outcome.reason } satisfies AbortTurnResponse, { status: 409 });
+		return Response.json({ ok: true } satisfies AbortTurnResponse);
 	}
 	// kind === "extraction": true cancellation; idempotent (nothing in
 	// flight is success — same dock outcome)
