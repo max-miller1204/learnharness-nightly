@@ -128,7 +128,7 @@ function snapshot() {
 		const box = (id: string) => ({ x: layout.x.get(id), y: layout.y.get(id), w: layout.nodeW.get(id), h: layout.nodeH.get(id) });
 		const steps = progressions(tree).map((taught) => {
 			const messages = lesson(tree, taught);
-			const statuses = derivePlanStatuses(tree, messages as Parameters<typeof derivePlanStatuses>[1]);
+			const statuses = derivePlanStatuses(tree, messages as unknown as Parameters<typeof derivePlanStatuses>[1]);
 			const status = Object.fromEntries(tree.nodes.map(({ id }) => [id, derivedNodeStatus(statuses, id)]));
 			const block: PlanBlockData = {
 				kind: "full", at: "2026-11-18T00:00:00.000Z", current: statuses.current,

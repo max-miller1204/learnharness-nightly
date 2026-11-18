@@ -36,6 +36,7 @@ export * from "./events.ts";
 // line existed). Same logic as layout-settle.ts below.
 export * from "./layout.ts";
 export * from "./plan-tree.ts";
+export * from "./plan-layout.ts";
 export * from "./phases.ts";
 export * from "./pending.ts";
 export * from "./prompt-segments.ts";
