@@ -1,57 +1,53 @@
 import type { ReactNode } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View, type TextInputProps } from "react-native";
+import { Pressable, Text, TextInput, View, type StyleProp, type TextInputProps, type ViewStyle } from "react-native";
+import { fonts, radius, space, useTheme } from "./theme";
 
-export const colors = {
-  background: "#f8f6f0",
-  surface: "#ffffff",
-  ink: "#171d18",
-  muted: "#4a564e",
-  border: "#c5cec4",
-  accent: "#204d3d",
-  accentLight: "#e3eee6",
-  danger: "#982c20",
-};
+type Variant = "primary" | "outline" | "ghost" | "success";
 
-export const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.background },
-  section: { padding: 18, gap: 12 },
-  row: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 },
-  header: { padding: 16, gap: 8, borderBottomColor: colors.border, borderBottomWidth: StyleSheet.hairlineWidth },
-  title: { fontSize: 24, fontWeight: "700", color: colors.ink },
-  subtitle: { fontSize: 17, fontWeight: "600", color: colors.ink },
-  text: { fontSize: 16, color: colors.ink },
-  muted: { fontSize: 15, color: colors.muted },
-  error: { fontSize: 15, color: colors.danger },
-  card: { padding: 12, gap: 8, borderRadius: 10, borderColor: colors.border, borderWidth: 1, backgroundColor: colors.surface },
-  input: { minHeight: 48, backgroundColor: colors.surface, color: colors.ink, borderRadius: 8, borderColor: colors.border, borderWidth: 1, padding: 10, fontSize: 16 },
-  button: { minHeight: 44, justifyContent: "center", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: colors.accentLight },
-  primary: { backgroundColor: colors.accent },
-  buttonText: { color: colors.accent, fontSize: 15, fontWeight: "600" },
-  divider: { borderTopWidth: StyleSheet.hairlineWidth, borderColor: colors.border },
-});
-
-export function Button({ children, onPress, disabled, primary, selected }: {
-  children: string; onPress: () => void; disabled?: boolean; primary?: boolean; selected?: boolean;
+/** The web Button: primary is light-on-dark, outline is the bordered default. */
+export function Button({ children, onPress, disabled, primary, selected, variant, label, style }: {
+  children: ReactNode; onPress: () => void; disabled?: boolean; primary?: boolean; selected?: boolean;
+  variant?: Variant; label?: string; style?: StyleProp<ViewStyle>;
 }) {
+  const { c } = useTheme();
+  const kind: Variant = primary || selected ? "primary" : variant ?? "outline";
+  const fill = { primary: c.primary, outline: c.input, ghost: "transparent", success: c.success }[kind];
+  const ink = kind === "primary" || kind === "success" ? c.onPrimary : c.text;
   return (
-    <Pressable accessibilityRole="button" accessibilityState={{ disabled, selected }} disabled={disabled} onPress={onPress}
-      style={({ pressed }) => [styles.button, (primary || selected) && styles.primary, (disabled || pressed) && { opacity: 0.55 }]}>
-      <Text style={[styles.buttonText, (primary || selected) && { color: "#ffffff" }]}>{children}</Text>
+    <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled, selected }} disabled={disabled} onPress={onPress}
+      style={({ pressed }) => [{
+        minHeight: 40, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: space.sm,
+        paddingHorizontal: space.lg, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: fill,
+        borderWidth: kind === "outline" ? 1 : 0, borderColor: c.border,
+        opacity: disabled ? 0.5 : pressed && (kind === "primary" || kind === "success") ? 0.9 : 1,
+      }, pressed && (kind === "outline" || kind === "ghost") && { backgroundColor: c.hover }, style]}>
+      {typeof children === "string"
+        ? <Text style={{ fontFamily: fonts.uiMedium, fontSize: 12.5, color: ink }}>{children}</Text>
+        : children}
     </Pressable>
   );
 }
 
+/** The web's quiet uppercase label (YOU, PROBLEM, SESSIONS…). */
+export function Label({ children }: { children: ReactNode }) {
+  const { s } = useTheme();
+  return <Text style={s.label}>{children}</Text>;
+}
+
 export function Field({ label, ...props }: TextInputProps & { label: string }) {
+  const { c, s } = useTheme();
   return (
-    <View style={{ gap: 5 }}>
-      <Text style={styles.muted}>{label}</Text>
-      <TextInput accessibilityLabel={label} placeholderTextColor={colors.muted} {...props}
-        style={[styles.input, props.multiline && { minHeight: 72, textAlignVertical: "top" }, props.style]} />
+    <View style={{ gap: space.xs }}>
+      <Label>{label}</Label>
+      <TextInput accessibilityLabel={label} placeholderTextColor={c.muted} selectionColor={c.accent} {...props}
+        style={[s.input, props.multiline && { minHeight: 72, textAlignVertical: "top" }, props.style]} />
     </View>
   );
 }
 
-export function Notice({ children }: { children: ReactNode }) {
+export function Notice({ children, boxed }: { children: ReactNode; boxed?: boolean }) {
+  const { s } = useTheme();
   if (!children) return null;
-  return <Text accessibilityRole="alert" accessibilityLiveRegion="polite" style={styles.error}>{children}</Text>;
+  const text = <Text selectable accessibilityRole="alert" accessibilityLiveRegion="polite" style={s.error}>{children}</Text>;
+  return boxed ? <View style={s.errorBox}>{text}</View> : text;
 }

@@ -4,6 +4,7 @@
     "slug": "learnharness-nightly",
     "version": "0.1.0",
     "icon": "../../build/icon.png",
+    "userInterfaceStyle": "automatic",
     "platforms": ["ios", "android"],
     "experiments": { "tsconfigPaths": false },
     "updates": { "enabled": false },

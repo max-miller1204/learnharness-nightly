@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject, type ComponentRef } from "react";
-import { Alert, Linking, ScrollView, Text, View } from "react-native";
+import { Alert, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
   BROWSER_HANDOFF_ROUTES, BROWSER_HANDOFF_V1, PRACTICE_CONTROLS_V1, hasCapability,
   type LhMessage, type PairingTokenResponse, type ServerInfo,
@@ -9,7 +9,8 @@ import { browserDestination, type MobileApi } from "./protocol";
 import { errorText, useSession } from "./use-session";
 import { BuiltinQuestion } from "./BuiltinQuestion";
 import { Transcript } from "./Transcript";
-import { Button, Field, Notice, styles } from "./ui";
+import { Button, Label, Notice } from "./ui";
+import { fonts, radius, space, useTheme } from "./theme";
 
 const EMPTY: LhMessage[] = [];
 
@@ -17,11 +18,13 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   api: MobileApi; info: ServerInfo; id: string; initialText?: string; sendInitialText?: boolean; active: boolean;
   reloadRef: RefObject<((reconnect?: boolean) => void) | null>; back: () => void; connectionFault: (error: unknown) => boolean;
 }) {
+  const { c, s } = useTheme();
   const session = useSession(api, id, active, connectionFault);
   const { record } = session;
   const [draft, setDraft] = useState(initialText ?? "");
   const [browserError, setBrowserError] = useState("");
   const [openingBrowser, setOpeningBrowser] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const browserScope = useRef<AbortController | null>(null);
   const started = useRef(false);
   const scroller = useRef<ComponentRef<typeof ScrollView>>(null);
@@ -88,63 +91,101 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
     ]);
   }
 
+  const thinkingLabel = problem ? "Your thinking" : "Message";
+  // Browser handoff lives in the top bar's menu until the phone handles these flows itself.
+  const browserItem = (label: string, pair: boolean) => (
+    <Pressable accessibilityRole="button" accessibilityState={{ disabled: openingBrowser }} disabled={openingBrowser}
+      onPress={() => { setMenuOpen(false); void openBrowser(pair); }}
+      style={({ pressed }) => ({ paddingHorizontal: 10, paddingVertical: space.sm, borderRadius: radius.md, borderCurve: "continuous",
+        backgroundColor: pressed ? c.hover : "transparent", opacity: openingBrowser ? 0.5 : 1 })}>
+      <Text style={s.ui}>{label}</Text>
+    </Pressable>
+  );
   return (
-    <>
-      <View style={styles.header}>
-        <View style={styles.row}>
-          <Button onPress={back}>Sessions</Button>
-          {busy && <Button primary onPress={() => void session.stop()} disabled={session.stopping}>{session.stopping ? "Stopping…" : "Stop"}</Button>}
-        </View>
-        <Text accessibilityRole="header" style={styles.title}>{record?.title ?? "Session"}</Text>
+    <View style={{ flex: 1 }}>
+      <View style={{ zIndex: 2 }}>
+      <View style={s.bar}>
+        <Button variant="ghost" label="Sessions" onPress={back} style={{ width: 36, paddingHorizontal: 0 }}>
+          <Text style={[s.ui, { fontSize: 20, lineHeight: 24 }]}>‹</Text>
+        </Button>
+        <Text accessibilityRole="header" numberOfLines={1} style={[s.title, { flex: 1 }]}>{record?.title ?? "Session"}</Text>
+        {practice && <Label>Practice</Label>}
+        {busy && <Button primary onPress={() => void session.stop()} disabled={session.stopping}>{session.stopping ? "Stopping…" : "Stop"}</Button>}
+        {record && <Button variant="ghost" label="Browser options" selected={false} onPress={() => setMenuOpen((open) => !open)}
+          style={[{ width: 36, paddingHorizontal: 0 }, menuOpen && { backgroundColor: c.hover }]}>
+          <Text style={[s.ui, { fontSize: 16 }]}>…</Text>
+        </Button>}
       </View>
-      <ScrollView ref={scroller} style={{ flex: 1 }} contentContainerStyle={styles.section}
+      {menuOpen && record && (
+        <View style={{ position: "absolute", top: "100%", right: space.md, marginTop: space.xs, minWidth: 200, padding: space.xs,
+          borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: c.border, backgroundColor: c.card,
+          boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.25)" }}>
+          {browserItem("Open in browser", false)}
+          {assisted && browserItem("Pair phone browser", true)}
+        </View>
+      )}
+      </View>
+      {menuOpen && <Pressable accessibilityLabel="Close menu" onPress={() => setMenuOpen(false)}
+        style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0, zIndex: 1 }} />}
+      <ScrollView ref={scroller} style={{ flex: 1 }} contentContainerStyle={[s.section, { gap: space.lg }]}
         keyboardShouldPersistTaps="handled" scrollEventThrottle={100}
         onScroll={({ nativeEvent: { contentOffset, layoutMeasurement, contentSize } }) => {
           nearBottom.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 100;
         }}
         onContentSizeChange={() => { if (nearBottom.current) scroller.current?.scrollToEnd({ animated: false }); }}>
-        {session.loading && <Text style={styles.muted}>Loading session…</Text>}
+        {session.loading && <Text style={s.muted}>Loading session…</Text>}
         <Transcript messages={messages} tail={session.tail} api={api} chatId={id} />
-        {busy && <Text accessibilityLiveRegion="polite" style={styles.muted}>Reply in progress…</Text>}
-        {record?.compacting && <Text style={styles.muted}>Updating session context…</Text>}
-        <Notice>{session.refreshError}</Notice>
-        {!!session.refreshError && <Button onPress={() => refresh(true)}>Reconnect</Button>}
-        <Notice>{session.writeError}</Notice>
-        <Notice>{failure}</Notice>
+        {busy && <Text accessibilityLiveRegion="polite" style={s.muted}>Reply in progress…</Text>}
+        {record?.compacting && <Text style={s.muted}>Updating session context…</Text>}
+        <Notice boxed>{session.refreshError}</Notice>
+        {!!session.refreshError && <View style={s.row}><Button onPress={() => refresh(true)}>Reconnect</Button></View>}
+        <Notice boxed>{session.writeError}</Notice>
+        <Notice boxed>{failure}</Notice>
         {failure && !busy && !pendingPlugin && (
-          <Button disabled={blocked} onPress={() => void submit({ type: "retry" })}>Retry reply</Button>
-        )}
-        {question && !pendingPlugin && (
-          <BuiltinQuestion key={question.key} question={question} disabled={blocked || busy} submit={(input) => void submit(input)} />
-        )}
-        {!question && !pendingPlugin && !malformed && record && (
-          <View style={styles.card}>
-            <Field label={problem ? "Your thinking" : "Message"} multiline value={draft} onChangeText={setDraft}
-              editable={!blocked && !busy} />
-            <View style={styles.row}>
-              <Button primary disabled={blocked || busy || !draft.trim()} onPress={sendDraft}>{problem ? "Submit thinking" : "Send"}</Button>
-              {practice && !problem && messages.length > 0 && !busy &&
-                <Button disabled={blocked} onPress={() => void submit({ type: "next" })}>Next</Button>}
-              {problem && controls && <Button disabled={blocked} onPress={() => discard(problem.toolCallId)}>Discard problem</Button>}
-            </View>
-          </View>
+          <View style={s.row}><Button disabled={blocked} onPress={() => void submit({ type: "retry" })}>Retry reply</Button></View>
         )}
         {malformed && !question && !pendingPlugin && (
-          <Button disabled={blocked || busy} onPress={() => void submit({
+          <View style={s.row}><Button disabled={blocked || busy} onPress={() => void submit({
             type: "retry-question", messageId: malformed.messageId, contentIndex: malformed.contentIndex, toolCallId: malformed.toolCallId,
-          })}>Retry question</Button>
+          })}>Retry question</Button></View>
         )}
-        {record && (
-          <View style={{ gap: 6 }}>
-            {pendingPlugin && <Text style={styles.muted}>Use the browser to complete this interaction.</Text>}
-            <Notice>{browserError}</Notice>
-            <View style={styles.row}>
-              <Button disabled={openingBrowser} onPress={() => void openBrowser(false)}>Open in browser</Button>
-              {assisted && <Button disabled={openingBrowser} onPress={() => void openBrowser(true)}>Pair phone browser</Button>}
+        {record && pendingPlugin && <Text style={s.muted}>Use the browser to complete this interaction. Open it from the … menu above.</Text>}
+        <Notice>{browserError}</Notice>
+      </ScrollView>
+      {question && !pendingPlugin && (
+        <View style={{ paddingHorizontal: space.md, paddingBottom: space.md, maxHeight: "55%" }}>
+          <View style={[s.dock, { flexShrink: 1, overflow: "hidden" }]}>
+            <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: space.lg }}>
+              <BuiltinQuestion key={question.key} question={question} disabled={blocked || busy} submit={(input) => void submit(input)} />
+            </ScrollView>
+          </View>
+        </View>
+      )}
+      {!question && !pendingPlugin && !malformed && record && (
+        <View style={{ paddingHorizontal: space.md, paddingBottom: space.md, gap: space.sm }}>
+          {((practice && !problem && messages.length > 0 && !busy) || (problem && controls)) && (
+            <View style={s.row}>
+              {practice && !problem && messages.length > 0 && !busy &&
+                <Button variant="success" label="Next" disabled={blocked} onPress={() => void submit({ type: "next" })}>
+                  <Text style={{ fontFamily: fonts.uiMedium, fontSize: 11, letterSpacing: 0.6, color: c.onPrimary }}>NEXT PROBLEM →</Text>
+                </Button>}
+              {problem && controls && <Button disabled={blocked} onPress={() => discard(problem.toolCallId)}>Discard problem</Button>}
+            </View>
+          )}
+          <View style={s.dock}>
+            {problem && <View style={{ paddingHorizontal: space.md, paddingTop: space.sm }}><Label>Your thinking</Label></View>}
+            <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 6, padding: 6 }}>
+              <TextInput accessibilityLabel={thinkingLabel} placeholder={thinkingLabel} placeholderTextColor={c.muted} selectionColor={c.accent}
+                multiline value={draft} onChangeText={setDraft} editable={!blocked && !busy}
+                style={{ flex: 1, minHeight: 40, maxHeight: 192, paddingHorizontal: 10, paddingVertical: 10, fontFamily: fonts.prose, fontSize: 16, lineHeight: 20, color: c.text, textAlignVertical: "top" }} />
+              <Button primary label={problem ? "Submit thinking" : "Send"} disabled={blocked || busy || !draft.trim()} onPress={sendDraft}
+                style={{ width: 40, paddingHorizontal: 0, borderRadius: radius.control }}>
+                <Text style={{ fontFamily: fonts.ui, fontSize: 18, color: c.onPrimary }}>↵</Text>
+              </Button>
             </View>
           </View>
-        )}
-      </ScrollView>
-    </>
+        </View>
+      )}
+    </View>
   );
 }

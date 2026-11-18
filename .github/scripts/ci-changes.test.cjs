@@ -43,6 +43,7 @@ test("mobile changes use the isolated gate and shared core changes use both", ()
 	assert.deepEqual(decide(["apps/mobile/package-lock.json"]), { ...none, mobile: true });
 	assert.deepEqual(decide(["src/client-protocol/index.ts"]), { ...all, mobile: true });
 	assert.deepEqual(decide(["src/core/view.ts"]), { ...all, mobile: true });
+	assert.deepEqual(decide(["public/fonts/cmunbx.ttf"]), { ...all, mobile: true });
 });
 
 test("one non-inert file in a docs change runs its gates", () => {

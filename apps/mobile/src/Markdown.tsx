@@ -3,7 +3,7 @@ import { Alert, Linking, useWindowDimensions } from "react-native";
 import { WebView } from "react-native-webview";
 import { httpsLink, parseMarkdown, renderMarkdown } from "./render-markdown";
 import { NativeMarkdown } from "./NativeMarkdown";
-import { colors } from "./ui";
+import { useTheme } from "./theme";
 
 function confirmExternalLink(value: string) {
   const url = httpsLink(value);
@@ -24,6 +24,7 @@ export function Markdown({ text }: { text: string }) {
 }
 
 function MathMarkdown({ parsed }: { parsed: ReturnType<typeof parseMarkdown> }) {
+  const { c } = useTheme();
   const { fontScale } = useWindowDimensions();
   const [height, setHeight] = useState(26);
   const [failed, setFailed] = useState(false);
@@ -32,17 +33,21 @@ function MathMarkdown({ parsed }: { parsed: ReturnType<typeof parseMarkdown> }) 
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-lh-size'; base-uri 'none'; form-action 'none'">
       <style>
-        html,body { margin:0; padding:0; background:transparent; color:${colors.ink};
-          font: ${16 * fontScale}px/1.45 system-ui,sans-serif; overflow-wrap:anywhere; }
+        html,body { margin:0; padding:0; background:transparent; color:${c.text};
+          font: ${16 * fontScale}px/1.5 system-ui,sans-serif; overflow-wrap:anywhere; }
         #content { display:flow-root; }
         #content > :first-child { margin-top:0; }
         #content > :last-child { margin-bottom:0; }
         pre, .katex-display { overflow-x:auto; }
-        a { color:${colors.accent}; }
-        pre, code { background:${colors.accentLight}; border-radius:4px; }
-        pre { padding:8px; }
-        blockquote { margin-inline:0; padding-inline-start:10px; border-inline-start:3px solid ${colors.border}; }
-        td,th { padding:4px; border-bottom:1px solid ${colors.border}; }
+        a { color:${c.text}; }
+        strong { color:${c.strong}; } em { color:${c.italic}; }
+        h1,h2,h3,h4,h5,h6 { font-weight:900; }
+        pre, code { font-family:ui-monospace,monospace; background:${c.well}; color:${c.code}; border:1px solid ${c.border}; border-radius:4px; }
+        pre { padding:12px 16px; border-radius:12px; }
+        pre code { border:0; }
+        blockquote { margin-inline:0; padding-inline-start:12px; border-inline-start:3px solid ${c.rail}; }
+        table { border-collapse:collapse; border:1px solid ${c.border}; }
+        td,th { padding:4px 8px; border:1px solid ${c.border}; }
       </style></head><body><div id="content">${renderMarkdown(parsed)}</div>
       <script nonce="lh-size">
         const content = document.getElementById('content');
@@ -59,7 +64,7 @@ function MathMarkdown({ parsed }: { parsed: ReturnType<typeof parseMarkdown> }) 
         window.addEventListener('load', resize);
         new ResizeObserver(resize).observe(content);
       </script></body></html>`,
-  }), [fontScale, parsed]);
+  }), [c, fontScale, parsed]);
   if (failed) return <NativeMarkdown tokens={parsed.tokens} openLink={confirmExternalLink} />;
 
   // The local document reports its size and link taps. It cannot navigate or load external content.

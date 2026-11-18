@@ -6,13 +6,15 @@ import { type SavedServer, saveBearer } from "./device-storage";
 import { nativeApi } from "./native-api";
 import { httpsOrigin, pairingCode, readPairingLink } from "./protocol";
 import { errorText } from "./use-session";
-import { Button, Field, Notice, styles } from "./ui";
+import { Button, Field, Notice } from "./ui";
+import { fonts, radius, space, useTheme } from "./theme";
 
 export function Pairing({ initialOrigin, cancel, onPaired }: {
   initialOrigin?: string;
   cancel: () => void;
   onPaired: (server: SavedServer, token: string) => Promise<void>;
 }) {
+  const { s } = useTheme();
   const [address, setAddress] = useState(initialOrigin ?? "");
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
@@ -96,15 +98,15 @@ export function Pairing({ initialOrigin, cancel, onPaired }: {
   }
 
   return (
-    <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.section}>
-      <Text accessibilityRole="header" style={styles.title}>Pair a server</Text>
-      <Text style={styles.text}>Use the QR code from lh pair or Settings → Devices.</Text>
-      <View style={styles.row}>
+    <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[s.section, { gap: space.lg }]}>
+      <Text accessibilityRole="header" style={s.heading}>Pair a server</Text>
+      <Text style={s.muted}>Use the QR code from lh pair or Settings → Devices.</Text>
+      <View style={s.row}>
         <Button disabled={busy} onPress={() => void scan()}>Scan QR code</Button>
         <Button disabled={busy} onPress={() => void paste()}>Paste pairing link</Button>
       </View>
       {scanning && (
-        <View style={{ height: 235, borderRadius: 8, overflow: "hidden" }}>
+        <View style={{ height: 235, borderRadius: radius.lg, borderCurve: "continuous", overflow: "hidden" }}>
           <CameraView style={{ flex: 1 }} facing="back" barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
             onMountError={() => {
               scanArmed.current = false;
@@ -118,9 +120,10 @@ export function Pairing({ initialOrigin, cancel, onPaired }: {
       <Field label="Server address" placeholder="https://server.example.ts.net" value={address} onChangeText={setAddress}
         autoCapitalize="none" autoCorrect={false} keyboardType="url" editable={!busy} />
       <Field label="Pairing code" placeholder="XXXX-XXXX-XXXX" value={code} onChangeText={setCode}
-        autoCapitalize="characters" autoCorrect={false} secureTextEntry editable={!busy} />
+        autoCapitalize="characters" autoCorrect={false} secureTextEntry editable={!busy}
+        style={{ fontFamily: fonts.ui, letterSpacing: 2 }} />
       <Notice>{error}</Notice>
-      <View style={styles.row}>
+      <View style={s.row}>
         <Button primary disabled={busy || !address.trim() || !code.trim()} onPress={() => void connect()}>{busy ? "Connecting…" : "Connect"}</Button>
         <Button disabled={busy} onPress={cancel}>Saved servers</Button>
       </View>

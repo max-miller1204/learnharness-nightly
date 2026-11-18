@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FlatList, Pressable, ScrollView, Text, View } from "react-native";
+import { FlatList, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
   PROTOCOL_ROUTES, PRACTICE_CONTROLS_V1, PRACTICE_CONTROL_ROUTES, hasCapability,
   type ChatKind, type ChatListResponse, type CreateChatRequest, type CreateChatResponse,
@@ -7,7 +7,8 @@ import {
 } from "../../../src/client-protocol/index.ts";
 import { ApiError, type MobileApi } from "./protocol";
 import { errorText } from "./use-session";
-import { Button, colors, Field, Notice, styles } from "./ui";
+import { Button, Field, Notice } from "./ui";
+import { fonts, radius, space, useTheme } from "./theme";
 
 const MAX_PICKS = 64;
 
@@ -15,6 +16,7 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
   api: MobileApi; info: ServerInfo; kind: ChatKind; back: () => void;
   open: (id: string, draft?: string, sendDraft?: boolean) => void; connectionFault: (error: unknown) => boolean;
 }) {
+  const { c, s } = useTheme();
   const [draft, setDraft] = useState("");
   const [picking, setPicking] = useState(false);
   const [propositions, setPropositions] = useState<GraphContextPick[]>();
@@ -96,18 +98,18 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
   if (picking) {
     return (
       <>
-        <View style={styles.header}>
-          <Text accessibilityRole="header" style={styles.title}>Graph material</Text>
+        <View style={[s.bar, { paddingVertical: space.md }]}>
+          <Text accessibilityRole="header" style={[s.heading, { flex: 1 }]}>Graph material</Text>
+          <Button primary onPress={() => setPicking(false)}>{`Done (${picks.length})`}</Button>
+        </View>
+        <View style={{ padding: space.lg, paddingBottom: 0, gap: space.sm }}>
           <Field label="Search propositions" value={query} onChangeText={setQuery} />
-          <View style={styles.row}>
-            <Button primary onPress={() => setPicking(false)}>{`Done (${picks.length})`}</Button>
-            {!!graphError && <Button onPress={() => { setGraphError(""); setGraphRevision((n) => n + 1); }}>Retry</Button>}
-          </View>
+          {!!graphError && <View style={s.row}><Button onPress={() => { setGraphError(""); setGraphRevision((n) => n + 1); }}>Retry</Button></View>}
           <Notice>{graphError}</Notice>
         </View>
         <FlatList data={filtered} keyExtractor={({ id }) => id} keyboardShouldPersistTaps="handled"
-          contentContainerStyle={styles.section} ListEmptyComponent={
-            graphError ? undefined : <Text style={styles.muted}>{propositions ? "No matching propositions" : "Loading propositions…"}</Text>
+          contentContainerStyle={[s.section, { gap: space.sm }]} ListEmptyComponent={
+            graphError ? undefined : <Text style={s.muted}>{propositions ? "No matching propositions" : "Loading propositions…"}</Text>
           }
           renderItem={({ item }) => {
             const selected = picks.some(({ id }) => id === item.id);
@@ -115,9 +117,19 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
             return (
               <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selected, disabled }} disabled={disabled}
                 onPress={() => setPicks((value) => selected ? value.filter(({ id }) => id !== item.id) : [...value, item])}
-                style={[styles.card, selected && { backgroundColor: colors.accentLight, borderColor: colors.accent }]}>
-                <Text style={styles.subtitle}>{item.name}</Text>
-                <Text style={styles.text}>{item.statement}</Text>
+                style={({ pressed }) => ({
+                  flexDirection: "row", gap: space.md, paddingHorizontal: space.md, paddingVertical: space.sm,
+                  borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: selected ? c.primary : c.border,
+                  backgroundColor: selected || pressed ? c.hover : "transparent", opacity: disabled ? 0.5 : 1,
+                })}>
+                <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ marginTop: 3, width: 16, height: 16, borderRadius: radius.sm, borderWidth: 1, alignItems: "center", justifyContent: "center",
+                  borderColor: selected ? c.primary : c.rail, backgroundColor: selected ? c.primary : "transparent" }}>
+                  {selected && <Text style={{ color: c.onPrimary, fontSize: 12, lineHeight: 14 }}>✓</Text>}
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[s.prose, { fontFamily: fonts.proseBold }]}>{item.name}</Text>
+                  <Text style={[s.prose, { fontSize: 14, lineHeight: 20, color: c.muted }]}>{item.statement}</Text>
+                </View>
               </Pressable>
             );
           }} />
@@ -125,25 +137,42 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
     );
   }
 
+  const prompt = kind === "practice" ? "What do you want to practice?" : "What do you want to learn?";
   return (
-    <ScrollView contentContainerStyle={styles.section} keyboardShouldPersistTaps="handled">
-      <View style={styles.row}><Button disabled={busy} onPress={back}>Sessions</Button></View>
-      <Text accessibilityRole="header" style={styles.title}>{kind === "practice" ? "New practice session" : "New teaching session"}</Text>
-      <Field label={kind === "practice" ? "What do you want to practice?" : "What do you want to learn?"}
-        value={draft} onChangeText={setDraft} multiline editable={!busy} />
-      {canPick && <View style={styles.row}>
-        <Button disabled={busy} onPress={() => { setGraphError(""); setPicking(true); }}>
-          {picks.length ? `Graph material (${picks.length})` : "Pick graph material"}
-        </Button>
-      </View>}
-      {picks.length > 0 && <Text style={styles.muted}>{picks.map(({ name }) => name).join(", ")}</Text>}
-      <Notice>{error}</Notice>
-      {recent?.map((chat) => <Button key={chat.id} onPress={() => open(chat.id, draft.trim())}>{chat.title}</Button>)}
-      <View style={styles.row}>
-        <Button primary disabled={busy || !draft.trim() || (!!recent && recent.length > 0)} onPress={() => void create()}>
-          {busy ? "Starting…" : "Start session"}
-        </Button>
+    <>
+      <View style={{ flexDirection: "row", padding: space.md }}>
+        <Button variant="ghost" label="Sessions" disabled={busy} onPress={back} style={{ paddingHorizontal: space.sm }}>‹ Sessions</Button>
       </View>
-    </ScrollView>
+      <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled"
+        contentContainerStyle={{ flexGrow: 1, justifyContent: "center", alignItems: "center", gap: space.xs, padding: 32 }}>
+        <Text accessibilityRole="header" style={[s.ui, { fontFamily: fonts.uiMedium, fontSize: 14, textAlign: "center" }]}>
+          {kind === "practice" ? "New practice session" : "New session"}
+        </Text>
+        <Text style={[s.muted, { textAlign: "center" }]}>
+          {kind === "practice"
+            ? "Pick nodes from your knowledge graph, describe what you want to practice, or bring your own problem."
+            : "The teacher will open by probing what you already know."}
+        </Text>
+      </ScrollView>
+      <View style={{ paddingHorizontal: space.md, paddingBottom: space.md, gap: space.sm }}>
+        {canPick && <View style={s.row}>
+          <Button disabled={busy} onPress={() => { setGraphError(""); setPicking(true); }} style={{ minHeight: 32, paddingHorizontal: space.md }}>
+            {picks.length ? `Graph material (${picks.length})` : "Pick graph material"}
+          </Button>
+        </View>}
+        {picks.length > 0 && <Text style={s.meta}>{picks.map(({ name }) => name).join(", ")}</Text>}
+        <Notice>{error}</Notice>
+        {recent?.map((chat) => <Button key={chat.id} onPress={() => open(chat.id, draft.trim())}>{chat.title}</Button>)}
+        <View style={[s.dock, { flexDirection: "row", alignItems: "flex-end", gap: 6, padding: 6 }]}>
+          <TextInput accessibilityLabel={prompt} placeholder={prompt} placeholderTextColor={c.muted} selectionColor={c.accent}
+            value={draft} onChangeText={setDraft} multiline editable={!busy}
+            style={{ flex: 1, minHeight: 40, maxHeight: 192, paddingHorizontal: 10, paddingVertical: 10, fontFamily: fonts.prose, fontSize: 16, lineHeight: 20, color: c.text, textAlignVertical: "top" }} />
+          <Button primary label={busy ? "Starting…" : "Start session"} disabled={busy || !draft.trim() || (!!recent && recent.length > 0)} onPress={() => void create()}
+            style={{ width: 40, paddingHorizontal: 0, borderRadius: radius.control }}>
+            <Text style={{ fontFamily: fonts.ui, fontSize: 18, color: c.onPrimary }}>{busy ? "…" : "↵"}</Text>
+          </Button>
+        </View>
+      </View>
+    </>
   );
 }

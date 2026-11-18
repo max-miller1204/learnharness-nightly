@@ -13,7 +13,7 @@ npm start
 
 ## Release a beta build
 
-Run EAS CLI commands from `apps/mobile` in the full Git checkout. The source archive needs the shared `src/` tree and `build/icon.png`. Before the first signed build, the owner needs to link the Expo project, confirm the two store IDs, authorize Apple signing and App Store Connect submission, configure the Android upload key and scoped Play submission access, and assign the testers. Store access and a test tailnet endpoint are separate from this code. [Expo build layout](https://docs.expo.dev/build-reference/build-with-monorepos/) · [EAS Submit](https://docs.expo.dev/deploy/submit-to-app-stores/)
+Run EAS CLI commands from `apps/mobile` in the full Git checkout. The source archive needs the shared `src/` tree, `build/icon.png` and the title font `public/fonts/cmunbx.ttf`. Before the first signed build, the owner needs to link the Expo project, confirm the two store IDs, authorize Apple signing and App Store Connect submission, configure the Android upload key and scoped Play submission access, and assign the testers. Store access and a test tailnet endpoint are separate from this code. [Expo build layout](https://docs.expo.dev/build-reference/build-with-monorepos/) · [EAS Submit](https://docs.expo.dev/deploy/submit-to-app-stores/)
 
 On the exact approved source revision, run:
 

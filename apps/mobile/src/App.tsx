@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, KeyboardAvoidingView, Platform, ScrollView, Text, View } from "react-native";
+import { AppState, KeyboardAvoidingView, ScrollView, Text, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
+import { useFonts } from "expo-font";
+import * as SystemUI from "expo-system-ui";
 import { PROTOCOL_ROUTES, type ServerInfo, type SessionStateResponse } from "../../../src/client-protocol/index.ts";
 import { clearBearer, loadDirectory, readBearer, saveDirectory, type SavedServer, type ServerDirectory } from "./device-storage";
 import { ApiError, type MobileApi } from "./protocol";
@@ -9,7 +11,8 @@ import { nativeApi } from "./native-api";
 import { errorText } from "./use-session";
 import { Pairing } from "./Pairing";
 import { Workspace } from "./Workspace";
-import { Button, Notice, styles } from "./ui";
+import { Button, Label, Notice } from "./ui";
+import { fontFiles, space, useTheme } from "./theme";
 
 interface Connection {
   api: MobileApi;
@@ -18,6 +21,7 @@ interface Connection {
 }
 
 function Mobile() {
+  const { s } = useTheme();
   const [directory, setDirectory] = useState<ServerDirectory>();
   const [connection, setConnection] = useState<Connection>();
   const [pairOrigin, setPairOrigin] = useState<string>();
@@ -151,33 +155,37 @@ function Mobile() {
 
   if (pairing) return (
     <>
-      <Notice>{error}</Notice>
+      {!!error && <View style={{ paddingHorizontal: space.lg, paddingTop: space.lg }}><Notice>{error}</Notice></View>}
       <Pairing initialOrigin={pairOrigin} cancel={showServers} onPaired={onPaired} />
     </>
   );
 
   return (
-    <ScrollView contentContainerStyle={styles.section}>
-      <Text accessibilityRole="header" style={styles.title}>LearnHarness Nightly</Text>
-      <Text style={styles.subtitle}>Saved servers</Text>
+    <ScrollView contentContainerStyle={[s.section, { gap: space.lg }]} keyboardShouldPersistTaps="handled">
+      <View style={{ gap: space.xs }}>
+        <Text accessibilityRole="header" style={s.heading}>LearnHarness Nightly</Text>
+        <Label>Saved servers</Label>
+      </View>
       <Notice>{storageError || error}</Notice>
-      {connecting && <Text accessibilityLiveRegion="polite" style={styles.muted}>Connecting…</Text>}
+      {connecting && <Text accessibilityLiveRegion="polite" style={s.muted}>Connecting…</Text>}
       {!directory && storageError && <Button onPress={() => setLaunch((value) => value + 1)}>Retry</Button>}
-      {failed && <View style={styles.row}>
+      {failed && <View style={s.row}>
         <Button disabled={connecting || saving} onPress={() => void connect(failed)}>Retry connection</Button>
       </View>}
       {directory?.servers.map((server) => (
-        <View key={server.origin} style={styles.card}>
-          <Text style={styles.subtitle}>{server.name}</Text>
-          <Text style={styles.muted}>{server.origin}</Text>
-          <View style={styles.row}>
+        <View key={server.origin} style={s.card}>
+          <View>
+            <Text style={s.prose}>{server.name}</Text>
+            <Text selectable style={s.meta}>{server.origin}</Text>
+          </View>
+          <View style={s.row}>
             <Button primary disabled={connecting || saving} onPress={() => void connect(server)}>Open</Button>
-            {directory.defaultOrigin === server.origin ? <Text style={styles.muted}>Default</Text>
+            {directory.defaultOrigin === server.origin ? <Label>Default</Label>
               : <Button disabled={connecting || saving} onPress={() => void makeDefault(server.origin)}>Make default</Button>}
           </View>
         </View>
       ))}
-      {directory && <View style={styles.row}><Button disabled={connecting || saving} onPress={() => {
+      {directory && <View style={s.row}><Button disabled={connecting || saving} onPress={() => {
         setFailed(undefined);
         setPairOrigin(undefined);
         setError("");
@@ -188,12 +196,16 @@ function Mobile() {
 }
 
 export function App() {
+  const { c, s } = useTheme();
+  const [fontsLoaded, fontError] = useFonts(fontFiles);
+  useEffect(() => { void SystemUI.setBackgroundColorAsync(c.background).catch(() => {}); }, [c.background]);
   return (
     <SafeAreaProvider>
-      <StatusBar style="dark" />
-      <SafeAreaView style={styles.page}>
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-          <Mobile />
+      <StatusBar style={c.mode === "dark" ? "light" : "dark"} />
+      <SafeAreaView style={s.page}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={process.env.EXPO_OS === "ios" ? "padding" : undefined}>
+          {/* A font that fails to load falls back to the system face. */}
+          {(fontsLoaded || fontError) && <Mobile />}
         </KeyboardAvoidingView>
       </SafeAreaView>
     </SafeAreaProvider>

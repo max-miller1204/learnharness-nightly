@@ -60,7 +60,7 @@ const STANDALONE_TESTS = [
 
 const WEB_GATES = ["typecheck", "test", "selfhost", "standalone"];
 const GATES = [...WEB_GATES, "mobile"];
-const MOBILE_SHARED = /^(src\/(client-protocol|core)\/|\.github\/|package(-lock)?\.json$|build\/icon\.png$)/;
+const MOBILE_SHARED = /^(src\/(client-protocol|core)\/|\.github\/|package(-lock)?\.json$|build\/icon\.png$|public\/fonts\/cmunbx\.ttf$)/;
 
 /** Web gate class for one repo-relative path. */
 function classify(file) {
