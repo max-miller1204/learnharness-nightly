@@ -882,6 +882,18 @@ test("parseCliLine ignores non-JSON, system, rate-limit and successful result li
 	assert.equal(parseCliLine('{"type":"assistant","error":null,"message":{"content":[{"type":"text","text":"hello there"}]}}'), null);
 });
 
+test("parseCliLine marks only error results tagged InputValidationError as invalid input", () => {
+	const invalid = "<tool_use_error>InputValidationError: could not be parsed as JSON.</tool_use_error>";
+	const line = JSON.stringify({ type: "user", message: { content: [
+		{ type: "tool_result", tool_use_id: "a", is_error: true, content: invalid },
+		{ type: "tool_result", tool_use_id: "b", is_error: true, content: [{ type: "text", text: invalid }] },
+		{ type: "tool_result", tool_use_id: "c", is_error: false, content: invalid },
+		{ type: "tool_result", tool_use_id: "d", is_error: true, content: "<tool_use_error>Error: No such tool available: read</tool_use_error>" },
+		{ type: "tool_result", tool_use_id: "e", is_error: true, content: "Denied by managed policy" },
+	] } });
+	assert.deepEqual(parseCliLine(line), { type: "toolResults", ids: ["a", "b", "c", "d", "e"], invalidInputIds: ["a", "b"] });
+});
+
 test("trailing toolResults matching a live process continue it: held calls answered, new assistant message streamed, no new spawn", async (t) => {
 	const readA: ToolUse = { id: "toolu_continue_a", name: "read", arguments: { path: "a" } };
 	const { runClaude, calls } = createFakeRun(t, [...toToolUseMessage([readA]), callTool(readA), REPLY]);
@@ -992,6 +1004,101 @@ test("a CLI-rejected malformed call is not exposed for execution", async (t) => 
 	const events = await collectEvents(createClaudeCodeStreamFunction(runClaude)(getModel(), normalizeContext({ messages: [HI], tools: [READ_TOOL] })));
 	assert.equal(events.some((event) => event.type === "toolcall_end"), false);
 	assert.match(getErrorMessage(events) ?? "", /refused.*before MCP admission/);
+	await assertCleanedUp(getOnlyCall(calls));
+});
+
+// The CLI answers a call whose input it cannot use (here: JSON it cannot parse) itself, with an
+// InputValidationError result the model sees; the call never reaches MCP.
+function rejectInvalidInput(toolUse: ToolUse, asBlocks = false): string {
+	const text = `<tool_use_error>InputValidationError: mcp__learnharness__${toolUse.name} was called with input that could not be parsed as JSON.</tool_use_error>`;
+	const content = asBlocks ? [{ type: "text", text }] : text;
+	return JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: toolUse.id, is_error: true, content }] } });
+}
+
+const SUBMIT_TOOL: Tool = { name: "submit", description: "Submit.", parameters: { type: "object", properties: { items: { type: "array", items: { type: "number" } } } } };
+
+test("a call the CLI rejects as unparseable before message_stop waits for the model's retry (recorded CLI order)", async (t) => {
+	// Recorded from claude 2.1.327 against a scripted API: the CLI prints the rejection between
+	// content_block_stop and message_delta, then streams the model's retry.
+	const retry: ToolUse = { id: "toolu_good2", name: "submit", arguments: { items: [1, 2, 3] } };
+	const { runClaude, calls } = createFakeRun(t, [...readFixtureLines("invalid-input.jsonl"), callTool(retry), REPLY]);
+	const stream = createClaudeCodeStreamFunction(runClaude);
+	const context = (messages: Message[]) => normalizeContext({ systemPrompt: "You are a tutor.", messages, tools: [SUBMIT_TOOL] });
+	const events = await collectEvents(stream(getModel(), context([HI]), { sessionId: SESSION_ID }));
+	const done = getLastEvent(events);
+	assert.ok(done.type === "done", `turn ended with ${done.type}`);
+	assert.equal(done.reason, "toolUse");
+	assert.deepEqual(done.message.content, [{ type: "toolCall", ...retry }]);
+	assert.deepEqual(events.filter((event) => event.type === "toolcall_end").map((event) => event.toolCall.id), [retry.id]);
+
+	const replyDone = getLastEvent(await collectEvents(stream(getModel(), context([HI, done.message, toToolResult(retry, "accepted")]), { sessionId: SESSION_ID })));
+	assert.ok(replyDone.type === "done");
+	assert.equal(getText(replyDone.message), "accepted");
+	await assertCleanedUp(getOnlyCall(calls));
+});
+
+test("an unparseable call rejected after message_stop also waits for the retry", async (t) => {
+	const bad: ToolUse = { id: "toolu_invalid_late", name: "read", arguments: {} };
+	const retry: ToolUse = { id: "toolu_invalid_late_retry", name: "read", arguments: { path: "a" } };
+	const { runClaude, calls } = createFakeRun(t, [
+		...toToolUseMessage([bad]), rejectInvalidInput(bad, true), ...toToolUseMessage([retry]), callTool(retry), REPLY,
+	]);
+	const stream = createClaudeCodeStreamFunction(runClaude);
+	const message = await runTurn(stream, [HI]);
+	assert.deepEqual(message.content, [{ type: "toolCall", ...retry }]);
+	const reply = await runTurn(stream, [HI, message, toToolResult(retry, "contents of a")]);
+	assert.equal(getText(reply), "contents of a");
+	await assertCleanedUp(getOnlyCall(calls));
+});
+
+test("an unparseable call beside a valid one admits only the valid one, and its later rejection does not fail the continuation", async (t) => {
+	// The CLI runs harness calls one at a time, so it rejects the second only after the first's result.
+	const good: ToolUse = { id: "toolu_invalid_sibling_good", name: "read", arguments: { path: "a" } };
+	const bad: ToolUse = { id: "toolu_invalid_sibling_bad", name: "read", arguments: { path: "b" } };
+	const { runClaude, calls } = createFakeRun(t, [...toToolUseMessage([good, bad]), callTool(good), rejectInvalidInput(bad), REPLY]);
+	const stream = createClaudeCodeStreamFunction(runClaude);
+	const message = await runTurn(stream, [HI]);
+	assert.deepEqual(message.content, [{ type: "toolCall", ...good }]);
+	const reply = await runTurn(stream, [HI, message, toToolResult(good, "A")]);
+	assert.equal(getText(reply), "A");
+	assert.equal(calls.length, 1);
+	await assertCleanedUp(getOnlyCall(calls));
+});
+
+test("an unparseable call followed by a text answer ends the turn normally", async (t) => {
+	const bad: ToolUse = { id: "toolu_invalid_then_text", name: "read", arguments: {} };
+	const firstMessage = toToolUseMessage([bad]);
+	const { events, calls } = await runScenario(t, [
+		...firstMessage.slice(0, -2), rejectInvalidInput(bad), ...firstMessage.slice(-2), ...readFixtureLines("text.jsonl"), HOLD,
+	]);
+	const done = getLastEvent(events);
+	assert.ok(done.type === "done");
+	assert.equal(done.reason, "stop");
+	assert.equal(getText(done.message), "hello there");
+	assert.equal(events.some((event) => event.type === "toolcall_start" || event.type === "toolcall_end"), false);
+	await assertCleanedUp(getOnlyCall(calls));
+});
+
+test("an MCP request for a call the CLI rejected as unparseable is never admitted", async (t) => {
+	const bad: ToolUse = { id: "toolu_invalid_then_called", name: "read", arguments: { path: "a" } };
+	const firstMessage = toToolUseMessage([bad]);
+	const { events, calls } = await runScenario(t, [
+		...firstMessage.slice(0, -2), rejectInvalidInput(bad), ...firstMessage.slice(-2), callTool(bad), HOLD,
+	]);
+	assert.match(getErrorMessage(events) ?? "", /does not match its streamed tool intent/);
+	assert.equal(events.some((event) => event.type === "toolcall_start" || event.type === "toolcall_end"), false);
+	await assertCleanedUp(getOnlyCall(calls));
+});
+
+test("any other CLI refusal printed before message_stop still fails as refused", async (t) => {
+	const read: ToolUse = { id: "toolu_denied_early", name: "read", arguments: { path: "a" } };
+	const message = toToolUseMessage([read]);
+	const denial = JSON.stringify({ type: "user", message: { content: [
+		{ type: "tool_result", tool_use_id: read.id, is_error: true, content: "Denied by managed policy" },
+	] } });
+	const { events, calls } = await runScenario(t, [...message.slice(0, -2), denial, ...message.slice(-2), HOLD]);
+	assert.match(getErrorMessage(events) ?? "", /refused.*before MCP admission/);
+	assert.equal(events.some((event) => event.type === "toolcall_end"), false);
 	await assertCleanedUp(getOnlyCall(calls));
 });
 

@@ -15,7 +15,8 @@ export type CliEvent =
 	| { type: "messageStop" }
 	| { type: "assistantError"; error: string; text: string }
 	| { type: "resultError"; text: string }
-	| { type: "toolResults"; ids: string[] };
+	/** invalidInputIds: results where the CLI refused a call's input itself (InputValidationError). */
+	| { type: "toolResults"; ids: string[]; invalidInputIds: string[] };
 
 type RawUsage = {
 	input_tokens?: number | null;
@@ -43,11 +44,13 @@ type RawStreamEvent = {
 	usage?: RawUsage;
 };
 
+type RawResultContent = string | { type: string; text?: string }[];
+
 type RawCliLine = {
 	type?: string;
 	event?: RawStreamEvent;
 	error?: string | null;
-	message?: { content?: { type: string; text?: string; tool_use_id?: string }[] };
+	message?: { content?: { type: string; text?: string; tool_use_id?: string; is_error?: boolean; content?: RawResultContent }[] };
 	is_error?: boolean;
 	result?: string;
 	subtype?: string;
@@ -152,6 +155,18 @@ function getResultErrorText(line: RawCliLine): string {
 	return `claude CLI failed: ${line.subtype ?? "unknown error"}`;
 }
 
+// The CLI's tag for a tool call whose input it could not use (for example JSON it could not parse).
+// It answers such a call itself, without running it, and the model sees the error.
+const INVALID_INPUT_ERROR = "<tool_use_error>InputValidationError:";
+
+function isInvalidInputResult(block: { is_error?: boolean; content?: RawResultContent }): boolean {
+	if (block.is_error !== true) return false;
+	const text = typeof block.content === "string"
+		? block.content
+		: Array.isArray(block.content) ? block.content.map((part) => (part.type === "text" ? part.text ?? "" : "")).join("") : "";
+	return text.trimStart().startsWith(INVALID_INPUT_ERROR);
+}
+
 export function parseCliLine(text: string): CliEvent | null {
 	let parsed: unknown;
 	try {
@@ -174,8 +189,10 @@ export function parseCliLine(text: string): CliEvent | null {
 
 		case "user": {
 			const blocks = Array.isArray(line.message?.content) ? line.message.content : [];
-			const ids = blocks.flatMap((block) => block.type === "tool_result" && typeof block.tool_use_id === "string" ? [block.tool_use_id] : []);
-			return ids.length ? { type: "toolResults", ids } : null;
+			const results = blocks.filter((block) => block.type === "tool_result" && typeof block.tool_use_id === "string");
+			const ids = results.map((block) => block.tool_use_id as string);
+			const invalidInputIds = results.flatMap((block) => (isInvalidInputResult(block) ? [block.tool_use_id as string] : []));
+			return ids.length ? { type: "toolResults", ids, invalidInputIds } : null;
 		}
 
 		case "result":
