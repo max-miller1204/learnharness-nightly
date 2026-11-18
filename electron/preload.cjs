@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld("lh", {
 		status: () => ipcRenderer.invoke("lh:chatgpt:control", { op: "status" }),
 		login: (id) => ipcRenderer.invoke("lh:chatgpt:control", { op: "login", id }),
 		cancel: () => ipcRenderer.invoke("lh:chatgpt:control", { op: "cancel" }),
+		complete: (url) => ipcRenderer.invoke("lh:chatgpt:control", { op: "complete", url }),
 		select: (id) => ipcRenderer.invoke("lh:chatgpt:control", { op: "select", id }),
 		disconnect: (id) => ipcRenderer.invoke("lh:chatgpt:control", { op: "disconnect", id }),
 		logout: (id) => ipcRenderer.invoke("lh:chatgpt:control", { op: "logout", id }),

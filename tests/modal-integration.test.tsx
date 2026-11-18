@@ -163,7 +163,7 @@ for (const provider of ["chatgpt", "native"] as const) it(`${provider} return-to
 	window.lh = { expandWindow() {}, chatgpt: {
 		status: async () => status, onChange: cb => { listeners.add(cb); return () => { listeners.delete(cb); }; },
 		cancel: async () => { cancelCalls++; await cancellation.promise; status = { ...status, pending: false }; return status; },
-		login: async () => status, select: async () => status, disconnect: async () => status, consent: async () => status, logout: async () => status,
+		login: async () => status, complete: async () => status, select: async () => status, disconnect: async () => status, consent: async () => status, logout: async () => status,
 	}, subscriptions: {
 		status: async () => [native], onChange: cb => { listeners.add(cb); return () => { listeners.delete(cb); }; },
 		cancel: async () => { cancelCalls++; await cancellation.promise; native.pending = false; },

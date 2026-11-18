@@ -18,6 +18,8 @@ export interface ChatGPTControlBridge {
 	status(): Promise<ChatGPTStatus>;
 	login(id?: string): Promise<ChatGPTStatus>;
 	cancel(): Promise<ChatGPTStatus>;
+	/** Paste-back: the sign-in tab's final 127.0.0.1 address, for a browser on another device. */
+	complete(callbackUrl: string): Promise<ChatGPTStatus>;
 	select(id: string): Promise<ChatGPTStatus>;
 	/** Explicitly forget every local registration/credential for this verified identity. */
 	disconnect(id: string): Promise<ChatGPTStatus>;

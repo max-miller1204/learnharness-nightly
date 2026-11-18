@@ -695,3 +695,115 @@ test("account catalog passes the account's window, input and effort metadata thr
 		]);
 	} finally { f.service.close(); }
 });
+
+// Paste-back (docs/specs/chatgpt-remote-signin.md): a browser on another device
+// cannot reach the server's 127.0.0.1 listener, so its final address is pasted.
+function pasteFor(f: ReturnType<typeof fixture>, params: Record<string, string> = {}) {
+	const callback = new URL(f.url.searchParams.get("redirect_uri")!);
+	callback.search = new URLSearchParams({ state: f.url.searchParams.get("state")!, code: "scratch-code", client_id: "oaiapp_scratch", ...params }).toString();
+	return callback;
+}
+
+test("pasted sign-in address completes with the original redirect URI and server-held verifier, then closes the listener", async () => {
+	const f = fixture();
+	try {
+		await f.service.login();
+		const params = f.url.searchParams;
+		const status = await f.service.completeLogin(`  ${pasteFor(f).toString()}\n`);
+		assert.equal(status.pending, false);
+		assert.equal(status.error, null);
+		assert(status.accounts.some((a: { id: string; connected: boolean }) => a.id === status.activeId && a.connected));
+		const form = f.requests.find((r) => r.url === tokenUrl)!.form!;
+		assert.equal(form.get("redirect_uri"), params.get("redirect_uri"));
+		assert.equal(form.get("client_id"), "oaiapp_scratch");
+		assert.equal(form.get("code"), "scratch-code");
+		assert.equal(createHash("sha256").update(form.get("code_verifier")!).digest("base64url"), params.get("code_challenge"));
+		const visible = JSON.stringify(await f.service.status());
+		for (const secret of ["scratch-code", params.get("state")!, form.get("code_verifier")!]) assert(!visible.includes(secret));
+		await assert.rejects(fetch(pasteFor(f)), "listener is closed after a paste consumed the attempt");
+		await assert.rejects(f.service.completeLogin(pasteFor(f).toString()), /inactive/);
+		assert.equal(f.requests.filter((r) => r.url === tokenUrl).length, 1);
+	} finally { f.service.close(); }
+});
+
+test("wrong pasted addresses are refused without consuming; the real redirect still completes", async () => {
+	const f = fixture();
+	try {
+		await f.service.login();
+		const good = pasteFor(f);
+		const port = Number(good.port);
+		const swap = (edit: (url: URL) => void) => { const url = new URL(good); edit(url); return url.toString(); };
+		const bad = [
+			"", "not a url", "x".repeat(9000), `${good.toString()}&pad=${"x".repeat(8200)}`,
+			pasteFor(f, { state: "wrong" }).toString(),
+			swap((url) => { url.port = String(port === 65535 ? port - 1 : port + 1); }),
+			swap((url) => { url.hostname = "localhost"; }),
+			swap((url) => { url.hostname = "192.168.1.10"; }),
+			good.toString().replace("http:", "https:"),
+			swap((url) => { url.pathname = "/auth/callback/extra"; }),
+			swap((url) => { url.hash = "x"; }),
+			swap((url) => { url.username = "u"; url.password = "p"; }),
+			`${good.toString()}&code=second`,
+			`${good.toString()}&state=${f.url.searchParams.get("state")}`,
+			`${good.toString()}&client_id=oaiapp_other`,
+			pasteFor(f, { error: "access_denied" }).toString(),
+			swap((url) => { url.searchParams.delete("code"); }),
+			swap((url) => { url.searchParams.set("code", ""); }),
+			swap((url) => { url.searchParams.set("client_id", ""); }),
+		];
+		for (const value of bad) await assert.rejects(f.service.completeLogin(value), /callback/, value.slice(0, 120));
+		assert.equal(f.requests.length, 0, "a refused paste never exchanges a code");
+		assert.equal((await f.service.status()).pending, true);
+		assert.equal((await f.callback()).status, 200);
+		await f.changed.promise;
+		assert.equal((await f.service.status()).error, null);
+		assert.equal(f.saved.registrations.length, 1);
+	} finally { f.service.close(); }
+});
+
+test("scheme-less paste is accepted; a listener-completed attempt refuses a later paste", async () => {
+	const pasted = fixture();
+	try {
+		await pasted.service.login();
+		const status = await pasted.service.completeLogin(pasteFor(pasted).toString().replace(/^http:\/\//, ""));
+		assert.equal(status.error, null);
+		assert.equal(pasted.saved.registrations.length, 1);
+	} finally { pasted.service.close(); }
+	const redirected = fixture();
+	try {
+		await redirected.service.login();
+		const late = pasteFor(redirected).toString();
+		await redirected.callback(); await redirected.changed.promise;
+		await assert.rejects(redirected.service.completeLogin(late), /inactive/);
+		assert.equal(redirected.requests.filter((r) => r.url === tokenUrl).length, 1);
+	} finally { redirected.service.close(); }
+});
+
+test("a pasted access_denied ends sign-in as cancelled; paste without a pending sign-in is refused", async () => {
+	const f = fixture();
+	try {
+		await assert.rejects(f.service.completeLogin("http://127.0.0.1:1/auth/callback?state=x&code=y"), /inactive/);
+		await f.service.login();
+		const denied = pasteFor(f); denied.searchParams.delete("code"); denied.searchParams.delete("client_id"); denied.searchParams.set("error", "access_denied");
+		const status = await f.service.completeLogin(denied.toString());
+		assert.equal(status.pending, false);
+		assert.equal(status.error, "ChatGPT sign-in cancelled.");
+		assert.equal(f.requests.length, 0);
+		f.service.cancelLogin();
+		await f.service.login(); f.service.cancelLogin();
+		await assert.rejects(f.service.completeLogin(pasteFor(f).toString()), /inactive/);
+	} finally { f.service.close(); }
+});
+
+test("IPC complete op returns a public error envelope for a wrong address and status for a right one", async () => {
+	const { chatGPTControl } = require("../electron/chatgpt-ipc.cjs");
+	const f = fixture();
+	try {
+		await chatGPTControl({ op: "login" }, f.service);
+		assert.deepEqual(await chatGPTControl({ op: "complete", url: pasteFor(f, { state: "wrong" }).toString() }, f.service), { error: "This address does not belong to the current ChatGPT sign-in. Copy the full address from the sign-in tab and try again." });
+		assert.deepEqual(await chatGPTControl({ op: "complete", url: 42 }, f.service), { error: "Unsupported ChatGPT control." });
+		const status = await chatGPTControl({ op: "complete", url: pasteFor(f).toString() }, f.service);
+		assert.equal(status.error, null);
+		assert.equal(status.pending, false);
+	} finally { f.service.close(); }
+});
