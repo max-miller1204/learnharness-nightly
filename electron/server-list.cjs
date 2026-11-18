@@ -7,7 +7,7 @@ const { openServerList } = require("./server-list-store.cjs");
 const { ServerProblem, parseOrigin, withScheme, normalizeCode, parsePairLink, checkDescriptor, checkSession, pairServer } = require("./remote-server.cjs");
 const { remoteChatGPTSignIn } = require("./remote-chatgpt.cjs");
 const { createRemoteWindow } = require("./remote-window.cjs");
-const { BACKGROUND, hostLabel, coverWindow } = require("./skeleton.cjs");
+const { BACKGROUND, hostLabel, paintFirst, coverWindow } = require("./skeleton.cjs");
 
 const SHELL = path.join(__dirname, "server-list.html");
 const CHANNEL = "lh:server-list";
@@ -80,9 +80,6 @@ async function createServerList({
 		controls = null;
 		if (panel && !panel.isDestroyed()) panel.destroy();
 	}
-	function cover(win, status, frame) {
-		return coverWindow(win, { WebContentsView, session, mode: themeMode(), status, frame });
-	}
 	function destroyContent() {
 		login?.abort();
 		login = null;
@@ -141,6 +138,22 @@ async function createServerList({
 		const options = { signal: operation.signal, retry: true };
 		// Closing the ghost dashboard cancels the connect quietly.
 		const hold = (win) => win.once("closed", () => { if (connecting === operation) operation.abort(); });
+		// The window shows only after its own page has painted the skeleton.
+		// The overlay then keeps covering it while the real page loads below.
+		async function ghostWindow(win, status, frame) {
+			hold(win);
+			await paintFirst(win, { mode: themeMode(), status, frame });
+			operation.signal.throwIfAborted();
+			win.show();
+			const skeleton = coverWindow(win, { WebContentsView, session, mode: themeMode(), status, frame });
+			skeleton.focus();
+			return skeleton;
+		}
+		async function beforeLoad(skeleton) {
+			const painted = await skeleton.painted;
+			operation.signal.throwIfAborted();
+			if (!painted) throw new Error("The ghost dashboard didn’t paint.");
+		}
 		try {
 			const previous = active?.server;
 			destroyContent();
@@ -148,16 +161,13 @@ async function createServerList({
 			if (previous === "local" && server !== "local") await stopLocal();
 			if (server === "local") {
 				const local = createLocalWindow();
-				const skeleton = cover(local.win, "Starting LearnHarness…", platform === "darwin" ? "inset" : "hidden");
 				registerContent(local.win);
-				hold(local.win);
-				local.win.show();
-				skeleton.focus();
+				const skeleton = await ghostWindow(local.win, "Starting LearnHarness…", platform === "darwin" ? "inset" : "hidden");
 				closeList();
 				const url = await startLocal(operation.signal);
 				operation.signal.throwIfAborted();
 				if (!store.damaged && !store.defaultServer) await store.saveDefault(server);
-				operation.signal.throwIfAborted();
+				await beforeLoad(skeleton);
 				// As before, the bundled app's own load errors stay in its window.
 				await local.load(url).catch(() => {});
 				operation.signal.throwIfAborted();
@@ -187,10 +197,7 @@ async function createServerList({
 				};
 				if (quiet) {
 					win = open();
-					skeleton = cover(win, `Connecting to ${hostLabel(server)}…`);
-					hold(win);
-					win.show();
-					skeleton.focus();
+					skeleton = await ghostWindow(win, `Connecting to ${hostLabel(server)}…`);
 				}
 				await checkDescriptor(server, options);
 				if (code) {
@@ -200,6 +207,7 @@ async function createServerList({
 				}
 				await checkSession(server, token, options);
 				win ??= open();
+				if (skeleton) await beforeLoad(skeleton);
 				try {
 					await win.loadURL(server).catch((error) => {
 						if (error.code !== "ERR_HTTP_RESPONSE_CODE_FAILURE") throw error;

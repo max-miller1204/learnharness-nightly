@@ -2,10 +2,40 @@
 
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
+const { pathToFileURL } = require("node:url");
 
 const PAGE = path.join(__dirname, "skeleton.html");
 // The Default theme's page and the app's original light default.
 const BACKGROUND = { dark: "#141414", light: "#f5f5f3" };
+// Resolves once the page has produced a frame.
+const PAINTED = "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true))))";
+
+function pageQuery({ mode, status, frame }) {
+	// frame: "inset" (macOS traffic lights) or "hidden" for the frameless
+	// local window, whose top band drags it. Remote windows keep a frame.
+	return { mode: mode === "light" ? "light" : "dark", status, ...(frame && { frame }) };
+}
+
+function isSkeletonPage(value) {
+	try {
+		const url = new URL(value);
+		return url.protocol === "file:" && url.pathname === pathToFileURL(PAGE).pathname && !url.hash;
+	} catch { return false; }
+}
+
+/** A child view paints only once its window shows, so the hidden window's
+ *  own page paints the skeleton first. Resolves after that first paint,
+ *  so the window's first visible frame is already the skeleton. */
+async function paintFirst(win, options) {
+	let timer;
+	const painted = new Promise((resolve) => {
+		win.once("ready-to-show", resolve);
+		timer = setTimeout(resolve, 1000);
+	});
+	await win.loadFile(PAGE, { query: pageQuery(options) }).catch(() => {});
+	await painted;
+	clearTimeout(timer);
+}
 
 /** The first label of a server name, or a whole IP literal. */
 function hostLabel(origin) {
@@ -29,7 +59,8 @@ function coverWindow(win, { WebContentsView, session, mode, status, frame }) {
 	contents.on("will-navigate", (event) => event.preventDefault());
 	contents.setWindowOpenHandler(() => ({ action: "deny" }));
 	contents.on("will-attach-webview", (event) => event.preventDefault());
-	view.setBackgroundColor(BACKGROUND[mode] ?? BACKGROUND.dark);
+	// Clear until it paints, so the window's own skeleton shows through.
+	view.setBackgroundColor("#00000000");
 	// The content view's bounds follow every content-area change, including
 	// the Alt menu bar on Windows and Linux, which fires no window resize.
 	const fit = () => {
@@ -46,11 +77,16 @@ function coverWindow(win, { WebContentsView, session, mode, status, frame }) {
 	const focus = () => { if (!contents.isDestroyed()) contents.focus(); };
 	win.webContents.on("before-input-event", block);
 	win.on("focus", focus);
-	// frame: "inset" (macOS traffic lights) or "hidden" for the frameless
-	// local window, whose top band drags it. Remote windows keep a frame.
-	const query = { mode: mode === "light" ? "light" : "dark", status, ...(frame && { frame }) };
-	void contents.loadFile(PAGE, { query }).catch(() => {});
 	let removed = false;
+	// The real page may load underneath only after this resolves true: from
+	// then on the view is opaque, even if its frame is later dropped.
+	const painted = contents.loadFile(PAGE, { query: pageQuery({ mode, status, frame }) })
+		.then(() => contents.executeJavaScript(PAINTED))
+		.then(() => {
+			if (removed || contents.isDestroyed()) return false;
+			view.setBackgroundColor(BACKGROUND[mode] ?? BACKGROUND.dark);
+			return true;
+		}, () => false);
 	function remove() {
 		if (removed) return;
 		removed = true;
@@ -63,7 +99,7 @@ function coverWindow(win, { WebContentsView, session, mode, status, frame }) {
 		if (!contents.isDestroyed()) contents.close();
 	}
 	win.once("closed", remove);
-	return { reveal: remove, focus };
+	return { reveal: remove, focus, painted };
 }
 
-module.exports = { BACKGROUND, hostLabel, coverWindow };
+module.exports = { PAGE, BACKGROUND, hostLabel, isSkeletonPage, paintFirst, coverWindow };

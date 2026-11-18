@@ -96,6 +96,7 @@ class TestView {
 	url = "";
 	closed = false;
 	focused = false;
+	painted = false;
 	background = "";
 	bounds: { width: number; height: number } | null = null;
 	webContents = Object.assign(new EventEmitter(), {
@@ -103,6 +104,7 @@ class TestView {
 		isDestroyed: () => this.closed,
 		close: () => { this.closed = true; },
 		focus: () => { this.focused = true; },
+		executeJavaScript: async () => { this.painted = true; return true; },
 		loadFile: async (file: string, { query = {} }: { query?: Record<string, string> } = {}) => {
 			this.url = `${pathToFileURL(file).href}?${new URLSearchParams(query)}`;
 		},
@@ -133,6 +135,10 @@ class TestWindow extends EventEmitter {
 	url = "";
 	destroyed = false;
 	shown = false;
+	painted = false;
+	/** What the first show() and the first server load found. */
+	atShow: { painted: boolean; url: string } | null = null;
+	atLoad: boolean[] | null = null;
 	snapshot: { active: string | null; defaultServer: string | null; problem: { kind: string } | null } | null = null;
 	windowOpen!: (details: { url: string; postBody?: object }) => unknown;
 	webContents = Object.assign(new EventEmitter(), {
@@ -151,11 +157,20 @@ class TestWindow extends EventEmitter {
 	isDestroyed() { return this.destroyed; }
 	isMinimized() { return false; }
 	focus() {}
-	show() { this.shown = true; }
+	show() {
+		this.atShow ??= { painted: this.painted, url: this.url };
+		this.shown = true;
+	}
 	destroy() { this.destroyed = true; this.emit("closed"); }
-	async loadURL(url: string) { this.url = url; this.webContents.mainFrame.url = url; }
-	loadFile(file: string, { query }: { query?: Record<string, string> } = {}) {
-		this.loadURL(pathToFileURL(file).href + (query ? `?${new URLSearchParams(query)}` : ""));
+	async loadURL(url: string) {
+		if (!url.startsWith("file:")) this.atLoad ??= this.contentView.children.map((view) => view.painted);
+		this.url = url;
+		this.webContents.mainFrame.url = url;
+	}
+	async loadFile(file: string, { query }: { query?: Record<string, string> } = {}) {
+		await this.loadURL(pathToFileURL(file).href + (query ? `?${new URLSearchParams(query)}` : ""));
+		this.painted = true;
+		this.emit("ready-to-show");
 	}
 }
 
@@ -581,7 +596,7 @@ test("a launch with a default skips the list and keeps the server page under the
 			case PROTOCOL_ROUTES.token: return Response.json({ access_token: "alpha-secret", token_type: "Bearer" });
 			case PROTOCOL_ROUTES.session: {
 				const win = TestWindow.all.at(-1)!;
-				checks.push({ covered: win.contentView.children.length, shown: win.shown, url: win.url });
+				checks.push({ covered: win.contentView.children.length, shown: win.shown, url: win.url.includes("/skeleton.html?") ? "skeleton" : win.url });
 				return Response.json({ authenticated: !(revokeLoaded && win.url === alpha) });
 			}
 			default: throw new Error("Unexpected request " + url.pathname);
@@ -625,9 +640,13 @@ test("a launch with a default skips the list and keeps the server page under the
 	assert.equal(remote.url, alpha);
 	assert.equal(remote.options.backgroundColor, "#141414");
 	assert.deepEqual(checks, [
-		{ covered: 1, shown: true, url: "" },
+		{ covered: 1, shown: true, url: "skeleton" },
 		{ covered: 1, shown: true, url: alpha },
 	], "the skeleton shows at once and covers the loaded page through the second check");
+	assert.equal(remote.atShow?.painted, true, "the window shows only after its own page painted the skeleton");
+	assert(remote.atShow?.url.includes("/skeleton.html?"));
+	assert.equal(new URL(remote.atShow!.url).searchParams.get("status"), "Connecting to one…");
+	assert.deepEqual(remote.atLoad, [true], "the server page loads only under a painted overlay");
 	assert.equal(remote.contentView.children.length, 0, "the verified page is revealed");
 	const ghost = TestView.all.at(-1)!;
 	const page = new URL(ghost.url);
@@ -709,9 +728,15 @@ test("This computer opens the ghost dashboard before the bundled server starts, 
 	await controller.launch();
 	const list = TestWindow.all.at(-1)!;
 	assert(isList(list));
+	const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 	const pending = handler({ sender: list.webContents, senderFrame: list.webContents.mainFrame }, "connect", "local");
 	const local = TestWindow.all.at(-1)!;
+	assert.equal(local.shown, false, "the window waits for its first paint");
+	assert.equal(list.destroyed, false, "the list stays until the window shows");
+	await settle();
 	assert.equal(local.shown, true, "the main window opens before the list closes");
+	assert.deepEqual(local.atShow?.painted, true);
+	assert.equal(new URL(local.atShow!.url).searchParams.get("status"), "Starting LearnHarness…");
 	assert.equal(list.destroyed, true);
 	assert.equal(local.contentView.children.length, 1);
 	const ghost = new URL(TestView.all.at(-1)!.url);
@@ -722,11 +747,13 @@ test("This computer opens the ghost dashboard before the bundled server starts, 
 	release("http://localhost:3000");
 	await pending;
 	assert.equal(local.url, "http://localhost:3000");
+	assert.deepEqual(local.atLoad, [true], "the app loads only under a painted overlay");
 	assert.equal(local.contentView.children.length, 0, "the app is revealed after it loads");
 
 	local.destroy();
 	let before = TestWindow.all.length;
 	const cancelled = controller.reopen();
+	await settle();
 	const closing = TestWindow.all.at(-1)!;
 	assert.equal(closing.contentView.children.length, 1);
 	closing.destroy();
@@ -736,6 +763,7 @@ test("This computer opens the ghost dashboard before the bundled server starts, 
 
 	before = TestWindow.all.length;
 	const failing = controller.reopen();
+	await settle();
 	refuse(new Error("fixture server crashed"));
 	await failing;
 	const { first: broken, second: recovery } = TestWindow.since(before);
@@ -858,4 +886,30 @@ test("a second launch or Dock click during a quiet connect opens nothing new", a
 	const { created, first: remote } = TestWindow.since(before);
 	assert.equal(created.length, 1, "one ghost window, and no list beside it");
 	assert.equal(remote.url, alpha);
+});
+
+test("the ghost dashboard's own page gets the first-load bearer, and only that local page is let in", () => {
+	const skeleton = pathToFileURL(path.join(import.meta.dirname, "../electron/skeleton.html")).href + "?mode=dark&status=x";
+	const frame = { url: skeleton };
+	const contents = { id: 7, mainFrame: frame, isDestroyed: () => false };
+	const win = { isDestroyed: () => false, webContents: contents };
+	const navigation = { webContentsId: 7, resourceType: "mainFrame", url: `${alpha}/`, requestHeaders: {} };
+	assert.equal(wire.remoteHeaders(navigation, alpha, "fixture", win).authorization, "Bearer fixture");
+	frame.url = pathToFileURL(path.join(import.meta.dirname, "../electron/server-list.html")).href;
+	assert.equal(wire.remoteHeaders(navigation, alpha, "fixture", win).authorization, undefined, "any other local page still blocks it");
+	const isolated = new TestSession();
+	const remote = createRemoteWindow({
+		BrowserWindow: TestWindow, session: { fromPartition: () => isolated }, origin: alpha, token: "fixture",
+		openExternal: async () => {}, onProblem() {},
+	}) as TestWindow;
+	const request = (url: string) => {
+		let result: object = {};
+		isolated.beforeSend!({ url, webContentsId: remote.webContents.id, resourceType: "mainFrame", method: "GET", requestHeaders: {} }, (value) => { result = value; });
+		return result;
+	};
+	assert.deepEqual(request(skeleton), {}, "the skeleton paints in the window's own page");
+	assert.deepEqual(request(frame.url), { cancel: true }, "no other local page");
+	assert.notDeepEqual(request(`${alpha}/`), { cancel: true });
+	assert.deepEqual(request(skeleton), { cancel: true }, "never again once the server page loads");
+	remote.destroy();
 });

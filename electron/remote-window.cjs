@@ -4,6 +4,7 @@ const { randomUUID } = require("node:crypto");
 const { atOrigin, isRemotePage, allowsRemoteRedirect, redirectLocation, rewritesToPairPage, remoteHeaders } = require("./remote-server.cjs");
 
 const { isBrowserAction, openWebSubscriptionBrowser } = require("./web-subscription-browser.cjs");
+const { isSkeletonPage } = require("./skeleton.cjs");
 const EXTERNAL_SCHEMES = new Set(["http:", "https:", "mailto:"]);
 
 function createRemoteWindow({ BrowserWindow, session, origin, token, signal, backgroundColor, openExternal, onProblem }) {
@@ -19,6 +20,9 @@ function createRemoteWindow({ BrowserWindow, session, origin, token, signal, bac
 	const filter = { urls: ["<all_urls>"] };
 	const belongs = (details) => details.webContentsId === id && !win.isDestroyed();
 	let popup;
+	// The ghost dashboard paints in this window's own page before anything
+	// from the server loads. Only that one local page, and only until then.
+	let remoteLoaded = false;
 
 	async function openInBrowser(target) {
 		const url = new URL(target);
@@ -58,7 +62,9 @@ function createRemoteWindow({ BrowserWindow, session, origin, token, signal, bac
 			if (details.resourceType === "mainFrame" && details.method === "GET") finishPopup(details.url);
 			return;
 		}
+		if (details.resourceType === "mainFrame" && !remoteLoaded && belongs(details) && isSkeletonPage(details.url)) return respond({});
 		if (details.resourceType === "mainFrame" && (!belongs(details) || !isRemotePage(details.url, origin))) return respond({ cancel: true });
+		if (details.resourceType === "mainFrame") remoteLoaded = true;
 		respond({ requestHeaders: remoteHeaders(details, origin, token, win) });
 	});
 	requests.onHeadersReceived(filter, (details, respond) => {
