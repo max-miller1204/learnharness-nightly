@@ -53,13 +53,11 @@ if [ -f "$BUILD/selfhost/src/auth-store.ts" ]; then
 fi
 # env -i: no ambient provider keys, tokens or LH_* settings reach the app.
 # PROVE_MODEL=claude-code keeps your real HOME so the claude CLI finds its login.
-# LH_GROK_SEARCH_PROBE=1 passes through for the one Grok search probe.
 APP_HOME=$SD/home
 [ "$PROVE_MODEL" = claude-code ] && APP_HOME=$HOME
 setsid nohup env -C "$(dirname "$SERVER")" -i PATH="$PATH:$HOME/.local/bin" HOME="$APP_HOME" LANG=C.UTF-8 \
 	NODE_ENV=production HOSTNAME=127.0.0.1 PORT="$APP_PORT" NEXT_TELEMETRY_DISABLED=1 \
 	LH_DATA_DIR="$SD/data" LH_AUTH_FILE="$SD/auth.json" LH_IGNORE_ENV_KEYS=1 CHROME_PATH="$PROVE_CHROME" \
-	${LH_GROK_SEARCH_PROBE:+LH_GROK_SEARCH_PROBE="$LH_GROK_SEARCH_PROBE"} \
 	node "$SERVER" </dev/null >"$SD/app.log" 2>&1 &
 echo $! >"$SD/app.pid"
 

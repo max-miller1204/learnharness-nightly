@@ -55,12 +55,6 @@ const CHATGPT_SEARCH_MODELS = [
 // other Grok model is tried when the connection does not offer it.
 const GROK_SEARCH_MODEL = "grok-4.7";
 
-/** The owner-approved single live probe: Grok is selectable only when the
- * isolated proof instance starts with this switch. */
-export function grokSearchProbe(): boolean {
-	return process.env.LH_GROK_SEARCH_PROBE === "1";
-}
-
 /** Test seams: production reads the installed CLI. */
 export const claudeSearchSeams: {
 	installation: () => Promise<ClaudeCodeStatus>;
@@ -119,10 +113,9 @@ const grokSelection = (connectionId: string) => createHash("sha256").update(conn
 
 function grokOption(): SubscriptionSearchOption {
 	const id = "xai-subscription";
-	if (!grokSearchProbe()) return { id, available: false, reason: "Subscription search is unavailable on the LearnHarness Grok OAuth connection." };
 	const connectionId = nativeSubscriptionStatus("xai")?.connectionId;
-	if (!connectionId || !nativeSubscriptionConnected("xai")) return { id, available: false, reason: "Connect Grok in Providers to run the search probe." };
-	const reason = "Search probe: search can use your Grok subscription allowance or credits, or be billed by xAI.";
+	if (!connectionId || !nativeSubscriptionConnected("xai")) return { id, available: false, reason: "Connect Grok in Providers to use it for search." };
+	const reason = "Search can use your Grok subscription allowance or credits, or be billed by xAI.";
 	return {
 		id, available: true, account: { label: "Grok account", selection: grokSelection(connectionId) },
 		reason: nativeSubscriptionBackgroundAllowed("xai") ? reason : `${reason} ${GROK_BACKGROUND}`,
@@ -143,7 +136,7 @@ export async function refreshSubscriptionSearch(): Promise<void> {
 	await Promise.all([
 		refreshChatGPTStatus().catch(() => { /* runtime connection changes are reflected by the bridge */ }),
 		refreshClaude().catch(() => { claude = undefined; }),
-		grokSearchProbe() ? refreshSubscriptionModels() : undefined,
+		refreshSubscriptionModels(),
 	]);
 }
 
@@ -184,7 +177,7 @@ export function subscriptionSearchProvider(settings: SearchSettings & { engine: 
 					}
 				}
 				case "xai-subscription": {
-					if (grokSearchProbe()) await refreshSubscriptionModels();
+					await refreshSubscriptionModels();
 					requireSelection(signal);
 					const model = nativeSubscriptionModels().find((entry) =>
 						entry.provider === "xai-subscription" && entry.id === GROK_SEARCH_MODEL && entry.input.includes("text"));
