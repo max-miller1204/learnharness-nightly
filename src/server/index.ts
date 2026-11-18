@@ -13,6 +13,9 @@ export * from "./source-deletion.ts";
 export { NotesImportError } from "../agent/subagents/extraction.ts";
 export { convertPdf } from "../agent/subagents/pdf-ops.ts";
 export { joinPages } from "../agent/subagents/pdf-markdown.ts";
+// Extract files (item 26): the document converter and image sniffing, for the import route.
+export { convertDocument, conversionFailureMessage, detectDocumentFormat, DocumentConversionError, isOleCompound, looksBinary } from "../agent/documents/index.ts";
+export { detectSupportedImageMimeType } from "../agent/image-processing/index.ts";
 export * from "./commit-positions.ts";
 export * from "./jobs.ts";
 export { prepareSubmissionImages, prepareSubmissionImageChannels } from "./submission-images.ts";

@@ -12,6 +12,10 @@ import {
 import { extractionStatuses } from "../agent/subagents/extraction.ts";
 import { stores } from "./stores.ts";
 import { callCost } from "./pricing.ts";
+import type { ModelRole } from "../../config.ts";
+import { FACTORY_SETTINGS } from "../core/settings.ts";
+import { resolveRoleSpec } from "../core/settings-resolution.ts";
+import { estimateImport, type ImportEstimate, type ImportEstimateInput } from "../../lib/notes-import-estimate.ts";
 
 /**
  * Server-side graph entry for the home view (GET /api/graph). A PURE READ:
@@ -121,3 +125,19 @@ export function deleteGraphNode(nodeId: string): NodeDeleteOutcome {
 	return { ok: true, stats, graphRevision: graphRevision() };
 }
 
+
+/** The folder-pick estimate (POST /api/graph/import/estimate): the browser's measures priced at the
+ *  models that would run now (docs/specs/extract-more-types.md, "Estimate endpoint"). */
+export function importEstimate(input: ImportEstimateInput): ImportEstimate {
+	const settings = stores.settingsStore.readSettings();
+	const modelId = (role: ModelRole) => {
+		const spec = resolveRoleSpec(role, settings);
+		return spec ? `${spec.provider}:${spec.id}` : undefined;
+	};
+	return estimateImport(
+		input,
+		{ extractor: modelId("extractor"), auditor: modelId("auditor"), imageReader: modelId("imageReader") },
+		callCost,
+		FACTORY_SETTINGS.graph.extractionChunkTokens,
+	);
+}
