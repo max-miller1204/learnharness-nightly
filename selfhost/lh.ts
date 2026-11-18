@@ -7,7 +7,7 @@
  *   lh restore <backup> | versions | logs [server|service|update] [-f]
  *   lh down | uninstall [--keep-data] | help
  *
- * Internal: __service (the systemd entry point), __install, __selftest,
+ * Internal: __service (the systemd or launchd entry point), __install, __selftest,
  * __selftest-launcher.
  */
 import { spawn, spawnSync } from "node:child_process";
@@ -22,7 +22,7 @@ import { freeBytes, listBackups, pruneBackups, restore, snapshot, spaceForSnapsh
 import { buildChildEnv, detectChrome, readConfig, readServiceEnv, writeConfig, type LhConfig } from "./src/config.ts";
 import { appendLog, boundLog, LOG_CHECK_INTERVAL_MS } from "./src/logs.ts";
 import { clearMarker, lockIsHeld, markerExists, tryAcquireLock, writeMarker, type Lock } from "./src/locks.ts";
-import { layout, lhHome, serviceName, versionPaths } from "./src/paths.ts";
+import { layout, lhHome, versionPaths } from "./src/paths.ts";
 import { LAUNCHER_PROTOCOL } from "./src/protocol.ts";
 import {
 	compareVersions,
@@ -39,7 +39,7 @@ import {
 	type ServiceState,
 } from "./src/release.ts";
 import { fetchHealth, readVersionProtocol, selftestLauncher, spawnServerChild } from "./src/server.ts";
-import { enableLinger, hasSystemd, lingerEnabled, repointService, shimPath, systemctl, unitPath, writeShim, writeUnit } from "./src/service.ts";
+import { enableLinger, lingerEnabled, repointService, serviceManager, shimPath, writeShim } from "./src/service.ts";
 import { Supervisor, type UpdateRequestMarker } from "./src/supervisor.ts";
 import { serveOff, serveOn, tailscaleAvailable, tailscaleSelf } from "./src/tailscale.ts";
 import { pruneVersions } from "./src/versions.ts";
@@ -188,6 +188,14 @@ const isWsl = () => {
 
 /** Open a URL in this machine's browser when there is a desktop session. */
 function openInBrowser(url: string): boolean {
+	if (process.platform === "darwin") {
+		// Over SSH this would open on the Mac's own screen and spend the one-time code there.
+		if (process.env.SSH_CONNECTION || process.env.SSH_TTY) return false;
+		const child = spawn("open", [url], { detached: true, stdio: "ignore" });
+		child.on("error", () => { /* best effort */ });
+		child.unref();
+		return true;
+	}
 	if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY && !isWsl()) return false;
 	const opened = spawnSync("sh", ["-c", "command -v xdg-open"], { encoding: "utf8" });
 	if (opened.status !== 0) return false;
@@ -220,7 +228,7 @@ function backupFrom(home: string, version: string): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// __service: the systemd entry point
+// __service: the systemd or launchd entry point
 
 async function acquireHomeLock(lockPath: string): Promise<Lock> {
 	const deadline = Date.now() + 2 * 60_000;
@@ -391,7 +399,8 @@ async function installCommand(flags: Flags): Promise<void> {
 async function upCommand(flags: Flags): Promise<void> {
 	const home = lhHome();
 	const state = requireState(home);
-	if (!hasSystemd()) fail("systemd (user services) is required. See docs/self-hosting.md.");
+	const service = serviceManager();
+	if (!service.available()) fail(service.kind === "launchd" ? "launchctl is required. See docs/self-hosting.md." : "systemd (user services) is required. See docs/self-hosting.md.");
 	const config = readConfig(home);
 	if (typeof flags.port === "string") {
 		const port = Number(flags.port);
@@ -405,7 +414,7 @@ async function upCommand(flags: Flags): Promise<void> {
 		const chrome = detectChrome();
 		if (chrome) config.chromePath = chrome;
 	}
-	if (!config.chromePath) out("No Chrome or Chromium found. Demo verification stays off until you install one (e.g. `sudo apt install chromium`) or pass --chrome-path, then run `lh up` again.");
+	if (!config.chromePath) out(`No Chrome or Chromium found. Demo verification stays off until you install one (${process.platform === "darwin" ? "Google Chrome in /Applications" : "e.g. `sudo apt install chromium`"}) or pass --chrome-path, then run \`lh up\` again.`);
 
 	let wantTailscale = config.tailscale.enabled;
 	if (flags.tailscale === true) wantTailscale = true;
@@ -425,23 +434,24 @@ async function upCommand(flags: Flags): Promise<void> {
 		config.tailscale = { enabled: false, port: config.tailscale.port };
 	}
 	writeConfig(home, config);
-	writeUnit(home, state.activeVersion);
-	writeShim(home, state.activeVersion);
-	systemctl("daemon-reload");
-	const running = systemctl("is-active", `${serviceName()}.service`).stdout.trim() === "active";
+	const running = service.isRunning();
+	service.write(home, state.activeVersion);
 	if (running) {
 		const ok = await ask("The service is running. Restart it now to apply these settings? Running agent turns will stop.", true, flags);
-		if (ok) systemctl("restart", `${serviceName()}.service`);
+		if (ok) service.restart();
 	} else {
-		const enabled = systemctl("enable", "--now", `${serviceName()}.service`);
-		if (!enabled.ok) fail(`systemctl --user enable --now failed: ${enabled.stderr.trim()}`);
+		const enabled = service.enable();
+		if (!enabled.ok && service.kind === "systemd") fail(`systemctl --user enable --now failed: ${enabled.stderr.trim()}`);
+		// T3's case: over SSH with nobody logged in at the screen, the gui domain refuses the job.
+		if (!enabled.ok) out(`Could not start the launch agent now (${enabled.stderr.trim() || "launchctl bootstrap failed"}). It is installed and starts the next time you log in at the Mac.`);
 	}
-	if (flags.linger !== false && !lingerEnabled()) {
+	if (service.kind === "systemd" && flags.linger !== false && !lingerEnabled()) {
 		const linger = await ask("Keep LearnHarness running when you're logged out? (runs `loginctl enable-linger`)", true, flags);
 		if (linger && !enableLinger()) out("Could not enable lingering; the service stops when you log out.");
 	}
 	out("");
 	out(`LearnHarness ${state.activeVersion} is starting.`);
+	if (service.kind === "launchd") out("It runs while you're logged in to this Mac. For a Mac that serves unattended, turn on automatic login and keep it from sleeping (docs/self-hosting.md).");
 	for (const url of urls(config)) out(`  ${url}`);
 	out("");
 	const { local } = printPairingLink(home, config);
@@ -459,10 +469,10 @@ async function statusCommand(): Promise<void> {
 	const home = lhHome();
 	const state = requireState(home);
 	const config = readConfig(home);
-	const active = systemctl("is-active", `${serviceName()}.service`).stdout.trim() || "unknown";
+	const service = serviceManager();
 	const h = await health(config);
 	out(`Home:      ${home}`);
-	out(`Service:   ${serviceName()}.service (${active})`);
+	out(`Service:   ${service.displayName} (${service.state()})`);
 	out(`Active:    ${state.activeVersion}`);
 	if (state.previousVersion) out(`Previous:  ${state.previousVersion}`);
 	const installed = installedVersions(home);
@@ -502,7 +512,7 @@ async function updateCommand(flags: Flags): Promise<void> {
 	if (compareVersions(feed.version, state.activeVersion) <= 0) { out(`Already on the newest version (${state.activeVersion}).`); return; }
 	await stageVersion(home, feed, arch, { badVersions: state.badVersions });
 	writeRequest(home, { targetVersion: feed.version, reason: "lh update" });
-	systemctl("restart", `${serviceName()}.service`);
+	serviceManager().restart();
 	out(`Switching to ${feed.version}. Follow it with \`lh logs update -f\`.`);
 }
 
@@ -518,8 +528,8 @@ async function switchCommand(target: string, flags: Flags, label: string): Promi
 		if (restoreIt) restoreBackup = backup;
 	}
 	writeRequest(home, { targetVersion: target, allowBad: true, reason: label, ...(restoreBackup ? { restoreBackup } : {}) });
-	const restarted = systemctl("restart", `${serviceName()}.service`);
-	if (!restarted.ok) fail(`systemctl --user restart failed: ${restarted.stderr.trim()}`);
+	const restarted = serviceManager().restart();
+	if (!restarted.ok) fail(`restarting the service failed: ${restarted.stderr.trim()}`);
 	out(`Switching to ${target}${restoreBackup ? " and restoring your data" : ""}. Follow it with \`lh logs update -f\`.`);
 }
 
@@ -533,9 +543,10 @@ async function restoreCommand(name: string | undefined, flags: Flags): Promise<v
 	}
 	const dir = all.find((d) => path.basename(d) === name || d === name) ?? fail(`No backup named ${name}. Run \`lh restore\` to list them.`);
 	if (flags.yes !== true && !(await ask(`Replace your current data with ${path.basename(dir as string)}? This discards everything since that backup.`, false, flags))) { out("Nothing restored."); return; }
-	systemctl("stop", `${serviceName()}.service`);
+	const service = serviceManager();
+	service.stop();
 	restore(home, dir as string);
-	systemctl("start", `${serviceName()}.service`);
+	service.start();
 	out("Restored and restarted.");
 }
 
@@ -550,7 +561,7 @@ async function downCommand(): Promise<void> {
 	const home = lhHome();
 	const config = readConfig(home);
 	if (config.tailscale.enabled) serveOff(config.tailscale.port);
-	systemctl("disable", "--now", `${serviceName()}.service`);
+	serviceManager().disable();
 	out("LearnHarness is stopped and won't start at login. `lh up` turns it back on.");
 }
 
@@ -561,8 +572,7 @@ async function uninstallCommand(flags: Flags): Promise<void> {
 	// --yes confirms an explicit destructive command (unlike the optional restore question in rollback).
 	if (flags.yes !== true && !(await ask(`Remove ${what}?`, false, flags))) { out("Nothing removed."); return; }
 	await downCommand();
-	fs.rmSync(unitPath(), { force: true });
-	systemctl("daemon-reload");
+	serviceManager().remove();
 	fs.rmSync(shimPath(), { force: true });
 	fs.rmSync(layout(home).runtime, { recursive: true, force: true });
 	if (!keepData) fs.rmSync(home, { recursive: true, force: true });
@@ -603,7 +613,7 @@ async function main(): Promise<void> {
 		}
 		case "use": return switchCommand(flags._[1] ?? fail("usage: lh use <version>"), flags, "lh use");
 		case "restart": {
-			const r = systemctl("restart", `${serviceName()}.service`);
+			const r = serviceManager().restart();
 			if (!r.ok) fail(r.stderr.trim());
 			out("Restarted.");
 			return;

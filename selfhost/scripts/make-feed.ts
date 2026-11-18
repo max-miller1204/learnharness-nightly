@@ -19,7 +19,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { parseArgs } from "node:util";
 import { LAUNCHER_PROTOCOL, MIN_LAUNCHER_PROTOCOL } from "../src/protocol.ts";
-import { mergeFeedNotes, parseFeed, parseFeedNotes, type LatestFeed } from "../src/release.ts";
+import { ARCHES, mergeFeedNotes, parseFeed, parseFeedNotes, type LatestFeed } from "../src/release.ts";
 
 const { values } = parseArgs({
 	options: {
@@ -37,7 +37,7 @@ const { values } = parseArgs({
 });
 const dir = path.resolve(values.dir ?? ".");
 const assets: LatestFeed["assets"] = {};
-for (const arch of ["linux-x64", "linux-arm64"] as const) {
+for (const arch of ARCHES) {
 	const name = `learnharness-${values.version}-${arch}.tar.gz`;
 	const shaFile = path.join(dir, `${name}.sha256`);
 	if (!fs.existsSync(shaFile)) continue;

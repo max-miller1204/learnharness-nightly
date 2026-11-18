@@ -28,7 +28,7 @@ Rows are in build order. **Order** is the planned sequence, after the self-hosti
 | 3 | 6 | Login and pairing | Access + security | none | Yes |
 | 4 | 1 | Electron desktop nightlies | Desktop + distribution | none | Small (`electron/main.cjs`) |
 | Later | 2 | Removing Electron | Desktop + distribution | none | Yes (deletions) |
-| Later | 3 | macOS self-hosting | Desktop + distribution | none | No |
+| Done | 3 | macOS self-hosting | Desktop + distribution | none | No |
 | Later | 4 | Docker image | Desktop + distribution | none | No |
 | Later | 5 | LAN mode | Access + security | 6 | Small |
 | Done | 7 | Updates like T3 Code, plus What's new | Ops + polish | none | Medium (`self-update.ts`, desktop updater, sidebar) |
@@ -149,6 +149,8 @@ Codex CLI: **parked, not built** (2026-11-17). A spike ([record](specs/codex-cli
 **Touches core.** Yes (deletions plus removing desktop branches).
 
 ### 3. macOS self-hosting
+
+**Status.** **Built** (2026-11-17): a launchd agent running the `lh` shim, a `darwin-arm64` nightly build on `macos-26`, Apple silicon only, no signing for the server archive. See [docs/specs/macos-selfhost.md](specs/macos-selfhost.md), which settles the open questions below. The rest of this entry is the original proposal.
 
 **Why.** Run the self-hosted server on a Mac (for example a Mac mini at home).
 

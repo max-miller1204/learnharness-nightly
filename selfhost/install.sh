@@ -1,5 +1,5 @@
 #!/bin/sh
-# LearnHarness nightly installer (self-hosted server, Linux x64/arm64).
+# LearnHarness nightly installer (self-hosted server: Linux x64/arm64, macOS on Apple silicon).
 #
 #   curl -fsSL https://github.com/max-miller1204/learnharness-nightly/releases/download/nightly/install.sh | sh
 #
@@ -18,14 +18,31 @@ say() { printf '%s\n' "$*"; }
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required"; }
 
-[ "$(uname -s)" = "Linux" ] || die "LearnHarness self-hosting supports Linux only (x86_64, aarch64)."
-case "$(uname -m)" in
-	x86_64|amd64) ARCH=linux-x64 ;;
-	aarch64|arm64) ARCH=linux-arm64 ;;
-	*) die "unsupported CPU $(uname -m); x86_64 and aarch64 are supported." ;;
+case "$(uname -s)" in
+	Linux)
+		case "$(uname -m)" in
+			x86_64|amd64) ARCH=linux-x64 ;;
+			aarch64|arm64) ARCH=linux-arm64 ;;
+			*) die "unsupported CPU $(uname -m); x86_64 and aarch64 are supported." ;;
+		esac
+		command -v systemctl >/dev/null 2>&1 || die "systemd is required (systemctl not found)."
+		;;
+	Darwin)
+		# Ask the hardware: a terminal running under Rosetta reports x86_64.
+		[ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ] || die "LearnHarness self-hosting on macOS needs Apple silicon; Intel Macs aren't supported."
+		ARCH=darwin-arm64
+		command -v launchctl >/dev/null 2>&1 || die "launchctl not found."
+		;;
+	*) die "LearnHarness self-hosting supports Linux (x86_64, aarch64) and macOS (Apple silicon)." ;;
 esac
-need curl; need tar; need sha256sum
-command -v systemctl >/dev/null 2>&1 || die "systemd is required (systemctl not found)."
+need curl; need tar
+if command -v sha256sum >/dev/null 2>&1; then
+	sha256check() { sha256sum -c - >/dev/null; }
+elif command -v shasum >/dev/null 2>&1; then
+	sha256check() { shasum -a 256 -c - >/dev/null; }
+else
+	die "sha256sum or shasum is required"
+fi
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT TERM
@@ -39,8 +56,10 @@ fetch() {
 
 say "Reading $FEED_URL"
 fetch "$FEED_URL" "$TMP/latest.json"
-# latest.json is machine-written; pick fields without needing jq.
-field() { tr -d '\n' < "$TMP/latest.json" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p"; }
+# latest.json is machine-written; pick fields without needing jq. Top-level
+# fields come before "assets", and the release notes after it repeat
+# "version", so only the part before "assets" is searched.
+field() { tr -d '\n' < "$TMP/latest.json" | sed 's/"assets".*//' | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p"; }
 VERSION=$(field version)
 [ -n "$VERSION" ] || die "latest.json has no version"
 ASSET=$(tr -d '\n' < "$TMP/latest.json" | sed -n "s/.*\"$ARCH\"[[:space:]]*:[[:space:]]*{\\([^}]*\\)}.*/\\1/p")
@@ -54,7 +73,7 @@ if [ -f "$DEST/.install-complete" ]; then
 else
 	say "Downloading LearnHarness $VERSION ($ARCH)"
 	fetch "$URL" "$TMP/lh.tar.gz"
-	printf '%s  %s\n' "$SHA" "$TMP/lh.tar.gz" | sha256sum -c - >/dev/null || die "checksum mismatch; not installing"
+	printf '%s  %s\n' "$SHA" "$TMP/lh.tar.gz" | sha256check || die "checksum mismatch; not installing"
 	rm -rf "$DEST.tmp"
 	mkdir -p "$DEST.tmp"
 	tar -xzf "$TMP/lh.tar.gz" -C "$DEST.tmp" --no-same-owner
