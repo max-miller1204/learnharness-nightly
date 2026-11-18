@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -25,19 +26,77 @@ export interface ClaudeAccount {
 
 export type ReadClaudeAuthStatus = (binary: string) => Promise<string>;
 
-/** No shell. The command exits non-zero when signed out, still printing JSON. */
-export const readClaudeAuthStatus: ReadClaudeAuthStatus = (binary) => new Promise((resolve, reject) => {
-	execFile(binary, ["auth", "status", "--json"], {
-		cwd: tmpdir(), env: externalCliEnv(), windowsHide: true,
-		timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 16_384,
-	}, (error, stdout) => stdout.trim() ? resolve(stdout) : reject(error ?? new Error("empty auth status")));
-});
+/** The CLI environment for search and its account check: native auth only,
+ * never keys LearnHarness's key store injected. */
+export function claudeSearchEnv(): NodeJS.ProcessEnv {
+	return { ...externalCliEnv(), CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" };
+}
+
+/** No shell. Runs from an empty private directory, like the search, so no
+ * project settings change the reported sign-in. The command exits non-zero
+ * when signed out, still printing JSON. */
+export const readClaudeAuthStatus: ReadClaudeAuthStatus = async (binary) => {
+	const cwd = await mkdtemp(join(tmpdir(), "claude-code-auth-"));
+	try {
+		return await new Promise<string>((resolve, reject) => {
+			execFile(binary, ["auth", "status", "--json"], {
+				cwd, env: claudeSearchEnv(), windowsHide: true,
+				timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 16_384,
+			}, (error, stdout) => stdout.trim() ? resolve(stdout) : reject(error ?? new Error("empty auth status")));
+		});
+	} finally {
+		await rm(cwd, { recursive: true, force: true });
+	}
+};
+
+// Credentials and identities the CLI may sign in with when it reports no
+// account. Owner decision: hash whatever is visible here, never run the
+// apiKeyHelper or call a cloud provider.
+const FINGERPRINT_ENV = [
+	"ANTHROPIC_API_KEY",
+	"ANTHROPIC_AUTH_TOKEN",
+	"CLAUDE_CODE_OAUTH_TOKEN",
+	"AWS_PROFILE",
+	"AWS_ACCESS_KEY_ID",
+	"AWS_BEARER_TOKEN_BEDROCK",
+	"ANTHROPIC_VERTEX_PROJECT_ID",
+	"GOOGLE_APPLICATION_CREDENTIALS",
+];
+
+/** The CLI's user settings (the search's only setting source), or null. */
+export function readClaudeUserSettings(configDirectory: string): unknown {
+	try {
+		return JSON.parse(readFileSync(join(configDirectory, "settings.json"), "utf8"));
+	} catch {
+		return null;
+	}
+}
+
+/** One-way and in memory only: never stored, logged or shown. User settings
+ * `env` values override the launch environment, as they do in the CLI. */
+export function credentialFingerprint(env: Record<string, string | undefined>, userSettings: unknown): string {
+	const settings = userSettings && typeof userSettings === "object" ? userSettings as { env?: unknown; apiKeyHelper?: unknown } : {};
+	const settingsEnv = settings.env && typeof settings.env === "object" ? settings.env as Record<string, unknown> : {};
+	const hash = createHash("sha256");
+	for (const name of FINGERPRINT_ENV) {
+		const value = typeof settingsEnv[name] === "string" ? settingsEnv[name] : env[name];
+		hash.update(JSON.stringify([name, value ?? null]));
+	}
+	hash.update(JSON.stringify(["apiKeyHelper", typeof settings.apiKeyHelper === "string" ? settings.apiKeyHelper : null]));
+	return hash.digest("hex");
+}
 
 const text = (value: unknown, max = 200) => typeof value === "string" ? value.trim().slice(0, max) : "";
 const capitalized = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 
-/** Null when signed out or unreadable. */
-export function parseClaudeAccount(stdout: string): ClaudeAccount | null {
+/** Null when signed out or unreadable. A sign-in without account identity
+ * (API key, token, apiKeyHelper, Bedrock, Vertex) binds to a credential
+ * fingerprint, so switching keys or cloud accounts requires reselection. */
+export function parseClaudeAccount(
+	stdout: string,
+	env: Record<string, string | undefined> = claudeSearchEnv(),
+	readSettings: (configDirectory: string) => unknown = readClaudeUserSettings,
+): ClaudeAccount | null {
 	let raw: Record<string, unknown>;
 	try {
 		raw = JSON.parse(stdout) as Record<string, unknown>;
@@ -50,8 +109,10 @@ export function parseClaudeAccount(stdout: string): ClaudeAccount | null {
 	const subscription = text(raw.subscriptionType, 40);
 	const plan = raw.authMethod === "claude.ai" && !!subscription;
 	const detail = plan ? `Claude ${capitalized(subscription)}` : method;
+	const configDirectory = text(raw.configDirectory, 4096) || env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+	const fingerprint = plan ? "" : credentialFingerprint(env, readSettings(configDirectory));
 	const selection = createHash("sha256")
-		.update(JSON.stringify([email, text(raw.orgId), text(raw.authMethod), text(raw.apiProvider)]))
+		.update(JSON.stringify([email, text(raw.orgId), text(raw.authMethod), text(raw.apiProvider), fingerprint]))
 		.digest("hex")
 		.slice(0, 32);
 	return { label: `${email || "Claude Code account"} · ${detail}`, selection, plan, method };
@@ -215,8 +276,9 @@ export async function searchClaudeCode(
 	const limit = signal ? AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]) : AbortSignal.timeout(TIMEOUT_MS);
 	const cwd = await mkdtemp(join(tmpdir(), "claude-code-search-"));
 	try {
-		const env = { ...externalCliEnv(), CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" };
-		const child = await runClaude(claudeSearchArgs(), { cwd, env, signal: limit });
+		// Its own process group on POSIX, so a kill reaches CLI subprocesses too.
+		const group = process.platform !== "win32";
+		const child = await runClaude(claudeSearchArgs(), { cwd, env: claudeSearchEnv(), signal: limit, detached: group });
 		if (!child) throw new Error("Claude Code CLI was not found on the LearnHarness server.");
 		const collector = new ClaudeSearchCollector(count);
 		// Resolve on exit, not stdio close: a grandchild holding the pipe
@@ -228,6 +290,9 @@ export async function searchClaudeCode(
 		exited.catch(() => { /* awaited below */ });
 		const lines = createInterface({ input: child.stdout });
 		const kill = () => {
+			try {
+				if (group && child.pid) process.kill(-child.pid, "SIGKILL");
+			} catch { /* the group is already gone */ }
 			if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 			lines.close();
 			child.stdout.destroy();
@@ -246,6 +311,8 @@ export async function searchClaudeCode(
 		} finally {
 			limit.removeEventListener("abort", kill);
 			kill();
+			// Never remove the directory under a child that is still exiting.
+			await exited.catch(() => { /* a spawn error has no exit */ });
 		}
 		if (limit.aborted) {
 			signal?.throwIfAborted();

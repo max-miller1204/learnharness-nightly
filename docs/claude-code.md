@@ -41,7 +41,7 @@ Abort terminates the child and active stream. Cancelling a queued tool request p
 
 ## Web search
 
-Choosing Claude Code in **Settings → Agent → Tools → Search engine** runs each LearnHarness web search as a separate headless `claude -p` with only the `WebSearch` tool, on haiku at low effort. Chat runs keep `--tools ""`. Search requires the opt-in above and binds to the account that `claude auth status --json` reports; signing in as another account requires choosing it again. Search uses whatever the CLI is signed in with, so it can use Claude plan usage limits or bill an API account, as the picker discloses.
+Choosing Claude Code in **Settings → Agent → Tools → Search engine** runs each LearnHarness web search as a separate headless `claude -p` with only the `WebSearch` tool, on haiku at low effort. Chat runs keep `--tools ""`. Search requires the opt-in above and binds to the account that `claude auth status --json` reports; signing in as another account requires choosing it again. Without a Claude plan, that binding uses a one-way fingerprint of visible credentials, with the limits described in the [spec](specs/subscription-search.md). Search uses whatever the CLI is signed in with, so it can use Claude plan usage limits or bill an API account, as the picker discloses.
 
 ## Usage and troubleshooting
 

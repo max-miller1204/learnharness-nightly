@@ -13,7 +13,7 @@ process.env.LH_IGNORE_ENV_KEYS = "1";
 delete process.env.LH_DESKTOP_SERVER;
 delete process.env.LH_DESKTOP_API_SECRET;
 delete process.env.LH_GROK_SEARCH_PROBE;
-const { ClaudeSearchCollector, claudeSearchArgs, parseClaudeAccount, searchClaudeCode } = await import("../src/agent/claude-code/search.ts");
+const { ClaudeSearchCollector, claudeSearchArgs, parseClaudeAccount, readClaudeAuthStatus, searchClaudeCode } = await import("../src/agent/claude-code/search.ts");
 const { searchPickerStatus, searchProvider } = await import("../src/server/search.ts");
 const { claudeSearchSeams } = await import("../src/server/subscription-search.ts");
 const { writeSettings } = await import("../src/store/settings.ts");
@@ -34,9 +34,49 @@ test("Claude Code account label and selection come from auth status and change w
 	assert.equal(plan.plan, true);
 	assert.match(plan.selection, /^[0-9a-f]{32}$/);
 	assert.notEqual(parseClaudeAccount(JSON.stringify({ ...planStatus, email: "other@example.invalid" }))!.selection, plan.selection);
-	const api = parseClaudeAccount(JSON.stringify({ loggedIn: true, authMethod: "api_key", apiProvider: "firstParty" }))!;
+	const apiStatus = JSON.stringify({ loggedIn: true, authMethod: "api_key", apiProvider: "firstParty", configDirectory: "/scratch/claude" });
+	const api = parseClaudeAccount(apiStatus, {}, () => null)!;
 	assert.equal(api.label, "Claude Code account · api_key", "the label is never blank");
 	assert.equal(api.plan, false);
+	assert.equal(parseClaudeAccount(JSON.stringify(planStatus), { ANTHROPIC_API_KEY: "sk-ant-scratch-a" })!.selection, plan.selection, "a plan sign-in binds to its account, not to unrelated variables");
+});
+
+test("sign-ins without account identity bind to a one-way credential fingerprint", () => {
+	const status = (method: string, provider = "firstParty") => JSON.stringify({ loggedIn: true, authMethod: method, apiProvider: provider, configDirectory: "/scratch/claude" });
+	const selection = (method: string, env: Record<string, string>, settings: unknown = null, provider?: string) => {
+		let read = "";
+		const account = parseClaudeAccount(status(method, provider), env, (directory) => { read = directory; return settings; })!;
+		assert.equal(read, "/scratch/claude", "the CLI's reported config directory holds its user settings");
+		assert.doesNotMatch(JSON.stringify(account), /scratch-secret/, "no raw credential is kept");
+		return account.selection;
+	};
+	const keyA = selection("api_key", { ANTHROPIC_API_KEY: "sk-ant-scratch-secret-a" });
+	assert.equal(selection("api_key", { ANTHROPIC_API_KEY: "sk-ant-scratch-secret-a" }), keyA, "the same key keeps the selection");
+	assert.notEqual(selection("api_key", { ANTHROPIC_API_KEY: "sk-ant-scratch-secret-b" }), keyA, "another key requires reselection");
+	assert.notEqual(selection("api_key", { ANTHROPIC_API_KEY: "sk-ant-scratch-secret-a" }, { env: { ANTHROPIC_API_KEY: "sk-ant-scratch-secret-c" } }), keyA, "user settings env overrides the launch env");
+	assert.notEqual(selection("oauth_token", { CLAUDE_CODE_OAUTH_TOKEN: "scratch-secret-a" }), selection("oauth_token", { CLAUDE_CODE_OAUTH_TOKEN: "scratch-secret-b" }));
+	assert.notEqual(selection("api_key_helper", {}, { apiKeyHelper: "scratch-helper a" }), selection("api_key_helper", {}, { apiKeyHelper: "scratch-helper b" }), "the helper command text, never its output");
+	const bedrock = (env: Record<string, string>) => selection("third_party", env, null, "bedrock");
+	assert.notEqual(bedrock({ AWS_PROFILE: "a" }), bedrock({ AWS_PROFILE: "b" }));
+	assert.notEqual(bedrock({ AWS_ACCESS_KEY_ID: "AKIA1" }), bedrock({ AWS_ACCESS_KEY_ID: "AKIA2" }));
+	assert.notEqual(bedrock({ AWS_BEARER_TOKEN_BEDROCK: "scratch-secret-a" }), bedrock({ AWS_BEARER_TOKEN_BEDROCK: "scratch-secret-b" }));
+	const vertex = (env: Record<string, string>) => selection("third_party", env, null, "vertex");
+	assert.notEqual(vertex({ ANTHROPIC_VERTEX_PROJECT_ID: "a" }), vertex({ ANTHROPIC_VERTEX_PROJECT_ID: "b" }));
+	assert.notEqual(vertex({ GOOGLE_APPLICATION_CREDENTIALS: "/a.json" }), vertex({ GOOGLE_APPLICATION_CREDENTIALS: "/b.json" }));
+});
+
+test("auth status runs from an empty private directory without LearnHarness keys", async () => {
+	assert.equal(saveKey("ANTHROPIC_API_KEY", "sk-ant-scratch-learnharness-only-key").ok, true);
+	assert.equal(process.env.ANTHROPIC_API_KEY, "sk-ant-scratch-learnharness-only-key", "the key store reflects the key into the server env");
+	const fake = path.join(directory, "fake-claude");
+	fs.writeFileSync(fake, `#!${process.execPath}\nconst fs = require("node:fs");\nconsole.log(JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), entries: fs.readdirSync("."), key: process.env.ANTHROPIC_API_KEY ?? null, mds: process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS }));\n`, { mode: 0o700 });
+	const report = JSON.parse(await readClaudeAuthStatus(fake)) as { args: string[]; cwd: string; entries: string[]; key: string | null; mds: string };
+	assert.deepEqual(report.args, ["auth", "status", "--json"]);
+	assert.notEqual(path.resolve(report.cwd), path.resolve(os.tmpdir()), "a stray tmpdir .claude/settings.json is never read");
+	assert.deepEqual(report.entries, []);
+	assert.equal(fs.existsSync(report.cwd), false, "the directory is removed");
+	assert.equal(report.key, null, "a LearnHarness-stored key never reaches the CLI");
+	assert.equal(report.mds, "1");
 	assert.equal(parseClaudeAccount(JSON.stringify({ loggedIn: false })), null);
 	assert.equal(parseClaudeAccount("not json"), null);
 });
@@ -88,20 +128,38 @@ test("headless search enables only WebSearch and parses native links", () => {
 	assert.match(signedOut.add(JSON.stringify({ type: "assistant", error: "authentication_failed", message: { content: [] } }))!, /claude auth login/);
 });
 
-test("an abort ends a hung CLI even when a grandchild holds its output open", async () => {
+test("an abort kills a hung CLI's whole process group and only then removes its directory", { skip: process.platform === "win32" }, async () => {
 	let cwd = "";
 	let child: ReturnType<typeof spawn> | undefined;
+	const pidFile = path.join(directory, "grandchild.pid");
 	const controller = new AbortController();
-	setTimeout(() => controller.abort(), 200);
+	setTimeout(() => controller.abort(), 300);
 	const started = Date.now();
 	await assert.rejects(searchClaudeCode("query", 5, controller.signal, (_args, options) => {
 		cwd = options.cwd;
-		child = spawn("sh", ["-c", "sleep 30 & echo '{}'; sleep 30"], { cwd: options.cwd, stdio: "pipe" });
+		assert.equal(options.detached, true, "search starts the CLI in its own process group");
+		child = spawn("sh", ["-c", 'sleep 30 & echo $! > "$1"; echo "{}"; sleep 30', "sh", pidFile], { cwd: options.cwd, stdio: "pipe", detached: options.detached });
 		return child as never;
 	}), /abort/i);
 	assert.ok(Date.now() - started < 5_000);
 	assert.equal(child!.signalCode, "SIGKILL");
 	assert.equal(fs.existsSync(cwd), false, "the temp directory is removed");
+	const grandchild = Number(fs.readFileSync(pidFile, "utf8"));
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	assert.throws(() => process.kill(grandchild, 0), { code: "ESRCH" }, "the CLI's subprocess does not outlive the kill");
+});
+
+test("a read error waits for the CLI to exit before removing its directory", async () => {
+	let exitedBeforeRemoval: boolean | undefined;
+	let child: ReturnType<typeof spawn> | undefined;
+	await assert.rejects(searchClaudeCode("query", 5, undefined, (_args, options) => {
+		child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: options.cwd, stdio: "pipe", detached: options.detached });
+		const cwd = options.cwd;
+		setTimeout(() => child!.stdout!.destroy(new Error("scratch read failure")), 100);
+		child.once("exit", () => { exitedBeforeRemoval = fs.existsSync(cwd); });
+		return child as never;
+	}), /scratch read failure/);
+	assert.equal(exitedBeforeRemoval, true, "the child exited while its directory still existed");
 });
 
 test("Claude Code search uses the selected CLI account, saves its links, and never falls back", async () => {
@@ -110,17 +168,19 @@ test("Claude Code search uses the selected CLI account, saves its links, and nev
 	let runs = 0;
 	let onRun: (() => void) | undefined;
 	claudeSearchSeams.installation = async () => ({ state: "meets-minimum", version: "9.9.9", minimumVersion: "2.1.259" });
-	claudeSearchSeams.account = async () => parseClaudeAccount(JSON.stringify(status));
+	claudeSearchSeams.account = async () => parseClaudeAccount(JSON.stringify(status), {}, () => null);
 	claudeSearchSeams.run = (args, options) => {
 		runs++;
 		assert.ok(args.includes("WebSearch"));
 		assert.equal(options.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS, "1");
+		assert.equal(options.env.ANTHROPIC_API_KEY, undefined, "a LearnHarness-stored key never reaches the search CLI");
 		onRun?.();
 		const script = `process.stdin.resume();process.stdin.on("end",()=>{for(const l of ${JSON.stringify(lines.map((l) => JSON.stringify(l)))})console.log(l)});`;
 		return spawn(process.execPath, ["-e", script], { cwd: options.cwd, stdio: "pipe" });
 	};
 	globalThis.fetch = async () => { throw new Error("no keyed fallback request is allowed"); };
 	assert.equal(saveKey("TAVILY_API_KEY", "tvly-scratch-never-fallback").ok, true);
+	assert.equal(saveKey("ANTHROPIC_API_KEY", "sk-ant-scratch-learnharness-only-key").ok, true);
 
 	writeSettings({ version: 1 });
 	assert.match((await searchPickerStatus()).subscriptions[1]!.reason, /Enable Claude Code/);
@@ -133,7 +193,7 @@ test("Claude Code search uses the selected CLI account, saves its links, and nev
 
 	const select = (accountSelection: string) => writeSettings({ version: 1, claudeCode: { enabled: true }, agent: { search: { engine: "claude-code", accountSelection } } });
 	select(option.account!.selection);
-	assert.match((await searchPickerStatus()).reason, /Claude Code subscription/);
+	assert.match((await searchPickerStatus()).reason, /^Search engine: Claude Code\. Search can use your Claude plan usage limits/);
 	lines = [
 		{ type: "system", subtype: "init", tools: ["WebSearch"] },
 		{ type: "assistant", message: { content: [{ type: "tool_use", name: "WebSearch" }] } },
@@ -156,6 +216,9 @@ test("Claude Code search uses the selected CLI account, saves its links, and nev
 	const apiOption = (await searchPickerStatus()).subscriptions[1]!;
 	assert.match(apiOption.reason, /signed in with api_key, so search may be billed/);
 	select(apiOption.account!.selection);
+	const apiReason = (await searchPickerStatus()).reason;
+	assert.match(apiReason, /^Search engine: Claude Code\. Claude Code is signed in with api_key/);
+	assert.doesNotMatch(apiReason, /subscription/i, "a pay-per-use sign-in is never called a subscription");
 	lines = [{ type: "system", subtype: "init", tools: ["WebSearch", "Bash"] }];
 	await assert.rejects(searchProvider()!.search("query", 5), /restrict this search/);
 	writeSettings({ version: 1, agent: { search: { engine: "claude-code", accountSelection: apiOption.account!.selection } } });
