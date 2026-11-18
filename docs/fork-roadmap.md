@@ -41,7 +41,7 @@ Rows are in build order. **Order** is the planned sequence, after the self-hosti
 | Later | 18 | Signed releases | Access + security | none | Small (`release.ts`) |
 | Later | 19 | Scheduled and off-machine backups | Ops + polish | none | No |
 | Later | 21 | Client protocol and server info | Clients + remote access | 6 | Yes |
-| Later | 22 | Mobile web app (PWA) | Clients + remote access | 6, 21 | Small |
+| Later | 22 | Mobile app (Expo) | Clients + remote access | 6, 21 | Small |
 | Later | 23 | Desktop server list (choose a backend) | Clients + remote access | 6, 21 | Moderate (`electron/`) |
 | Later | 24 | Remote-safe attachments | Clients + remote access | 6 | Yes |
 | Later | 25 | Office and data formats | Files + ingestion | none | Yes |
@@ -111,7 +111,7 @@ Codex CLI: **parked, not built** (2026-11-17). A spike ([record](specs/codex-cli
 
 **Why.** A native app on Mac, Windows and Linux that tracks fork `main`, for when a browser tab on the self-hosted server isn't enough.
 
-**Decided.** Not part of the self-hosting work. The owner has an Apple Developer Program membership, so signed and notarized Mac builds are possible.
+**Decided.** Not part of the self-hosting work. The owner has an Apple Developer Program membership, so signed and notarized Mac builds are possible. Owner decisions (2026-11-17): Mac arm64 signed and notarized, Windows unsigned, Linux AppImage; Mac checks run over the linked MacBook.
 
 **Facts.**
 - `electron-builder.yml` hard-codes `appId: com.learnharness.LearnHarness`, `productName: LearnHarness`, `mac.notarize: true`, and `publish` to `provider: github`, `owner: amosblomqvist`, `repo: learnharness`, `releaseType: draft`.
@@ -266,7 +266,7 @@ What LearnHarness already has toward this: a standalone, versioned, self-updatin
 
 **Why.** Today the API is internal Next.js routes that change freely. That's fine while the server ships its own UI, but any client released separately (a native phone app, a desktop app pointed at a remote server) lags behind the server and needs a contract it can rely on.
 
-**Decided.** Nothing yet.
+**Decided.** Exact protocol version match between client and server, like T3 (chosen over a version range).
 
 **Proposed design (not approved).**
 - A server-info endpoint (or an extended `/api/health`) reporting the server version, a client protocol version and a list of capabilities, OpenBot-style: for example `attachments-upload-v1` (24) or `pairing-v1` (6).
@@ -279,11 +279,11 @@ What LearnHarness already has toward this: a standalone, versioned, self-updatin
 
 **Touches core.** Yes (new routes, plus discipline on existing ones).
 
-### 22. Mobile web app (PWA)
+### 22. Mobile app (Expo)
 
 **Why.** The cheapest way onto a phone: the server already serves the UI, and phones can open it today over Tailscale. Making it installable gives a home-screen app with no app store and automatic updates with the server.
 
-**Decided.** Web app first; a native app only if it turns out to be needed.
+**Decided.** A native Expo app, not a PWA (owner decision 2026-11-17, replacing "web app first"). Beta builds through EAS to TestFlight and the Play internal track; tested on an Android emulator on the Linux box, iOS checked by the owner on their phone. One server at a time, opening a server the owner chooses as the default, like item 23.
 
 **Proposed design (not approved).**
 - A web app manifest and icons, plus a service worker that caches only the app shell (never chats or learning data, which stay server-side).
@@ -300,7 +300,7 @@ What LearnHarness already has toward this: a standalone, versioned, self-updatin
 
 **Why.** Let the desktop app use either its own built-in server or a remote one (your self-hosted box), the way T3 and OpenBot let you pick a server.
 
-**Decided.** Nothing yet. Relates to item 1 (desktop nightlies).
+**Decided.** Relates to item 1 (desktop nightlies). Owner decisions (2026-11-17/18): one backend per person (all knowledge on one server; desktop, web and phone are windows onto it). The app shows one server at a time and opens a server the owner chooses as the default; the server list exists to repoint, not to merge several servers like T3. On first launch the app asks "Run my LearnHarness here" (local server on) or "Connect to my server" (pair; local server off), changeable later in Settings. When connected to a remote server, the desktop app catches the ChatGPT sign-in redirect on its own 127.0.0.1 and passes the result to the server, so desktop sign-in needs no error page or pasting (web and phone keep the paste-back flow from PR #238).
 
 **Proposed design (not approved).**
 - The Electron shell keeps a server list: "This computer" (today's spawned local server) plus remote servers, each an address and a pairing token from item 6.
@@ -308,7 +308,7 @@ What LearnHarness already has toward this: a standalone, versioned, self-updatin
 - Desktop-only bridge features (`window.lh`: folder picker, local file paths, native updates) are offered only for "This computer", or replaced by the protocol in 21 (for example uploads from 24).
 - Switching servers never moves data; each server keeps its own.
 
-**Open questions.** Should the desktop app run its local server at all while a remote one is selected? How are remote servers found (typed address, QR code, Tailscale names)? How do subscription sign-ins behave when the server is remote (ChatGPT sign-in completes in a browser on the server machine today)?
+**Open questions.** How are remote servers found (typed address, QR code, Tailscale names)?
 
 **Build outline.** Server list storage and UI in the shell, remote window loading with the pairing token, gating of bridge features, then a test against a self-hosted install.
 
@@ -426,7 +426,7 @@ Where things stand, so the entries below start from facts:
 
 **Why.** The fork exists to review and merge upstream PRs. Running a PR on your real server before merging is the most direct review.
 
-**Decided.** Not in the first release. T3 has a manual-only "preview" channel whose builds stay as draft releases, carry no update feed, and are never offered to installs automatically.
+**Decided.** Not in the first release. T3 has a manual-only "preview" channel whose builds stay as draft releases, carry no update feed, and are never offered to installs automatically. Owner decisions (2026-11-17): previews run on fresh, empty data; the owner's PRs build automatically, upstream and outside PRs only when the owner adds a label.
 
 **Proposed design (not approved).**
 - A `pr-preview.yml` workflow runs on a `preview` label or a manual dispatch with a PR number. It reuses the nightly bundle job and publishes a `preview-pr-<N>` prerelease (`<version>-preview.pr<N>.<run>`) that never touches `latest.json`, then comments the install command on the PR.
