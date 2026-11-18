@@ -28,10 +28,10 @@ function trustedSender(event, origin, BrowserWindow) {
 		return !!win && event.senderFrame === event.sender.mainFrame && new URL(event.senderFrame.url).origin === origin;
 	} catch { return false; }
 }
-async function chatGPTControl(command, connection) {
+async function chatGPTControl(command, connection, desktopRedirectPort = undefined) {
 	try {
 		if (command?.op === "status") return await connection.status();
-		if (command?.op === "login" && (command.id === undefined || typeof command.id === "string")) return await connection.login(command.id);
+		if (command?.op === "login" && (command.id === undefined || typeof command.id === "string")) return await connection.login(command.id, desktopRedirectPort);
 		if (command?.op === "cancel") return connection.cancelLogin();
 		if (command?.op === "complete" && typeof command.url === "string") return await connection.completeLogin(command.url);
 		if (command?.op === "select" && typeof command.id === "string") return await connection.select(command.id);

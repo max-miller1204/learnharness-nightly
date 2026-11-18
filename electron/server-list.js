@@ -1,0 +1,90 @@
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const api = window.servers;
+let state;
+let adding = false;
+
+function showPair(origin = "") {
+	adding = true;
+	$("pair-title").textContent = origin ? "Pair again" : "Add a server";
+	$("link").value = "";
+	$("origin").value = origin;
+	$("code").value = "";
+	$("form-error").textContent = "";
+	render();
+	$(origin ? "code" : "link").focus();
+}
+
+function render() {
+	const { servers, active, defaultServer, busy, problem, notice, signingIn } = state;
+	const firstRun = !defaultServer && !active && !problem && servers.length === 0 && !notice;
+	$("welcome").hidden = !firstRun || adding;
+	$("list").hidden = (firstRun || adding) && !problem;
+	$("add-server").hidden = !adding || !!problem;
+	$("notice").textContent = busy ? "Connecting…" : signingIn ? "Finish sign-in in your browser." : notice;
+	$("recovery").hidden = !problem;
+	if (problem) {
+		$("problem").textContent = problem.message;
+		const canPairAgain = problem.kind === "pair" && problem.server !== "local";
+		$("recover").hidden = problem.kind === "mismatch";
+		$("recover").textContent = canPairAgain ? "Pair again" : "Retry";
+		$("recover").onclick = () => {
+			if (canPairAgain) {
+				state = { ...state, problem: null };
+				showPair(problem.server);
+			} else if (problem.server === "local" || servers.includes(problem.server)) {
+				void api.connect(problem.server);
+			} else {
+				state = { ...state, problem: null };
+				showPair(problem.server);
+			}
+		};
+	}
+	$("servers").replaceChildren(...["local", ...servers].map((server) => {
+		const item = document.createElement("li");
+		const label = document.createElement("span");
+		label.textContent = server === "local" ? "This computer" : server;
+		const tags = [server === active && "Active", server === defaultServer && "Default"].filter(Boolean);
+		if (tags.length) {
+			const caption = document.createElement("small");
+			caption.textContent = tags.join(" · ");
+			label.append(caption);
+		}
+		item.append(label);
+		if (server !== active || server !== defaultServer) {
+			const button = document.createElement("button");
+			button.type = "button";
+			button.textContent = server === active ? "Set as default" : "Connect";
+			button.onclick = () => void (server === active ? api.setDefault(server) : api.connect(server));
+			item.append(button);
+		}
+		return item;
+	}));
+	$("sign-in").hidden = !active || active === "local";
+	document.querySelectorAll("button, input").forEach((input) => { input.disabled = busy; });
+	$("sign-in").disabled = busy || signingIn;
+}
+api.onChange((next) => { state = next; render(); });
+void api.state().then((next) => { state = next; render(); });
+
+$("run-local").onclick = () => void api.connect("local");
+$("connect-remote").onclick = () => showPair();
+$("add").onclick = () => { state = { ...state, problem: null }; showPair(); };
+$("back").onclick = () => { adding = false; render(); };
+$("sign-in").onclick = () => void api.signIn();
+$("link").addEventListener("input", async (event) => {
+	const text = event.target.value;
+	const parsed = await api.parseLink(text);
+	if (text !== $("link").value) return;
+	if (parsed) {
+		$("origin").value = parsed.origin;
+		$("code").value = parsed.code;
+		$("link").value = "";
+		$("form-error").textContent = "";
+	}
+});
+$("pair").onsubmit = async (event) => {
+	event.preventDefault();
+	$("form-error").textContent = await api.pair($("origin").value, $("code").value) ?? "";
+};

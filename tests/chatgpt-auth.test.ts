@@ -830,3 +830,100 @@ test("while an exchange is in flight, a second paste or a paste after the redire
 		} finally { release.resolve(); f.service.close(); }
 	}
 });
+
+test("desktop relay reserves loopback, forwards the exact verified callback once, and exchanges only on the server", async () => {
+	const { remoteChatGPTSignIn } = require("../electron/remote-chatgpt.cjs");
+	const f = fixture();
+	const origin = "https://server.example.test";
+	const browserAction = "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001";
+	const operations: string[] = [];
+	let exact = "";
+	try {
+		await remoteChatGPTSignIn(origin, "fixture-bearer", {
+			timeoutMs: 5000,
+			request: async (input: URL, options: RequestInit) => {
+				assert.equal(input.origin, origin);
+				const headers = new Headers(options.headers);
+				assert.equal(headers.get("authorization"), "Bearer fixture-bearer");
+				assert.equal(headers.get("origin"), origin);
+				assert.equal(headers.get("x-learnharness-subscriptions"), "1");
+				assert.equal(headers.get("cookie"), null);
+				assert.equal(options.credentials, "omit");
+				if (input.pathname === "/api/subscriptions/browser") {
+					assert.equal(options.redirect, "manual");
+					operations.push("browser");
+					return new Response(null, { status: 303, headers: { Location: f.url.href } });
+				}
+				assert.equal(options.redirect, "error");
+				const body = JSON.parse(String(options.body));
+				operations.push(body.op);
+				if (body.op === "login") {
+					const value = await f.service.login(undefined, body.desktopRedirectPort);
+					return Response.json({ value, browserAction });
+				}
+				assert.deepEqual(body, { providerId: "chatgpt", op: "complete", url: exact });
+				return Response.json({ value: await f.service.completeLogin(body.url) });
+			},
+			openExternal: async (url: string) => {
+				const page = new URL(url);
+				const callback = new URL(page.searchParams.get("redirect_uri")!);
+				assert.equal(callback.hostname, "127.0.0.1");
+				assert.equal(callback.pathname, "/auth/callback");
+				const rejected = await fetch(`${callback.href}?state=wrong&code=scratch`);
+				assert.equal(rejected.status, 400);
+				await rejected.text();
+				exact = `${callback.href}?client_id=oaiapp_scratch&code=scratch%2bcode&state=${page.searchParams.get("state")}`;
+				const accepted = await fetch(exact);
+				assert.equal(accepted.status, 200);
+				await accepted.text();
+				assert.equal((await fetch(exact)).status, 404, "replay does not reach the server");
+			},
+		});
+		assert.deepEqual(operations, ["login", "browser", "complete"]);
+		const exchange = f.requests.filter((r) => r.url === tokenUrl);
+		assert.equal(exchange.length, 1);
+		assert.equal(exchange[0]?.form?.get("code"), "scratch+code");
+		assert.equal(exchange[0]?.form?.get("redirect_uri"), f.url.searchParams.get("redirect_uri"));
+		assert.equal(createHash("sha256").update(exchange[0]!.form!.get("code_verifier")!).digest("base64url"), f.url.searchParams.get("code_challenge"));
+		assert.equal(f.saved.registrations[0].tokens.accessToken, "scratch-oauth-token");
+	} finally { f.service.close(); }
+});
+
+test("desktop relay never opens the browser for bind failure, an occupied redirect port, or an unexpected authorization endpoint", async () => {
+	const { createServer } = await import("node:http");
+	const { remoteChatGPTSignIn } = require("../electron/remote-chatgpt.cjs");
+	const occupied = createServer();
+	await new Promise<void>((resolve) => occupied.listen(0, "127.0.0.1", resolve));
+	try {
+		const address = occupied.address();
+		assert(address && typeof address !== "string");
+		const openExternal = async () => assert.fail("must stop before opening a browser");
+		await assert.rejects(remoteChatGPTSignIn("https://server.example.test", "fixture", {
+			openExternal,
+			createListener: () => {
+				const listener = createServer();
+				const listen = listener.listen.bind(listener);
+				listener.listen = ((_port: number, host: string, ready: () => void) => listen(address.port, host, ready)) as typeof listener.listen;
+				return listener;
+			},
+			request: () => assert.fail("bind must happen before login"),
+		}), /reserve the local/);
+		for (const reason of ["occupied", "endpoint"]) {
+			let port = 0;
+			await assert.rejects(remoteChatGPTSignIn("https://server.example.test", "fixture", {
+				openExternal,
+				request: async (input: URL, options: RequestInit) => {
+					if (input.pathname === "/api/subscriptions") {
+						port = JSON.parse(String(options.body)).desktopRedirectPort;
+						assert.notEqual(port, address.port, "the kernel chose a free port");
+						return Response.json({ browserAction: "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001" });
+					}
+					const auth = new URL(reason === "endpoint" ? "https://auth.openai.com/wrong-path" : "https://auth.openai.com/api/accounts/authorize");
+					auth.searchParams.set("state", "fixture");
+					auth.searchParams.set("redirect_uri", `http://127.0.0.1:${reason === "occupied" ? address.port : port}/auth/callback`);
+					return new Response(null, { status: 303, headers: { Location: auth.href } });
+				},
+			}), /unexpected ChatGPT callback/);
+		}
+	} finally { await new Promise<void>((resolve) => occupied.close(() => resolve())); }
+});

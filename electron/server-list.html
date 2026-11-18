@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<title>LearnHarness servers</title>
+	<link rel="stylesheet" href="./server-list.css">
+	<script src="./server-list.js" defer></script>
+</head>
+<body>
+	<main>
+		<section id="welcome" hidden>
+			<h1>Set up LearnHarness</h1>
+			<div class="actions">
+				<button id="run-local" type="button">Run my LearnHarness here</button>
+				<button id="connect-remote" type="button">Connect to my server</button>
+			</div>
+		</section>
+		<section id="list" hidden>
+			<h1>Switch server</h1>
+			<div id="recovery" hidden>
+				<p id="problem" role="status"></p>
+				<button id="recover" type="button">Retry</button>
+			</div>
+			<ul id="servers"></ul>
+			<div class="actions">
+				<button id="add" type="button">Add a server</button>
+				<button id="sign-in" type="button" hidden>Sign in to ChatGPT</button>
+			</div>
+		</section>
+		<section id="add-server" hidden>
+			<h1 id="pair-title">Add a server</h1>
+			<form id="pair" autocomplete="off">
+				<label>Pairing link <input id="link" type="text" spellcheck="false" placeholder="Paste a pairing link"></label>
+				<label>Server origin <input id="origin" type="text" required spellcheck="false" placeholder="https://my-server.example"></label>
+				<label>Pairing code <input id="code" type="text" required spellcheck="false" autocapitalize="characters" placeholder="XXXX-XXXX-XXXX"></label>
+				<p id="form-error" role="status"></p>
+				<div class="actions">
+					<button id="pair-submit" type="submit">Pair and connect</button>
+					<button id="back" type="button">Back</button>
+				</div>
+			</form>
+		</section>
+		<p id="notice" role="status"></p>
+	</main>
+</body>
+</html>
