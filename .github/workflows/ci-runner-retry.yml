@@ -1,0 +1,52 @@
+name: CI runner retry
+
+# When a CI run fails only because GitHub cancelled a job that no hosted runner
+# ever picked up (the macOS arm64 queue under capacity constraints), re-run its
+# failed jobs, which re-runs `Check` too. Real failures, cancels by a newer push
+# or by a person, and runs past 3 automatic re-runs are left alone. Whether a
+# re-run this starts triggers this workflow again is unproven (see the spec).
+# .github/scripts/ci-runner-retry.cjs decides. See docs/specs/ci-runner-retry.md.
+#
+# workflow_run, so GitHub always runs main's copy of this file and script. It
+# checks out main, never the PR, and runs no PR code. No secrets: the built-in
+# token re-runs the jobs.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  retry:
+    name: Retry no-runner cancels
+    # `workflows: [CI]` matches by name, so the path pins it to ci.yml rather
+    # than any workflow a PR adds under the same name.
+    if: >-
+      github.repository == 'max-miller1204/learnharness-nightly' &&
+      github.event.workflow_run.path == '.github/workflows/ci.yml' &&
+      github.event.workflow_run.conclusion != 'success'
+    # One decision per CI run at a time; a later completion of the same run
+    # waits rather than racing it.
+    concurrency:
+      group: ci-runner-retry-${{ github.event.workflow_run.id }}
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      checks: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Re-run if no runner was acquired
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: node .github/scripts/ci-runner-retry.cjs --run "$RUN_ID" --attempt "$RUN_ATTEMPT"
