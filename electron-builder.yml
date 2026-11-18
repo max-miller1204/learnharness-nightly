@@ -11,6 +11,10 @@
 #     profile; the profile + team env vars are baked into desktop:dist).
 appId: com.learnharness.LearnHarness.Nightly
 productName: LearnHarness Nightly
+extraMetadata:
+  # The package name determines the NSIS install folder and updater cache.
+  name: learnharness-nightly
+  desktopName: learnharness-nightly.desktop
 directories:
   output: dist
 # Icons (owner ruling, 2026-10-13) — per-platform sources in build/:

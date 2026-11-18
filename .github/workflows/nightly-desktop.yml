@@ -127,7 +127,7 @@ jobs:
               ;;
             Linux)
               payload="dist/linux-unpacked/resources/server/standalone"
-              runtime="dist/linux-unpacked/learnharness"
+              runtime="dist/linux-unpacked/learnharness-nightly"
               runner=(xvfb-run -a)
               ;;
           esac

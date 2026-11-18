@@ -45,13 +45,13 @@ case "$MODE" in
 		[ -x "$REPO/node_modules/electron/dist/electron" ] || (cd "$REPO" && node node_modules/electron/install.js) >>"$ED/electron.log" 2>&1
 		(cd "$REPO" && npx electron-builder --linux dir --publish never) >"$ED/package.log" 2>&1 || { tail -30 "$ED/package.log" >&2; die "electron-builder --linux dir failed"; }
 		say "[electron] packaged in $((SECONDS - t0))s"
-		BIN=$(find "$REPO/dist/linux-unpacked" -maxdepth 1 -type f -perm -u+x -iname 'learnharness' | head -1)
-		[ -n "$BIN" ] || die "no binary in $REPO/dist/linux-unpacked"
+		BIN=$REPO/dist/linux-unpacked/learnharness-nightly
+		[ -x "$BIN" ] || die "no executable at $BIN"
 		ARGS=("${SANDBOX[@]}" "--remote-debugging-port=$CDP")
 		ENVS=()
 		WANT_URL=http://127.0.0.1
 		SEED=1
-		E_DATA=$ED/config/LearnHarness/data
+		E_DATA="$ED/config/LearnHarness Nightly/data"
 		;;
 	*) die "mode must be dev or packaged" ;;
 esac
@@ -76,7 +76,7 @@ SEED_IN_PAGE=$SEED
 FAKE_URL=$FAKE_URL
 FAKE_CONTROL=$FAKE_CONTROL
 BUILD_STAMP="$BUILD_STAMP"
-DATA_DIR=$E_DATA
+DATA_DIR="$E_DATA"
 FIXTURE=$FIXTURE
 MODEL_LOG=$MODEL_LOG
 EOF

@@ -21,6 +21,8 @@ env:
 jobs:
   quality:
     name: Release gates
+    # The fork ships desktop packages through nightly.yml only.
+    if: github.repository == 'amosblomqvist/learnharness'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -187,7 +189,7 @@ jobs:
               ;;
             Linux)
               payload="dist/linux-unpacked/resources/server/standalone"
-              runtime="dist/linux-unpacked/learnharness"
+              runtime="dist/linux-unpacked/learnharness-nightly"
               ;;
           esac
           node scripts/smoke-provider-runtime.mjs --standalone "$payload"
@@ -200,10 +202,10 @@ jobs:
               node scripts/smoke-demo-runtime.mjs --standalone "$app/Resources/server/standalone" --runtime "$app/MacOS/LearnHarness Nightly" --browser
               ;;
             Windows)
-              node scripts/smoke-demo-runtime.mjs --standalone dist/win-unpacked/resources/server/standalone --runtime dist/win-unpacked/LearnHarness Nightly.exe --browser
+              node scripts/smoke-demo-runtime.mjs --standalone dist/win-unpacked/resources/server/standalone --runtime "dist/win-unpacked/LearnHarness Nightly.exe" --browser
               ;;
             Linux)
-              xvfb-run -a node scripts/smoke-demo-runtime.mjs --standalone dist/linux-unpacked/resources/server/standalone --runtime dist/linux-unpacked/learnharness --browser
+              xvfb-run -a node scripts/smoke-demo-runtime.mjs --standalone dist/linux-unpacked/resources/server/standalone --runtime dist/linux-unpacked/learnharness-nightly --browser
               ;;
           esac
       - name: Save installers and update metadata

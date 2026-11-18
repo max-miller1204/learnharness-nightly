@@ -46,6 +46,8 @@ describe("desktop development startup", () => {
 		const devUrl = "http://localhost:3000";
 		const loaded: string[] = [];
 		let respond: (() => void) | undefined;
+		let appName = "";
+		let userData = "";
 		class FakeWindow {
 			static getAllWindows() { return []; }
 			webContents = { on() {}, setWindowOpenHandler() {} };
@@ -54,7 +56,12 @@ describe("desktop development startup", () => {
 		}
 		const electron = {
 			app: {
-				setName() {}, getPath: () => "/fixture/LearnHarness", setPath() {},
+				setName(name: string) { appName = name; },
+				getPath: () => userData || `/fixture/${appName}`,
+				setPath(key: string, value: string) {
+					assert.equal(key, "userData");
+					userData = value;
+				},
 				requestSingleInstanceLock: () => false, quit() {}, on() {}, once() {}, removeListener() {}, whenReady: async () => {},
 			},
 			BrowserWindow: FakeWindow,
@@ -79,6 +86,7 @@ describe("desktop development startup", () => {
 			__dirname: dirname(mainFile),
 		};
 		runInNewContext(mainSource, context, { filename: mainFile });
+		assert.equal(userData, "/fixture/LearnHarness-dev");
 		const boot = runInNewContext("main()", context) as Promise<void>;
 		await new Promise<void>(resolve => setImmediate(resolve));
 		assert.deepEqual(loaded, [], "a slow server must not leave a failed navigation in the window");
@@ -270,6 +278,25 @@ describe("desktop packaging policy", () => {
 		await validateConfiguration(config, { isEnabled: false });
 	});
 
+	it("keeps the nightly install folder, updater cache and Linux desktop identity distinct", async () => {
+		const { getConfig } = require("app-builder-lib/out/util/config/config.js");
+		const { AppInfo, LinuxPackager } = require("app-builder-lib");
+		const { LinuxTargetHelper } = require("app-builder-lib/out/targets/LinuxTargetHelper.js");
+		const { getWindowsInstallationDirName } = require("app-builder-lib/out/targets/targetUtil.js");
+		const version = "0.6.1-nightly.20261118.1";
+		const root = fileURLToPath(new URL("../", import.meta.url));
+		const builderConfig = await getConfig(root, null, { extraMetadata: { version } });
+		const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+		const info = { config: builderConfig, metadata: { ...pkg, ...builderConfig.extraMetadata } };
+		const appInfo = new AppInfo(info);
+		assert.equal(appInfo.version, version);
+		assert.equal(getWindowsInstallationDirName(appInfo, !config.nsis.oneClick || config.nsis.perMachine), "learnharness-nightly");
+		assert.equal(appInfo.updaterCacheDirName, "learnharness-nightly-updater");
+		const linux = new LinuxPackager(info);
+		assert.equal(linux.executableName, "learnharness-nightly");
+		assert.equal(new LinuxTargetHelper(linux).getDesktopFileName(), "learnharness-nightly");
+	});
+
 	it("ships Mac arm64, Windows NSIS x64, and both Linux x64 channels", () => {
 		assert.deepEqual(config.mac.target, [
 			{ target: "dmg", arch: ["arm64"] }, { target: "zip", arch: ["arm64"] },
@@ -349,7 +376,7 @@ describe("desktop release workflow", () => {
 	type Workflow = {
 		concurrency: { group: string; "cancel-in-progress": boolean };
 		jobs: Record<string, {
-			needs?: string | string[]; steps: Step[]; "runs-on"?: string;
+			if?: string; needs?: string | string[]; steps: Step[]; "runs-on"?: string;
 			strategy?: { matrix: { include: { os: string; platform: string; builder_args?: string }[] } };
 		}>;
 	};
@@ -408,6 +435,13 @@ describe("desktop release workflow", () => {
 			assert.equal(native.env?.ELECTRON_RUN_AS_NODE, "1");
 			assert.ok(steps.some(step => step.run === "node scripts/smoke-server.mjs --electron"));
 		}
+	});
+
+	it("gates every tagged desktop job behind the upstream-only quality job", () => {
+		assert.equal(workflow.jobs.quality?.if, "github.repository == 'amosblomqvist/learnharness'");
+		assert.equal(draft.needs, "quality");
+		assert.deepEqual(packaging.needs, ["quality", "draft"]);
+		assert.equal(workflow.jobs.verify?.needs, "package");
 	});
 
 	it("pairs Icon Composer packaging with macOS 26 and Xcode selection, retaining macOS 15 CI", () => {

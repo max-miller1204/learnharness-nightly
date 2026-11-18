@@ -46,7 +46,7 @@ const SIDEBAR_AUTOCLOSE = 928;
 const PRODUCT_NAME = "LearnHarness Nightly";
 
 // Set the profile name before resolving userData or taking the instance lock.
-app.setName(PRODUCT_NAME);
+app.setName(process.env.LH_DEV_URL ? "LearnHarness" : PRODUCT_NAME);
 const AUTH_FILE = () => path.join(app.getPath("userData"), "auth.json");
 const DATA_DIR = () => path.join(app.getPath("userData"), "data");
 

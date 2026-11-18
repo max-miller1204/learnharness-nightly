@@ -6,7 +6,11 @@ The owner approved this plan on November 18, 2026, including update discovery.
 
 The desktop app is **LearnHarness Nightly**, with bundle ID `com.learnharness.LearnHarness.Nightly`. On first launch it starts with a fresh Electron profile. Its bundled server uses `data` and `auth.json` under Electron’s `userData` for that profile. The self-hosted server uses `~/.learnharness/userdata` by default. Existing profiles, backups, restores, rollbacks and uninstall behavior stay in place. Item 23 covers connecting desktop to a self-hosted server.
 
+The packaged app uses `learnharness-nightly` for the Windows per-user install folder and `learnharness-nightly-updater` for the updater cache. Its Linux executable and desktop entry are `learnharness-nightly` and `learnharness-nightly.desktop`. Development keeps the `LearnHarness-dev` profile.
+
 ## Build and publication
+
+The fork ships desktop packages through the nightly workflow. The inherited tagged desktop workflow's gate only allows the upstream repository.
 
 A successful push CI run on `main` supplies the exact commit. The nightly uses one `<version>-nightly.<UTC date>.<run number>` across the Electron metadata, bundled Next server, the self-hosted archives and update manifests.
 
