@@ -45,6 +45,7 @@ import * as http from "node:http";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const option = (name) => {
@@ -139,7 +140,8 @@ async function main() {
 		fs.writeFileSync(guard, `import {registerHooks} from 'node:module'; import {realpathSync} from 'node:fs'; import path from 'node:path'; import {fileURLToPath} from 'node:url';
 const roots = ${JSON.stringify([standalone, path.join(home, "data", "plugins")])}.map(p=>realpathSync(p));
 registerHooks({resolve(specifier,context,next){ const result=next(specifier,context); if(result.url.startsWith('file:')) { const file=realpathSync(fileURLToPath(result.url)); if(!roots.some(root=>file===root || file.startsWith(root+path.sep))) throw new Error('Import escaped standalone/plugin payload: '+file); } return result; }});`);
-		imports.push("--import", guard);
+		// --import takes a URL; a bare C:\ path fails on Windows.
+		imports.push("--import", pathToFileURL(guard).href);
 	}
 
 	const tail = []; // rolling log tail for failure diagnosis
