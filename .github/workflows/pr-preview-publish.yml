@@ -57,7 +57,7 @@ jobs:
     if: needs.identify.outputs.pr != ''
     concurrency:
       group: pr-preview-publish-${{ needs.identify.outputs.pr }}
-      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -72,6 +72,7 @@ jobs:
       HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
       ACTOR: ${{ github.event.workflow_run.triggering_actor.login }}
       RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+      RUN_CREATED_AT: ${{ github.event.workflow_run.created_at }}
       OWNER: ${{ github.repository_owner }}
     steps:
       - uses: actions/checkout@v7
@@ -85,7 +86,6 @@ jobs:
         id: check
         env:
           RUN_ID: ${{ github.event.workflow_run.id }}
-          RUN_CREATED_AT: ${{ github.event.workflow_run.created_at }}
         run: FILES="$RUNNER_TEMP/preview-files" OUT="$RUNNER_TEMP/preview-out" selfhost/scripts/pr-preview-check.sh
       - name: Prepare the preview release
         if: steps.check.outputs.publish == 'true'

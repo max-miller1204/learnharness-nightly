@@ -361,8 +361,8 @@ args="$*"
 case "$args" in
   *"/permission"*) [ -f "$fx/perm" ] && cat "$fx/perm" || exit 1 ;;
   *"/events"*) cat "$fx/labels" ;;
-  *"/actions/artifacts "*) [ -f "$fx/approval" ] && [[ "$args" == *"name=$(cat "$fx/approval") "* ]] && echo 23; exit 0 ;;
-  *"/actions/runs/23 "*) cat "$fx/approval.tsv" ;;
+  *"/actions/workflows/pr-preview-approval.yml/runs "*) cat "$fx/approval.tsv" ;;
+  *"/actions/runs/23/artifacts "*) if [ -f "$fx/approval" ] && [[ "$args" == *"name=$(cat "$fx/approval") "* ]]; then echo 1; else echo 0; fi ;;
   *"DELETE "*"/labels/preview"*) touch "$fx/consumed"; if [ -f "$fx/after" ]; then cp "$fx/after" "$fx/pr.tsv"; fi ;;
   *"/pulls/"*) cat "$fx/pr.tsv" ;;
 esac
@@ -382,7 +382,7 @@ describe("publish gate (pr-preview-check.sh)", () => {
 	const LABEL = ["10", "labeled", "max", "2026-11-17T11:59:55Z"];
 	interface Case {
 		pr?: string; tsv?: string[]; perm?: string; actor?: string; labels?: string[][];
-		approval?: string; approvalRun?: string[]; runAt?: string;
+		approval?: string; approvalRuns?: string[][]; runAt?: string;
 		version?: string; extra?: boolean; noMeta?: boolean; confirm?: string; after?: string[];
 	}
 	function gate(c: Case): { code: number; out: Record<string, string>; log: string; files: string[]; outDir: string; consumed: boolean } {
@@ -392,7 +392,7 @@ describe("publish gate (pr-preview-check.sh)", () => {
 		if (c.perm !== "") fs.writeFileSync(path.join(fx, "perm"), `${c.perm ?? "admin"}\n`);
 		fs.writeFileSync(path.join(fx, "labels"), (c.labels ?? []).map((label) => `${label.join("\t")}\n`).join(""));
 		if (c.approval) fs.writeFileSync(path.join(fx, "approval"), c.approval);
-		fs.writeFileSync(path.join(fx, "approval.tsv"), `${(c.approvalRun ?? ["pull_request_target", ".github/workflows/pr-preview-approval.yml", "max", "success", RUN_AT]).join("\t")}\n`);
+		fs.writeFileSync(path.join(fx, "approval.tsv"), (c.approvalRuns ?? [["23", "Approve preview #12 at abc", "success", RUN_AT]]).map((run) => `${run.join("\t")}\n`).join(""));
 		if (c.after) fs.writeFileSync(path.join(fx, "after"), `${c.after.join("\t")}\n`);
 		const version = c.version ?? "0.6.1-preview.20261117.5";
 		for (const arch of ["linux-x64", "linux-arm64"]) {
@@ -433,12 +433,13 @@ describe("publish gate (pr-preview-check.sh)", () => {
 		const cases: Array<[Case, RegExp]> = [
 			[{ approval: "preview-approval-12-def" }, /No trusted owner approval/],
 			[{ approval: "preview-approval-13-abc" }, /No trusted owner approval/],
-			[{ approval: APPROVAL, approvalRun: ["pull_request", ".github/workflows/pr-preview-approval.yml", "max", "success", RUN_AT] }, /No trusted owner approval/],
-			[{ approval: APPROVAL, approvalRun: ["pull_request_target", ".github/workflows/pr-preview.yml", "max", "success", RUN_AT] }, /No trusted owner approval/],
+			[{ approval: APPROVAL, approvalRuns: [] }, /No trusted owner approval/],
+			[{ approval: APPROVAL, approvalRuns: [["23", "Approve preview #12 at abc", "pending", RUN_AT]] }, /No trusted owner approval/],
+			[{ approval: APPROVAL, approvalRuns: [["24", "Approve preview #12 at def", "pending", RUN_AT], ["23", "Approve preview #12 at abc", "success", RUN_AT]] }, /No trusted owner approval/],
 			[{ approval: APPROVAL, actor: "helper", perm: "write" }, /Only max can request/],
 			[{ approval: APPROVAL, labels: [["11", "labeled", "helper", RUN_AT], LABEL] }, /latest|current preview label/],
 			[{ approval: APPROVAL, runAt: "2026-11-17T12:02:00Z" }, /did not run for the current preview label/],
-			[{ approval: APPROVAL, labels: [["11", "labeled", "max", "2026-11-17T11:59:55Z"], LABEL], approvalRun: ["pull_request_target", ".github/workflows/pr-preview-approval.yml", "max", "success", "2026-11-17T11:58:00Z"] }, /No trusted owner approval/],
+			[{ approval: APPROVAL, labels: [["11", "labeled", "max", "2026-11-17T11:59:55Z"], LABEL], approvalRuns: [["23", "Approve preview #12 at abc", "success", "2026-11-17T11:58:00Z"]] }, /No trusted owner approval/],
 		];
 		for (const [c, message] of cases) {
 			const r = gate({ tsv: stranger(true), labels: [LABEL], ...c });
@@ -450,7 +451,7 @@ describe("publish gate (pr-preview-check.sh)", () => {
 	});
 
 	it("rechecks the head and consumes the same label before publishing", () => {
-		const c = { tsv: stranger(true), labels: [LABEL], confirm: "10" };
+		const c = { tsv: stranger(true), labels: [LABEL], approval: APPROVAL, confirm: "10" };
 		const current = gate(c);
 		assert.equal(current.out.publish, "true", current.log);
 		assert.equal(current.consumed, true);

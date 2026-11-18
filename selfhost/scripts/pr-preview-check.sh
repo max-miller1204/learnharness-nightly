@@ -43,6 +43,34 @@ owner_label() {
   [ "$event" = labeled ] && [ "$labeler" = "$OWNER" ] || skip "The current preview label was not added by $OWNER."
 }
 
+matches_label() {
+  local timestamp delta
+  timestamp=$(iso_seconds "$1") || return 1
+  delta=$(( timestamp - label_time ))
+  [ "$delta" -ge 0 ] && [ "$delta" -le 60 ]
+}
+
+verify_approval() {
+  local label_time latest run title conclusion created_at recorded
+  owner_label
+  label_time=$(iso_seconds "$label_at")
+  matches_label "$RUN_CREATED_AT" || skip "This build did not run for the current preview label."
+  # Ask for the newest trusted approval for this PR, even if it is for a
+  # different SHA or is still running. Never fall back to an older approval.
+  latest=$(gh api --paginate -X GET "repos/$GH_REPO/actions/workflows/pr-preview-approval.yml/runs" \
+    -f event=pull_request_target -f actor="$OWNER" -f created=">=$label_at" \
+    --jq ".workflow_runs[] | select(.display_title | startswith(\"Approve preview #$pr at \")) | [.id, .display_title, (.conclusion // \"pending\"), .created_at] | @tsv" |
+    sort -t $'\t' -k4,4 -k1,1n | tail -n 1)
+  IFS=$'\t' read -r run title conclusion created_at <<<"$latest"
+  if ! [[ "$run" =~ ^[1-9][0-9]*$ && "$title" = "Approve preview #$pr at $HEAD_SHA" && "$conclusion" = success ]] ||
+    ! matches_label "$created_at"; then
+    skip "No trusted owner approval for PR #$pr at $HEAD_SHA."
+  fi
+  recorded=$(gh api -X GET "repos/$GH_REPO/actions/runs/$run/artifacts" -f name="preview-approval-$pr-$HEAD_SHA" \
+    --jq '[.artifacts[] | select(.expired == false)] | length')
+  [ "$recorded" = 1 ] || skip "No trusted owner approval for PR #$pr at $HEAD_SHA."
+}
+
 case "${1:-}" in
   --identify)
     mkdir -p "$FILES/meta"
@@ -56,7 +84,7 @@ case "${1:-}" in
     pr=$PR
     read_pr
     if [ -n "$APPROVAL_LABEL" ]; then
-      owner_label
+      verify_approval
       [ "$label_id" = "$APPROVAL_LABEL" ] || skip "PR #$pr has a different preview label approval."
       gh api -X DELETE "repos/$GH_REPO/issues/$pr/labels/preview" >/dev/null
       read_pr
@@ -78,32 +106,8 @@ if [ "$author" = "$OWNER" ]; then
   by_owner=true
 else
   [ "$ACTOR" = "$OWNER" ] || skip "Only $OWNER can request an outside PR preview."
-  owner_label
-  label_time=$(iso_seconds "$label_at")
-  # Match the current label application. Timing only identifies the request;
-  # the commit must be recorded by the trusted, label-only workflow.
-  matches_label() {
-    local timestamp delta
-    timestamp=$(iso_seconds "$1") || return 1
-    delta=$(( timestamp - label_time ))
-    [ "$delta" -ge -5 ] && [ "$delta" -le 60 ]
-  }
-  matches_label "$RUN_CREATED_AT" || skip "This build did not run for the current preview label."
-  approval_name="preview-approval-$pr-$HEAD_SHA"
-  runs=$(gh api --paginate -X GET "repos/$GH_REPO/actions/artifacts" -f name="$approval_name" \
-    --jq '.artifacts[] | select(.expired == false) | .workflow_run.id')
-  while read -r run; do
-    [[ "$run" =~ ^[1-9][0-9]*$ ]] || continue
-    info=$(gh api "repos/$GH_REPO/actions/runs/$run" \
-      --jq '[.event, (.path | split("@")[0]), .actor.login, .conclusion, .created_at] | @tsv')
-    IFS=$'\t' read -r event workflow approver conclusion created_at <<<"$info"
-    if [ "$event" = pull_request_target ] && [ "$workflow" = .github/workflows/pr-preview-approval.yml ] &&
-      [ "$approver" = "$OWNER" ] && [ "$conclusion" = success ] && matches_label "$created_at"; then
-      approval_label=$label_id
-      break
-    fi
-  done <<<"$runs"
-  [ -n "$approval_label" ] || skip "No trusted owner approval for PR #$pr at $HEAD_SHA."
+  verify_approval
+  approval_label=$label_id
 fi
 
 # Files are data: exact names, one version for both arches, the build's run

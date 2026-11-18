@@ -1,4 +1,10 @@
 name: PR preview approval
+run-name: >-
+  ${{ github.event.label.name == 'preview' &&
+  github.event.sender.login == github.repository_owner &&
+  github.event.pull_request.user.login != github.repository_owner &&
+  format('Approve preview #{0} at {1}', github.event.pull_request.number, github.event.pull_request.head.sha) ||
+  'Skip preview approval' }}
 
 # Record the exact commit the repository owner labeled. This is the default
 # branch's workflow. It never checks out code or reads build artifacts.
