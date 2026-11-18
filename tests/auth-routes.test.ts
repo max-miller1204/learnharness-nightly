@@ -55,6 +55,24 @@ describe("browser pairing", () => {
 	});
 });
 
+describe("a held store lock", () => {
+	it("never blocks the event loop: the claim waits asynchronously and succeeds once the lock is gone", async () => {
+		const { code } = createPairingLink(AUTH_TEST_DATA_DIR);
+		const lock = path.join(AUTH_TEST_DATA_DIR, "auth", ".lock");
+		fs.writeFileSync(lock, "999999\n");
+		const started = Date.now();
+		let tick = 0;
+		const ticked = new Promise<void>((resolve) => setTimeout(() => { tick = Date.now() - started; resolve(); }, 20));
+		const claim = browserSession(post("/api/auth/browser-session", { credential: code }));
+		await ticked;
+		assert.ok(tick < 200, `a timer still fires while the claim waits (${tick} ms)`);
+		setTimeout(() => fs.rmSync(lock, { force: true }), 150);
+		const response = await claim;
+		assert.equal(response.status, 200);
+		assert.ok(Date.now() - started >= 150, "it really waited for the lock");
+	});
+});
+
 describe("native token exchange", () => {
 	const exchange = (fields: Record<string, string>) => tokenExchange(new Request(`${origin}/oauth/token`, {
 		method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": "LearnHarnessApp/1.0" }, body: new URLSearchParams(fields),

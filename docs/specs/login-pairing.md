@@ -96,7 +96,7 @@ What you give up compared with today's LearnHarness:
 
 - **`sessions.json`:** `{ version: 1, sessions: [{ id, method: "pairing" | "desktop" | "cli", hidden?, label?, deviceType, os?, browser?, ip?, userAgent?, issuedAt, expiresAt, lastSeenAt?, revokedAt? }] }`. Times are ISO strings.
 - **`pairing.json`:** `{ version: 1, links: [{ id, codeHash, label?, hidden?, createdAt, expiresAt, consumedAt? }] }`.
-- **Writes:** read-modify-write under `auth/.lock`, taken with `O_EXCL` (a lock older than 10 seconds counts as stale). Each file is written to a temp file and renamed into place.
+- **Writes:** read-modify-write under `auth/.lock`, taken with `O_EXCL` (a lock older than 10 seconds counts as stale). Each file is written to a temp file and renamed into place. A server request never blocks its event loop on a held lock: it tries once and retries asynchronously for up to 12 seconds (past the stale threshold), then answers 503 "The login store is busy" and the pairing screen says to try again (the code stays valid). Last-seen updates skip a held lock. `lh` and scripts wait synchronously.
 - **Reads:** a cache keyed on file mtime and size, so the proxy pays one `stat` per request.
 - **Functions:** `createPairingLink`, `claimPairingCode` (consumes the link and creates the session in one locked write), `issueSession`, `verifyToken`, `listSessions`, `revokeSession`, `revokeOthers`, `touchLastSeen`, `normalizeCode`, `formatCode`.
 

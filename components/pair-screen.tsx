@@ -44,7 +44,9 @@ export function PairScreen() {
 				body: JSON.stringify({ credential }),
 			});
 			if (res.ok) { enterApp(); return; }
-			setError(WRONG_CODE);
+			// Only a refused code is the code's fault; anything else (a busy or
+			// damaged login store) leaves the code usable.
+			setError(res.status === 401 ? WRONG_CODE : "The server couldn't sign you in right now. Try again in a moment.");
 		} catch {
 			setError("Couldn't reach the LearnHarness server. Try again.");
 		}

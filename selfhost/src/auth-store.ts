@@ -162,8 +162,18 @@ function breakStaleLock(lock: string): void {
 	}
 }
 
+/** Thrown with `wait: false` when another writer holds the lock. The server
+ * retries asynchronously (src/server/auth-routes.ts) instead of blocking its
+ * event loop; `lh` and scripts wait synchronously. */
+export class LockBusy extends Error {
+	constructor() { super("The login store is busy."); }
+}
+
+/** Write options every store write takes. */
+export type WriteOptions = { now?: number; wait?: boolean };
+
 /** Run `fn` holding auth/.lock. A lock older than 10 seconds is stale. With
- * `wait: false` it gives up at once (undefined) when the lock is held. */
+ * `wait: false` it throws LockBusy at once when the lock is held. */
 function withLock<T>(dataDir: string, fn: () => T, options: { wait?: boolean } = {}): T {
 	const f = files(dataDir);
 	ensureDir(f.dir);
@@ -192,8 +202,6 @@ function withLock<T>(dataDir: string, fn: () => T, options: { wait?: boolean } =
 		try { if (fs.statSync(f.lock).ino === held) fs.rmSync(f.lock, { force: true }); } catch { /* already gone */ }
 	}
 }
-
-class LockBusy extends Error {}
 
 function writeSessions(dataDir: string, sessions: SessionRecord[], now: number): void {
 	const kept = sessions.filter((s) => {
@@ -274,7 +282,7 @@ export function pairingUrl(origin: string, code: string): string {
 
 export function createPairingLink(
 	dataDir: string,
-	options: { label?: string; hidden?: boolean; ttlMs?: number; now?: number } = {},
+	options: { label?: string; hidden?: boolean; ttlMs?: number } & WriteOptions = {},
 ): { id: string; code: string; label?: string; expiresAt: string } {
 	const now = options.now ?? Date.now();
 	const code = generatePairingCode();
@@ -287,7 +295,7 @@ export function createPairingLink(
 		createdAt: new Date(now).toISOString(),
 		expiresAt: new Date(now + (options.ttlMs ?? PAIRING_TTL_MS)).toISOString(),
 	};
-	withLock(dataDir, () => writePairing(dataDir, [...readPairingFile(dataDir).links, link], now));
+	withLock(dataDir, () => writePairing(dataDir, [...readPairingFile(dataDir).links, link], now), { wait: options.wait });
 	return { id: link.id, code, ...(label ? { label } : {}), expiresAt: link.expiresAt };
 }
 
@@ -319,7 +327,7 @@ export type ClaimResult =
 	| { ok: false; reason: "invalid" | "expired" | "used" };
 
 /** Spend a one-time code and create its session, in one locked write. */
-export function claimPairingCode(dataDir: string, input: string, client: ClientInfo, options: { now?: number } = {}): ClaimResult {
+export function claimPairingCode(dataDir: string, input: string, client: ClientInfo, options: WriteOptions = {}): ClaimResult {
 	const now = options.now ?? Date.now();
 	const code = normalizeCode(input);
 	if (!code) return { ok: false, reason: "invalid" };
@@ -337,7 +345,7 @@ export function claimPairingCode(dataDir: string, input: string, client: ClientI
 		const session = newSession("pairing", { ...client, ...(label ? { label } : {}) }, now, SESSION_TTL_MS);
 		writeSessions(dataDir, [...sessions, session], now);
 		return { ok: true, token: mintToken(dataDir, session), session } as const;
-	});
+	}, { wait: options.wait });
 }
 
 /** A session without a pairing code: the desktop shell's (replacing the
@@ -345,7 +353,7 @@ export function claimPairingCode(dataDir: string, input: string, client: ClientI
  * hidden short-lived one for `lh`. */
 export function issueSession(
 	dataDir: string,
-	options: { method: SessionMethod; client: ClientInfo; hidden?: boolean; ttlMs?: number; replaceMethod?: boolean; now?: number },
+	options: { method: SessionMethod; client: ClientInfo; hidden?: boolean; ttlMs?: number; replaceMethod?: boolean } & WriteOptions,
 ): { token: string; session: SessionRecord } {
 	const now = options.now ?? Date.now();
 	return withLock(dataDir, () => {
@@ -355,7 +363,7 @@ export function issueSession(
 		const session = newSession(options.method, options.client, now, options.ttlMs ?? SESSION_TTL_MS, options.hidden);
 		writeSessions(dataDir, [...sessions, session], now);
 		return { token: mintToken(dataDir, session), session };
-	});
+	}, { wait: options.wait });
 }
 
 const active = (s: SessionRecord, now: number) => !s.revokedAt && Date.parse(s.expiresAt) > now;
@@ -391,7 +399,7 @@ export function listSessions(dataDir: string, options: { now?: number } = {}): S
 		.sort((a, b) => Date.parse(b.issuedAt) - Date.parse(a.issuedAt));
 }
 
-export function revokeSession(dataDir: string, id: string, options: { now?: number } = {}): boolean {
+export function revokeSession(dataDir: string, id: string, options: WriteOptions = {}): boolean {
 	const now = options.now ?? Date.now();
 	return withLock(dataDir, () => {
 		const sessions = readSessionsFile(dataDir).sessions;
@@ -399,11 +407,11 @@ export function revokeSession(dataDir: string, id: string, options: { now?: numb
 		if (!target) return false;
 		writeSessions(dataDir, sessions.map((s) => (s === target ? { ...s, revokedAt: new Date(now).toISOString() } : s)), now);
 		return true;
-	});
+	}, { wait: options.wait });
 }
 
 /** Revoke every listed session except `currentId`. Hidden sessions are left alone. */
-export function revokeOthers(dataDir: string, currentId: string, options: { now?: number } = {}): number {
+export function revokeOthers(dataDir: string, currentId: string, options: WriteOptions = {}): number {
 	const now = options.now ?? Date.now();
 	return withLock(dataDir, () => {
 		const sessions = readSessionsFile(dataDir).sessions;
@@ -415,7 +423,7 @@ export function revokeOthers(dataDir: string, currentId: string, options: { now?
 		});
 		if (count > 0) writeSessions(dataDir, next, now);
 		return count;
-	});
+	}, { wait: options.wait });
 }
 
 /** Record that a session was used, at most once a minute. On the request

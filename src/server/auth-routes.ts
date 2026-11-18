@@ -11,6 +11,7 @@ import {
 	createPairingLink,
 	issueSession,
 	listSessions,
+	LockBusy,
 	revokeOthers,
 	revokeSession,
 	type SessionRecord,
@@ -20,6 +21,26 @@ import { authDataDir, authenticate, clientInfo, CREDENTIAL_HEADERS, sessionCooki
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
 	Response.json(body, { status, headers: { ...CREDENTIAL_HEADERS, ...extra } });
+
+const BUSY = Symbol("busy");
+const LOCK_RETRY_MS = 12_000;
+const busy = () => json({ error: "The login store is busy. Try again in a moment." }, 503, { "Retry-After": "1" });
+
+/** Store writes from a request never block the event loop on a held lock
+ * (that would stall every request, /api/health too): try once, then retry
+ * asynchronously for up to 12 s, longer than a crashed writer's stale lock. */
+async function unlocked<T>(write: (options: { wait: false }) => T): Promise<T | typeof BUSY> {
+	const deadline = Date.now() + LOCK_RETRY_MS;
+	for (;;) {
+		try {
+			return write({ wait: false });
+		} catch (error) {
+			if (!(error instanceof LockBusy)) throw error;
+			if (Date.now() > deadline) return BUSY;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+}
 
 async function jsonBody(request: Request): Promise<Record<string, unknown>> {
 	try {
@@ -41,7 +62,8 @@ export function sessionState(request: Request): Response {
 export async function browserSession(request: Request): Promise<Response> {
 	const { credential } = await jsonBody(request);
 	if (typeof credential !== "string" || !credential) return json({ error: "Expected a pairing code." }, 400);
-	const claimed = claimPairingCode(authDataDir(), credential, clientInfo(request));
+	const claimed = await unlocked((options) => claimPairingCode(authDataDir(), credential, clientInfo(request), options));
+	if (claimed === BUSY) return busy();
 	if (!claimed.ok) return json({ error: "That code is wrong, expired or already used. Make a new one.", reason: claimed.reason }, 401);
 	return json(
 		{ authenticated: true, expiresAt: claimed.session.expiresAt },
@@ -82,18 +104,22 @@ export async function tokenExchange(request: Request): Promise<Response> {
 	let issued: { token: string; session: SessionRecord };
 	switch (params.get("subject_token_type")) {
 		case PAIRING_CODE_TOKEN_TYPE: {
-			const claimed = claimPairingCode(authDataDir(), subject, client);
+			const claimed = await unlocked((options) => claimPairingCode(authDataDir(), subject, client, options));
+			if (claimed === BUSY) return json({ error: "temporarily_unavailable", error_description: "The login store is busy. Try again in a moment." }, 503, { "Retry-After": "1" });
 			if (!claimed.ok) return oauthError("invalid_grant", "That pairing code is wrong, expired or already used.");
 			issued = claimed;
 			break;
 		}
 		case DESKTOP_BOOTSTRAP_TOKEN_TYPE: {
 			if (!desktopSecretMatches(subject)) return oauthError("invalid_grant", "The desktop bootstrap credential is not valid.");
-			issued = issueSession(authDataDir(), {
+			const desktop = await unlocked((options) => issueSession(authDataDir(), {
 				method: "desktop",
 				client: { ...client, label: client.label ?? "LearnHarness Desktop", deviceType: params.get("client_device_type") ? client.deviceType : "desktop" },
 				replaceMethod: true,
-			});
+				...options,
+			}));
+			if (desktop === BUSY) return json({ error: "temporarily_unavailable", error_description: "The login store is busy. Try again in a moment." }, 503, { "Retry-After": "1" });
+			issued = desktop;
 			break;
 		}
 		default:
@@ -126,7 +152,8 @@ export async function createPairingToken(request: Request): Promise<Response> {
 	const result = authenticate(request);
 	if (!result.ok) return json({ error: result.error }, result.status);
 	const { label } = await jsonBody(request);
-	const link = createPairingLink(authDataDir(), { ...(typeof label === "string" ? { label } : {}) });
+	const link = await unlocked((options) => createPairingLink(authDataDir(), { ...(typeof label === "string" ? { label } : {}), ...options }));
+	if (link === BUSY) return busy();
 	const tailscale = tailscaleOrigin();
 	return json({ id: link.id, credential: link.code, ...(link.label ? { label: link.label } : {}), expiresAt: link.expiresAt, ...(tailscale ? { tailscaleOrigin: tailscale } : {}) });
 }
@@ -158,12 +185,14 @@ export async function revokeClient(request: Request): Promise<Response> {
 	const { sessionId } = await jsonBody(request);
 	if (typeof sessionId !== "string" || !sessionId) return json({ error: "Expected a sessionId." }, 400);
 	if (sessionId === result.session.id) return json({ error: "current_session_revoke_not_allowed" }, 400);
-	return json({ revoked: revokeSession(authDataDir(), sessionId) });
+	const revoked = await unlocked((options) => revokeSession(authDataDir(), sessionId, options));
+	return revoked === BUSY ? busy() : json({ revoked });
 }
 
 /** POST /api/auth/clients/revoke-others. */
-export function revokeOtherClients(request: Request): Response {
+export async function revokeOtherClients(request: Request): Promise<Response> {
 	const result = authenticate(request);
 	if (!result.ok) return json({ error: result.error }, result.status);
-	return json({ revokedCount: revokeOthers(authDataDir(), result.session.id) });
+	const revokedCount = await unlocked((options) => revokeOthers(authDataDir(), result.session.id, options));
+	return revokedCount === BUSY ? busy() : json({ revokedCount });
 }
