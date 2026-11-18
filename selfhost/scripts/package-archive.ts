@@ -31,8 +31,7 @@ const arch = values.arch ?? "";
 if (!isExactVersion(version)) throw new Error(`--version must be an exact version, got "${version}"`);
 if (!(ARCHES as readonly string[]).includes(arch)) throw new Error(`--arch must be one of ${ARCHES.join(", ")}, got "${arch}"`);
 // The archive ships the standalone server's native modules, which npm installed for this OS.
-const archOs = arch.split("-")[0];
-if (archOs !== process.platform) throw new Error(`build the ${arch} archive on ${archOs}, not ${process.platform}`);
+if (arch !== `${process.platform}-${process.arch}`) throw new Error(`build the ${arch} archive on ${arch}, not ${process.platform}-${process.arch}`);
 const nodeDir = path.resolve(values["node-dir"] ?? "");
 const standalone = path.resolve(values.standalone);
 const outDir = path.resolve(values.out);
@@ -64,7 +63,7 @@ try {
 	const archive = path.join(outDir, name);
 	// GNU tar on Linux; macOS tar (bsdtar) spells the owner flags differently
 	// and must not add AppleDouble `._` files or extended attributes.
-	const ownerFlags = process.platform === "darwin" ? ["--uid", "0", "--gid", "0", "--no-mac-metadata", "--no-xattrs"] : ["--owner=0", "--group=0"];
+	const ownerFlags = process.platform === "darwin" ? ["--uid", "0", "--gid", "0", "--uname", "root", "--gname", "wheel", "--no-mac-metadata", "--no-xattrs"] : ["--owner=0", "--group=0"];
 	execFileSync("tar", ["-czf", archive, ...ownerFlags, "-C", stage, "."], { stdio: "inherit", env: { ...process.env, COPYFILE_DISABLE: "1" } });
 	const sha = createHash("sha256").update(fs.readFileSync(archive)).digest("hex");
 	fs.writeFileSync(`${archive}.sha256`, `${sha}  ${name}\n`);

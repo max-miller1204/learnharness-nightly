@@ -275,8 +275,17 @@ function launchdManager(name: string): ServiceManager {
 	const loaded = () => launchctl("print", target).ok;
 	// Unloaded jobs reject bootout; bootout --wait (T3) waits through ExitTimeOut.
 	const stop = (): ServiceResult => (loaded() ? launchctl("bootout", "--wait", target) : { ok: true, stdout: "", stderr: "" });
+	/**
+	 * Every start is a fresh bootstrap, so a rewritten plist always takes
+	 * effect: a loaded job (running, crash-looping or throttled) is booted out
+	 * first. A persisted `launchctl disable` (from `lh down`) refuses
+	 * bootstrap, so it is cleared first, as T3 does; like `systemctl start`,
+	 * starting by hand turns the service back on.
+	 */
 	const start = (): ServiceResult => {
-		if (loaded()) return launchctl("kickstart", target);
+		const stopped = stop();
+		if (!stopped.ok) return stopped;
+		launchctl("enable", target);
 		// A bootstrap right after a bootout can fail with EIO while launchd tears the old job down.
 		let result = launchctl("bootstrap", domain, file);
 		for (let attempt = 0; !result.ok && attempt < 5 && !loaded(); attempt++) {
@@ -301,18 +310,10 @@ function launchdManager(name: string): ServiceManager {
 			const printed = launchctl("print", target);
 			return printed.ok ? (parseLaunchdState(printed.stdout) ?? "loaded") : "not loaded";
 		},
-		enable() {
-			// A persisted `launchctl disable` (from `lh down`) refuses bootstrap; clear it.
-			launchctl("enable", target);
-			return start();
-		},
+		enable: start,
 		start,
 		stop,
-		restart() {
-			// Stop and bootstrap again, so a rewritten plist takes effect.
-			const stopped = stop();
-			return stopped.ok ? start() : stopped;
-		},
+		restart: start,
 		disable() {
 			const stopped = stop();
 			const disabled = launchctl("disable", target);

@@ -436,6 +436,7 @@ async function upCommand(flags: Flags): Promise<void> {
 	writeConfig(home, config);
 	const running = service.isRunning();
 	service.write(home, state.activeVersion);
+	let started = true;
 	if (running) {
 		const ok = await ask("The service is running. Restart it now to apply these settings? Running agent turns will stop.", true, flags);
 		if (ok) service.restart();
@@ -443,21 +444,24 @@ async function upCommand(flags: Flags): Promise<void> {
 		const enabled = service.enable();
 		if (!enabled.ok && service.kind === "systemd") fail(`systemctl --user enable --now failed: ${enabled.stderr.trim()}`);
 		// T3's case: over SSH with nobody logged in at the screen, the gui domain refuses the job.
-		if (!enabled.ok) out(`Could not start the launch agent now (${enabled.stderr.trim() || "launchctl bootstrap failed"}). It is installed and starts the next time you log in at the Mac.`);
+		if (!enabled.ok) {
+			started = false;
+			out(`Could not start the launch agent now (${enabled.stderr.trim() || "launchctl bootstrap failed"}). It is installed and starts the next time you log in at the Mac.`);
+		}
 	}
 	if (service.kind === "systemd" && flags.linger !== false && !lingerEnabled()) {
 		const linger = await ask("Keep LearnHarness running when you're logged out? (runs `loginctl enable-linger`)", true, flags);
 		if (linger && !enableLinger()) out("Could not enable lingering; the service stops when you log out.");
 	}
 	out("");
-	out(`LearnHarness ${state.activeVersion} is starting.`);
+	out(started ? `LearnHarness ${state.activeVersion} is starting.` : `LearnHarness ${state.activeVersion} is installed.`);
 	if (service.kind === "launchd") out("It runs while you're logged in to this Mac. For a Mac that serves unattended, turn on automatic login and keep it from sleeping (docs/self-hosting.md).");
 	for (const url of urls(config)) out(`  ${url}`);
 	out("");
 	const { local } = printPairingLink(home, config);
 	if (config.tailscale.enabled) out("Only devices on your tailnet can reach the HTTPS address.");
 	out("Pair another device with `lh pair`. Never turn on Tailscale Funnel.");
-	if (process.stdout.isTTY && flags.open !== false) {
+	if (started && process.stdout.isTTY && flags.open !== false) {
 		// Wait for the server so the browser doesn't land on a refused connection.
 		const deadline = Date.now() + 60_000;
 		while (Date.now() < deadline && !(await health(config))?.ok) await sleep(1000);
@@ -512,7 +516,8 @@ async function updateCommand(flags: Flags): Promise<void> {
 	if (compareVersions(feed.version, state.activeVersion) <= 0) { out(`Already on the newest version (${state.activeVersion}).`); return; }
 	await stageVersion(home, feed, arch, { badVersions: state.badVersions });
 	writeRequest(home, { targetVersion: feed.version, reason: "lh update" });
-	serviceManager().restart();
+	const restarted = serviceManager().restart();
+	if (!restarted.ok) fail(`restarting the service failed: ${restarted.stderr.trim()}. ${feed.version} is downloaded and installs at the next service start.`);
 	out(`Switching to ${feed.version}. Follow it with \`lh logs update -f\`.`);
 }
 
@@ -546,7 +551,8 @@ async function restoreCommand(name: string | undefined, flags: Flags): Promise<v
 	const service = serviceManager();
 	service.stop();
 	restore(home, dir as string);
-	service.start();
+	const started = service.start();
+	if (!started.ok) fail(`Restored, but the service didn't start: ${started.stderr.trim()}. Run \`lh up\`.`);
 	out("Restored and restarted.");
 }
 
