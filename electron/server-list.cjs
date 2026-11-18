@@ -14,10 +14,7 @@ const CHANGED = "lh:server-list:changed";
 
 async function createServerList({ app, BrowserWindow, ipcMain, session, shell, safeStorage, startLocal, stopLocal, createLocalWindow, setLocalMenu }) {
 	const file = path.join(app.getPath("userData"), "servers.json");
-	let store;
-	let storeError;
-	try { store = await openServerList(file, safeStorage); }
-	catch { storeError = "Couldn’t read the saved server list."; }
+	const store = await openServerList(file, safeStorage);
 
 	let active = null;
 	let window = null;
@@ -32,9 +29,9 @@ async function createServerList({ app, BrowserWindow, ipcMain, session, shell, s
 
 	function snapshot() {
 		return {
-			servers: store?.origins ?? [], defaultServer: store?.defaultServer ?? null,
-			active: window ? active?.server ?? null : null, busy, problem, notice: storeError ?? notice,
-			signingIn: !!login,
+			servers: store.origins, defaultServer: store.defaultServer, damaged: store.damaged,
+			active: window ? active?.server ?? null : null, busy, problem,
+			notice: notice || (store.damaged ? "Couldn’t read the saved server list." : ""), signingIn: !!login,
 		};
 	}
 	function publish() {
@@ -106,7 +103,7 @@ async function createServerList({ app, BrowserWindow, ipcMain, session, shell, s
 		} finally { rechecking.delete(win); }
 	}
 	async function connect(server, code) {
-		if (busy || closing || !store) return;
+		if (busy || closing) return;
 		busy = true;
 		problem = null;
 		notice = "";
@@ -123,7 +120,7 @@ async function createServerList({ app, BrowserWindow, ipcMain, session, shell, s
 			if (server === "local") {
 				const url = await startLocal(operation.signal);
 				operation.signal.throwIfAborted();
-				if (!store.defaultServer) await store.saveDefault(server);
+				if (!store.damaged && !store.defaultServer) await store.saveDefault(server);
 				operation.signal.throwIfAborted();
 				active = { server };
 				registerContent(createLocalWindow(url));
@@ -142,13 +139,16 @@ async function createServerList({ app, BrowserWindow, ipcMain, session, shell, s
 				const selection = { server, token };
 				const lifetime = new AbortController();
 				const win = createRemoteWindow({
-					BrowserWindow, session, origin: server, token,
+					BrowserWindow, session, origin: server, token, signal: lifetime.signal,
+					openExternal: (target) => shell.openExternal(target),
 					onProblem: (mainFrame) => { void recheck(win, selection, mainFrame, lifetime.signal); },
 				});
 				win.once("closed", () => lifetime.abort());
 				registerContent(win);
 				try {
-					await win.loadURL(server);
+					await win.loadURL(server).catch((error) => {
+						if (error.code !== "ERR_HTTP_RESPONSE_CODE_FAILURE") throw error;
+					});
 					// Older protocol-compatible servers may still rewrite a
 					// late revocation to /pair. Keep the first load hidden.
 					await checkSession(server, token, options);
@@ -205,14 +205,21 @@ async function createServerList({ app, BrowserWindow, ipcMain, session, shell, s
 		}
 		if (action === "state") return snapshot();
 		if (action === "link") return typeof value === "string" && value.length <= 8192 ? parsePairLink(value) : null;
-		if (busy || closing || !store) return;
+		if (busy || closing) return;
 		if (action === "connect" && (value === "local" || store.origins.includes(value))) return connect(value);
-		if (action === "pair") {
+		if (action === "reset" && store.damaged) {
+			busy = true;
+			try {
+				await store.reset();
+				notice = "";
+			} catch { notice = "Couldn’t reset the saved server list."; }
+			finally { busy = false; publish(); }
+		} else if (action === "pair" && !store.damaged) {
 			const origin = parseOrigin(value?.origin);
 			const code = normalizeCode(value?.code);
 			if (!origin || !code) return "Enter an HTTPS origin and a 12-character pairing code.";
 			await connect(origin, code);
-		} else if (action === "default" && active?.server === value && store.defaultServer !== value) {
+		} else if (action === "default" && !store.damaged && active?.server === value && store.defaultServer !== value) {
 			busy = true;
 			publish();
 			try { await store.saveDefault(value); }
@@ -226,7 +233,7 @@ async function createServerList({ app, BrowserWindow, ipcMain, session, shell, s
 		show,
 		async launch() {
 			show();
-			if (store?.defaultServer) return connect(store.defaultServer);
+			if (store.defaultServer) return connect(store.defaultServer);
 		},
 		reopen() {
 			if (active) return connect(active.server);

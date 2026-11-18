@@ -9,20 +9,23 @@ const emptyList = () => ({ defaultServer: null, servers: [] });
 
 async function openServerList(file, safeStorage, platform = process.platform) {
 	let state = emptyList();
+	let damaged = false;
 	try {
 		const info = await fs.lstat(file);
-		if (!info.isFile() || (platform !== "win32" && (info.mode & 0o077) !== 0)) throw new Error("Invalid server list permissions.");
-		state = JSON.parse(await fs.readFile(file, "utf8"));
-		if (state?.version !== 1 || !Array.isArray(state.servers) ||
-			state.servers.some((entry) => !entry?.origin || entry.origin !== parseOrigin(entry.origin) || typeof entry.credential !== "string") ||
-			!(state.defaultServer === null || state.defaultServer === "local" || state.servers.some(({ origin }) => origin === state.defaultServer))) {
+		if (!info.isFile() || (platform !== "win32" && (info.mode & 0o7777) !== 0o600)) throw new Error("Invalid server list permissions.");
+		const saved = JSON.parse(await fs.readFile(file, "utf8"));
+		if (saved?.version !== 1 || !Array.isArray(saved.servers) ||
+			saved.servers.some((entry) => !entry?.origin || entry.origin !== parseOrigin(entry.origin) || typeof entry.credential !== "string") ||
+			!(saved.defaultServer === null || saved.defaultServer === "local" || saved.servers.some(({ origin }) => origin === saved.defaultServer))) {
 			throw new Error("Invalid server list.");
 		}
+		state = saved;
 	} catch (error) {
-		if (error.code !== "ENOENT") throw error;
+		damaged = error.code !== "ENOENT";
 	}
 
 	async function save(next) {
+		if (damaged) throw new Error("Reset the damaged server list first.");
 		const temporary = `${file}.${randomUUID()}.tmp`;
 		await fs.mkdir(path.dirname(file), { recursive: true });
 		try {
@@ -49,6 +52,16 @@ async function openServerList(file, safeStorage, platform = process.platform) {
 		}
 	}
 	return {
+		get damaged() { return damaged; },
+		async reset() {
+			if (!damaged) return;
+			// Clear the active path without following a symlink or deleting
+			// contents if a directory is occupying the file's place.
+			try { await fs.rename(file, `${file}.${randomUUID()}.damaged`); }
+			catch (error) { if (error.code !== "ENOENT") throw error; }
+			state = emptyList();
+			damaged = false;
+		},
 		get defaultServer() { return state.defaultServer; },
 		get origins() { return state.servers.map(({ origin }) => origin); },
 		async saveDefault(server) {

@@ -18,8 +18,9 @@ async function remoteChatGPTSignIn(origin, token, {
 	const lifetime = signal ? AbortSignal.any([signal, timeout]) : timeout;
 	const headers = { origin, "x-learnharness-subscriptions": "1" };
 	const send = (pathname, options) => requestServer(origin, pathname, { ...options, signal: lifetime, token, request });
-	const control = async (op, fields) => {
-		const response = await send(LOGIN_PATH, {
+	const control = async (op, fields, operationSignal = lifetime) => {
+		const response = await requestServer(origin, LOGIN_PATH, {
+			request, token, signal: operationSignal,
 			method: "POST", headers: { ...headers, "content-type": "application/json" },
 			body: JSON.stringify({ providerId: "chatgpt", op, ...fields }),
 		});
@@ -32,14 +33,19 @@ async function remoteChatGPTSignIn(origin, token, {
 	});
 	let settling;
 	let consumed = false;
+	let pending = false;
 	try {
 		try { await bind; } catch { throw new ServerProblem("sign-in", "Couldn’t reserve the local ChatGPT callback port."); }
 		lifetime.throwIfAborted();
 		const { port } = listener.address();
 		const callbackHost = `${CALLBACK_HOST}:${port}`;
 		const callbackUrl = `http://${callbackHost}${CALLBACK_PATH}`;
-		const reply = await control("login", { desktopRedirectPort: port });
+		// Collect the login reply even if the user aborts during this request.
+		// Only an acknowledged browser action establishes an attempt to cancel.
+		const reply = await control("login", { desktopRedirectPort: port }, AbortSignal.timeout(15000));
 		if (!isBrowserAction(reply?.browserAction)) throw new ServerProblem("sign-in", "The server couldn’t start ChatGPT sign-in. Check Providers on the server.");
+		pending = true;
+		lifetime.throwIfAborted();
 		const action = await send(reply.browserAction, { method: "POST", headers, redirect: "manual" });
 		let target;
 		try { target = new URL(action.headers.get("location")); } catch { /* Fail below. */ }
@@ -76,15 +82,19 @@ async function remoteChatGPTSignIn(origin, token, {
 			lifetime.addEventListener("abort", cancel, { once: true });
 			settling = () => lifetime.removeEventListener("abort", cancel);
 		});
-		await openExternal(target.href);
-		const exact = await Promise.race([callback, interrupted]);
+		const opened = openExternal(target.href).then(() => callback);
+		const exact = await Promise.race([opened, interrupted]);
 		if (!exact) throw new ServerProblem("sign-in", "ChatGPT sign-in ended. Try again from Switch server.");
 		const { value } = await control("complete", { url: exact });
+		pending = false;
 		if (!value?.activeId || value.error) throw new ServerProblem("sign-in", "ChatGPT sign-in did not complete. Check Providers on the server.");
 	} finally {
 		settling?.();
 		listener.close();
 		listener.closeAllConnections();
+		if (pending) {
+			await control("cancel", undefined, AbortSignal.timeout(5000)).catch(() => {});
+		}
 	}
 }
 

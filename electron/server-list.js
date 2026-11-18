@@ -17,7 +17,7 @@ function showPair(origin = "") {
 }
 
 function render() {
-	const { servers, active, defaultServer, busy, problem, notice, signingIn } = state;
+	const { servers, active, defaultServer, damaged, busy, problem, notice, signingIn } = state;
 	const firstRun = !defaultServer && !active && !problem && servers.length === 0 && !notice;
 	$("welcome").hidden = !firstRun || adding;
 	$("list").hidden = (firstRun || adding) && !problem;
@@ -52,7 +52,7 @@ function render() {
 			label.append(caption);
 		}
 		item.append(label);
-		if (server !== active || server !== defaultServer) {
+		if (server !== active || (!damaged && server !== defaultServer)) {
 			const button = document.createElement("button");
 			button.type = "button";
 			button.textContent = server === active ? "Set as default" : "Connect";
@@ -61,6 +61,8 @@ function render() {
 		}
 		return item;
 	}));
+	$("add").hidden = damaged;
+	$("reset").hidden = !damaged;
 	$("sign-in").hidden = !active || active === "local";
 	document.querySelectorAll("button, input").forEach((input) => { input.disabled = busy; });
 	$("sign-in").disabled = busy || signingIn;
@@ -70,6 +72,7 @@ void api.state().then((next) => { state = next; render(); });
 
 $("run-local").onclick = () => void api.connect("local");
 $("connect-remote").onclick = () => showPair();
+$("reset").onclick = () => void api.reset();
 $("add").onclick = () => { state = { ...state, problem: null }; showPair(); };
 $("back").onclick = () => { adding = false; render(); };
 $("sign-in").onclick = () => void api.signIn();

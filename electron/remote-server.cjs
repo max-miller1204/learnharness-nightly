@@ -161,15 +161,18 @@ function rewritesToPairPage(details) {
 	return false;
 }
 
+function redirectLocation(details) {
+	return details.statusCode >= 300 && details.statusCode < 400 ? responseHeader(details, "location") : undefined;
+}
+
 function allowsRemoteRedirect(details, origin) {
-	if (!atOrigin(details.url, origin) || details.statusCode < 300 || details.statusCode >= 400) return true;
-	const location = responseHeader(details, "location");
-	if (!location) return true;
+	const location = redirectLocation(details);
+	if (!location || !atOrigin(details.url, origin)) return true;
 	try { return isRemotePage(new URL(location, details.url), origin); } catch { return false; }
 }
 
 module.exports = {
 	CLIENT_PROTOCOL_VERSION, PROTOCOL_HEADER, SERVER_INFO_PATH, TOKEN_PATH, SESSION_PATH, ServerProblem,
 	parseOrigin, normalizeCode, parsePairLink, requestServer, checkDescriptor, checkSession, pairServer, validToken,
-	atOrigin, remoteHeaders, isRemotePage, rewritesToPairPage, allowsRemoteRedirect,
+	atOrigin, remoteHeaders, isRemotePage, rewritesToPairPage, allowsRemoteRedirect, redirectLocation,
 };

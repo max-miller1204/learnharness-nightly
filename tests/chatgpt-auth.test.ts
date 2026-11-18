@@ -927,3 +927,48 @@ test("desktop relay never opens the browser for bind failure, an occupied redire
 		}
 	} finally { await new Promise<void>((resolve) => occupied.close(() => resolve())); }
 });
+
+test("desktop relay cancels an acknowledged attempt on abort and timeout using the original origin", async () => {
+	const { remoteChatGPTSignIn } = require("../electron/remote-chatgpt.cjs");
+	const origin = "https://desktop-sign-in.example.test";
+	for (const reason of ["abort", "timeout", "during-login"]) {
+		const f = fixture();
+		const abort = new AbortController();
+		const calls: string[] = [];
+		const browserAction = "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001";
+		try {
+			await assert.rejects(remoteChatGPTSignIn(origin, "fixture-bearer", {
+				timeoutMs: reason === "timeout" ? 50 : 5000,
+				signal: abort.signal,
+				openExternal: async () => {
+					assert.notEqual(reason, "during-login", "do not open the browser after the user aborts");
+					if (reason === "abort") abort.abort();
+				},
+				request: async (input: URL, options: RequestInit) => {
+					assert.equal(input.origin, origin);
+					const headers = new Headers(options.headers);
+					assert.equal(headers.get("authorization"), "Bearer fixture-bearer");
+					assert.equal(headers.get("origin"), origin);
+					assert.equal(headers.get("x-learnharness-subscriptions"), "1");
+					if (input.pathname.endsWith("/browser")) {
+						calls.push("browser");
+						return new Response(null, { status: 303, headers: { Location: f.url.href } });
+					}
+					const body = JSON.parse(String(options.body));
+					calls.push(body.op);
+					assert.equal(options.signal?.aborted, false);
+					if (body.op === "login") {
+						const value = await f.service.login(undefined, body.desktopRedirectPort);
+						if (reason === "during-login") abort.abort();
+						return Response.json({ value, browserAction });
+					}
+					assert.deepEqual(body, { providerId: "chatgpt", op: "cancel" });
+					return Response.json({ value: f.service.cancelLogin() });
+				},
+			}));
+			assert.deepEqual(calls, reason === "during-login" ? ["login", "cancel"] : ["login", "browser", "cancel"]);
+			assert.equal((await f.service.status()).pending, false);
+			assert.equal((await f.service.login()).pending, true, "can retry immediately");
+		} finally { f.service.close(); }
+	}
+});

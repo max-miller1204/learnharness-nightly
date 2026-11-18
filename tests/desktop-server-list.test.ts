@@ -10,6 +10,7 @@ import { CLIENT_PROTOCOL_VERSION, PROTOCOL_HEADER, PROTOCOL_ROUTES } from "../sr
 
 const require = createRequire(import.meta.url);
 const wire = require("../electron/remote-server.cjs");
+const { createRemoteWindow } = require("../electron/remote-window.cjs");
 const { createServerList } = require("../electron/server-list.cjs");
 const { openServerList } = require("../electron/server-list-store.cjs");
 const alpha = "https://one.example.test";
@@ -71,8 +72,9 @@ class TestSession {
 	closeAllConnections = async () => { this.closed = true; };
 	closed = false;
 	headersReceived: ((details: object, respond: (value: object) => void) => void) | null = null;
+	beforeSend: typeof this.headersReceived = null;
 	webRequest = {
-		onBeforeSendHeaders() {},
+		onBeforeSendHeaders: (filter: object | null, listener: typeof this.beforeSend) => { this.beforeSend = filter && listener; },
 		onHeadersReceived: (filter: object | null, listener: typeof this.headersReceived) => { this.headersReceived = filter && listener; },
 	};
 }
@@ -84,11 +86,12 @@ class TestWindow extends EventEmitter {
 	destroyed = false;
 	shown = false;
 	snapshot: { active: string | null; defaultServer: string | null; problem: { kind: string } | null } | null = null;
+	windowOpen!: (details: { url: string; postBody?: object }) => unknown;
 	webContents = Object.assign(new EventEmitter(), {
 		id: TestWindow.all.length,
 		mainFrame: { url: "" },
 		isDestroyed: () => this.destroyed,
-		setWindowOpenHandler: (handler: () => unknown) => { assert.deepEqual(handler(), { action: "deny" }); },
+		setWindowOpenHandler: (handler: typeof this.windowOpen) => { this.windowOpen = handler; },
 		send: (_channel: string, snapshot: typeof this.snapshot) => { this.snapshot = snapshot; },
 	});
 	constructor(options: { webPreferences?: { preload?: string; session?: TestSession } } = {}) {
@@ -101,7 +104,7 @@ class TestWindow extends EventEmitter {
 	focus() {}
 	show() { this.shown = true; }
 	destroy() { this.destroyed = true; this.emit("closed"); }
-	loadURL(url: string) { this.url = url; this.webContents.mainFrame.url = url; }
+	async loadURL(url: string) { this.url = url; this.webContents.mainFrame.url = url; }
 	loadFile(file: string) { this.loadURL(pathToFileURL(file).href); }
 }
 
@@ -157,7 +160,7 @@ test("the app-owned switch flow keeps defaults, enforces preflight and isolates 
 
 	await controller.launch();
 	assert.equal(localStarts, 0);
-	assert.deepEqual(await send(panel(), "state"), { servers: [], defaultServer: null, active: null, busy: false, problem: null, notice: "", signingIn: false });
+	assert.deepEqual(await send(panel(), "state"), { servers: [], defaultServer: null, active: null, busy: false, problem: null, notice: "", signingIn: false, damaged: false });
 	await send(panel(), "connect", "local");
 	const local = lastWindow();
 	assert.equal(localStarts, 1);
@@ -200,7 +203,8 @@ test("the app-owned switch flow keeps defaults, enforces preflight and isolates 
 	assert.equal(revokedWindow.destroyed, true);
 	assert.equal(panel().snapshot?.problem?.kind, "pair");
 	assert.equal(panel().snapshot?.defaultServer, alpha);
-	const saved = await fs.readFile(path.join(directory, "servers.json"), "utf8");
+	const file = path.join(directory, "servers.json");
+	const saved = await fs.readFile(file, "utf8");
 	offline = true;
 	await send(panel(), "connect", alpha);
 	assert.equal(panel().snapshot?.problem?.kind, "retry");
@@ -217,13 +221,25 @@ test("the app-owned switch flow keeps defaults, enforces preflight and isolates 
 	assert.equal((await send(panel(), "state") as { defaultServer: string }).defaultServer, alpha);
 	controller.close();
 	for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
-	await fs.rm(path.join(directory, "servers.json"));
+	await fs.writeFile(file, "{bad json");
+	controller = await boot();
+	await controller.launch();
+	assert.equal((await send(panel(), "state") as { damaged: boolean }).damaged, true);
+	await send(panel(), "connect", "local");
+	assert.equal(lastWindow().url, "http://localhost:3000");
+	assert.equal(await fs.readFile(file, "utf8"), "{bad json", "local setup leaves the damaged path alone");
+	await send(panel(), "reset");
+	assert.equal((await send(panel(), "state") as { damaged: boolean }).damaged, false);
+	await assert.rejects(fs.lstat(file), { code: "ENOENT" });
+	assert.equal(localStarts, 2);
+	controller.close();
+	for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
 	controller = await boot();
 	await controller.launch();
 	incompatible = false;
 	await send(panel(), "pair", { origin: alpha, code });
 	assert.equal((await send(panel(), "state") as { defaultServer: string }).defaultServer, alpha, "first successful remote setup becomes default");
-	assert.equal(localStarts, 1);
+	assert.equal(localStarts, 2);
 });
 
 test("bearer headers and redirects stay confined to the selected origin and main frame", () => {
@@ -247,4 +263,92 @@ test("bearer headers and redirects stay confined to the selected origin and main
 	for (const location of [beta, "//other.example.test", "/pair", "/%70air", "http://one.example.test", "https://user@one.example.test"]) {
 		assert.equal(wire.allowsRemoteRedirect(reply(location), alpha), false, location);
 	}
+});
+
+test("reset detaches damaged permissions and a directory without following or deleting its contents", async (t) => {
+	const home = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-reset-"));
+	t.after(() => fs.rm(home, { recursive: true, force: true }));
+	const file = path.join(home, "servers.json");
+	for (const kind of ["mode", "directory"]) {
+		if (kind === "mode") {
+			if (process.platform === "win32") continue;
+			await fs.writeFile(file, JSON.stringify({ version: 1, defaultServer: "local", servers: [] }), { mode: 0o644 });
+			await fs.chmod(file, 0o644);
+		} else {
+			await fs.mkdir(file);
+			await fs.writeFile(path.join(file, "keep.txt"), "fixture");
+		}
+		const store = await openServerList(file, fakeSafeStorage);
+		assert.equal(store.damaged, true);
+		assert.equal(store.defaultServer, null);
+		await assert.rejects(store.saveDefault("local"), /Reset the damaged server list/);
+		await store.reset();
+		assert.equal(store.damaged, false);
+		await assert.rejects(fs.lstat(file), { code: "ENOENT" });
+		await store.saveDefault("local");
+		assert.equal((await openServerList(file, fakeSafeStorage)).defaultServer, "local");
+		await fs.unlink(file);
+	}
+	let kept = false;
+	for (const name of await fs.readdir(home)) {
+		const backup = path.join(home, name);
+		if ((await fs.lstat(backup)).isDirectory()) kept = await fs.readFile(path.join(backup, "keep.txt"), "utf8") === "fixture";
+	}
+	assert.equal(kept, true);
+});
+
+test("remote browser handoff keeps the credential in main and leaves ordinary page errors in the window", async (t) => {
+	const originalFetch = globalThis.fetch;
+	t.after(() => { globalThis.fetch = originalFetch; });
+	const browser: string[] = [];
+	const problems: boolean[] = [];
+	const requests: string[] = [];
+	const action = "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001";
+	const provider = "https://provider.example.test/authorize?state=fixture";
+	const isolated = new TestSession();
+	const openExternal = async (destination: string) => { browser.push(destination); };
+	const win = createRemoteWindow({
+		BrowserWindow: TestWindow, session: { fromPartition: () => isolated }, origin: alpha, token: "paired-secret",
+		openExternal, onProblem: (mainFrame: boolean) => problems.push(mainFrame),
+	}) as TestWindow;
+	globalThis.fetch = async (input, init) => {
+		requests.push(String(input));
+		assert.equal(String(input), alpha + action);
+		assert.equal(init?.method, "POST");
+		assert.equal(init?.redirect, "manual");
+		assert.equal(init?.credentials, "omit");
+		assert.equal(new Headers(init?.headers).get("authorization"), "Bearer paired-secret");
+		return new Response(null, { status: 303, headers: { Location: provider } });
+	};
+	let prevented = 0;
+	const event = { preventDefault: () => { prevented++; } };
+	win.webContents.emit("will-navigate", event, "https://example.test/docs");
+	assert.deepEqual(win.windowOpen({ url: "https://example.test/releases" }), { action: "deny" });
+	win.windowOpen({ url: "file:///private/local.txt" });
+	win.windowOpen({ url: "https://example.test/?token=paired%2Dsecret" });
+	assert.equal(prevented, 1);
+	assert.deepEqual(browser, ["https://example.test/docs", "https://example.test/releases"]);
+	assert.deepEqual(win.windowOpen({ url: "about:blank" }), {
+		action: "allow", overrideBrowserWindowOptions: { show: false },
+	});
+	const popup = new TestWindow();
+	win.webContents.emit("did-create-window", popup);
+	popup.webContents.emit("will-frame-navigate", { ...event, url: alpha + action, isMainFrame: true });
+	assert.equal(prevented, 2);
+	assert.equal(popup.destroyed, true);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	isolated.beforeSend!({
+		url: alpha + action, webContentsId: popup.webContents.id, resourceType: "mainFrame", method: "GET",
+	}, (result) => assert.deepEqual(result, { cancel: true }));
+	assert.deepEqual(requests, [alpha + action]);
+	assert.deepEqual(browser, ["https://example.test/docs", "https://example.test/releases", provider]);
+	assert.equal(win.destroyed, false);
+	const page = { url: alpha + "/chat/deleted", resourceType: "mainFrame", webContentsId: win.webContents.id, statusCode: 404 };
+	isolated.headersReceived!(page, (result) => assert.deepEqual(result, {}));
+	win.webContents.emit("did-fail-load", {}, -379, "", page.url, true);
+	assert.deepEqual(problems, []);
+	isolated.headersReceived!({ ...page, statusCode: 401 }, (result) => assert.deepEqual(result, {}));
+	win.webContents.emit("did-fail-load", {}, -105, "", page.url, true);
+	assert.deepEqual(problems, [false, false], "reauthenticate before classifying a connection failure");
+	win.destroy();
 });
