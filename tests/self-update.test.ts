@@ -12,7 +12,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { CHECK_INTERVAL_MS, createSelfUpdater, type SelfUpdaterDeps } from "../src/server/self-update.ts";
+import { CHECK_AFTER_COMMIT_MS, CHECK_INTERVAL_MS, createSelfUpdater, type SelfUpdaterDeps } from "../src/server/self-update.ts";
 import type { ReleaseNoteGroup } from "../src/core/release-notes.ts";
 import { dataLockPath, tryAcquireDataLock } from "../src/server/data-lock.ts";
 import type { ChildMessage } from "../selfhost/src/protocol.ts";
@@ -196,13 +196,17 @@ describe("self-hosted updater", () => {
 		assert.equal(u.state().notice, null);
 	});
 
-	it("a trial child checks once committed, not before (the startup check it skipped)", async () => {
+	it("a trial child checks 15 s after its commit, not before (the startup check it skipped)", async () => {
 		const f = fake({ trialUpdateId: "u-1" });
 		const u = createSelfUpdater(f.deps);
 		u.start();
 		await settle();
 		assert.deepEqual(f.flags.staged, [], "no check during the trial");
 		f.toParent({ type: "committed", updateId: "u-1" });
+		await settle();
+		assert.deepEqual(f.flags.staged, [], "not at once: the launcher prunes *.tmp version folders right after the commit");
+		assert.equal(CHECK_AFTER_COMMIT_MS, 15_000);
+		f.run(CHECK_AFTER_COMMIT_MS);
 		await settle();
 		assert.equal(u.state().status, "downloaded");
 		assert.equal(u.state().version, NEXT);
@@ -214,6 +218,7 @@ describe("self-hosted updater", () => {
 		createSelfUpdater(off.deps).start();
 		await settle();
 		off.toParent({ type: "committed", updateId: "u-2" });
+		off.run(CHECK_AFTER_COMMIT_MS);
 		await settle();
 		assert.deepEqual(off.flags.staged, [], "the toggle still gates it");
 	});
