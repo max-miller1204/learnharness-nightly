@@ -248,6 +248,18 @@ it("cost summary folds an image's description into the extraction stage and the 
 	const both = graphCostSummary({ chats: [], namings: [], sources: [{ filePath: "c.png", extractions: [{ startedAt: 3, at: "2026-11-17T00:00:00Z", durationMs: 1,
 		stages: { extractor: { model: "m:unpriced", steps: [step] }, auditor: { model: "m:a", steps: [step] }, imageReader: { model: "m:unpriced", steps: [step] } } }] }] } as never, (_call, model) => model === "m:unpriced" ? null : 1);
 	assert.equal(both.stages.extraction.unpricedRuns, 1, "one run counts once");
+	// A subscription part beside an unpriced part carries both marks, once each (owner, 2026-11-17).
+	const sub = "chatgpt:gpt-5";
+	for (const [extractor, vision] of [[sub, "m:unpriced"], ["m:unpriced", sub]]) {
+		const mixedSub = graphCostSummary({ chats: [], namings: [], sources: [{ filePath: "d.png", extractions: [{ startedAt: 4, at: "2026-11-17T00:00:00Z", durationMs: 1,
+			stages: { extractor: { model: extractor, steps: [step] }, auditor: { model: "m:a", steps: [step] }, imageReader: { model: vision, steps: [step] } } }] }] } as never, (_call, model) => model === "m:unpriced" ? null : 1);
+		assert.equal(mixedSub.stages.extraction.subscriptionRuns, 1, `${extractor} + ${vision}`);
+		assert.equal(mixedSub.stages.extraction.unpricedRuns, 1, `${extractor} + ${vision}`);
+		assert.equal(mixedSub.stages.extraction.dollars, 0);
+	}
+	const subVisionPriced = graphCostSummary({ chats: [], namings: [], sources: [{ filePath: "e.png", extractions: [{ startedAt: 5, at: "2026-11-17T00:00:00Z", durationMs: 1,
+		stages: { extractor: { model: "m:e", steps: [step] }, auditor: { model: "m:a", steps: [step] }, imageReader: { model: sub, steps: [step] } } }] }] } as never, () => 1);
+	assert.deepEqual([subVisionPriced.stages.extraction.subscriptionRuns, subVisionPriced.stages.extraction.unpricedRuns, subVisionPriced.stages.extraction.dollars], [1, 0, 1]);
 });
 
 // ── folder picks ──

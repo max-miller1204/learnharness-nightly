@@ -132,26 +132,21 @@ export function graphCostSummary(input: CostSummaryInput, price: CallPricer): Gr
 		extraction.runs++;
 		mergeTokens(extraction.tokens, stages.extractor.steps);
 		const extDollars = stageDollars(stages.extractor.model, stages.extractor.steps, price);
-		if (isSubscriptionModel(stages.extractor.model)) {
-			extraction.subscriptionRuns = (extraction.subscriptionRuns ?? 0) + 1;
-			extraction.subscriptionProviders = [...new Set([...(extraction.subscriptionProviders ?? []), ...subscriptionLabels([stages.extractor.model])])];
-		}
-		else if (extDollars === null) extraction.unpricedRuns++;
-		else extraction.dollars += extDollars;
 		// An image's description (item 26) is part of extracting from that file.
 		const image = stages.imageReader;
 		const imgDollars = image ? stageDollars(image.model, image.steps, price) : null;
-		// One run counts once: an unknown Vision cost makes the stage's dollars incomplete ("—", owner
-		// 2026-11-17) only when the extractor's part didn't already.
-		const extCounted = isSubscriptionModel(stages.extractor.model) || extDollars === null;
-		if (image) {
-			mergeTokens(extraction.tokens, image.steps);
-			if (isSubscriptionModel(image.model)) {
-				if (!extCounted) extraction.subscriptionRuns = (extraction.subscriptionRuns ?? 0) + 1;
-				extraction.subscriptionProviders = [...new Set([...(extraction.subscriptionProviders ?? []), ...subscriptionLabels([image.model])])];
-			} else if (imgDollars === null) { if (!extCounted) extraction.unpricedRuns++; }
-			else extraction.dollars += imgDollars;
+		if (image) mergeTokens(extraction.tokens, image.steps);
+		// Each part of the stage is a subscription, unpriced or dollars. A run carries each mark at most
+		// once, and a mixed run carries both (owner, 2026-11-17: like a subscription extractor beside an
+		// unpriced auditor).
+		const parts: Array<[string, number | null]> = [[stages.extractor.model, extDollars], ...(image ? [[image.model, imgDollars] as [string, number | null]] : [])];
+		const subscriptionParts = parts.filter(([model]) => isSubscriptionModel(model));
+		if (subscriptionParts.length > 0) {
+			extraction.subscriptionRuns = (extraction.subscriptionRuns ?? 0) + 1;
+			extraction.subscriptionProviders = [...new Set([...(extraction.subscriptionProviders ?? []), ...subscriptionLabels(subscriptionParts.map(([model]) => model))])];
 		}
+		if (parts.some(([model, dollars]) => !isSubscriptionModel(model) && dollars === null)) extraction.unpricedRuns++;
+		for (const [model, dollars] of parts) if (!isSubscriptionModel(model) && dollars !== null) extraction.dollars += dollars;
 
 		audit.runs++;
 		mergeTokens(audit.tokens, stages.auditor.steps);
