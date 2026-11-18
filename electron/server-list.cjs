@@ -4,7 +4,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { randomUUID } = require("node:crypto");
 const { openServerList } = require("./server-list-store.cjs");
-const { ServerProblem, parseOrigin, normalizeCode, parsePairLink, checkDescriptor, checkSession, pairServer } = require("./remote-server.cjs");
+const { ServerProblem, parseOrigin, withScheme, normalizeCode, parsePairLink, checkDescriptor, checkSession, pairServer } = require("./remote-server.cjs");
 const { remoteChatGPTSignIn } = require("./remote-chatgpt.cjs");
 const { createRemoteWindow } = require("./remote-window.cjs");
 const { BACKGROUND, hostLabel, coverWindow } = require("./skeleton.cjs");
@@ -12,6 +12,13 @@ const { BACKGROUND, hostLabel, coverWindow } = require("./skeleton.cjs");
 const SHELL = path.join(__dirname, "server-list.html");
 const CHANNEL = "lh:server-list";
 const CHANGED = "lh:server-list:changed";
+// The shell carries only the theme mode in its query.
+function isShell(value) {
+	try {
+		const url = new URL(value);
+		return url.protocol === "file:" && url.pathname === pathToFileURL(SHELL).pathname && !url.hash;
+	} catch { return false; }
+}
 
 async function createServerList({
 	app, BrowserWindow, WebContentsView, ipcMain, session, shell, safeStorage,
@@ -46,8 +53,8 @@ async function createServerList({
 	function show() {
 		if (!controls || controls.isDestroyed()) {
 			const panel = new BrowserWindow({
-				width: 530, height: 590, minWidth: 390, minHeight: 420, title: "LearnHarness servers",
-				autoHideMenuBar: true,
+				width: 530, height: 590, minWidth: 390, minHeight: 420, title: "LearnHarness",
+				autoHideMenuBar: true, backgroundColor: BACKGROUND[themeMode()] ?? BACKGROUND.dark,
 				webPreferences: {
 					session: session.fromPartition(`server-list-${randomUUID()}`),
 					sandbox: true, contextIsolation: true, nodeIntegration: false,
@@ -59,7 +66,7 @@ async function createServerList({
 			panel.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
 			panel.webContents.on("will-attach-webview", (event) => event.preventDefault());
 			panel.once("closed", () => { if (controls === panel) controls = null; });
-			void panel.loadFile(SHELL);
+			void panel.loadFile(SHELL, { query: { mode: themeMode() === "light" ? "light" : "dark" } });
 		} else {
 			if (controls.isMinimized()) controls.restore();
 			controls.focus();
@@ -256,7 +263,7 @@ async function createServerList({
 	}
 	ipcMain.handle(CHANNEL, async (event, action, value) => {
 		if (!controls || controls.isDestroyed() || event.sender !== controls.webContents ||
-			event.senderFrame !== controls.webContents.mainFrame || event.senderFrame.url !== pathToFileURL(SHELL).href) {
+			event.senderFrame !== controls.webContents.mainFrame || !isShell(event.senderFrame.url)) {
 			throw new Error("Untrusted server window request.");
 		}
 		if (action === "state") return snapshot();
@@ -271,9 +278,10 @@ async function createServerList({
 			} catch { notice = "Couldn’t reset the saved server list."; }
 			finally { busy = false; publish(); }
 		} else if (action === "pair" && !store.damaged) {
-			const origin = parseOrigin(value?.origin);
+			const origin = parseOrigin(withScheme(value?.origin));
+			if (!origin) return "Enter the HTTPS address of your server, or paste its pairing link.";
 			const code = normalizeCode(value?.code);
-			if (!origin || !code) return "Enter an HTTPS origin and a 12-character pairing code.";
+			if (!code) return "Enter the 12-character pairing code.";
 			await connect(origin, code);
 		} else if (action === "default" && !store.damaged && active?.server === value && store.defaultServer !== value) {
 			busy = true;

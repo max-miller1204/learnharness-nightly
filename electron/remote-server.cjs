@@ -29,6 +29,14 @@ function parseOrigin(value) {
 	try { return new URL(text).origin; } catch { return null; }
 }
 
+/** The setup box takes an address without a scheme as HTTPS. parseOrigin
+ *  still refuses anything that isn't an HTTPS origin. */
+function withScheme(value) {
+	if (typeof value !== "string") return value;
+	const text = value.trim();
+	return !text || /^[a-z][a-z\d+.-]*:\/\//i.test(text) || text.startsWith("//") ? text : `https://${text}`;
+}
+
 function normalizeCode(value) {
 	const code = typeof value === "string" && value.replace(/[\s-]+/g, "").toUpperCase();
 	return PAIRING_CODE.test(code) ? code : null;
@@ -210,6 +218,6 @@ function allowsRemoteRedirect(details, origin) {
 
 module.exports = {
 	CLIENT_PROTOCOL_VERSION, PROTOCOL_HEADER, SERVER_INFO_PATH, TOKEN_PATH, SESSION_PATH, ServerProblem, retryTiming,
-	parseOrigin, normalizeCode, parsePairLink, requestServer, checkDescriptor, checkSession, pairServer, validToken,
+	parseOrigin, withScheme, normalizeCode, parsePairLink, requestServer, checkDescriptor, checkSession, pairServer, validToken,
 	atOrigin, remoteHeaders, isRemotePage, rewritesToPairPage, allowsRemoteRedirect, redirectLocation,
 };

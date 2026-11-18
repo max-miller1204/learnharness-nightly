@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
+import { runInNewContext } from "node:vm";
+import { parseHTML } from "linkedom";
 import { CLIENT_PROTOCOL_VERSION, PROTOCOL_HEADER, PROTOCOL_ROUTES } from "../src/client-protocol/index.ts";
 
 const require = createRequire(import.meta.url);
@@ -33,6 +35,12 @@ test("the packaged shell follows the pairing and protocol contracts", () => {
 	}
 	assert.equal(wire.parsePairLink(`${alpha}/pair#token=${code}&token=${code}`), null);
 	assert.equal(wire.parseOrigin("https://one.ts.net/"), "https://one.ts.net");
+	assert.equal(wire.withScheme(" my-server.ts.net:8443 "), "https://my-server.ts.net:8443");
+	assert.equal(wire.withScheme("one.test"), "https://one.test");
+	for (const input of ["http://one.test", "https://one.test", "ftp://one.test", "//one.test", ""]) {
+		assert.equal(wire.withScheme(input), input);
+	}
+	assert.equal(wire.parseOrigin(wire.withScheme("http://one.test")), null, "a typed scheme still has to be HTTPS");
 	for (const input of ["http://foo.test", "https://one.test/settings", "https://user@foo.test", "https://one.test#pair", "https://one.test\\pair"]) {
 		assert.equal(wire.parseOrigin(input), null);
 	}
@@ -145,7 +153,9 @@ class TestWindow extends EventEmitter {
 	show() { this.shown = true; }
 	destroy() { this.destroyed = true; this.emit("closed"); }
 	async loadURL(url: string) { this.url = url; this.webContents.mainFrame.url = url; }
-	loadFile(file: string) { this.loadURL(pathToFileURL(file).href); }
+	loadFile(file: string, { query }: { query?: Record<string, string> } = {}) {
+		this.loadURL(pathToFileURL(file).href + (query ? `?${new URLSearchParams(query)}` : ""));
+	}
 }
 
 test("the app-owned switch flow keeps defaults, enforces preflight and isolates remote windows", async (t) => {
@@ -570,12 +580,19 @@ test("a launch with a default skips the list and keeps the server page under the
 		createLocalWindow: () => { const win = new TestWindow(); return { win, load: (url: string) => win.loadURL(url) }; },
 		setLocalMenu() {}, themeMode: () => "dark",
 	});
-	const isList = (win: TestWindow) => win.url.endsWith("/server-list.html");
+	const isList = (win: TestWindow) => win.url.split("?")[0]!.endsWith("/server-list.html");
 	let controller = await boot();
 	await controller.launch();
 	const first = TestWindow.all.at(-1)!;
 	assert(isList(first), "first run shows the list");
-	await handler({ sender: first.webContents, senderFrame: first.webContents.mainFrame }, "pair", { origin: alpha, code });
+	const pair = (value: object) => handler({ sender: first.webContents, senderFrame: first.webContents.mainFrame }, "pair", value);
+	assert.equal(new URL(first.url).searchParams.get("mode"), "dark");
+	assert.equal(first.options.backgroundColor, "#141414");
+	assert.equal(await pair({ origin: "http://one.example.test", code }), "Enter the HTTPS address of your server, or paste its pairing link.");
+	assert.equal(await pair({ origin: "one.example.test", code: "2345" }), "Enter the 12-character pairing code.");
+	assert.equal(checks.length, 0);
+	await pair({ origin: " one.example.test ", code });
+	assert.equal(TestWindow.all.at(-1)!.url, alpha, "an address without a scheme connects over HTTPS");
 	assert.deepEqual(checks.map(({ covered }) => covered), [0, 0], "a connect from the list keeps the server window hidden instead");
 	controller.close();
 	for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
@@ -671,7 +688,7 @@ test("This computer opens the ghost dashboard before the bundled server starts, 
 		controller.close();
 		for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
 	});
-	const isList = (win: TestWindow) => win.url.endsWith("/server-list.html");
+	const isList = (win: TestWindow) => win.url.split("?")[0]!.endsWith("/server-list.html");
 	await controller.launch();
 	const list = TestWindow.all.at(-1)!;
 	assert(isList(list));
@@ -708,4 +725,48 @@ test("This computer opens the ghost dashboard before the bundled server starts, 
 	assert.equal(broken.destroyed, true);
 	assert(isList(recovery));
 	assert.equal(recovery.snapshot?.problem?.kind, "retry");
+});
+
+test("the setup screen offers two tiles, and a pasted pairing link fills the address and the code", async () => {
+	const shell = path.join(import.meta.dirname, "../electron");
+	const { window, document } = parseHTML(await fs.readFile(path.join(shell, "server-list.html"), "utf8"));
+	const sent: unknown[][] = [];
+	let listener!: (state: object) => void;
+	const empty = { servers: [], defaultServer: null, active: null, busy: false, problem: null, notice: "", signingIn: false, damaged: false };
+	const servers = {
+		state: async () => empty,
+		parseLink: async (text: string) => wire.parsePairLink(text),
+		connect: async (server: string) => { sent.push(["connect", server]); },
+		pair: async (origin: string, value: string) => { sent.push(["pair", origin, value]); return "fixture error"; },
+		onChange: (next: typeof listener) => { listener = next; },
+	};
+	runInNewContext(await fs.readFile(path.join(shell, "server-list.js"), "utf8"), { window: { servers }, document });
+	const $ = (id: string) => document.getElementById(id) as HTMLInputElement;
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(document.title, "LearnHarness");
+	assert.equal($("welcome").hidden, false);
+	assert.equal($("run-local").querySelector(".tile-title")!.textContent, "This computer");
+	$("connect-remote").onclick!(new window.Event("click") as PointerEvent);
+	assert.equal($("add-server").hidden, false);
+	assert.equal($("pair-title").textContent, "Connect to my server");
+	const type = async (id: string, value: string) => {
+		$(id).value = value;
+		$(id).dispatchEvent(new window.Event("input"));
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	};
+	await type("address", `${beta}/pair#token=2345-6789-abcd`);
+	assert.equal($("address").value, beta);
+	assert.equal($("code").value, code);
+	assert.equal($("filled").hidden, false);
+	assert.equal($("filled").textContent, "Code filled in from the link.");
+	await type("code", "2345-6789-abce");
+	assert.equal($("filled").hidden, true, "the note leaves once the code is edited");
+	await type("address", "my-server.ts.net:8443");
+	assert.equal($("address").value, "my-server.ts.net:8443", "a plain address stays as typed");
+	await $("pair").onsubmit!(Object.assign(new window.Event("submit"), { preventDefault() {} }) as SubmitEvent);
+	assert.deepEqual(sent, [["pair", "my-server.ts.net:8443", "2345-6789-abce"]], "main adds the scheme and checks it");
+	assert.equal($("form-error").textContent, "fixture error");
+	listener({ ...empty, busy: true });
+	assert.equal($("pair-submit").textContent, "Connecting…");
+	assert.equal($("pair-submit").disabled, true);
 });

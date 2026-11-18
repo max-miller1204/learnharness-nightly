@@ -4,46 +4,98 @@
 	<meta charset="utf-8">
 	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
 	<meta name="viewport" content="width=device-width,initial-scale=1">
-	<title>LearnHarness servers</title>
+	<title>LearnHarness</title>
+	<script src="./window-mode.js"></script>
 	<link rel="stylesheet" href="./server-list.css">
 	<script src="./server-list.js" defer></script>
 </head>
 <body>
 	<main>
-		<section id="welcome" hidden>
-			<h1>Set up LearnHarness</h1>
-			<div class="actions">
-				<button id="run-local" type="button">Run my LearnHarness here</button>
-				<button id="connect-remote" type="button">Connect to my server</button>
+		<div class="card">
+			<div class="brand" role="img" aria-label="LearnHarness">
+				<!-- components/lh-mark.tsx, with attributes instead of the inline styles the CSP blocks. -->
+				<svg class="mark" viewBox="0 0 806 806" fill-rule="evenodd" clip-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" aria-hidden="true">
+					<g transform="matrix(1,0,0,1,-109.002299,-109.002299)">
+						<g transform="matrix(0.939904,0,0,0.939904,30.769428,30.766742)">
+							<g transform="matrix(-0.232199,0,0,0.232199,1384.403797,-416.791824)">
+								<g transform="matrix(0.573992,-2.142166,2.142166,0.573992,-5516.07298,4432.117471)">
+									<path fill="#949494" d="M1234.728,3305.937C871.642,3324.965 587,3624.915 587,3988.5C587,4365.734 893.266,4672 1270.5,4672C1647.734,4672 1954,4365.734 1954,3988.5C1954,3880.637 1928.472,3774.304 1879.503,3678.197L1794.243,3721.64C1836.356,3804.292 1858.31,3895.737 1858.31,3988.5C1858.31,4312.921 1594.921,4576.31 1270.5,4576.31C946.079,4576.31 682.69,4312.921 682.69,3988.5C682.69,3675.817 927.482,3417.86 1239.736,3401.496L1234.728,3305.937Z"/>
+								</g>
+								<g transform="matrix(1.261034,-0,-0,1.261034,1170.373407,-2014.261188)">
+									<path class="ink" d="M1270.5,3305C893.266,3305 587,3611.266 587,3988.5C587,4365.734 893.266,4672 1270.5,4672C1647.734,4672 1954,4365.734 1954,3988.5C1954,3611.266 1647.734,3305 1270.5,3305ZM1270.5,3471.537C1555.819,3471.537 1787.463,3703.181 1787.463,3988.5C1787.463,4273.819 1555.819,4505.463 1270.5,4505.463C985.181,4505.463 753.537,4273.819 753.537,3988.5C753.537,3703.181 985.181,3471.537 1270.5,3471.537Z"/>
+								</g>
+								<g transform="matrix(1.261034,0,-0,1.261034,3139.627182,-45.007413)">
+									<circle class="ink" cx="1270.5" cy="3988.5" r="683.5"/>
+								</g>
+							</g>
+						</g>
+					</g>
+				</svg>
+				<span aria-hidden="true">LearnHarness</span>
 			</div>
-		</section>
-		<section id="list" hidden>
-			<h1>Switch server</h1>
-			<div id="recovery" hidden>
-				<p id="problem" role="status"></p>
-				<button id="recover" type="button">Retry</button>
-			</div>
-			<ul id="servers"></ul>
-			<div class="actions">
-				<button id="add" type="button">Add a server</button>
-				<button id="reset" type="button" hidden>Reset saved servers</button>
-				<button id="sign-in" type="button" hidden>Sign in to ChatGPT</button>
-			</div>
-		</section>
-		<section id="add-server" hidden>
-			<h1 id="pair-title">Add a server</h1>
-			<form id="pair" autocomplete="off">
-				<label>Pairing link <input id="link" type="text" spellcheck="false" placeholder="Paste a pairing link"></label>
-				<label>Server origin <input id="origin" type="text" required spellcheck="false" placeholder="https://my-server.example"></label>
-				<label>Pairing code <input id="code" type="text" required spellcheck="false" autocapitalize="characters" placeholder="XXXX-XXXX-XXXX"></label>
-				<p id="form-error" role="status"></p>
-				<div class="actions">
-					<button id="pair-submit" type="submit">Pair and connect</button>
-					<button id="back" type="button">Back</button>
+			<section id="welcome" hidden>
+				<h1>Welcome to LearnHarness</h1>
+				<p class="lead">Choose where LearnHarness runs. You can change this later from Switch server in the app menu.</p>
+				<div class="tiles">
+					<button id="run-local" class="tile" type="button">
+						<span class="tile-icon" aria-hidden="true">
+							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+						</span>
+						<span class="tile-body">
+							<span class="tile-title">This computer</span>
+							<span class="tile-text">Run LearnHarness here. Your learning data stays on this computer.</span>
+						</span>
+					</button>
+					<button id="connect-remote" class="tile" type="button">
+						<span class="tile-icon" aria-hidden="true">
+							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg>
+						</span>
+						<span class="tile-body">
+							<span class="tile-title">My server</span>
+							<span class="tile-text">Connect to a LearnHarness server you run somewhere else, such as over Tailscale.</span>
+						</span>
+					</button>
 				</div>
-			</form>
-		</section>
-		<p id="notice" role="status"></p>
+			</section>
+			<section id="list" hidden>
+				<h1>Switch server</h1>
+				<div id="recovery" class="alert" hidden>
+					<p id="problem" role="status"></p>
+					<button id="recover" class="primary" type="button">Retry</button>
+				</div>
+				<ul id="servers"></ul>
+				<div class="actions">
+					<button id="add" type="button">Add a server</button>
+					<button id="reset" type="button" hidden>Reset saved servers</button>
+					<button id="sign-in" type="button" hidden>Sign in to ChatGPT</button>
+				</div>
+			</section>
+			<section id="add-server" hidden>
+				<div class="heading">
+					<h1 id="pair-title">Connect to my server</h1>
+					<button id="back" class="link" type="button">Back</button>
+				</div>
+				<p class="lead">On your server, run <code>lh pair</code>. Or, on a signed-in device, open Settings → Devices → Create pairing link.</p>
+				<form id="pair" autocomplete="off" novalidate>
+					<div class="field">
+						<label for="address">Pairing link or server address</label>
+						<input id="address" type="text" spellcheck="false" autocapitalize="none" placeholder="https://my-server.ts.net:8443" aria-describedby="address-help">
+						<p id="address-help" class="help">Paste the full link to fill in the code. Use the HTTPS link, not 127.0.0.1.</p>
+						<p id="filled" class="note" role="status" hidden>Code filled in from the link.</p>
+					</div>
+					<div class="field">
+						<label for="code">Pairing code</label>
+						<input id="code" type="text" spellcheck="false" autocapitalize="characters" placeholder="XXXX-XXXX-XXXX" aria-describedby="code-help">
+						<p id="code-help" class="help">12 characters, shown after “Code:”. Works once, for 5 minutes.</p>
+					</div>
+					<p id="form-error" class="error" role="alert"></p>
+					<div class="actions">
+						<button id="pair-submit" class="primary" type="submit">Connect</button>
+					</div>
+				</form>
+			</section>
+			<p id="notice" role="status"></p>
+		</div>
 	</main>
 </body>
 </html>
