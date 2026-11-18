@@ -9,7 +9,7 @@ A paired browser, or the desktop app connected to a remote server, uploads files
 - `folder-drop`: dropping files or folders anywhere in the content area of a page with an uploading composer. The overlay reads "Drop to upload files or a folder". The desktop app on its own local server keeps path chips instead.
 - `skip`: hidden entries (any name starting with `.`), `Thumbs.db`, `desktop.ini` and `__MACOSX/` are skipped before counting, with a `role=status` line such as "Skipped 3 hidden or system files in Notes: .git/, .DS_Store, sub/Thumbs.db".
 - `limits`: 100 files and 256 MiB per folder after skipping, plus PR 1's per-file, per-image, per-message, staging and per-chat limits. The `role=alert` line names the limit and nothing uploads.
-- `unsafe`: an unsafe path (`..`, absolute, backslash, device name such as `CON.txt`, `<>:"|?*`, trailing dot or space, duplicates ignoring case, file and folder at one path) rejects the whole folder before any request, naming the entry.
+- `unsafe`: an unsafe path (`..`, absolute, backslash, device name such as `CON.txt`, `CONIN$` or `CON .txt`, C0 or C1 control characters, `<>:"|?*`, trailing dot or space, duplicates ignoring case, file and folder at one path) rejects the whole folder before any request, naming the entry.
 - `no-relative-paths`: a browser that returns plain files from the folder input (iOS before 18.4, Android Chrome before 132) gets "This browser can't attach folders. Attach individual files instead." and nothing uploads.
 - `renew`: Retry, or an upload that outlives its 10-minute grants, calls `POST /api/attachments/:id` and re-sends only the files that have not arrived.
 - `send`: the folder id rides in `attachmentUploadIds`; the saved message carries `{ id, name, fileCount }` and the chip reads "Notes · 3 files" after reload.
@@ -57,4 +57,6 @@ Evidence: screenshots of the chip, skipped line and alerts, the network log of a
 - `scenarios/attachment-folder.json` needs the message to contain `zz-prove-it folder` and the folder to hold `week1/intro.md` with `PROVE-FOLDER`; `{{attachmentRef}}` is the first `attachment:<id>` the app sent the model.
 - Chromium sends folder picks as File objects whose `webkitRelativePath` starts with the folder name; the composer strips it, so manifest paths never include `Notes/`.
 - The composer renews grants on its own 30 seconds before they expire, so a slow upload shows one or more extra `POST /api/attachments/:id` calls without a failure.
-- Uploads are refused while a turn runs, for the button and for drops alike.
+- Uploads are refused while a turn runs, for the button and for drops alike: during a turn the drop overlay does not appear at all.
+- Grant timing follows the server's `Date` header: set the browser's clock an hour ahead or behind (for example with a `Date.now` override injected before load) and uploads and Retry still behave.
+- Names that only start with two dots (`..notes.txt`, `..config/`) are ordinary names and must upload and send.

@@ -50,10 +50,13 @@ const renew = (id: string, token = owner.token) => renewAttachmentFolderRequest(
 const put = (uploadUrl: string, text: string) => uploadAttachmentRequest(request(uploadUrl, "PUT", text));
 
 test("unsafe paths reject the whole folder and name the entry", () => {
-	for (const unsafe of ["/etc/passwd", "C:/x.txt", "a/../b", "./a", "a\\b", "a//b", "a/", "CON", "sub/nul.txt", "com1.md", "a:b", "what?", "trailing.", "space ", "x\u0001y", "a".repeat(256)]) {
+	for (const unsafe of ["/etc/passwd", "C:/x.txt", "a/../b", "./a", "a\\b", "a//b", "a/", "CON", "sub/nul.txt", "com1.md", "a:b", "what?", "trailing.", "space ", "x\u0001y", "a".repeat(256),
+		"CONIN$", "conout$.txt", "CON .txt", "nul. .md", "sub/LPT1 .log", "c1\u0085control", "x\u009f", "\u0080"]) {
 		assert.equal(unsafeFolderPath(unsafe), true, unsafe);
 	}
-	for (const safe of ["notes.md", "sub/deeper/file.txt", ".hidden/ok", "console.log", "a b/c"]) assert.equal(unsafeFolderPath(safe), false, safe);
+	for (const safe of ["notes.md", "sub/deeper/file.txt", ".hidden/ok", "console.log", "a b/c", "..notes.txt", "..config/a.txt", "conin.txt", "com10.md", "caf\u00e9.md"]) {
+		assert.equal(unsafeFolderPath(safe), false, safe);
+	}
 	assert.equal(folderPathError("Notes", [file("a.md"), file("sub/CON.txt")]), "\"Notes/sub/CON.txt\" is not a safe file path. Rename it or attach a different folder.");
 	assert.match(folderPathError("Notes", [file("A.md"), file("a.md")])!, /Notes\/a\.md/);
 	assert.match(folderPathError("Notes", [file("sub"), file("sub/x.md")])!, /Notes\/sub\/x\.md/);
@@ -199,4 +202,19 @@ test("an unsent folder expires with its files and a missing upload blocks the se
 	sweepAttachments(Date.now());
 	assert.ok(!pendingEntries().some(entry => entry.startsWith(grant.id)));
 	assert.equal((await renew(grant.id)).status, 404);
+});
+
+test("names that only start with two dots upload and keep their layout", async () => {
+	const chat = chatStore.createChat("zz-prove-it dot-dot names");
+	const grant = await (await reserveFolder({ chatId: chat.id }, "Dots", [file("..notes.txt", 2), file("..config/a.txt", 1)])).json();
+	assert.equal((await put(grant.files[0].uploadUrl, "nn")).status, 204);
+	assert.equal((await put(grant.files[1].uploadUrl, "a")).status, 204);
+	claimAttachments([grant.id], owner.session.id, { chatId: chat.id }, [], attachments => {
+		chatStore.saveMessages(chat.id, [{ ...newUserMessage("dots"), attachments }]);
+	});
+	const stored = claimedAttachmentPath(grant.id)!;
+	assert.equal(fs.readFileSync(path.join(stored, "..notes.txt"), "utf8"), "nn");
+	assert.equal(fs.readFileSync(path.join(stored, "..config", "a.txt"), "utf8"), "a");
+	const read = await createReadTool(undefined, attachmentsForChat(chat.id)).execute("dots", { path: `attachment:${grant.id}/..config/a.txt` });
+	assert.deepEqual(read.content, [{ type: "text", text: "a" }]);
 });

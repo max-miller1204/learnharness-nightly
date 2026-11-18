@@ -418,7 +418,9 @@ function copyFolder(folder: PendingFolder, root: string): void {
 	fs.mkdirSync(/* turbopackIgnore: true */ root, { mode: 0o700 });
 	for (const file of folder.files) {
 		const destination = path.join(/* turbopackIgnore: true */ root, ...file.path.split("/"));
-		if (path.relative(root, destination).startsWith("..")) throw new Error("Invalid folder attachment path");
+		// A real ".." segment, not a name such as "..notes.txt".
+		const relative = path.relative(root, destination);
+		if (relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) throw new Error("Invalid folder attachment path");
 		fs.mkdirSync(/* turbopackIgnore: true */ path.dirname(destination), { recursive: true, mode: 0o700 });
 		copyBytes(pendingFile(file.member, ".body"), destination);
 	}

@@ -25,10 +25,12 @@ export function skippedFolderSegment(segments: readonly string[]): number {
 		(index < segments.length - 1 ? JUNK_FOLDERS.has(segment.toLowerCase()) : JUNK_FILES.has(segment.toLowerCase())));
 }
 
-const DEVICE_NAME = /^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(?:\..*)?$/i;
+/** Windows device names, also with spaces or dots before an extension
+ * ("CON .txt"), which Windows trims back to the device. */
+const DEVICE_NAME = /^(?:con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])[ .]*(?:\..*)?$/i;
 
 function unsafeSegment(segment: string): boolean {
-	return !segment || segment === "." || segment === ".." || /[<>:"|?*\\\x00-\x1f\x7f]/.test(segment) ||
+	return !segment || segment === "." || segment === ".." || /[<>:"|?*\\\x00-\x1f\x7f-\x9f]/.test(segment) ||
 		/[. ]$/.test(segment) || DEVICE_NAME.test(segment) || new TextEncoder().encode(segment).length > 255;
 }
 

@@ -14,10 +14,11 @@ afterEach(async () => { await cleanup?.(); cleanup = undefined; });
 
 /** No native DataTransfer/Selection in linkedom. These shims exercise React's
  * real bubbling handlers and the editor's logical caret contract, not OS drag. */
-async function fixture({ desktop = true, claimed = true, onContentRoot, uploadTarget = false }: {
+async function fixture({ desktop = true, claimed = true, onContentRoot, uploadTarget = false, uploadBusy = false }: {
 	desktop?: boolean;
 	claimed?: boolean;
 	uploadTarget?: boolean;
+	uploadBusy?: boolean;
 	onContentRoot?: (element: HTMLElement | null) => void;
 } = {}) {
 	const { window: win, document: doc } = parseHTML("<html><body><div id='root'></div></body></html>");
@@ -67,7 +68,7 @@ async function fixture({ desktop = true, claimed = true, onContentRoot, uploadTa
 					<PathInput data-testid="editor" value={value} onValueChange={(next) => { value = next; draw(); }} onKeyDown={() => { keys++; }} />
 					<button type="button" data-testid="elsewhere">Elsewhere</button>
 					<div data-testid="content">Content away from the input</div>
-					{uploadTarget && <div data-attachment-upload="" data-testid="upload-target" />}
+					{uploadTarget && <div data-attachment-upload={uploadBusy ? "busy" : ""} data-testid="upload-target" />}
 				</form>
 			</FilePathDropZone>
 		</>;
@@ -188,6 +189,21 @@ test("a browser drop goes to the page's uploading composer as entries, folders i
 	assert.deepEqual(received[0]!.entries.map(entry => entry.isDirectory), [true, false]);
 	assert.equal(f.status, "");
 	assert.equal(f.value, "readthis");
+	f.assertPathOnly();
+});
+
+test("while a turn runs the uploading composer shows no drop overlay and a drop does nothing", async () => {
+	const f = await fixture({ desktop: false, uploadTarget: true, uploadBusy: true });
+	let received = 0;
+	f.doc.querySelector('[data-testid="upload-target"]')!.addEventListener("lh:attachment-drop", () => { received++; });
+	const transfer = f.transfer([f.file("notes")], [0]);
+	const enter = await f.event("dragenter", transfer);
+	assert.equal(enter.defaultPrevented, true);
+	assert.equal(f.doc.querySelector('[data-testid="file-path-drop-indicator"]'), null);
+	const drop = await f.event("drop", transfer);
+	assert.equal(drop.defaultPrevented, true);
+	assert.equal(received, 0);
+	assert.equal(f.status, "");
 	f.assertPathOnly();
 });
 

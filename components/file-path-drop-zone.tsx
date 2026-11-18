@@ -18,6 +18,9 @@ function uploadTarget(root: HTMLElement | null): HTMLElement | null {
 	return targets.find(target => target.closest("[data-attachment-composer]")?.contains(document.activeElement)) ?? targets[0] ?? null;
 }
 
+/** While a turn runs the composer takes no uploads: no overlay, and a drop does nothing. */
+const busy = (target: HTMLElement | null) => target?.getAttribute("data-attachment-upload") === "busy";
+
 /** The content area only: the sidebar is deliberately outside this zone.
  * Existing files stay where they are; only quoted path strings enter drafts. */
 export function FilePathDropZone({ children, className, onContentRoot }: {
@@ -59,8 +62,9 @@ export function FilePathDropZone({ children, className, onContentRoot }: {
 				if (!hasFiles(event)) return;
 				event.preventDefault();
 				depth.current++;
-				setDragging(true);
-				setUploading(Boolean(uploadTarget(root.current)));
+				const upload = uploadTarget(root.current);
+				setDragging(!busy(upload));
+				setUploading(Boolean(upload));
 				setNotice("");
 			}}
 			onDragOver={(event) => {
@@ -81,6 +85,7 @@ export function FilePathDropZone({ children, className, onContentRoot }: {
 				clearDrag();
 				const resolve = window.lh?.getPathForFile;
 				const upload = uploadTarget(root.current);
+				if (busy(upload)) { setNotice(""); return; }
 				if (upload) {
 					// Entries must be read during the drop event; walking happens later.
 					const entries: FileSystemEntry[] = [];

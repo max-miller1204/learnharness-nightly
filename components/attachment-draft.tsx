@@ -16,7 +16,8 @@ interface DraftFile {
 	name: string;
 	file?: File;
 	folder?: PickedFolder;
-	grant?: Pick<AttachmentGrantResponse, "id" | "expiresAt"> & { uploadUrl?: string };
+	/** `deadline` is the upload start deadline on this device's clock. */
+	grant?: { id: string; deadline: number; uploadUrl?: string };
 	uploads: Set<XMLHttpRequest>;
 	work?: Promise<void>;
 	progress: number;
@@ -82,12 +83,21 @@ class RequestError extends Error {
 	constructor(public status: number, message: string) { super(message); }
 }
 
-async function postJson<T>(url: string, body?: unknown): Promise<T> {
+/** The server's `expiresAt` on this device's clock. The response's Date
+ * header gives the server's time, so a skewed device clock doesn't matter.
+ * Date has one-second resolution: allow that second. */
+export function localDeadline(expiresAt: number, serverDate: string | null, now = Date.now()): number {
+	const server = Date.parse(serverDate ?? "");
+	return expiresAt - 1000 + (Number.isFinite(server) ? now - server : 0);
+}
+
+async function postGrant<T extends { expiresAt: number }>(url: string, body?: unknown): Promise<T & { deadline: number }> {
 	const response = await fetch(url, body === undefined ? { method: "POST" } : {
 		method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
 	});
 	if (!response.ok) throw new RequestError(response.status, await attachmentResponseError(response));
-	return await response.json() as T;
+	const grant = await response.json() as T;
+	return { ...grant, deadline: localDeadline(grant.expiresAt, response.headers.get("date")) };
 }
 
 export function useAttachmentDraft(chatId?: string) {
@@ -119,13 +129,13 @@ export function useAttachmentDraft(chatId?: string) {
 	const target = (): AttachmentTarget => chatId ? { chatId } : { draftId: openingDraft.current ??= uuid() };
 	const live = (row: DraftFile) => files.current.includes(row);
 	const uploadFile = async (row: DraftFile) => {
-		if (!row.grant?.uploadUrl || row.grant.expiresAt <= Date.now()) {
+		if (!row.grant?.uploadUrl || row.grant.deadline <= Date.now()) {
 			if (row.grant) {
 				await deleteGrant(row.grant.id);
 				row.grant = undefined;
 			}
 			if (!live(row)) return;
-			row.grant = await postJson<AttachmentGrantResponse>(PROTOCOL_ROUTES.attachments, {
+			row.grant = await postGrant<AttachmentGrantResponse>(PROTOCOL_ROUTES.attachments, {
 				...target(), name: row.file!.name, mimeType: row.file!.type, size: row.file!.size,
 			});
 		}
@@ -145,17 +155,17 @@ export function useAttachmentDraft(chatId?: string) {
 		// Each round finishes at least one file, so this bounds a misbehaving server.
 		for (let round = 0; round <= folder.files.length + 1; round++) {
 			if (!live(row)) return;
-			let grants: AttachmentFolderGrantResponse | undefined;
+			let grants: (AttachmentFolderGrantResponse & { deadline: number }) | undefined;
 			if (row.grant) {
-				try { grants = await postJson<AttachmentFolderGrantResponse>(PROTOCOL_ROUTES.renewAttachmentFolder(row.grant.id)); }
+				try { grants = await postGrant<AttachmentFolderGrantResponse>(PROTOCOL_ROUTES.renewAttachmentFolder(row.grant.id)); }
 				catch (error) {
 					if (!(error instanceof RequestError && error.status === 404)) throw error;
 					row.grant = undefined; // Expired and collected: reserve the folder again.
 					continue;
 				}
 			} else {
-				grants = await postJson<AttachmentFolderGrantResponse>(PROTOCOL_ROUTES.attachments, { ...target(), name: folder.name, files: folderManifest(folder) });
-				row.grant = { id: grants.id, expiresAt: grants.expiresAt };
+				grants = await postGrant<AttachmentFolderGrantResponse>(PROTOCOL_ROUTES.attachments, { ...target(), name: folder.name, files: folderManifest(folder) });
+				row.grant = { id: grants.id, deadline: grants.deadline };
 			}
 			if (!grants.files.length) return true;
 			const loaded = new Map<string, number>();
@@ -168,7 +178,7 @@ export function useAttachmentDraft(chatId?: string) {
 			let failure: unknown;
 			let finished = 0;
 			await Promise.all(Array.from({ length: FOLDER_UPLOADS_AT_ONCE }, async () => {
-				for (let next = queue.shift(); next && failure === undefined && live(row) && Date.now() < grants.expiresAt - 30_000; next = queue.shift()) {
+				for (let next = queue.shift(); next && failure === undefined && live(row) && Date.now() < grants.deadline - 30_000; next = queue.shift()) {
 					const file = byPath.get(next.path);
 					if (!file) { failure = new Error("Upload failed. Try again."); return; }
 					try {
@@ -204,30 +214,31 @@ export function useAttachmentDraft(chatId?: string) {
 		files.current = [...files.current, ...rows];
 		for (const row of rows) start(row);
 	};
-	const select = (selected: File[]) => {
+	/** Add the files, or return the limit they exceed. */
+	const addFiles = (selected: File[]): string | undefined => {
 		const error = attachmentLimitError([...limitInputs(files.current), ...selected.map(file => ({ name: file.name, mimeType: file.type, size: file.size }))]);
-		setValidation(error);
-		if (error) return;
-		add(selected.map(file => ({ key: uuid(), name: file.name, file, uploads: new Set(), ready: false, progress: 0 })));
+		if (!error) add(selected.map(file => ({ key: uuid(), name: file.name, file, uploads: new Set(), ready: false, progress: 0 })));
+		return error;
 	};
 	/** Reject the whole folder before any bytes upload; keep the rest of the draft. */
-	const addFolder = (pick: FolderPick) => {
-		if ("error" in pick) { setValidation(pick.error); return; }
+	const addFolder = (pick: FolderPick): string | undefined => {
+		if ("error" in pick) return pick.error;
 		const manifest = folderManifest(pick);
 		const error = folderPathError(pick.name, manifest) ?? folderLimitError(pick.name, manifest) ??
 			attachmentLimitError([...limitInputs(files.current), ...folderFilesAsAttachments(manifest)]);
-		setValidation(error);
-		if (error) return;
-		add([{ key: uuid(), name: pick.name, folder: pick, uploads: new Set(), ready: false, progress: 0 }]);
+		if (!error) add([{ key: uuid(), name: pick.name, folder: pick, uploads: new Set(), ready: false, progress: 0 }]);
+		return error;
 	};
-	const selectFolder = (selected: File[]) => { if (selected.length) addFolder(folderFromFiles(selected)); };
+	const select = (selected: File[]) => { setValidation(addFiles(selected)); };
+	const selectFolder = (selected: File[]) => { if (selected.length) setValidation(addFolder(folderFromFiles(selected))); };
+	// One line per rejected item, so a later accepted folder hides none.
 	const drop = async (entries: readonly FileSystemEntry[], plain: readonly File[]) => {
 		let dropped: Awaited<ReturnType<typeof droppedAttachments>>;
 		try { dropped = await droppedAttachments(entries); }
 		catch { setValidation("Upload failed. Try again."); return; }
 		const loose = [...dropped.files, ...plain];
-		if (loose.length) select(loose);
-		for (const folder of dropped.folders) addFolder(folder);
+		const errors = [loose.length ? addFiles(loose) : undefined, ...dropped.folders.map(addFolder)].filter(error => error !== undefined);
+		setValidation(errors.length ? errors.join("\n") : undefined);
 	};
 	const remove = (row: DraftFile) => {
 		files.current = files.current.filter(file => file !== row);
@@ -287,7 +298,7 @@ export function DraftAttachmentChips({ draft, disabled = false }: { draft: Attac
 	if (!draft.enabled && !draft.files.length && !draft.validation) return null;
 	const empty = !draft.files.length && !draft.validation;
 	return (
-		<div ref={root} data-attachment-upload="" className={empty ? "w-full" : "w-full space-y-1 px-2.5 pt-2"}>
+		<div ref={root} data-attachment-upload={disabled ? "busy" : ""} className={empty ? "w-full" : "w-full space-y-1 px-2.5 pt-2"}>
 			{!empty && <div className="flex max-h-28 flex-wrap gap-1 overflow-y-auto">
 				{draft.files.map(row => {
 					const Icon = row.folder ? FolderIcon : PaperclipIcon;
@@ -310,7 +321,7 @@ export function DraftAttachmentChips({ draft, disabled = false }: { draft: Attac
 			{draft.files.map(row => row.folder?.skippedCount
 				? <p key={row.key} role="status" className="text-xs text-muted-foreground">{skippedFolderNotice(row.name, row.folder.skippedCount, row.folder.skippedNames)}</p>
 				: null)}
-			{draft.validation && <p role="alert" className="text-xs text-destructive">{draft.validation}</p>}
+			{draft.validation?.split("\n").map((line, index) => <p key={index} role="alert" className="text-xs text-destructive">{line}</p>)}
 		</div>
 	);
 }

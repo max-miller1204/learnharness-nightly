@@ -464,3 +464,99 @@ it("a folder uploads as one chip, reports skipped entries, and Retry renews only
 	assert.equal(draft.validation, "This browser can't attach folders. Attach individual files instead.");
 	assert.equal(draft.files.length, 1);
 });
+
+function fakeEntries() {
+	const fileEntry = (fullPath: string) => ({
+		isFile: true, isDirectory: false, name: fullPath.split("/").at(-1)!, fullPath,
+		file: (resolve: (value: File) => void) => resolve(new File(["x"], fullPath.split("/").at(-1)!)),
+	});
+	const directory = (fullPath: string, children: object[]) => ({
+		isFile: false, isDirectory: true, name: fullPath.split("/").at(-1)!, fullPath,
+		createReader: () => { let done = false; return { readEntries: (resolve: (value: object[]) => void) => { resolve(done ? [] : children); done = true; } }; },
+	});
+	return { fileEntry, directory };
+}
+
+it("each rejected folder of one drop keeps its own error line, even beside an accepted folder", async t => {
+	t.mock.method(globalThis, "fetch", async (_url: string, init?: RequestInit) => {
+		if (!init?.method) return Response.json({ capabilities: ["attachment-uploads-v1", "attachment-folders-v1"] });
+		return Response.json({ error: "Offline in this test." }, { status: 503 });
+	});
+	let draft!: AttachmentDraft;
+	await fixture({ desktop: false, onDraft: value => { draft = value; } });
+	const { fileEntry, directory } = fakeEntries();
+	const unsafe = directory("/Bad", [fileEntry("/Bad/CON.txt")]);
+	const accepted = directory("/Good", [fileEntry("/Good/a.md")]);
+	const empty = directory("/Hidden", [fileEntry("/Hidden/.DS_Store")]);
+	await act(async () => { await draft.drop([unsafe, accepted, empty] as unknown as FileSystemEntry[], []); });
+	assert.deepEqual(draft.files.map(row => row.name), ["Good"]);
+	assert.deepEqual(draft.validation?.split("\n"), ["\"Bad/CON.txt\" is not a safe file path. Rename it or attach a different folder.", "Hidden has no files to attach."]);
+	const alerts = [...renderToStaticMarkup(<DraftAttachmentChips draft={draft} />).matchAll(/role="alert"[^>]*>([^<]*)</g)].map(match => match[1]);
+	assert.ok(alerts.includes("Hidden has no files to attach."));
+	assert.ok(alerts.some(text => text?.includes("Bad/CON.txt")));
+});
+
+it("grant timing follows the server's clock, not a skewed device clock", async t => {
+	let skew = 60 * 60_000; // First the device clock runs an hour ahead of the server.
+	let serverNow = Date.now();
+	const realNow = Date.now.bind(Date);
+	t.mock.method(Date, "now", () => realNow() + skew);
+	const posts: string[] = [];
+	t.mock.method(globalThis, "fetch", async (url: string, init?: RequestInit) => {
+		if (!init?.method) return Response.json({ capabilities: ["attachment-uploads-v1", "attachment-folders-v1"] });
+		const headers = { date: new Date(serverNow).toUTCString() };
+		if (init.method === "POST") {
+			posts.push(url);
+			const body = init.body ? JSON.parse(String(init.body)) : {};
+			if (body.files) return Response.json({ id: "folder", expiresAt: serverNow + 600_000, files: [{ path: "a.md", uploadUrl: "/upload/folder-a" }] }, { status: 201, headers });
+			if (url !== "/api/attachments") return Response.json({ id: "folder", expiresAt: serverNow + 600_000, files: [] }, { headers });
+			return Response.json({ id: `file-${posts.length}`, uploadUrl: `/upload/file-${posts.length}`, expiresAt: serverNow + 600_000 }, { status: 201, headers });
+		}
+		return new Response(null, { status: 204, headers });
+	});
+	const puts: string[] = [];
+	let failFirstFile = true;
+	class ClockUpload {
+		upload = {};
+		status = 204;
+		url = "";
+		onload?: () => void;
+		onerror?: () => void;
+		open(_method: string, url: string) { this.url = url; }
+		send() {
+			puts.push(this.url);
+			queueMicrotask(() => {
+				if (this.url.startsWith("/upload/file") && failFirstFile) { failFirstFile = false; this.onerror?.(); }
+				else this.onload?.();
+			});
+		}
+	}
+	const descriptor = Object.getOwnPropertyDescriptor(globalThis, "XMLHttpRequest");
+	Object.defineProperty(globalThis, "XMLHttpRequest", { value: ClockUpload, configurable: true });
+	t.after(() => {
+		if (descriptor) Object.defineProperty(globalThis, "XMLHttpRequest", descriptor);
+		else Reflect.deleteProperty(globalThis, "XMLHttpRequest");
+	});
+	let draft!: AttachmentDraft;
+	await fixture({ desktop: false, onDraft: value => { draft = value; } });
+	// A folder: against the hour-ahead device clock the fresh grant looks
+	// expired, which used to block every upload.
+	const picked = Object.assign(new File(["x"], "a.md"), { webkitRelativePath: "Notes/a.md" });
+	await act(async () => { draft.selectFolder([picked]); });
+	await act(async () => { await draft.files[0]?.work; });
+	assert.equal(draft.files[0]!.ready, true);
+	assert.deepEqual(puts, ["/upload/folder-a"]);
+	// A single file on a device an hour behind, whose PUT failed: eleven
+	// minutes later its grant has expired on the server, so Retry reserves
+	// again instead of reusing it.
+	skew = -60 * 60_000;
+	await act(async () => { draft.select([new File(["x"], "b.txt")]); });
+	await act(async () => { await draft.files[1]?.work; });
+	assert.match(draft.files[1]!.error!, /Upload interrupted/);
+	serverNow += 11 * 60_000;
+	skew += 11 * 60_000;
+	await act(async () => { draft.retry(draft.files[1]!); });
+	await act(async () => { await draft.files[1]?.work; });
+	assert.equal(draft.files[1]!.ready, true);
+	assert.equal(puts.at(-1), "/upload/file-4");
+});
