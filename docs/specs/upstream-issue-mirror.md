@@ -1,6 +1,6 @@
 # Upstream issue mirror
 
-Status: approved by the owner on 2026-11-17.
+Status: approved by the owner on 2026-11-17. Hardened the same day ([fix-upstream-hardening.md](fix-upstream-hardening.md)): the copied-text fence, bot-only mirror matching and workflow-only writes below replace the first version's rules.
 
 Goal: roadmap item 13. A scheduled job copies upstream issues (`amosblomqvist/learnharness`) into the fork as fork issues, once each, and labels a mirror `upstream-closed` while its upstream issue is closed. Nothing ever pings upstream.
 
@@ -28,18 +28,18 @@ These are small calls that follow this repo's existing upstream workflows.
 
 | Topic | Proposal |
 |---|---|
-| Matching a mirror to its upstream issue | A hidden first line in the mirror body, `<!-- upstream-issue: amosblomqvist/learnharness#N -->`. Each run lists every fork issue (any state, any labels) and reads that marker. Removing the label or renaming the mirror doesn't cause a duplicate; deleting the marker line does. |
+| Matching a mirror to its upstream issue | A hidden first line in the mirror body, `<!-- upstream-issue: amosblomqvist/learnharness#N -->`. Each run lists every fork issue (any state, any labels) and reads that marker, counting only issues the fork bot App opened (`FORK_BOT_LOGIN`, default `learnharness-nightly-bot[bot]`). An issue anyone else opens with the marker is ignored by both passes, so it can't block a mirror or have its labels changed. Removing the label or renaming the mirror doesn't cause a duplicate; deleting the marker line does. |
 | Title | `[upstream issue N] <upstream title>`, like `[upstream PR N] <title>` for imported PRs. The upstream title is cut at 230 characters to stay under GitHub's 256 cap. |
 | Which issues count as new | An upstream issue with no mirror is copied if it's open, **or** if its number is above `792` (the newest today) even when already closed. So an issue opened and closed between two runs is still mirrored, arriving with `upstream-closed`. The `792` cutoff and the per-run cap are `NEW_AFTER` and `MAX_NEW` in the workflow `env`. |
 | Order and per-run cap | Oldest first (lowest number), at most **100** new mirrors per run, 3 seconds apart (issue creation also has an anti-spam check against fast bulk creates; other writes 1 second apart). The backfill of 315 takes 4 hourly runs. |
-| Rate limits | Reads are about 15 calls per run plus one comments call per new mirror, far below the App's 5000 per hour. Writes stay under GitHub's secondary limits (80 per minute, 500 per hour) through the cap and the pause. Each mirror is a single create call with its labels, so a failure never leaves a half-made mirror. Any API error stops the run and fails it (a red run, GitHub emails the owner); the next run picks up where it stopped, because what's mirrored is read from the fork each time. |
+| Rate limits | Reads are about 15 calls per run plus one comments call per new mirror, far below the App's 5000 per hour. Writes stay under GitHub's secondary limits (80 per minute, 500 per hour) through the cap and the pause. Each mirror is a single create call with its labels, so a failure never leaves a half-made mirror. Any API or jq error stops the run and fails it (a red run, GitHub emails the owner; the loops read jq output from files, so a jq error can't silently end one early); the next run picks up where it stopped, because what's mirrored is read from the fork each time. |
 | Overlapping runs | `concurrency: mirror-upstream-issues`, no cancel, so two runs never create the same mirror twice. |
-| No pings | Same rules as the PR import. Upstream references are written as code (`` `amosblomqvist/learnharness#N` `` and the URL in backticks), authors as code (`` `login` ``), and the body and each comment sit in a `~~~~markdown` fenced block, where mentions, `#N` links and URLs don't fire. A copied line that could close the fence (up to 3 spaces, then `~~~~`) is indented to 4 spaces so it can't. |
+| No pings | Same rules as the PR import. Upstream references are written as code (`` `amosblomqvist/learnharness#N` `` and the URL in backticks), authors as code (`` `login` ``), and the body and each comment sit in a `markdown` tilde-fenced block, where mentions, `#N` links and URLs don't fire. The fence is one tilde longer than the longest run of tildes anywhere in the copied text (at least `~~~~`), so no line in it can close the block, whatever its indentation or line endings, and the text is copied unchanged. GitHub caps a fence at 255 tildes, so text with a run of 255 or more instead gets a 255-tilde fence, LF line endings and each line starting with up to 3 spaces and a tilde indented to 4 spaces. `selfhost/scripts/fence.jq` holds this rule for both this script and the PR import. |
 | Body layout | Marker line; one credit line (upstream link, author, opened date, "copied once on <date>; later upstream edits and comments aren't synced"); the issue body in an open `<details>`; then the comments in a collapsed `<details>`, each headed by its author and date. |
 | Size limit | GitHub caps an issue body at 65536 characters. If the mirror would pass 60000 bytes, comments are dropped from the end with a note "N more comments upstream"; if the body alone is too long it's cut with "Truncated; read the rest upstream". |
 | Label colors | `upstream`: `1d76db`, "Mirrored from amosblomqvist/learnharness". `upstream-closed`: `cfd3d7`, "Closed upstream; this copy stays open". |
 | Manual run | `workflow_dispatch` with an optional `issue` number: mirror just that upstream issue now (even an older closed one), then run the close-tracking pass. Without it, a dispatch does a normal run. |
-| Local run | `selfhost/scripts/mirror-upstream-issues.sh [issue]` with your `gh` login, like `import-upstream-pr.sh`. `DRY_RUN=1` prints what it would create and label without writing. |
+| Local run | `DRY_RUN=1 selfhost/scripts/mirror-upstream-issues.sh [issue]` with your `gh` login prints what it would create and label without writing. Real writes happen only in the workflow (`GITHUB_ACTIONS=true`, as the bot); without `DRY_RUN=1` elsewhere the script refuses to run, since mirrors it opened under your login wouldn't be recognized. |
 | Turning on Issues | Issues are **disabled** on the fork today. After approval I run `gh repo edit max-miller1204/learnharness-nightly --enable-issues` with your login (or you tick Settings → General → Features → Issues). |
 | Notifications | The backfill creates about 315 issues. If you watch the repo, GitHub sends a notification for each (bot-created issues notify watchers). Expect a burst over 4 hours. |
 
@@ -71,7 +71,7 @@ jobs:
 
 1. Ensure the two labels exist.
 2. List upstream issues (state all, PRs filtered out) and fork issues (state all), each in one paginated call.
-3. Build the map upstream number → fork mirror (number, labels) from the markers.
+3. Build the map upstream number → fork mirror (number, labels) from the markers on issues the fork bot opened.
 4. **New mirrors:** pick unmirrored upstream issues that are open or above the cutoff (or only the dispatched `issue`), oldest first, up to 100. For each: fetch its comments, render the body with `jq`, create the fork issue with `upstream`, upstream's labels that exist here, and `upstream-closed` if it's already closed.
 5. **Close tracking:** for every existing mirror, add `upstream-closed` when upstream is closed and the label is missing; remove it when upstream is open and the label is present. Fork open or closed state is never changed.
 6. Print a summary: created, labeled, unlabeled, remaining backlog.

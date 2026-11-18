@@ -40,7 +40,7 @@ It pushes the PR's exact commits to `upstream-pr/<N>` (same commit IDs as upstre
 
 **Merge imported PRs with "Create a merge commit", never squash.** When upstream later merges the same commits, git sees them as already merged and the Sync PR stays clean. (Upstream's maintainer often reworks PRs before landing them; those reworked versions still conflict, and you resolve them once in the Sync PR.)
 
-The bots never ping anyone upstream: upstream PR references are written as code, and an imported PR's original description is copied into a collapsed code block. So no `@mentions` fire, and nothing adds "mentioned this" entries to upstream's timelines.
+The bots never ping anyone upstream: upstream PR references are written as code, and an imported PR's original description is copied into a collapsed code block. The block's fence is one tilde longer than any run of tildes in the copied text, and at least 4 (`selfhost/scripts/fence.jq`, shared with the issue mirror). GitHub caps a fence at 255 tildes, so text with a run of 255 or more instead gets a 255-tilde fence, LF line endings and its tilde-led lines indented to 4 spaces. Either way nothing in it can close the block early. So no `@mentions` fire, and nothing adds "mentioned this" entries to upstream's timelines.
 
 ## Mirroring upstream issues
 
@@ -49,10 +49,10 @@ The bots never ping anyone upstream: upstream PR references are written as code,
 - A mirror is a fork issue "[upstream issue N] <title>" labeled `upstream`, plus upstream's own labels that exist here. Its body credits the author and quotes the original issue and the comments it had at copy time. Later upstream edits and comments aren't copied.
 - Every upstream issue numbered above 792 is mirrored, even one already closed. Older ones were backfilled only if open. At most 100 new mirrors per run, oldest first.
 - While an upstream issue is closed, its mirror carries `upstream-closed`; the label goes away if upstream reopens it. The job never opens or closes fork issues.
-- The hidden first line of a mirror's body (`<!-- upstream-issue: amosblomqvist/learnharness#N -->`) is how the job finds it. Keep that line, or the next run mirrors the issue again.
-- Like the imports, nothing pings upstream: references and authors are written as code and the copied text sits in code blocks.
+- The hidden first line of a mirror's body (`<!-- upstream-issue: amosblomqvist/learnharness#N -->`) is how the job finds it, and only issues the fork bot opened (`learnharness-nightly-bot[bot]`) count. Keep that line, or the next run mirrors the issue again. An issue anyone else opens with that line is ignored, so it can't block or relabel a mirror.
+- Like the imports, nothing pings upstream: references and authors are written as code and the copied text sits in code blocks that nothing in it can close.
 
-To mirror one issue now (even an older closed one), run **Actions → Mirror upstream issues** with its number, or locally `selfhost/scripts/mirror-upstream-issues.sh <N>`. With `DRY_RUN=1` in front, it prints what it would do (and the body) without writing. If a manual run shows as cancelled, a scheduled run took its queue slot; run it again.
+To mirror one issue now (even an older closed one), run **Actions → Mirror upstream issues** with its number. Only the workflow writes mirrors, because mirrors opened under any other login aren't recognized and would be copied again. Locally, `DRY_RUN=1 selfhost/scripts/mirror-upstream-issues.sh [N]` prints what it would do (and, with a number, the body) without writing; without `DRY_RUN=1` it refuses to run. If a manual run shows as cancelled, a scheduled run took its queue slot; run it again.
 
 ## Fork bot (GitHub App)
 

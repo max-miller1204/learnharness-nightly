@@ -6,7 +6,8 @@ name: Mirror upstream issues
 # Copied text sits in code blocks and upstream references are written as code,
 # so nothing pings anyone upstream. Design: docs/specs/upstream-issue-mirror.md.
 #
-# Local equivalent: selfhost/scripts/mirror-upstream-issues.sh [issue]
+# Local dry run: DRY_RUN=1 selfhost/scripts/mirror-upstream-issues.sh [issue]
+# (only this workflow writes mirrors; the script refuses to elsewhere).
 # Authenticates as the fork bot GitHub App (see docs/fork-workflow.md).
 
 on:
