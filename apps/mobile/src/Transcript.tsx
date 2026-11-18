@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Image, Pressable, Text, useWindowDimensions, View } from "react-native";
-import { PROTOCOL_ROUTES, type ImageSnapshot, type JobRecord, type LhMessage } from "../../../src/client-protocol/index.ts";
+import { PROTOCOL_ROUTES, type AttachmentReference, type ImageSnapshot, type JobRecord, type LhMessage } from "../../../src/client-protocol/index.ts";
 import type { PlanBlockData } from "../../../src/core/contracts/chat.ts";
 import { blockLayout, GRAPH_PAD, TEXT_CAP_SCALE } from "../../../src/core/plan-layout.ts";
 import { projectView, type LhViewMessage, type LhViewPart } from "../../../src/core/view.ts";
@@ -9,6 +9,7 @@ import type { MobileApi } from "./protocol";
 import { helperCard, isSubagentSteer, teachSeam } from "./lesson";
 import { CompactionCut, CompactionNote, DispatchCard, GraphContextCard, ReasoningRow, SeamDivider, SteerCard, ThinkingRow } from "./LessonParts";
 import { Markdown } from "./Markdown";
+import { SavedChips } from "./Attachments";
 import { PlanDiagram } from "./PlanDiagram";
 import { Label } from "./ui";
 import { space, useTheme } from "./theme";
@@ -129,9 +130,11 @@ function Part({ part, context }: { part: LhViewPart; context: PartContext }) {
   return helper ? <DispatchCard kind={helper.kind} job={helper.job} /> : null;
 }
 
-export function Transcript({ settled, tail, api, chatId, jobs, liveHelpers, openPlan }: {
+export function Transcript({ settled, tail, api, chatId, jobs, liveHelpers, openPlan, files, unavailableFiles }: {
   settled: LhViewMessage[]; tail: LhMessage[]; api: MobileApi; chatId: string;
   jobs: readonly JobRecord[]; liveHelpers: boolean; openPlan: () => void;
+  /** Saved user messages' uploaded files, by message ID. */
+  files: ReadonlyMap<string, readonly AttachmentReference[]>; unavailableFiles: ReadonlySet<string>;
 }) {
   const { s } = useTheme();
   const live = useMemo(() => projectView(tail), [tail]);
@@ -148,7 +151,9 @@ export function Transcript({ settled, tail, api, chatId, jobs, liveHelpers, open
           : <Part key={part.id ?? index} part={part} context={context} />);
         // The learner's words sit in the web's band: card fill, left rail, YOU label.
         if (message.role === "user" && message.parts.some(({ type }) => type === "text")) {
-          return <View key={message.id} style={s.band}><Label>You</Label>{parts}</View>;
+          const attached = files.get(message.id);
+          return <View key={message.id} style={s.band}><Label>You</Label>{parts}
+            {attached && <View style={{ paddingVertical: space.xs }}><SavedChips files={attached} unavailable={unavailableFiles} /></View>}</View>;
         }
         return (
           <View key={message.id} style={{ gap: space.sm }}>

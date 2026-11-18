@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
-  PROTOCOL_ROUTES, PRACTICE_CONTROLS_V1, PRACTICE_CONTROL_ROUTES, hasCapability,
+  ATTACHMENT_UPLOADS, PROTOCOL_ROUTES, PRACTICE_CONTROLS_V1, PRACTICE_CONTROL_ROUTES, hasCapability,
   type ChatKind, type ChatListResponse, type CreateChatRequest, type CreateChatResponse,
-  type GraphContextPick, type PracticePropositionsResponse, type ServerInfo,
+  type GraphContextPick, type PracticePropositionsResponse, type ServerInfo, type StartWithAttachmentsRequest,
 } from "../../../src/client-protocol/index.ts";
 import { ApiError, type MobileApi } from "./protocol";
 import { errorText } from "./use-session";
 import { Button, Field, Notice } from "./ui";
 import { fonts, radius, space, useTheme } from "./theme";
+import { useAttachments } from "./use-attachments";
+import { AttachButton, AttachMenu, DraftChips } from "./Attachments";
 
 const MAX_PICKS = 64;
 
@@ -31,6 +33,10 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
   useEffect(() => () => operation.current?.abort(), []);
   // Graph picks ride the creation for teaching and practice alike (home.tsx).
   const canPick = hasCapability(info, PRACTICE_CONTROLS_V1);
+  const canAttach = hasCapability(info, ATTACHMENT_UPLOADS);
+  // Files reserved before the session exists belong to this opening draft.
+  const attachments = useAttachments(api);
+  const [attachOpen, setAttachOpen] = useState(false);
 
   useEffect(() => {
     if (!picking) return;
@@ -48,9 +54,41 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
     return propositions?.filter(({ name, statement }) => `${name} ${statement}`.toLowerCase().includes(search)) ?? [];
   }, [propositions, query]);
 
+  /** One step creates the session and sends the opening message with its
+   *  files. Sending again reuses the send, so it never makes a second session. */
+  async function createWithFiles(text: string) {
+    const scope = new AbortController();
+    const signal = scope.signal;
+    operation.current = scope;
+    setBusy(true);
+    setError("");
+    setRecent(undefined);
+    try {
+      const upload = await attachments.prepare(JSON.stringify({ text, kind, picks: picks.map(({ id }) => id) }));
+      if (!upload || signal.aborted) return;
+      const body: StartWithAttachmentsRequest = {
+        draftId: attachments.draftId(), ...upload, title: text,
+        ...(kind === "practice" ? { kind } : {}),
+        ...(picks.length > 0 ? { graphContext: { propositions: picks } } : {}),
+      };
+      const { id } = await api.post<CreateChatResponse>(PROTOCOL_ROUTES.startWithAttachments, body, signal);
+      if (signal.aborted) return;
+      attachments.accept(upload);
+      open(id);
+    } catch (error) {
+      if (signal.aborted || connectionFault(error)) return;
+      setError(error instanceof ApiError && error.status < 500 ? errorText(error)
+        : "The server didn't confirm the start. Send again to finish it without creating a second session.");
+    } finally {
+      operation.current = null;
+      if (!signal.aborted) setBusy(false);
+    }
+  }
+
   async function create() {
     const text = draft.trim();
     if (!text || operation.current) return;
+    if (canAttach && attachments.rows.length) return createWithFiles(text);
     const scope = new AbortController();
     const signal = scope.signal;
     operation.current = scope;
@@ -165,7 +203,10 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
         {picks.length > 0 && <Text style={s.meta}>{picks.map(({ name }) => name).join(", ")}</Text>}
         <Notice>{error}</Notice>
         {recent?.map((chat) => <Button key={chat.id} onPress={() => open(chat.id, draft.trim())}>{chat.title}</Button>)}
+        {canAttach && attachOpen && !busy && <AttachMenu attachments={attachments} close={() => setAttachOpen(false)} />}
+        {canAttach && <DraftChips attachments={attachments} needsText={!draft.trim()} />}
         <View style={[s.dock, { flexDirection: "row", alignItems: "flex-end", gap: 6, padding: 6 }]}>
+          {canAttach && <AttachButton open={attachOpen} setOpen={setAttachOpen} disabled={busy} />}
           <TextInput accessibilityLabel={prompt} placeholder={prompt} placeholderTextColor={c.muted} selectionColor={c.accent}
             value={draft} onChangeText={setDraft} multiline editable={!busy}
             style={{ flex: 1, minHeight: 40, maxHeight: 192, paddingHorizontal: 10, paddingVertical: 10, fontFamily: fonts.prose, fontSize: 16, lineHeight: 20, color: c.text, textAlignVertical: "top" }} />

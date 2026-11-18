@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject, type ComponentRef } from "react";
 import { Alert, Keyboard, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
-  BROWSER_HANDOFF_ROUTES, BROWSER_HANDOFF_V1, LESSON_VIEW_V1, PRACTICE_CONTROLS_V1, hasCapability,
-  type LhMessage, type PairingTokenResponse, type ServerInfo,
+  ATTACHMENT_UPLOADS, BROWSER_HANDOFF_ROUTES, BROWSER_HANDOFF_V1, LESSON_VIEW_V1, PRACTICE_CONTROLS_V1, hasCapability,
+  type AttachmentReference, type LhMessage, type PairingTokenResponse, type ServerInfo,
 } from "../../../src/client-protocol/index.ts";
 import { activeProblemOf, malformedQuestionsOf, pendingQuestionOf, pluginQuestionCallsOf } from "../../../src/core/native-messages.ts";
 import { projectView } from "../../../src/core/view.ts";
@@ -16,6 +16,8 @@ import { revealOffset } from "./reveal";
 import { checkNeedsReveal, livePlan, PHASE_LABEL, sessionPhase, skipAnswer, skipParked } from "./lesson";
 import { PlanScreen } from "./PlanScreen";
 import { useJobs } from "./use-jobs";
+import { useAttachments } from "./use-attachments";
+import { AttachButton, AttachMenu, DraftChips } from "./Attachments";
 
 const EMPTY: LhMessage[] = [];
 
@@ -80,6 +82,14 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const { refresh, submit } = session;
   const jobsSettled = useCallback(() => refresh(), [refresh]);
   const jobs = useJobs(api, id, active && lessonView, jobsRef, jobsSettled, connectionFault);
+  // Uploads ride ordinary text messages only, never practice thinking (the server's rule).
+  const canAttach = hasCapability(info, ATTACHMENT_UPLOADS) && !problem;
+  const attachments = useAttachments(api, id);
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [sending, setSending] = useState(false);
+  const savedFiles = useMemo(() => new Map(messages.flatMap((message) =>
+    message.role === "user" && message.attachments?.length ? [[message.id, message.attachments] as [string, AttachmentReference[]]] : [])), [messages]);
+  const unavailableFiles = useMemo(() => new Set(record?.unavailableAttachmentIds), [record?.unavailableAttachmentIds]);
 
   useEffect(() => {
     reloadRef.current = refresh;
@@ -132,11 +142,17 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
     }
   }
 
-  function sendDraft() {
+  async function sendDraft() {
     const text = draft.trim();
-    if (!text) return;
-    void submit(problem ? { type: "thinking", problemCallId: problem.toolCallId, text } : { type: "text", text },
-      () => setDraft((current) => current.trim() === text ? "" : current));
+    if (!text || sending) return;
+    const clear = () => setDraft((current) => current.trim() === text ? "" : current);
+    if (problem) return void submit({ type: "thinking", problemCallId: problem.toolCallId, text }, clear);
+    if (!canAttach || !attachments.rows.length) return void submit({ type: "text", text }, clear);
+    // Send can be pressed while files upload: wait for them, then send.
+    setSending(true);
+    const upload = await attachments.prepare(JSON.stringify({ type: "text", text }));
+    setSending(false);
+    if (upload) void submit({ type: "text", text }, () => { attachments.accept(upload); clear(); }, upload);
   }
 
   function skip(readingThinking: string) {
@@ -183,7 +199,8 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
         }}
         onContentSizeChange={() => { if (nearBottom.current) scroller.current?.scrollToEnd({ animated: false }); }}>
         {session.loading && <Text style={s.muted}>Loading session…</Text>}
-        <Transcript settled={settledView} tail={session.tail} api={api} chatId={id} jobs={jobs} liveHelpers={lessonView} openPlan={() => setPlanOpen(true)} />
+        <Transcript settled={settledView} tail={session.tail} api={api} chatId={id} jobs={jobs} liveHelpers={lessonView} openPlan={() => setPlanOpen(true)}
+          files={savedFiles} unavailableFiles={unavailableFiles} />
         {busy && <Text accessibilityLiveRegion="polite" style={s.muted}>Reply in progress…</Text>}
         {record?.compacting && <Text style={s.muted}>Updating session context…</Text>}
         <Notice boxed>{session.refreshError}</Notice>
@@ -229,13 +246,16 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
               {problem && controls && <Button disabled={blocked} onPress={() => discard(problem.toolCallId)}>Discard problem</Button>}
             </View>
           )}
+          {canAttach && attachOpen && !blocked && !busy && <AttachMenu attachments={attachments} close={() => setAttachOpen(false)} />}
+          {canAttach && <DraftChips attachments={attachments} needsText={!draft.trim()} />}
           <View style={s.dock}>
             {problem && <View style={{ paddingHorizontal: space.md, paddingTop: space.sm }}><Label>Your thinking</Label></View>}
             <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 6, padding: 6 }}>
+              {canAttach && <AttachButton open={attachOpen} setOpen={setAttachOpen} disabled={blocked || busy || sending} />}
               <TextInput accessibilityLabel={thinkingLabel} placeholder={thinkingLabel} placeholderTextColor={c.muted} selectionColor={c.accent}
                 multiline value={draft} onChangeText={setDraft} editable={!blocked && !busy}
                 style={{ flex: 1, minHeight: 40, maxHeight: 192, paddingHorizontal: 10, paddingVertical: 10, fontFamily: fonts.prose, fontSize: 16, lineHeight: 20, color: c.text, textAlignVertical: "top" }} />
-              <Button primary label={problem ? "Submit thinking" : "Send"} disabled={blocked || busy || !draft.trim()} onPress={sendDraft}
+              <Button primary label={problem ? "Submit thinking" : "Send"} disabled={blocked || busy || sending || !draft.trim()} onPress={() => void sendDraft()}
                 style={{ width: 40, paddingHorizontal: 0, borderRadius: radius.control }}>
                 <Text style={{ fontFamily: fonts.ui, fontSize: 18, color: c.onPrimary }}>↵</Text>
               </Button>
