@@ -1,0 +1,178 @@
+name: PR preview publish
+
+# Publishes a finished PR preview build (pr-preview.yml) as the PR's
+# `preview-pr-<N>` prerelease and comments `lh preview <N>` on the PR; also
+# deletes the previews of PRs that are no longer open. Design:
+# docs/specs/pr-previews.md.
+#
+# Trusted half: workflow_run always runs main's copy of this file. It never
+# checks out or runs PR code; the build's files are data (exact names, a
+# version shape, checksums computed here). selfhost/scripts/pr-preview-check.sh
+# checks that the PR is open and at the built commit, and that the build
+# was started by someone with write access. Outside PRs also need a trusted
+# record of the owner's label on that exact commit. Built-in token only.
+
+on:
+  workflow_run:
+    workflows: ["PR preview"]
+    types: [completed]
+  schedule:
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  identify:
+    name: Identify the PR
+    if: >-
+      github.repository == 'max-miller1204/learnharness-nightly' &&
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.path == '.github/workflows/pr-preview.yml'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      pr: ${{ steps.identify.outputs.pr }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: selfhost
+      - name: Read the PR number
+        id: identify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: FILES="$RUNNER_TEMP/preview-files" selfhost/scripts/pr-preview-check.sh --identify
+
+  publish:
+    name: Publish
+    needs: identify
+    if: needs.identify.outputs.pr != ''
+    concurrency:
+      group: pr-preview-publish-${{ needs.identify.outputs.pr }}
+      queue: max
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PR: ${{ needs.identify.outputs.pr }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      ACTOR: ${{ github.event.workflow_run.triggering_actor.login }}
+      RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+      RUN_CREATED_AT: ${{ github.event.workflow_run.created_at }}
+      OWNER: ${{ github.repository_owner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: selfhost
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+      - name: Check who asked, and the files
+        id: check
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: FILES="$RUNNER_TEMP/preview-files" OUT="$RUNNER_TEMP/preview-out" selfhost/scripts/pr-preview-check.sh
+      - name: Prepare the preview release
+        if: steps.check.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="preview-pr-$PR" OUT="$RUNNER_TEMP/preview-out"
+          node selfhost/scripts/make-feed.ts --version "$VERSION" --tag "$tag" --sha "$HEAD_SHA" --repo "$GH_REPO" --dir "$OUT" > "$OUT/latest.json"
+          cat > "$RUNNER_TEMP/notes.md" <<NOTES
+          Preview of #$PR at \`$HEAD_SHA\` ($VERSION).
+
+          Not an update: installs never see it. Run it beside your server, with fresh, empty data:
+
+          \`\`\`sh
+          lh preview $PR
+          \`\`\`
+
+          Replaced by each new build of the PR, and deleted when the PR closes. See [PR previews](https://github.com/$GH_REPO/blob/main/docs/specs/pr-previews.md).
+          NOTES
+      - name: Confirm the head and consume the label
+        id: confirm
+        if: steps.check.outputs.publish == 'true'
+        env:
+          APPROVAL_LABEL: ${{ steps.check.outputs.approval_label }}
+        run: selfhost/scripts/pr-preview-check.sh --confirm
+      - name: Publish the preview release
+        if: steps.confirm.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="preview-pr-$PR" OUT="$RUNNER_TEMP/preview-out"
+          # One release per PR. The tag only holds files, so it points at main.
+          if gh release view "$tag" >/dev/null 2>&1; then gh release delete "$tag" --yes --cleanup-tag; fi
+          gh release create "$tag" "$OUT"/*.tar.gz "$OUT"/*.sha256 "$OUT/latest.json" \
+            --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "PR #$PR preview (${HEAD_SHA::12})" --notes-file "$RUNNER_TEMP/notes.md"
+      - name: Comment on the PR
+        if: steps.confirm.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+          BY_OWNER: ${{ steps.check.outputs.by_owner }}
+        run: |
+          set -euo pipefail
+          marker="<!-- lh-pr-preview -->"
+          if [ "$BY_OWNER" = true ]; then again="Each push builds a new one."; else again="A new push builds nothing until you add the \`preview\` label again."; fi
+          cat > "$RUNNER_TEMP/comment.md" <<BODY
+          $marker
+          **Preview ready** for \`${HEAD_SHA::12}\` (\`$VERSION\`). On your server:
+
+          \`\`\`sh
+          lh preview $PR
+          \`\`\`
+
+          It runs beside your server on port 3775 with fresh, empty data, and Ctrl+C stops it and deletes it. [Release files](https://github.com/$GH_REPO/releases/tag/preview-pr-$PR). $again
+          BODY
+          id=$(gh api --paginate "repos/$GH_REPO/issues/$PR/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | head -n 1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GH_REPO/issues/comments/$id" -F "body=@$RUNNER_TEMP/comment.md" >/dev/null
+          else
+            gh api -X POST "repos/$GH_REPO/issues/$PR/comments" -F "body=@$RUNNER_TEMP/comment.md" >/dev/null
+          fi
+
+  cleanup:
+    name: Delete previews of closed PRs
+    if: github.repository == 'max-miller1204/learnharness-nightly'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Sweep
+        run: |
+          set -euo pipefail
+          gh release list --limit 1000 --json tagName --jq '.[].tagName | select(test("^preview-pr-[1-9][0-9]*$"))' |
+          while read -r tag; do
+            pr=${tag#preview-pr-}
+            # Only an explicit `closed`: an API hiccup must not delete an open PR's preview.
+            state=$(gh api "repos/$GH_REPO/pulls/$pr" --jq .state 2>/dev/null || echo unknown)
+            if [ "$state" = closed ]; then
+              echo "PR #$pr is $state: deleting $tag."
+              gh release delete "$tag" --yes --cleanup-tag
+            fi
+          done

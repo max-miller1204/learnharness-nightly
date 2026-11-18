@@ -1,0 +1,79 @@
+name: PR preview
+
+# Builds a PR's preview (docs/specs/pr-previews.md): the nightly's bundle and
+# gates, at the PR's head commit, versioned <version>-preview.<date>.<run>.
+# The owner's PRs build on open, push and reopen; anyone else's only when the
+# owner adds the `preview` label. pr-preview-publish.yml (main's copy, on
+# workflow_run) checks the result and publishes it as the PR's
+# `preview-pr-<N>` prerelease; this workflow can't publish anything.
+#
+# This runs PR code: read-only token, no secrets, no stored git credentials,
+# and the `pull_request` cache scope (main never reads it). The `if:` below
+# only saves runners: a PR can edit its own copy of this file, so the publish
+# workflow re-checks who asked for the build.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+
+permissions:
+  contents: read
+
+# Only runs that build join the PR's group, so an event that builds nothing
+# (another label, a fork author's push to a PR they don't own) can't cancel
+# a build in progress.
+concurrency:
+  group: >-
+    ${{ ((github.event.action == 'labeled' && github.event.label.name == 'preview' &&
+    github.event.sender.login == github.repository_owner) ||
+    (github.event.action != 'labeled' && github.event.pull_request.user.login == github.repository_owner))
+    && format('pr-preview-{0}', github.event.pull_request.number) || format('pr-preview-noop-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+jobs:
+  meta:
+    name: Version
+    if: >-
+      (github.event.action == 'labeled' && github.event.label.name == 'preview' &&
+      github.event.sender.login == github.repository_owner) ||
+      (github.event.action != 'labeled' && github.event.pull_request.user.login == github.repository_owner)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          sparse-checkout: package.json
+          sparse-checkout-cone-mode: false
+      - id: meta
+        run: |
+          base=$(node -p "require('./package.json').version")
+          echo "version=${base}-preview.$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+      # The publish workflow needs the PR number: workflow_run lists no PRs
+      # for a fork's PR. It checks this against the PR's head commit.
+      - name: PR number for the publish workflow
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          mkdir preview-meta
+          echo "$PR" > preview-meta/pr
+      - uses: actions/upload-artifact@v7
+        with:
+          name: preview-meta
+          path: preview-meta/pr
+          if-no-files-found: error
+          retention-days: 7
+
+  bundle:
+    name: Bundle
+    needs: meta
+    uses: ./.github/workflows/selfhost-bundle.yml
+    with:
+      sha: ${{ github.event.pull_request.head.sha }}
+      version: ${{ needs.meta.outputs.version }}
