@@ -1,0 +1,510 @@
+{
+	"id": "chat_zzmobilelesson",
+	"title": "Sets and unions",
+	"createdAt": "2026-11-18T15:00:00.000Z",
+	"updatedAt": "2026-11-18T15:06:00.000Z",
+	"messages": [
+		{
+			"id": "msg_mwmc7bi7_83ce32cc",
+			"role": "custom",
+			"customType": "graph-context",
+			"content": "[Session context] — picked from the learner's knowledge map when starting this session:\n\nPropositions (id — name: statement; the problem tool's target field uses these ids):\n- [p_sets] Sets: A set is an unordered collection of distinct objects.\n- [p_union] Union: The union of A and B holds everything in A or in B.\n\nReasoning chains among them (premises → conclusion):\n- Sets → Union",
+			"display": true,
+			"details": {
+				"propositions": [
+					{
+						"id": "p_sets",
+						"name": "Sets",
+						"statement": "A set is an unordered collection of distinct objects."
+					},
+					{
+						"id": "p_union",
+						"name": "Union",
+						"statement": "The union of A and B holds everything in A or in B."
+					}
+				],
+				"chains": [
+					"Sets → Union"
+				]
+			},
+			"timestamp": 1795014040000
+		},
+		{
+			"role": "user",
+			"content": "Teach me about sets and unions",
+			"id": "u_goal",
+			"timestamp": 1795014060000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "The learner picked Sets and Union. Start by checking whether braces mean anything to them."
+				},
+				{
+					"type": "toolCall",
+					"id": "call_probe1",
+					"name": "probe",
+					"arguments": {
+						"question": "Which of these is a set?",
+						"options": [
+							{
+								"label": "{1, 2, 3}"
+							},
+							{
+								"label": "1 + 2"
+							}
+						],
+						"explanation": "Braces collect distinct objects.",
+						"correctAnswer": "{1, 2, 3}"
+					}
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "toolUse",
+			"id": "a_probe",
+			"timestamp": 1795014080000
+		},
+		{
+			"role": "toolResult",
+			"toolCallId": "call_probe1",
+			"toolName": "probe",
+			"content": [
+				{
+					"type": "text",
+					"text": "answered"
+				}
+			],
+			"details": {
+				"kind": "quiz",
+				"tool": "probe",
+				"questionText": "Which of these is a set?",
+				"options": [
+					{
+						"index": 1,
+						"label": "{1, 2, 3}"
+					},
+					{
+						"index": 2,
+						"label": "1 + 2"
+					}
+				],
+				"dontKnow": false,
+				"answers": [
+					{
+						"index": 1,
+						"label": "{1, 2, 3}"
+					}
+				],
+				"correct": true,
+				"correctIndices": [
+					1
+				],
+				"confidence": 70,
+				"explanation": "Braces collect distinct objects.",
+				"thinking": "Braces usually mean a collection.",
+				"answeredAt": "2026-11-18T15:00:20.000Z"
+			},
+			"isError": false,
+			"id": "r_probe",
+			"timestamp": 1795014100000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "Good, you recognise set notation."
+				},
+				{
+					"type": "toolCall",
+					"id": "call_pd",
+					"name": "probe_done",
+					"arguments": {
+						"summary": "Knows set notation, not unions."
+					}
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "toolUse",
+			"id": "a_probe_done",
+			"timestamp": 1795014120000
+		},
+		{
+			"role": "toolResult",
+			"toolCallId": "call_pd",
+			"toolName": "probe_done",
+			"content": [
+				{
+					"type": "text",
+					"text": "ok"
+				}
+			],
+			"details": {
+				"ok": true
+			},
+			"isError": false,
+			"id": "r_probe_done",
+			"timestamp": 1795014140000
+		},
+		{
+			"id": "steer_probe_chat_zzmobilelesson",
+			"role": "custom",
+			"customType": "probe-handoff",
+			"content": "Next: plan the full teaching arc from my current understanding to the goal understanding. Apply the teaching methodology in your system prompt, and find the optimal way to teach me this. Find the unconditional truths, plan the motivated derivations/discoveries, so every reasoning step has to land as obviously true. Take your time here and really think this through. When it's genuinely reasoned out, call plan_init and present the plan; I'll accept it or ask for changes.",
+			"display": true,
+			"details": {
+				"chatId": "chat_zzmobilelesson"
+			},
+			"timestamp": 1795014160000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "Plan: sets first, then unions, then the two ways forward."
+				},
+				{
+					"type": "toolCall",
+					"id": "call_plan",
+					"name": "plan_init",
+					"arguments": {
+						"mermaid": "graph TD; sets-->union; sets-->power; union-->venn"
+					}
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "toolUse",
+			"id": "a_plan",
+			"timestamp": 1795014180000
+		},
+		{
+			"role": "toolResult",
+			"toolCallId": "call_plan",
+			"toolName": "plan_init",
+			"content": [
+				{
+					"type": "text",
+					"text": "Plan saved."
+				}
+			],
+			"details": {
+				"ok": true,
+				"tree": {
+					"nodes": [
+						{
+							"id": "sets",
+							"title": "What a set is"
+						},
+						{
+							"id": "union",
+							"title": "Unions and intersections"
+						},
+						{
+							"id": "power",
+							"title": "Power sets"
+						},
+						{
+							"id": "venn",
+							"title": "Venn diagrams and inclusion-exclusion"
+						}
+					],
+					"edges": [
+						{
+							"from": "sets",
+							"to": "union"
+						},
+						{
+							"from": "sets",
+							"to": "power"
+						},
+						{
+							"from": "union",
+							"to": "venn"
+						}
+					],
+					"version": 1
+				}
+			},
+			"isError": false,
+			"id": "r_plan",
+			"timestamp": 1795014200000
+		},
+		{
+			"id": "pb_mwmc7bi8_a399e804",
+			"role": "custom",
+			"customType": "plan-block",
+			"content": "",
+			"display": true,
+			"details": {
+				"planCallId": "call_plan",
+				"block": {
+					"kind": "full",
+					"at": "2026-11-18T15:03:40.000Z",
+					"current": null,
+					"nodes": [
+						{
+							"id": "sets",
+							"title": "What a set is",
+							"status": "upcoming"
+						},
+						{
+							"id": "union",
+							"title": "Unions and intersections",
+							"status": "upcoming"
+						},
+						{
+							"id": "power",
+							"title": "Power sets",
+							"status": "upcoming"
+						},
+						{
+							"id": "venn",
+							"title": "Venn diagrams and inclusion-exclusion",
+							"status": "upcoming"
+						}
+					],
+					"edges": [
+						{
+							"from": "sets",
+							"to": "union"
+						},
+						{
+							"from": "sets",
+							"to": "power"
+						},
+						{
+							"from": "union",
+							"to": "venn"
+						}
+					]
+				}
+			},
+			"timestamp": 1795014240000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "A **set** is a collection of distinct things. I'll look up a clean statement of inclusion-exclusion while we go."
+				},
+				{
+					"type": "toolCall",
+					"id": "call_research1",
+					"name": "research",
+					"arguments": {
+						"question": "State the inclusion-exclusion principle for two sets.",
+						"context": "For a beginner lesson on unions."
+					}
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "toolUse",
+			"id": "a_research",
+			"timestamp": 1795014260000
+		},
+		{
+			"role": "toolResult",
+			"toolCallId": "call_research1",
+			"toolName": "research",
+			"content": [
+				{
+					"type": "text",
+					"text": "Dispatched (job job_zzresearch1). The brief will arrive separately."
+				}
+			],
+			"details": {
+				"jobId": "job_zzresearch1",
+				"dispatched": true
+			},
+			"isError": false,
+			"id": "r_research",
+			"timestamp": 1795014280000
+		},
+		{
+			"id": "steer_job_zzresearch1",
+			"role": "custom",
+			"customType": "subagent-steer",
+			"content": "Research complete — the researcher's full brief follows. Weave it into the lesson and cite its sources when you use its findings:\n\n**Inclusion-exclusion** counts a union by adding the parts and subtracting the overlap: $|A \\cup B| = |A| + |B| - |A \\cap B|$.",
+			"display": true,
+			"details": {
+				"jobId": "job_zzresearch1",
+				"kind": "research",
+				"toolCallId": "call_research1",
+				"result": {
+					"brief": "**Inclusion-exclusion** counts a union by adding the parts and subtracting the overlap: $|A \\cup B| = |A| + |B| - |A \\cap B|$.",
+					"sources": [
+						{
+							"title": "Inclusion-exclusion principle (Wikipedia)",
+							"url": "https://en.wikipedia.org/wiki/Inclusion%E2%80%93exclusion_principle"
+						}
+					]
+				}
+			},
+			"timestamp": 1795014300000
+		},
+		{
+			"id": "msg_mwmc7bi9_77b54dd5",
+			"role": "custom",
+			"customType": "compaction",
+			"content": "[SESSION HISTORY COMPACTED] The transcript before this point was summarized to fit the context window; the summary below replaces it. Everything after this message is the verbatim recent transcript.\n\nThe learner knows set notation and the plan covers sets, unions, power sets and Venn diagrams.",
+			"display": true,
+			"details": {
+				"firstKeptMessageId": "a_plan",
+				"tokensBefore": 118000,
+				"model": "custom:prove-strong"
+			},
+			"timestamp": 1795014320000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "Teach the union, then check it before moving on."
+				},
+				{
+					"type": "text",
+					"text": "The **union** $A \\cup B$ holds everything that is in $A$, in $B$, or in both. For $A = \\{1, 2\\}$ and $B = \\{2, 3\\}$ that is $\\{1, 2, 3\\}$."
+				},
+				{
+					"type": "toolCall",
+					"id": "call_research2",
+					"name": "research",
+					"arguments": {
+						"question": "Find a classic Venn diagram exercise for two sets."
+					}
+				},
+				{
+					"type": "toolCall",
+					"id": "call_check1",
+					"name": "quiz",
+					"arguments": {
+						"type": "check",
+						"nodeId": "union",
+						"question": "What is $\\{1, 2\\} \\cup \\{2, 3\\}$?",
+						"options": [
+							{
+								"label": "{1, 2, 3}"
+							},
+							{
+								"label": "{2}"
+							},
+							{
+								"label": "{1, 2, 2, 3}"
+							}
+						],
+						"explanation": "A union lists each element once.",
+						"correctAnswer": "{1, 2, 3}"
+					}
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "toolUse",
+			"id": "a_check",
+			"timestamp": 1795014340000
+		},
+		{
+			"role": "toolResult",
+			"toolCallId": "call_research2",
+			"toolName": "research",
+			"content": [
+				{
+					"type": "text",
+					"text": "Dispatched (job job_zzresearch2). The brief will arrive separately."
+				}
+			],
+			"details": {
+				"jobId": "job_zzresearch2",
+				"dispatched": true
+			},
+			"isError": false,
+			"id": "r_research2",
+			"timestamp": 1795014360000
+		}
+	],
+	"version": 2
+}

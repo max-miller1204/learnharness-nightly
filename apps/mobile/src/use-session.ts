@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  PRACTICE_CONTROL_ROUTES, PROTOCOL_ROUTES,
+  LESSON_VIEW_ROUTES, PRACTICE_CONTROL_ROUTES, PROTOCOL_ROUTES,
   type AbortTurnResponse, type ChatResponse, type LhMessage, type SendResponse, type TurnStreamEvent,
 } from "../../../src/client-protocol/index.ts";
 import { ApiError, type MobileApi } from "./protocol";
@@ -171,7 +171,8 @@ export function useSession(api: MobileApi, id: string, active: boolean, connecti
   async function submit(input: SessionInput, accepted = () => {}) {
     const before = latest.current;
     if (!active || !before || writingNow.current || pending.current || refreshError || before.compacting) return;
-    if (before.turnInFlight && input.type !== "dismiss-problem") return;
+    // Discards and skips may land mid-turn: the server parks them for the settle.
+    if (before.turnInFlight && input.type !== "dismiss-problem" && input.type !== "dismiss") return;
     const signal = write.current.signal;
     writingNow.current = true;
     setWriting(true);
@@ -180,6 +181,8 @@ export function useSession(api: MobileApi, id: string, active: boolean, connecti
     try {
       if (input.type === "dismiss-problem") {
         await api.post(PRACTICE_CONTROL_ROUTES.dismiss(id), { input }, signal);
+      } else if (input.type === "dismiss") {
+        await api.post(LESSON_VIEW_ROUTES.dismiss(id), { input }, signal);
       } else {
         await api.post<SendResponse>(PROTOCOL_ROUTES.send, { chatId: id, input }, signal);
       }

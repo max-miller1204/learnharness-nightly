@@ -5,7 +5,7 @@ import { httpsLink, parseMarkdown, renderMarkdown } from "./render-markdown";
 import { NativeMarkdown } from "./NativeMarkdown";
 import { useTheme } from "./theme";
 
-function confirmExternalLink(value: string) {
+export function confirmExternalLink(value: string) {
   const url = httpsLink(value);
   if (!url) return;
   Alert.alert("Open in browser?", url, [

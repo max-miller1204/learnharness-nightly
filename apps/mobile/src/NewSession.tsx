@@ -29,7 +29,8 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
   const [recent, setRecent] = useState<ChatListResponse["chats"]>();
   const operation = useRef<AbortController | null>(null);
   useEffect(() => () => operation.current?.abort(), []);
-  const canPick = kind === "practice" && hasCapability(info, PRACTICE_CONTROLS_V1);
+  // Graph picks ride the creation for teaching and practice alike (home.tsx).
+  const canPick = hasCapability(info, PRACTICE_CONTROLS_V1);
 
   useEffect(() => {
     if (!picking) return;
@@ -70,7 +71,8 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
     try {
       const body: CreateChatRequest = {
         title: text,
-        ...(kind === "practice" ? { kind, ...(picks.length > 0 ? { graphContext: { propositions: picks } } : {}) } : {}),
+        ...(kind === "practice" ? { kind } : {}),
+        ...(picks.length > 0 ? { graphContext: { propositions: picks } } : {}),
       };
       const { id } = await api.post<CreateChatResponse>(PROTOCOL_ROUTES.chats, body, signal);
       if (!signal.aborted) open(id, text, true);

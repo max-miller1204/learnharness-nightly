@@ -13,7 +13,7 @@ import { NextRequest } from "next/server";
 import ts from "typescript";
 import { proxy } from "../proxy.ts";
 import { mintToken } from "./helpers/auth-data-dir.ts";
-import { CLIENT_PROTOCOL_VERSION, hasCapability, PROTOCOL_HEADER, PROTOCOL_ROUTES, protocolMismatch, SERVER_INFO_PATH } from "../src/client-protocol/index.ts";
+import { CLIENT_PROTOCOL_VERSION, hasCapability, LESSON_VIEW_ROUTES, PROTOCOL_HEADER, PROTOCOL_ROUTES, protocolMismatch, SERVER_INFO_PATH } from "../src/client-protocol/index.ts";
 import { serverInfo } from "../src/server/server-info.ts";
 import { GET as serverInfoRoute } from "../app/.well-known/learnharness/server/route.ts";
 
@@ -34,10 +34,11 @@ import { GET as serverInfoRoute } from "../app/.well-known/learnharness/server/r
 const RECORDED = {
 	protocolVersion: 1,
 	fingerprint: {
-		"src/client-protocol/index.ts": "1baa68084eaac0ca",
+		"src/client-protocol/index.ts": "776654debdeb8a50",
 		"src/core/attachments.ts": "a2fda90879239dc8",
 		"src/core/contracts/chat.ts": "937c52917f863b25",
 		"src/core/contracts/graph.ts": "b84d4803bd0c4acc",
+		"src/core/contracts/jobs.ts": "d5a740982ab0196d",
 		"src/core/contracts/plan.ts": "feebc7e5e0e6e8cf",
 		"src/core/events.ts": "9024567ad9c36c27",
 		"src/core/input-events.ts": "bfc9d2408879952e",
@@ -140,7 +141,7 @@ describe("server info", () => {
 		assert.equal(info.version, "0.6.1-nightly.1");
 		assert.equal(info.protocolVersion, 1);
 		assert.ok(info.name.length > 0);
-		assert.deepEqual(info.capabilities, ["attachment-uploads-v1", "attachment-folders-v1", "practice-controls-v1", "browser-handoff-v1"]);
+		assert.deepEqual(info.capabilities, ["attachment-uploads-v1", "attachment-folders-v1", "practice-controls-v1", "browser-handoff-v1", "lesson-view-v1"]);
 		assert.deepEqual(info.auth, {
 			required: true,
 			bootstrapMethods: ["one-time-token"],
@@ -189,12 +190,13 @@ describe("version check in proxy.ts", () => {
 		}
 	});
 
-	it("gates optional practice routes and the pairing mint with the existing auth and version checks", () => {
+	it("gates optional practice and lesson-view routes and the pairing mint with the existing auth and version checks", () => {
 		const token = mintToken();
 		for (const [path, method] of [
 			["/api/practice/propositions", "GET"],
 			["/api/chats/chat_123/dismiss", "POST"],
 			["/api/auth/pairing-token", "POST"],
+			["/api/jobs?chatId=chat_123", "GET"],
 		] as const) {
 			const request = (headers: Record<string, string>) => new NextRequest(origin + path, { method, headers });
 			assert.equal(proxy(request({ [PROTOCOL_HEADER]: "1" })).status, 401);
@@ -238,6 +240,8 @@ describe("client helpers", () => {
 	});
 
 	it("route builders encode IDs", () => {
+		assert.equal(LESSON_VIEW_ROUTES.jobs("a b&c"), "/api/jobs?chatId=a%20b%26c");
+		assert.equal(LESSON_VIEW_ROUTES.dismiss("c1"), "/api/chats/c1/dismiss");
 		assert.equal(PROTOCOL_ROUTES.chat("a b"), "/api/chats/a%20b");
 		assert.equal(PROTOCOL_ROUTES.turnStream("c1"), "/api/chats/c1/stream");
 		assert.equal(PROTOCOL_ROUTES.image("c1", "f".repeat(64)), `/api/chats/c1/images/${"f".repeat(64)}`);

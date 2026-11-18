@@ -11,7 +11,7 @@ import { parseQuestionInput } from "../../../src/core/tool-parts.ts";
 import type { ChatInput } from "../../../src/client-protocol/index.ts";
 import { Markdown } from "./Markdown";
 import { Button, Field, Label } from "./ui";
-import { alpha, confidenceColors, radius, space, useTheme } from "./theme";
+import { alpha, confidenceColors, fonts, radius, space, useTheme } from "./theme";
 
 /** The web dock's confidence slider: a thin rail with tick marks and a round
  *  handle that snaps to the six stops. Tap or drag anywhere on the rail. */
@@ -102,11 +102,40 @@ export function questionData(pending: PendingQuestion): QuestionData | undefined
   return data;
 }
 
-export function BuiltinQuestion({ question, disabled, submit }: {
+/** The teach-check invitation (question-dock.tsx QuestionDockBar, reveal variant). */
+function RevealBar({ question, onOpen }: { question: string; onOpen: () => void }) {
+  const { c, s } = useTheme();
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel="Check your understanding" accessibilityHint="Opens the question" onPress={onOpen}
+      style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: space.md, borderRadius: radius.md, borderCurve: "continuous",
+        backgroundColor: pressed ? c.hover : "transparent" })}>
+      <View style={{ width: 28, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: alpha(c.primary, 0.15) }}>
+        <Text style={{ color: c.primary, fontSize: 11 }}>▶</Text>
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={[s.ui, { fontFamily: fonts.uiMedium, fontSize: 14 }]}>Check your understanding</Text>
+        {/* The question's first line, rendered (math included) like the web's QuestionPreview. */}
+        <View pointerEvents="none" style={{ maxHeight: 24, overflow: "hidden", opacity: 0.7 }}><Markdown text={question} /></View>
+      </View>
+      <Text style={[s.ui, { fontFamily: fonts.uiMedium, fontSize: 11 }]}>Open ›</Text>
+    </Pressable>
+  );
+}
+
+export function BuiltinQuestion({ question, disabled, submit, reveal, openAtStart, skip }: {
   question: PendingQuestion; disabled: boolean; submit: (input: ChatInput) => void;
+  /** A teach-phase check: it waits closed behind its invitation, with the thinking-while-reading field. */
+  reveal: boolean;
+  /** A check that directly follows another question arrives open (chat.tsx revealArrival). */
+  openAtStart: boolean;
+  /** lesson-view-v1: skip the question, carrying any thinking while reading. It stays
+   * available mid-turn, where the skip also stops the turn. */
+  skip?: { disabled: boolean; run: (readingThinking: string) => void };
 }) {
   const { s } = useTheme();
   const data = useMemo(() => questionData(question), [question]);
+  const [reading, setReading] = useState("");
+  const [revealed, setRevealed] = useState(!reveal || openAtStart);
   const [selection, setSelection] = useState(emptyDockSelection);
   const [answer, setAnswer] = useState("");
   const [other, setOther] = useState("");
@@ -131,13 +160,20 @@ export function BuiltinQuestion({ question, disabled, submit }: {
         other: !dontKnow && selection.otherSelected ? other : undefined,
         confidence,
         thinking,
+        readingThinking: reveal ? reading : undefined,
       }, question.tool),
     });
   }
 
   const multi = mode === "multi-select";
+  const readingField = reveal && (
+    <Field label="Thinking while reading" placeholder="Whatever comes to mind as you read." value={reading} onChangeText={setReading}
+      editable={!disabled} multiline />
+  );
+  if (!revealed) return <View style={{ gap: space.md }}>{readingField}<RevealBar question={data.question} onOpen={() => setRevealed(true)} /></View>;
   return (
     <View style={{ gap: space.md }}>
+      {readingField}
       <View style={{ gap: space.xs }}>
         <Label>{data.kind === "quiz" ? "Quiz" : "Question"}</Label>
         <Markdown text={data.question} />
@@ -170,6 +206,7 @@ export function BuiltinQuestion({ question, disabled, submit }: {
       <View style={s.row}>
         <Button disabled={disabled || !ready} primary onPress={() => send()}>Submit answer</Button>
         {data.kind !== "ask" && <Button disabled={disabled} onPress={() => send(true)}>I don’t know</Button>}
+        {skip && <Button variant="ghost" disabled={skip.disabled} onPress={() => skip.run(reveal ? reading : "")}>Skip</Button>}
       </View>
     </View>
   );

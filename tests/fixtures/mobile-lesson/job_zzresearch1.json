@@ -1,0 +1,26 @@
+{
+	"id": "job_zzresearch1",
+	"kind": "research",
+	"toolCallId": "call_research1",
+	"chatId": "chat_zzmobilelesson",
+	"input": {
+		"question": "State the inclusion-exclusion principle for two sets."
+	},
+	"delivery": {
+		"kind": "result",
+		"status": "delivered"
+	},
+	"status": "done",
+	"activity": "brief written",
+	"createdAt": "2026-11-18T15:04:00.000Z",
+	"updatedAt": "2026-11-18T15:05:00.000Z",
+	"result": {
+		"brief": "**Inclusion-exclusion** counts a union by adding the parts and subtracting the overlap: $|A \\cup B| = |A| + |B| - |A \\cap B|$.",
+		"sources": [
+			{
+				"title": "Inclusion-exclusion principle (Wikipedia)",
+				"url": "https://en.wikipedia.org/wiki/Inclusion%E2%80%93exclusion_principle"
+			}
+		]
+	}
+}

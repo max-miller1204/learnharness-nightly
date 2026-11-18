@@ -1,7 +1,7 @@
-import type { ChatInput, LhMessage, TurnStreamEvent } from "../../../src/client-protocol/index.ts";
+import type { ChatInput, LhMessage, QuestionDismissRequest, TurnStreamEvent } from "../../../src/client-protocol/index.ts";
 
 type DismissProblem = { type: "dismiss-problem"; problemCallId: string };
-export type SessionInput = ChatInput | DismissProblem;
+export type SessionInput = ChatInput | DismissProblem | QuestionDismissRequest["input"];
 
 /** The turn stream replays full partial snapshots. Use their message slot,
  * and rebuild the entire transient tail when attaching again. */
@@ -33,6 +33,7 @@ export function inputWasSaved(messages: readonly LhMessage[], priorIds: Readonly
         return text === input.text;
       }
       case "answer":
+      case "dismiss":
         return message.role === "toolResult" && message.toolCallId === input.toolCallId && !message.isError;
       case "retry":
       case "continue":
