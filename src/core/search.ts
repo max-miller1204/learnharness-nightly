@@ -6,10 +6,8 @@
  * store (the curated key catalog), and the server composes the live adapter.
  *
  * Owner decisions baked here:
- *  - NO default engine in the factory record: an engine is live iff its
- *    key is present. With a key, the engine auto-activates (the user never
- *    chooses an engine to make search work — setting the key is enough);
- *    agent.search.engine is only an explicit preference.
+ *  - Automatic uses configured keyed engines. A subscription requires
+ *    an explicit preference bound to the selected account.
  *  - Nothing silently falls back: no engine live = search is honestly
  *    unavailable (the tool says so). Research remains available keylessly
  *    through web_fetch for known URLs.
@@ -37,11 +35,34 @@ export const SEARCH_ENGINES = [
 	{ id: "ollama", label: "Ollama", envVar: "OLLAMA_API_KEY" },
 ] as const;
 
-export type SearchEngineId = (typeof SEARCH_ENGINES)[number]["id"];
+export const SUBSCRIPTION_SEARCH_ENGINES = [
+	{ id: "chatgpt", label: "ChatGPT subscription" },
+	{ id: "claude-code", label: "Claude Code subscription" },
+	{ id: "xai-subscription", label: "Grok subscription" },
+	{ id: "github-copilot-subscription", label: "GitHub Copilot subscription" },
+] as const;
+
+export type KeyedSearchEngineId = (typeof SEARCH_ENGINES)[number]["id"];
+export type SubscriptionSearchEngineId = (typeof SUBSCRIPTION_SEARCH_ENGINES)[number]["id"];
+export type SearchEngineId = KeyedSearchEngineId | SubscriptionSearchEngineId;
+
+export function isSubscriptionSearchEngineId(value: unknown): value is SubscriptionSearchEngineId {
+	return SUBSCRIPTION_SEARCH_ENGINES.some(({ id }) => id === value);
+}
 
 /** The read/write guards' membership check (settings record + PUT body). */
 export function isSearchEngineId(value: unknown): value is SearchEngineId {
-	return SEARCH_ENGINES.some((engine) => engine.id === value);
+	return SEARCH_ENGINES.some((engine) => engine.id === value) || isSubscriptionSearchEngineId(value);
+}
+
+export interface SearchSettings {
+	engine?: SearchEngineId;
+	/** Non-secret ID for the explicit account selection, invalidated by account changes. */
+	accountSelection?: string;
+}
+
+export function isSearchAccountSelection(value: unknown): value is string {
+	return typeof value === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
 }
 
 /** A live search engine: an id (for status/labels) + one operation. The
@@ -50,7 +71,7 @@ export function isSearchEngineId(value: unknown): value is SearchEngineId {
  *  errors to clear Error messages); the tool layer catches and reports. */
 export interface SearchProvider {
 	id: SearchEngineId;
-	search(query: string, count: number): Promise<SearchHit[]>;
+	search(query: string, count: number, signal?: AbortSignal): Promise<SearchHit[]>;
 }
 
 /** Why search is (un)available — the honest status the UI and the tool
@@ -61,4 +82,15 @@ export interface SearchStatus {
 	engine: SearchEngineId | null;
 	/** The one-line reason for the state (status text for the UI). */
 	reason: string;
+}
+
+export interface SubscriptionSearchOption {
+	id: SubscriptionSearchEngineId;
+	available: boolean;
+	reason: string;
+	account?: { label: string; selection: string };
+}
+
+export interface SearchPickerStatus extends SearchStatus {
+	subscriptions: SubscriptionSearchOption[];
 }

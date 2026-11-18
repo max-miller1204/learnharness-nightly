@@ -513,8 +513,16 @@ test("verified identity grouping hides legacy duplicate registrations without me
 		assert.equal(f.saved.registrations.length, 3, "a status read never purges or merges stored credential handles");
 		assert.deepEqual(f.saved, state);
 		await f.service.select(distinct.id);
-		assert.equal((await f.service.status()).activeId, distinct.id);
-		assert.equal((await f.service.status()).accounts.length, 2);
+		const switched = await f.service.status();
+		assert.equal(switched.activeId, distinct.id);
+		assert.equal(switched.accounts.length, 2);
+		assert.notEqual(switched.accountSelection, status.accountSelection);
+		const back = await f.service.select(duplicate.id);
+		assert.notEqual(back.accountSelection, status.accountSelection, "returning to a previous account requires search reselection");
+		const restarted = fixture({ state: f.saved });
+		try {
+			assert.equal((await restarted.service.status()).accountSelection, back.accountSelection, "restart preserves the current selection");
+		} finally { restarted.service.close(); }
 	} finally { f.service.close(); }
 });
 

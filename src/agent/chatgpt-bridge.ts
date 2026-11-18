@@ -82,6 +82,10 @@ export function chatGPTRequest<T>(op: "status" | "models" | "lease", fields: Rec
  });
 }
 export function chatGPTStatus(): ChatGPTStatus { return bridge().status; }
+export async function refreshChatGPTStatus(): Promise<void> {
+ if (!runtimeConnected()) return;
+ acceptStatus(bridge(), await chatGPTRequest<StatusValue>("status"));
+}
 export function chatGPTConnected(): boolean { const s = chatGPTStatus(); return runtimeConnected() && s.available && s.accounts.some((a) => a.id === s.activeId && a.connected && a.planEnabled === true); }
 export function chatGPTBackgroundAllowed(): boolean { const s = chatGPTStatus(); return chatGPTConnected() && s.allowBackgroundUse === true; }
 export function onChatGPTChange(listener: () => void): () => void { bridge().listeners.add(listener); return () => { bridge().listeners.delete(listener); }; }

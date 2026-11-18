@@ -4,7 +4,7 @@ import { serverExecute } from "../tool-execute.ts";
 import { safeFetch } from "./safe-fetch.ts";
 // The search-hit shape lives in the core port since the search wave
 // (2026-09-20); this alias keeps callers churn-free.
-import type { SearchHit as WebSearchResult, SearchProvider } from "../../core/search.ts";
+import { isSubscriptionSearchEngineId, type SearchHit as WebSearchResult, type SearchProvider } from "../../core/search.ts";
 export type { WebSearchResult };
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
@@ -80,7 +80,7 @@ function htmlToMarkdown(html: string): { title: string; content: string } | null
 	return { title: article.title ?? "", content: markdown };
 }
 
-async function fetchAndExtract(url: string): Promise<string> {
+async function fetchAndExtract(url: string, onFetchResponse?: (url: string, ok: boolean) => void): Promise<string> {
 	const resp = await safeFetch(url, {
 		headers: {
 			"User-Agent": USER_AGENT,
@@ -89,6 +89,7 @@ async function fetchAndExtract(url: string): Promise<string> {
 		},
 		signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 	});
+	onFetchResponse?.(url, resp.ok);
 	if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
 
 	// Final URL after redirects + status — the researcher's only way to
@@ -135,7 +136,11 @@ const webFetchInput = Type.Object({
 	url: Type.String({ description: "The URL to fetch" }),
 });
 
-export function createWebTools(search: () => SearchProvider | null): Record<string, AgentTool<any>> {
+export function createWebTools(
+	search: () => SearchProvider | null,
+	onSubscriptionResults?: (results: WebSearchResult[]) => void,
+	onFetchResponse?: (url: string, ok: boolean) => void,
+): Record<string, AgentTool<any>> {
 	return {
 		web_search: {
 			name: "web_search",
@@ -143,7 +148,7 @@ export function createWebTools(search: () => SearchProvider | null): Record<stri
 			description: "Search the web. One search per call — use one call per search angle. " +
 				"Returns an array of results with title, url, and snippet.",
 			parameters: webSearchInput,
-			execute: serverExecute("web_search", webSearchInput, async ({ query, count }): Promise<WebSearchResult[] | string> => {
+			execute: serverExecute("web_search", webSearchInput, async ({ query, count }, { signal }): Promise<WebSearchResult[] | string> => {
 				const provider = search();
 				if (!provider) {
 					return (
@@ -152,9 +157,12 @@ export function createWebTools(search: () => SearchProvider | null): Record<stri
 					);
 				}
 				try {
-					return await provider.search(query, count ?? 5);
+					const results = await provider.search(query, count ?? 5, signal);
+					if (isSubscriptionSearchEngineId(provider.id)) onSubscriptionResults?.(results);
+					return results;
 				} catch (err) {
-					return `web_search failed: ${err instanceof Error ? err.message : String(err)}`;
+					const message = `web_search failed: ${err instanceof Error ? err.message : String(err)}`;
+					return isSubscriptionSearchEngineId(provider.id) ? `${message} Use web_fetch for known URLs.` : message;
 				}
 			}),
 		},
@@ -179,7 +187,7 @@ export function createWebTools(search: () => SearchProvider | null): Record<stri
 					return `web_fetch failed: invalid URL "${url}"`;
 				}
 				try {
-					return await fetchAndExtract(url);
+					return await fetchAndExtract(url, onFetchResponse);
 				} catch (err) {
 					return `web_fetch failed for ${url}: ${err instanceof Error ? err.message : String(err)}`;
 				}

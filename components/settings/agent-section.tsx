@@ -23,13 +23,9 @@
  * trigger showing "Default" over a live override would lie about the
  * record.
  *
- * Search engine (search wave, 2026-09-20, owner: no default — an engine
- * is live iff its key is present; with a key the engine AUTO-activates,
- * the explicit choice is only a preference between live engines): a row
- * in the Tools group, with the same shared-menu look and
- * the live reason line from /api/search. No engine key at all → the row
- * grays whole-row (a choice without a key would only BLOCK another
- * engine's auto-activation).
+ * Search engine: Automatic resolves configured keyed engines. The Tools
+ * picker also offers explicitly selected subscription accounts, with
+ * connection and usage information from /api/search.
  *
  * Tools — the owner's final list (2026-09-19): research, demo, visual, pdf.
  * Absent key = enabled in the schema; the UI writes explicit booleans for
@@ -65,6 +61,7 @@ import {
 	COMPACTION_THRESHOLD_FLOOR,
 	MODEL_SLOTS,
 	SEARCH_ENGINES,
+	SUBSCRIPTION_SEARCH_ENGINES,
 	resolveSettings,
 	isFileAccessFolder,
 	type AgentSettings,
@@ -73,6 +70,7 @@ import {
 	type ModelSlotName,
 	type ModelsSettings,
 	type SearchEngineId,
+	type SearchPickerStatus,
 } from "@/src/core";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { prettyModel } from "@/components/usage-format";
@@ -81,6 +79,7 @@ import { SettingsGroup, SettingsRow, SettingsMenuTrigger, Toggle, CommitInput } 
 import { ModelMenuList, ThinkingMenuList } from "./model-menu";
 import { ChatGPTBackgroundAccess } from "./chatgpt-connection";
 import { NativeSubscriptionBackgroundAccess } from "./subscription-connections";
+import { useChatGPTBridge } from "./subscription-client";
 
 /** One slot's display identity — the tier's roster as the row hint rides
  *  with the resolved default (owner: the hint ALWAYS names the default). */
@@ -225,13 +224,14 @@ export function composeSlotCacheRetention(models: ModelsSettings | undefined, sl
 export function composeSearchEngine(
 	agent: AgentSettings | undefined,
 	engine: SearchEngineId | null,
+	accountSelection?: string,
 ): AgentSettings {
 	if (engine === null) {
 		if (!agent?.search) return { ...agent };
 		const { search: _drop, ...rest } = agent;
 		return { ...rest } as AgentSettings;
 	}
-	return { ...agent, search: { engine } };
+	return { ...agent, search: { engine, ...(accountSelection && { accountSelection }) } };
 }
 
 /** The indicator under a row whose override IS the version in use (owner
@@ -374,9 +374,8 @@ export function AgentSection({
 	/** The live search state (/api/search) — the row's reason line. */
 	const [folderInput, setFolderInput] = useState("");
 	const [folderError, setFolderError] = useState<string | null>(null);
-	const [search, setSearch] = useState<{ available: boolean; engine: string | null; reason: string } | null>(null);
-	/** Which search engines have a key (/api/keys) — the no-keys-anywhere
-	 *  state grays the row; per-engine marks ride the menu rows. */
+	const [search, setSearch] = useState<SearchPickerStatus | null>(null);
+	/** Which keyed engines have a credential, shown alongside subscriptions. */
 	const [engineKeys, setEngineKeys] = useState<Partial<Record<SearchEngineId, boolean>>>({});
 	const [prompts, setPrompts] = useState<PromptView | null>(null);
 	const [openSegment, setOpenSegment] = useState<string | null>(null);
@@ -390,11 +389,28 @@ export function AgentSection({
 	const menuAnchorRef = useRef<HTMLSpanElement>(null);
 	const interactions = useInteractionLayers();
 
-	const refreshSearch = () =>
-		fetch("/api/search")
-			.then((r) => r.json())
-			.then((body: { available: boolean; engine: string | null; reason: string }) => setSearch(body))
-			.catch(() => setSearch(null));
+	const chatGPT = useChatGPTBridge();
+	const accountSelection = agent?.search?.accountSelection;
+	const searchEngine = agent?.search?.engine;
+
+	useEffect(() => {
+		let request: AbortController | undefined;
+		const refreshSearch = () => {
+			request?.abort();
+			const controller = new AbortController();
+			request = controller;
+			fetch("/api/search", { cache: "no-store", signal: controller.signal })
+				.then((response) => {
+					if (!response.ok) throw new Error("Search status unavailable");
+					return response.json() as Promise<SearchPickerStatus>;
+				})
+				.then((body) => { if (!controller.signal.aborted) setSearch(body); })
+				.catch(() => { if (!controller.signal.aborted) setSearch(null); });
+		};
+		refreshSearch();
+		const unsubscribe = chatGPT?.onChange(refreshSearch);
+		return () => { unsubscribe?.(); request?.abort(); };
+	}, [searchEngine, accountSelection, chatGPT]);
 
 	/** Re-read the prompt-segment view — the signal seam for the
 	 *  2026-09-26 state-echo fix: the view's `enabled` flags DERIVE from
@@ -436,14 +452,6 @@ export function AgentSection({
 			})
 			.catch(() => {});
 	}, []);
-
-	// The reason line re-reads /api/search AFTER an engine write lands —
-	// the write updates the `agent` prop (the dialog's record mirror), so
-	// keying on the pin avoids the race where the fetch beat the PUT and
-	// the hint contradicted the trigger it sits under.
-	useEffect(() => {
-		refreshSearch();
-	}, [agent?.search?.engine]);
 
 	// The dropdown contract (the chat model selector's, mirrored): any
 	// click outside the open menu — or an Esc — closes it. Esc is CLAIMED
@@ -950,25 +958,24 @@ export function AgentSection({
 				})()}
 				{(() => {
 					const engine = agent?.search?.engine ?? null;
-					const anyKey = SEARCH_ENGINES.some(({ id }) => engineKeys[id] === true);
 					const open = openMenu?.target === "search";
+					const selected = search?.subscriptions?.find(({ id, account }) => id === engine && account?.selection === accountSelection);
+					const label = [...SEARCH_ENGINES, ...SUBSCRIPTION_SEARCH_ENGINES].find(({ id }) => id === engine)?.label;
 					return (
 						<SettingsRow
 							label="Search engine"
-							hint={search?.reason ?? undefined}
+							hint={selected?.account ? `${selected.account.label} · ${search?.reason}` : search?.reason}
 							testid="search-engine-row"
-							dimmed={!anyKey}
 						>
 							<span ref={open ? menuAnchorRef : undefined} className="relative flex items-center gap-2">
 								<MenuTrigger
-									value={SEARCH_ENGINES.find(({ id }) => id === engine)?.label ?? ""}
+									value={label ?? ""}
 									emptyLabel="Automatic"
 									ariaLabel="Search engine"
 									testid="search-engine-trigger"
 									open={open}
 									onClick={() => setOpenMenu(open ? null : { target: "search", kind: "engine" })}
 									widthClass="min-w-20"
-									disabled={!anyKey}
 								/>
 								{open && (
 									<MenuShell
@@ -976,7 +983,7 @@ export function AgentSection({
 											anchorTestid="search-engine-trigger"
 										testid="search-engine-menu"
 										onClose={() => { setOpenMenu(null); return "closed"; }}
-										menuClass="flex w-44 flex-col gap-0.5 rounded-xl border border-border bg-card p-2 text-xs shadow-xl"
+										menuClass="flex w-72 flex-col gap-0.5 rounded-xl border border-border bg-card p-2 text-xs shadow-xl"
 									>
 										{engineOption("auto", "Automatic", engine === null, null, () => {
 											onSectionChange(composeSearchEngine(agent, null));
@@ -988,6 +995,28 @@ export function AgentSection({
 												setOpenMenu(null);
 											}),
 										)}
+										{SUBSCRIPTION_SEARCH_ENGINES.map(({ id, label }) => {
+											const option = search?.subscriptions?.find((entry) => entry.id === id);
+											const account = option?.account;
+											const active = id === engine && !!account && account.selection === accountSelection;
+											return (
+												<button
+													key={id}
+													type="button"
+													data-testid={`engine-option-${id}`}
+													disabled={!option?.available || !account}
+													className={cn("w-full rounded-lg px-2 py-1.5 text-left hover:bg-muted disabled:text-muted-foreground", active && "bg-muted/60")}
+													onClick={() => {
+														if (account) onSectionChange(composeSearchEngine(agent, id, account.selection));
+														setOpenMenu(null);
+													}}
+												>
+													<span className="block">{label}{active && <span aria-hidden> ✓</span>}</span>
+													{account && <span className="block break-all text-muted-foreground">{account.label}</span>}
+													<span className="block text-muted-foreground">{option?.reason ?? "Search status unavailable."}</span>
+												</button>
+											);
+										})}
 									</MenuShell>
 								)}
 							</span>

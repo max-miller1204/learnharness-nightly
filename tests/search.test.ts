@@ -288,7 +288,7 @@ describe("ollamaProvider (hosted search only)", () => {
 describe("five-engine catalog and resolution", () => {
 	it("pins the approved Automatic order independently of table-driven tests", () => {
 		assert.deepEqual(SEARCH_ENGINES.map(({ id }) => id), ["tavily", "brave", "exa", "firecrawl", "ollama"]);
-		assert.equal(isSearchEngineId("chatgpt"), false);
+		assert.equal(isSearchEngineId("chatgpt"), true);
 		assert.equal(isSearchEngineId("deepseek"), false);
 		for (const value of [null, {}, 1, "", "toString"]) assert.equal(isSearchEngineId(value), false);
 	});
