@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { authDataDir, authenticate, CREDENTIAL_HEADERS, sessionCookie } from "./src/server/auth.ts";
+import { authDataDir, authenticate, CREDENTIAL_HEADERS, readCredential, sessionCookie } from "./src/server/auth.ts";
 import { NEVER_EXPIRES, touchLastSeen } from "./selfhost/src/auth-store.ts";
 import { SERVER_INFO_PATH } from "./src/client-protocol/index.ts";
 import { protocolRefusal } from "./src/server/server-info.ts";
@@ -38,7 +38,10 @@ export function proxy(request: NextRequest) {
 		}
 		return response;
 	}
-	if (isApiPath(pathname)) {
+	// A paired desktop can be revoked between its session check and a page
+	// request. Native bearer clients recover in their own shell.
+	const credential = readCredential(request);
+	if (isApiPath(pathname) || (credential && credential !== "refused" && credential.via === "bearer")) {
 		return NextResponse.json({ error: result.error }, { status: result.status, headers: CREDENTIAL_HEADERS });
 	}
 	// Next normalizes the loopback hostname to localhost. If its router

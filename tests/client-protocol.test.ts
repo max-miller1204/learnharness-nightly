@@ -203,6 +203,10 @@ describe("version check in proxy.ts", () => {
 		assert(passes(proxy(new NextRequest(`${origin}/api/events?protocol=1`, { headers: { authorization: `Bearer ${token}` } }))));
 		assert(passes(proxy(new NextRequest(`${origin}/api/chats`, { headers: { authorization: `Bearer ${token}` } }))));
 		assert.equal(proxy(new NextRequest(`${origin}/api/chats`, { headers: { [PROTOCOL_HEADER]: "1" } })).status, 401);
+		const revokedPage = proxy(new NextRequest(`${origin}/chat/new`, { headers: { authorization: "Bearer revoked" } }));
+		assert.equal(revokedPage.status, 401);
+		assert.equal(revokedPage.headers.get("x-middleware-rewrite"), null, "native rejection stays in the app-owned shell");
+		assert.match(proxy(new NextRequest(`${origin}/chat/new`)).headers.get("x-middleware-rewrite") ?? "", /\/pair$/);
 	});
 });
 

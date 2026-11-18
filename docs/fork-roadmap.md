@@ -304,19 +304,7 @@ What LearnHarness already has toward this: a standalone, versioned, self-updatin
 
 **Why.** Let the desktop app use either its own built-in server or a remote one (your self-hosted box), the way T3 and OpenBot let you pick a server.
 
-**Decided.** Relates to item 1 (desktop nightlies). Owner decisions (2026-11-17/18): one backend per person (all knowledge on one server; desktop, web and phone are windows onto it). The app shows one server at a time and opens a server the owner chooses as the default; the server list exists to repoint, not to merge several servers like T3. On first launch the app asks "Run my LearnHarness here" (local server on) or "Connect to my server" (pair; local server off), changeable later in Settings. When connected to a remote server, the desktop app catches the ChatGPT sign-in redirect on its own 127.0.0.1 and passes the result to the server, so desktop sign-in needs no error page or pasting (web and phone keep the paste-back flow from PR #238).
-
-**Proposed design (not approved).**
-- The Electron shell keeps a server list: "This computer" (today's spawned local server) plus remote servers, each an address and a pairing token from item 6.
-- For a remote server, the window loads that server's own UI, so UI and server versions always match and the shell needs no copy of the app code.
-- Desktop-only bridge features (`window.lh`: folder picker, local file paths, native updates) are offered only for "This computer", or replaced by the protocol in 21 (for example uploads from 24).
-- Switching servers never moves data; each server keeps its own.
-
-**Open questions.** How are remote servers found (typed address, QR code, Tailscale names)?
-
-**Build outline.** Server list storage and UI in the shell, remote window loading with the pairing token, gating of bridge features, then a test against a self-hosted install.
-
-**Touches core.** Moderate (`electron/main.cjs`, `electron/preload.cjs`, small UI changes).
+**Approved (2026-11-18).** The first slice adds the desktop server list, direct HTTPS pairing, native switching, an explicit default, shell recovery, and the app-owned ChatGPT callback. Each window uses one backend. The second slice adds coordinated server and desktop updates for macOS, Windows NSIS, and Linux AppImage. [Desktop server list spec](specs/desktop-server-list.md)
 
 ### 24. Remote-safe attachments
 

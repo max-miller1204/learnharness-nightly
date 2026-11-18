@@ -273,7 +273,8 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 		return json(TOKEN, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body: new URLSearchParams({ ...fields, resource: RESOURCE }), signal });
 	}
 
-	async function login(accountId) {
+	/** @param {number} [desktopRedirectPort] */
+	async function login(accountId, desktopRedirectPort) {
 		await ready();
 		if (pending) throw fail("pending");
 		if (paused) throw fail("disconnected");
@@ -286,11 +287,11 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 		const abort = new AbortController();
 		let finish;
 		const completion = new Promise((resolve) => { finish = resolve; });
-		const listener = http.createServer();
+		const listener = desktopRedirectPort === undefined ? http.createServer() : null;
 		let timer;
 		let consumed = false;
 		let redirectUri;
-		const cleanup = () => { clearTimeout(timer); listener.close(); listener.closeAllConnections(); };
+		const cleanup = () => { clearTimeout(timer); listener?.close(); listener?.closeAllConnections(); };
 		const cancel = (code = "cancelled") => {
 			abort.abort();
 			cleanup();
@@ -350,27 +351,31 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 		lastError = null;
 		notify();
 		try {
-			await new Promise((resolve, reject) => {
-				listener.once("error", reject);
-				listener.listen(0, "127.0.0.1", resolve);
-			});
-			redirectUri = `http://127.0.0.1:${listener.address().port}/auth/callback`;
-			listener.on("request", async (req, res) => {
-				let callback;
-				try { callback = new URL(req.url || "/", redirectUri); }
-				catch { res.writeHead(400).end(); return; }
-				res.setHeader("Cache-Control", "no-store");
-				res.setHeader("Content-Security-Policy", "default-src 'none'");
-				res.setHeader("Referrer-Policy", "no-referrer");
-				if (req.method !== "GET" || callback.origin !== new URL(redirectUri).origin || callback.pathname !== "/auth/callback" || req.headers.host !== new URL(redirectUri).host || consumed) { res.writeHead(404).end(); return; }
-				const params = callback.searchParams;
-				// Reject duplicate parameters and unsolicited callbacks without consuming a valid pending attempt.
-				if (CALLBACK_PARAMS.some((key) => params.getAll(key).length > 1) || params.get("state") !== expectedState) { res.writeHead(400).end("Sign-in could not be verified."); return; }
-				consumed = true;
-				res.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end("Return to LearnHarness to view the sign-in result. You may close this tab.");
-				cleanup();
-				await accept(params);
-			});
+			if (listener) {
+				await new Promise((resolve, reject) => {
+					listener.once("error", reject);
+					listener.listen(0, "127.0.0.1", resolve);
+				});
+				redirectUri = `http://127.0.0.1:${listener.address().port}/auth/callback`;
+				listener.on("request", async (req, res) => {
+					let callback;
+					try { callback = new URL(req.url || "/", redirectUri); }
+					catch { res.writeHead(400).end(); return; }
+					res.setHeader("Cache-Control", "no-store");
+					res.setHeader("Content-Security-Policy", "default-src 'none'");
+					res.setHeader("Referrer-Policy", "no-referrer");
+					if (req.method !== "GET" || callback.origin !== new URL(redirectUri).origin || callback.pathname !== "/auth/callback" || req.headers.host !== new URL(redirectUri).host || consumed) { res.writeHead(404).end(); return; }
+					const params = callback.searchParams;
+					// Reject duplicate parameters and unsolicited callbacks without consuming a valid pending attempt.
+					if (CALLBACK_PARAMS.some((key) => params.getAll(key).length > 1) || params.get("state") !== expectedState) { res.writeHead(400).end("Sign-in could not be verified."); return; }
+					consumed = true;
+					res.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end("Return to LearnHarness to view the sign-in result. You may close this tab.");
+					cleanup();
+					await accept(params);
+				});
+			} else {
+				redirectUri = `http://127.0.0.1:${desktopRedirectPort}/auth/callback`;
+			}
 			timer = setTimeout(() => cancel("timeout"), timeoutMs);
 			const url = new URL(AUTHORIZE);
 			url.search = new URLSearchParams({
@@ -588,4 +593,4 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 	return { status, login, cancelLogin, completeLogin, lease, models, select, consent, disconnect, logout, close, pause, resume, stamp };
 }
 
-module.exports = { createChatGPT, fileStore, publicError, allowedAuthEndpoint, pastedCallback, SCOPES, validateState };
+module.exports = { createChatGPT, fileStore, publicError, allowedAuthEndpoint, pastedCallback, AUTHORIZE, SCOPES, validateState };
