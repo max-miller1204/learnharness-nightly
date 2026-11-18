@@ -16,6 +16,8 @@ const REPO = path.resolve(import.meta.dirname, "../../../..");
 const inst = Object.fromEntries(fs.readFileSync(instPath, "utf8").split("\n").filter((l) => l.includes("=")).map((l) => { const i = l.indexOf("="); return [l.slice(0, i), l.slice(i + 1).replace(/^"|"$/g, "")]; }));
 const OUT = path.join(path.dirname(instPath), "probes");
 fs.mkdirSync(OUT, { recursive: true });
+import { signIn, signInPage } from "./sign-in.mjs";
+signIn(inst);
 const APP = inst.APP_URL;
 const puppeteer = createRequire(path.join(REPO, "package.json"))("puppeteer-core");
 const res = { side: inst.SIDE, build: inst.BUILD_STAMP, steps: [], observations: {}, budgets: {}, probes: {}, consoleErrors: [] };
@@ -32,6 +34,7 @@ fs.writeFileSync(chromePid, String(browser.process().pid)); // stop.sh ends Chro
 let code = 0;
 try {
 	const page = await browser.newPage();
+	await signInPage(page, inst);
 	await page.setViewport({ width: 1280, height: 900 });
 	page.on("console", (m) => { if (m.type() === "error") res.consoleErrors.push({ text: m.text().slice(0, 200), url: m.location()?.url?.replace(/chat_[a-z0-9]+_[a-f0-9]+/g, "<chat>") ?? null }); });
 	page.on("pageerror", (e) => res.consoleErrors.push({ text: `uncaught: ${e.message.slice(0, 200)}` }));

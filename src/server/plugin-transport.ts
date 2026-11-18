@@ -1,5 +1,5 @@
 import { isPluginHostError } from "./plugin-host.ts";
-import { apiRequestRefusal } from "./desktop-access.ts";
+import { authRefusal } from "./auth.ts";
 import type { PluginFrontendContext, PluginInfo } from "../core/plugins.ts";
 
 /** Thin HTTP adapter, separately injectable so its tests never boot plugins. */
@@ -60,13 +60,10 @@ export function createPluginTransport(deps: { getHost(): Promise<PluginTransport
 }
 
 /** This one streamed route must avoid Proxy's silently truncated body clone.
- * Preserve the identical mode-aware API policy before ANY params/body/host
+ * Apply the same login check as proxy.ts before ANY params/body/host
  * work, including unsupported methods and framework-style OPTIONS responses. */
 export function createPluginDocumentRoute(transport: Pick<ReturnType<typeof createPluginTransport>, "convertDocument">) {
-	const refusal = (request: Request) => {
-		const error = apiRequestRefusal(request);
-		return error ? json({ error }, 403) : undefined;
-	};
+	const refusal = (request: Request) => authRefusal(request);
 	const unsupported = (request: Request) => refusal(request) ?? new Response(null, { status: 405 });
 	return {
 		async POST(request: Request, context: { params: Promise<{ id: string }> }) {

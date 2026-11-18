@@ -5,8 +5,7 @@
  * Environment order (T3 Code's readServiceEnvironment): the inherited
  * environment, then ~/.learnharness/service.env (your overrides, parsed with
  * util.parseEnv), then the managed names, which always win. A managed name
- * set in service.env is ignored and reported once. LH_ALLOWED_HOSTS is the
- * one merge: your hosts plus the MagicDNS name `lh up` found.
+ * set in service.env is ignored and reported once.
  */
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -135,9 +134,5 @@ export function buildChildEnv(input: ChildEnvInput): NodeJS.ProcessEnv {
 	env[ENV.feedUrl] = input.config.feedUrl ?? DEFAULT_FEED_URL;
 	if (input.trialUpdateId) env[ENV.trialUpdateId] = input.trialUpdateId;
 	if (input.config.chromePath && !overrides[ENV.chromePath]) env[ENV.chromePath] = input.config.chromePath;
-	const hosts = new Set((overrides[ENV.allowedHosts] ?? inherited[ENV.allowedHosts] ?? "").split(",").map((h) => h.trim()).filter(Boolean));
-	if (input.config.tailscale.enabled && input.config.tailscale.hostname) hosts.add(input.config.tailscale.hostname);
-	if (hosts.size > 0) env[ENV.allowedHosts] = [...hosts].join(",");
-	else delete env[ENV.allowedHosts];
 	return env as NodeJS.ProcessEnv;
 }

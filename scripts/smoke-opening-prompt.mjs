@@ -12,6 +12,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import puppeteer from "puppeteer-core";
+import { signFetch, smokeToken } from "./lib/smoke-auth.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "lh154-ui-"));
@@ -38,6 +39,8 @@ const env = {
 	LH_IGNORE_ENV_KEYS: "1", NEXT_TELEMETRY_DISABLED: "1",
 	NEXT_FONT_GOOGLE_MOCKED_RESPONSES: path.join(home, "fonts.cjs"),
 };
+const authorization = `Bearer ${smokeToken(env.LH_DATA_DIR)}`;
+signFetch(origin, authorization.slice("Bearer ".length));
 const server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "dev", "--hostname", "127.0.0.1", "--port", String(port)], {
 	cwd: root, env, stdio: ["ignore", "pipe", "pipe"],
 });
@@ -62,6 +65,7 @@ try {
 		args: ["--disable-background-networking", "--disable-sync", "--no-first-run", "--disable-default-apps"],
 	});
 	page = await browser.newPage();
+	await page.setExtraHTTPHeaders({ authorization });
 	page.setDefaultTimeout(45000);
 	page.on("pageerror", err => errors.push(err.message));
 	const model = { id: "synthetic", name: "Synthetic (no calls)", provider: "fixture", input: ["text"], reasoning: false, supportedLevels: ["off"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1024 };

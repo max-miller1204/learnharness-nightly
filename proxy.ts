@@ -1,23 +1,38 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { apiRequestRefusal } from "./src/server/desktop-access.ts";
+import { authDataDir, authenticate, CREDENTIAL_HEADERS } from "./src/server/auth.ts";
+import { touchLastSeen } from "./selfhost/src/auth-store.ts";
 
-/** Protects API methods, including SSE and spending/settings routes. The one
- * streamed document route enforces the identical all-method request policy
- * inside its handler, avoiding Next's silently truncated Proxy body clone.
- * No public callback or worker bypass: legitimate self-HTTP still needs the capability. */
+/** Paths anyone may load: the pairing screen, the credential exchanges, and
+ * the health check that already-installed launchers call without a
+ * credential (launcher protocol 1 is frozen). docs/specs/login-pairing.md */
+export const PUBLIC_PATHS = new Set(["/pair", "/api/health", "/api/auth/session", "/api/auth/browser-session", "/oauth/token"]);
+
+export const isApiPath = (pathname: string) => pathname === "/api" || pathname.startsWith("/api/");
+
+/** The login gate (T3 Code's model, no localhost bypass). Signed-out page
+ * requests are rewritten to the pairing screen, because LearnHarness pages
+ * render data on the server; signed-out API requests get 401. The one
+ * streamed document route checks for itself, avoiding Next's silently
+ * truncated Proxy body clone. */
 export function proxy(request: NextRequest) {
-	const refusal = apiRequestRefusal(request);
-	if (refusal) {
-		return NextResponse.json(
-			{ error: refusal },
-			{ status: 403, headers: { "Cache-Control": "no-store" } },
-		);
+	const { pathname } = request.nextUrl;
+	if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
+	const result = authenticate(request);
+	if (result.ok) {
+		try { touchLastSeen(authDataDir(), result.session.id); } catch { /* last-seen is best effort */ }
+		return NextResponse.next();
 	}
-	return NextResponse.next();
+	if (isApiPath(pathname)) {
+		return NextResponse.json({ error: result.error }, { status: result.status, headers: CREDENTIAL_HEADERS });
+	}
+	const pair = request.nextUrl.clone();
+	pair.pathname = "/pair";
+	pair.search = "";
+	return NextResponse.rewrite(pair);
 }
 
 export const config = {
-	// Keep /api itself covered; exempt only the exact streamed endpoint, not
-	// the documents subtree or other plugin routes. Must remain static literals.
-	matcher: ["/api", "/api/((?!plugins/[^/]+/documents/markdown/?$).*)"],
+	// Everything except static files (Next's own /_next/ assets, favicon and
+	// public/) and the exact streamed documents endpoint. Must remain static literals.
+	matcher: ["/((?!_next/|favicon\\.ico$|fonts/|siwc/|worklets/|plugin-loader\\.js$|api/plugins/[^/]+/documents/markdown/?$).*)"],
 };

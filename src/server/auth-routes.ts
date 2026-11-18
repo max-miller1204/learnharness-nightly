@@ -1,0 +1,169 @@
+/**
+ * The login and pairing routes (docs/specs/login-pairing.md), modeled on
+ * T3 Code's apps/server/src/auth/http.ts (MIT, Copyright (c) 2026 T3 Tools
+ * Inc.). Public: session, browser-session, /oauth/token. The rest need a
+ * session (proxy.ts) and re-check it here, because they act on it.
+ */
+import * as fs from "node:fs";
+import { timingSafeEqual } from "node:crypto";
+import {
+	claimPairingCode,
+	createPairingLink,
+	issueSession,
+	listSessions,
+	revokeOthers,
+	revokeSession,
+	type SessionRecord,
+} from "../../selfhost/src/auth-store.ts";
+import { layout } from "../../selfhost/src/paths.ts";
+import { authDataDir, authenticate, clientInfo, CREDENTIAL_HEADERS, sessionCookie } from "./auth.ts";
+
+const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
+	Response.json(body, { status, headers: { ...CREDENTIAL_HEADERS, ...extra } });
+
+async function jsonBody(request: Request): Promise<Record<string, unknown>> {
+	try {
+		const body = await request.json() as unknown;
+		return body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {};
+	} catch {
+		return {};
+	}
+}
+
+/** GET /api/auth/session (public). */
+export function sessionState(request: Request): Response {
+	const result = authenticate(request);
+	if (!result.ok) return json({ authenticated: false });
+	return json({ authenticated: true, sessionId: result.session.id, expiresAt: result.session.expiresAt });
+}
+
+/** POST /api/auth/browser-session (public): body { credential } -> session cookie. */
+export async function browserSession(request: Request): Promise<Response> {
+	const { credential } = await jsonBody(request);
+	if (typeof credential !== "string" || !credential) return json({ error: "Expected a pairing code." }, 400);
+	const claimed = claimPairingCode(authDataDir(), credential, clientInfo(request));
+	if (!claimed.ok) return json({ error: "That code is wrong, expired or already used. Make a new one.", reason: claimed.reason }, 401);
+	return json(
+		{ authenticated: true, expiresAt: claimed.session.expiresAt },
+		200,
+		{ "Set-Cookie": sessionCookie(request, claimed.token, claimed.session.expiresAt) },
+	);
+}
+
+export const PAIRING_CODE_TOKEN_TYPE = "urn:learnharness:params:oauth:token-type:pairing-code";
+export const DESKTOP_BOOTSTRAP_TOKEN_TYPE = "urn:learnharness:params:oauth:token-type:desktop-bootstrap";
+const TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token-exchange";
+const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
+
+const oauthError = (error: string, description: string) => json({ error, error_description: description }, 400);
+
+function desktopSecretMatches(supplied: string, env: Record<string, string | undefined> = process.env): boolean {
+	const expected = env.LH_DESKTOP_API_SECRET;
+	if (env.LH_DESKTOP_SERVER !== "1" || !expected || expected.length < 64) return false;
+	const a = Buffer.from(supplied);
+	const b = Buffer.from(expected);
+	return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** POST /oauth/token (public): T3's RFC 8693 token exchange for native
+ * clients and the desktop shell. Form-encoded in, bearer token out. */
+export async function tokenExchange(request: Request): Promise<Response> {
+	const params = new URLSearchParams(await request.text().catch(() => ""));
+	if (params.get("grant_type") !== TOKEN_EXCHANGE) return oauthError("unsupported_grant_type", `grant_type must be ${TOKEN_EXCHANGE}.`);
+	const requested = params.get("requested_token_type");
+	if (requested !== null && requested !== ACCESS_TOKEN_TYPE) return oauthError("invalid_request", `requested_token_type must be ${ACCESS_TOKEN_TYPE}.`);
+	const subject = params.get("subject_token");
+	if (!subject) return oauthError("invalid_request", "subject_token is required.");
+	const client = clientInfo(request, {
+		label: params.get("client_label"),
+		deviceType: params.get("client_device_type"),
+		os: params.get("client_os"),
+	});
+	let issued: { token: string; session: SessionRecord };
+	switch (params.get("subject_token_type")) {
+		case PAIRING_CODE_TOKEN_TYPE: {
+			const claimed = claimPairingCode(authDataDir(), subject, client);
+			if (!claimed.ok) return oauthError("invalid_grant", "That pairing code is wrong, expired or already used.");
+			issued = claimed;
+			break;
+		}
+		case DESKTOP_BOOTSTRAP_TOKEN_TYPE: {
+			if (!desktopSecretMatches(subject)) return oauthError("invalid_grant", "The desktop bootstrap credential is not valid.");
+			issued = issueSession(authDataDir(), {
+				method: "desktop",
+				client: { ...client, label: client.label ?? "LearnHarness Desktop", deviceType: params.get("client_device_type") ? client.deviceType : "desktop" },
+				replaceMethod: true,
+			});
+			break;
+		}
+		default:
+			return oauthError("invalid_request", `subject_token_type must be ${PAIRING_CODE_TOKEN_TYPE}.`);
+	}
+	return json({
+		access_token: issued.token,
+		issued_token_type: ACCESS_TOKEN_TYPE,
+		token_type: "Bearer",
+		expires_in: Math.max(0, Math.floor((Date.parse(issued.session.expiresAt) - Date.now()) / 1000)),
+	});
+}
+
+/** The launcher's Tailscale HTTPS address, read from its config.json. */
+export function tailscaleOrigin(env: Record<string, string | undefined> = process.env): string | undefined {
+	if (env.LH_SELFHOST !== "1" || !env.LH_HOME) return undefined;
+	try {
+		const raw = JSON.parse(fs.readFileSync(layout(env.LH_HOME).config, "utf8")) as { tailscale?: { enabled?: unknown; hostname?: unknown; port?: unknown } };
+		const ts = raw.tailscale;
+		if (ts?.enabled !== true || typeof ts.hostname !== "string" || !/^[A-Za-z0-9.-]+$/.test(ts.hostname)) return undefined;
+		const port = Number.isInteger(ts.port) ? ts.port as number : 8443;
+		return `https://${ts.hostname.replace(/\.$/, "")}${port === 443 ? "" : `:${port}`}`;
+	} catch {
+		return undefined;
+	}
+}
+
+/** POST /api/auth/pairing-token: body { label? } -> a one-time code. */
+export async function createPairingToken(request: Request): Promise<Response> {
+	const result = authenticate(request);
+	if (!result.ok) return json({ error: result.error }, result.status);
+	const { label } = await jsonBody(request);
+	const link = createPairingLink(authDataDir(), { ...(typeof label === "string" ? { label } : {}) });
+	const tailscale = tailscaleOrigin();
+	return json({ id: link.id, credential: link.code, ...(link.label ? { label: link.label } : {}), expiresAt: link.expiresAt, ...(tailscale ? { tailscaleOrigin: tailscale } : {}) });
+}
+
+/** GET /api/auth/clients: the signed-in devices. */
+export function listClients(request: Request): Response {
+	const result = authenticate(request);
+	if (!result.ok) return json({ error: result.error }, result.status);
+	const clients = listSessions(authDataDir()).map((s) => ({
+		sessionId: s.id,
+		method: s.method,
+		...(s.label ? { label: s.label } : {}),
+		deviceType: s.deviceType,
+		...(s.os ? { os: s.os } : {}),
+		...(s.browser ? { browser: s.browser } : {}),
+		...(s.ip ? { ip: s.ip } : {}),
+		issuedAt: s.issuedAt,
+		expiresAt: s.expiresAt,
+		lastSeenAt: s.lastSeenAt ?? null,
+		current: s.id === result.session.id,
+	}));
+	return json({ clients });
+}
+
+/** POST /api/auth/clients/revoke: body { sessionId }. Not your own session. */
+export async function revokeClient(request: Request): Promise<Response> {
+	const result = authenticate(request);
+	if (!result.ok) return json({ error: result.error }, result.status);
+	const { sessionId } = await jsonBody(request);
+	if (typeof sessionId !== "string" || !sessionId) return json({ error: "Expected a sessionId." }, 400);
+	if (sessionId === result.session.id) return json({ error: "current_session_revoke_not_allowed" }, 400);
+	return json({ revoked: revokeSession(authDataDir(), sessionId) });
+}
+
+/** POST /api/auth/clients/revoke-others. */
+export function revokeOtherClients(request: Request): Response {
+	const result = authenticate(request);
+	if (!result.ok) return json({ error: result.error }, result.status);
+	return json({ revokedCount: revokeOthers(authDataDir(), result.session.id) });
+}

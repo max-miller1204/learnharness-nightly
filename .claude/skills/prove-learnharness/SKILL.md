@@ -193,7 +193,7 @@ The Expo mobile app (Android emulator on this machine) and the versioned client 
 
 ### Varies by and deliberate
 
-- **Varies by**: build mode (production standalone here; `next dev` is not proved), host (`localhost` and IP literals pass, other names need `LH_ALLOWED_HOSTS`), desktop vs browser (desktop secret header, native updater, desktop-owned subscriptions), model provider (fake custom endpoint vs Claude Code CLI). A flow isn't proved while a variant the change reaches is unproven.
+- **Varies by**: build mode (production standalone here; `next dev` is not proved), signed in or out (every request needs a login; `APP_TOKEN` in instance.env), desktop vs browser (desktop bearer session, native updater, desktop-owned subscriptions), model provider (fake custom endpoint vs Claude Code CLI). A flow isn't proved while a variant the change reaches is unproven.
 - **Known and deliberate**: the desktop window never calls `GET /api/updates` or `GET /api/subscriptions` (native updater, desktop-owned subscriptions). `GET /api/claude-code` answers 403 until Claude Code is turned on. `GET /api/jobs` needs `?chatId=`. The probe card shuffles options. Console: `/api/stt/token` 503 with no Deepgram key (see `budgets.json`).
 
 ### Verifying a bug fix

@@ -38,6 +38,8 @@ const inst = Object.fromEntries(fs.readFileSync(instPath, "utf8").split("\n").fi
 const SIDE_DIR = path.dirname(instPath);
 const OUT = path.join(SIDE_DIR, "web-teach");
 fs.mkdirSync(OUT, { recursive: true });
+import { signIn, signInPage } from "./sign-in.mjs";
+signIn(inst);
 const APP = inst.APP_URL;
 const REPO = path.resolve(import.meta.dirname, "../../../..");
 const require = createRequire(path.join(REPO, "package.json"));
@@ -87,6 +89,7 @@ try {
 		}
 	} else {
 		page = await browser.newPage();
+		await signInPage(page, inst);
 		await page.setViewport({ width: 1280, height: 900 });
 	}
 	await page.evaluateOnNewDocument(() => {
