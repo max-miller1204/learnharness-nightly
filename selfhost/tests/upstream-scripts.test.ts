@@ -108,11 +108,25 @@ const HOSTILE = [
 	"lone\r~~~~\r@octocat",
 ].join("\n");
 
-/** The copied text must sit verbatim inside one block whose fence is longer than any tilde run in it. */
+// GitHub treats a fence over 255 tildes as 255, so a line of 255+ tildes could
+// close any fence. Text with such a run takes the indenting path.
+const LONG = `${HOSTILE}\n${"~".repeat(255)}\n@octocat #3\r  ${"~".repeat(300)}\r\n@octocat #4\n\t${"~".repeat(400)}\nend`;
+
+/**
+ * The copied text must sit inside one block whose fence is longer than any
+ * tilde run in it: verbatim, or for a run of 255+ in a 255-tilde fence with LF
+ * line endings and every line that could close it indented to 4 spaces.
+ */
 function assertFenced(rendered: string, text: string) {
 	const longest = Math.max(0, ...(text.match(/~+/g) ?? []).map((run) => run.length));
-	const fence = "~".repeat(Math.max(4, longest + 1));
-	assert.ok(rendered.includes(`\n${fence}markdown\n${text}\n${fence}\n`), `expected a ${fence.length}-tilde block holding the text verbatim:\n${rendered}`);
+	let fence = "~".repeat(Math.max(4, longest + 1));
+	let inside = text;
+	if (longest >= 255) {
+		fence = "~".repeat(255);
+		inside = text.split(/\r\n|\r|\n/).map((line) => line.replace(/^ {0,3}(?=~)/, "    ")).join("\n");
+		assert.ok(!/\r/.test(inside) && !/^ {0,3}~/m.test(inside));
+	}
+	assert.ok(rendered.includes(`\n${fence}markdown\n${inside}\n${fence}\n`), `expected a ${fence.length}-tilde block holding the text:\n${rendered}`);
 }
 
 describe("mirror-upstream-issues.sh", () => {
@@ -128,6 +142,16 @@ describe("mirror-upstream-issues.sh", () => {
 		assertFenced(body, HOSTILE);
 		assertFenced(body, `${HOSTILE}\n~~~~~~~~~~~~~~~~~~~~`);
 		assert.match(body, /\n~{21}markdown\n/); // one longer than the comment's 20-tilde run
+	});
+
+	it("indents closing-capable lines when the text has a run of 255+ tildes", () => {
+		fixture(`repos/${UP}/issues?state=all&per_page=100`, [issue(10, "open", LONG)]);
+		fixture(`repos/${UP}/issues/10/comments?per_page=100`, [{ user: { login: "commenter" }, created_at: "2026-11-02T00:00:00Z", body: LONG }]);
+		const { status, stderr, calls } = run("mirror-upstream-issues.sh", []);
+		assert.equal(status, 0, stderr);
+		const body = calls.find((c) => c.args[0] === "issue" && c.args[1] === "create")?.body ?? "";
+		assertFenced(body, LONG);
+		assert.equal(body.match(new RegExp(`\n${"~".repeat(255)}markdown\n`, "g"))?.length, 2);
 	});
 
 	it("counts only the fork bot's issues as mirrors, so a fake marker can't block or steer one", () => {
@@ -202,6 +226,14 @@ describe("import-upstream-pr.sh", () => {
 		assert.equal(create.args[create.args.indexOf("--title") + 1], "[upstream PR 7] A PR");
 		assertFenced(create.body, HOSTILE);
 		assert.match(create.body, /<summary>Original description<\/summary>\n\n~{13}markdown\n[\s\S]*\n~{13}\n\n<\/details>\n$/);
+	});
+
+	it("indents closing-capable lines when the description has a run of 255+ tildes", () => {
+		fixture(`repos/${UP}/pulls/7`, pr(LONG));
+		const { status, stderr, calls } = run("import-upstream-pr.sh", ["7"]);
+		assert.equal(status, 0, stderr);
+		const create = calls.find((c) => c.args[0] === "pr" && c.args[1] === "create");
+		assertFenced(create?.body ?? "", LONG);
 	});
 
 	it("writes (none) for an empty description", () => {
