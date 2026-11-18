@@ -9,25 +9,24 @@
  * downloaded by the workflow's own gh steps).
  *
  * Every expected file name below was verified against the INSTALLED
- * builder (app-builder-lib 26.15.3) — these are the artifacts it actually
- * emits for this repo's electron-builder.yml, not pattern guesses:
+ * builder (app-builder-lib 26.15.3), with the fork’s explicit filename prefix.
  *
- *   mac (dmg + zip, arm64; no user artifactName there):
- *     dmg    LearnHarness-<v>-arm64.dmg       + .blockmap (createBlockmap)
- *     zip    LearnHarness-<v>-arm64-mac.zip   + .blockmap (createBlockmap;
+ *   mac (dmg + zip, arm64):
+ *     dmg    LearnHarness-Nightly-<v>-arm64.dmg       + .blockmap (createBlockmap)
+ *     zip    LearnHarness-Nightly-<v>-arm64-mac.zip   + .blockmap (createBlockmap;
  *            Squirrel.Mac updates from the ZIP — it IS the updater payload)
  *     feed   latest-mac.yml — files[0] is the ZIP (writeUpdateInfoFiles
  *            sorts zip first) and the legacy top-level path/sha512 point
  *            at it.
- *   win (nsis x64; artifactName "${productName}-${version}-${arch}-setup.${ext}"):
- *     exe    LearnHarness-<v>-x64-setup.exe   + .blockmap (createBlockmap)
+ *   win (nsis x64; artifactName "LearnHarness-Nightly-${version}-${arch}-setup.${ext}"):
+ *     exe    LearnHarness-Nightly-<v>-x64-setup.exe   + .blockmap (createBlockmap)
  *     feed   latest.yml — a single file entry, the exe.
- *   linux (AppImage + deb, x64; artifactName "${productName}-${version}-${arch}.${ext}"
+ *   linux (AppImage + deb, x64; artifactName "LearnHarness-Nightly-${version}-${arch}.${ext}"
  *            is user-forced at the linux level, so it overrides BOTH targets'
  *            default name formats, and ${arch} expands per target ext:
  *            x64→x86_64 for AppImage, x64→amd64 for deb):
- *     image  LearnHarness-<v>-x86_64.AppImage (no blockmap in 26.15.3)
- *     deb    LearnHarness-<v>-amd64.deb       (no blockmap)
+ *     image  LearnHarness-Nightly-<v>-x86_64.AppImage (no blockmap in 26.15.3)
+ *     deb    LearnHarness-Nightly-<v>-amd64.deb       (no blockmap)
  *     feed   latest-linux.yml — the AppImage and deb entries merged by
  *            writeUpdateInfoFiles (order not deterministic; checked as a set).
  *
@@ -79,7 +78,7 @@ const yaml = require("js-yaml") as { load(source: string): unknown };
 // Types
 // ---------------------------------------------------------------------------
 
-export type ReleaseAsset = { id: number; name: string; size: number; state: string };
+export type ReleaseAsset = { id: number; name: string; size: number; state: string; sha512?: string };
 export type ReleaseRecord = { id: number; tag_name: string; draft: boolean; assets: ReleaseAsset[] };
 
 export type Failures = { ok: false; errors: string[] };
@@ -105,7 +104,8 @@ type Issues = Issue[];
 // ---------------------------------------------------------------------------
 
 /** Verified product name spelled into every artifact (electron-builder.yml productName). */
-const PRODUCT_NAME = "LearnHarness";
+const PRODUCT_NAME = "LearnHarness Nightly";
+const ARTIFACT_PREFIX = "LearnHarness-Nightly";
 
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 
@@ -117,19 +117,19 @@ export function checkVersion(version: unknown): { ok: true; version: string } | 
 }
 
 /** The exact asset set the installed builder emits for this repo's config. */
-export function expectedAssets(version: string): ExpectedAssets {
+export function expectedAssets(version: string, appImageOnly = false): ExpectedAssets {
 	const mac = {
-		dmg: `${PRODUCT_NAME}-${version}-arm64.dmg`,
-		zip: `${PRODUCT_NAME}-${version}-arm64-mac.zip`,
+		dmg: `${ARTIFACT_PREFIX}-${version}-arm64.dmg`,
+		zip: `${ARTIFACT_PREFIX}-${version}-arm64-mac.zip`,
 		feed: "latest-mac.yml",
 	};
 	const win = {
-		exe: `${PRODUCT_NAME}-${version}-x64-setup.exe`,
+		exe: `${ARTIFACT_PREFIX}-${version}-x64-setup.exe`,
 		feed: "latest.yml",
 	};
 	const linux = {
-		appImage: `${PRODUCT_NAME}-${version}-x86_64.AppImage`,
-		deb: `${PRODUCT_NAME}-${version}-amd64.deb`,
+		appImage: `${ARTIFACT_PREFIX}-${version}-x86_64.AppImage`,
+		deb: `${ARTIFACT_PREFIX}-${version}-amd64.deb`,
 		feed: "latest-linux.yml",
 	};
 	// Sidecar differential-update blockmaps: emitted for dmg, mac zip and
@@ -140,7 +140,7 @@ export function expectedAssets(version: string): ExpectedAssets {
 		mac,
 		win,
 		linux,
-		files: [mac.dmg, mac.zip, win.exe, linux.appImage, linux.deb, ...blockmaps, mac.feed, win.feed, linux.feed],
+		files: [mac.dmg, mac.zip, win.exe, linux.appImage, ...(appImageOnly ? [] : [linux.deb]), ...blockmaps, mac.feed, win.feed, linux.feed],
 	};
 }
 
@@ -269,14 +269,19 @@ export function verifyConfigAssumptions(config: unknown, pkg: unknown): { ok: tr
 		JSON.stringify(actual) === JSON.stringify(expected);
 	if (!isPlainObject(config.mac)) bad("mac section missing");
 	else {
-		if (config.mac.artifactName != null) bad("mac.artifactName set — expected names no longer hold");
+		if (config.mac.artifactName !== "LearnHarness-Nightly-${version}-${arch}-mac.${ext}") {
+			bad("mac.artifactName changed — expected names no longer hold");
+		}
 		if (!sameTargets(config.mac.target, [{ target: "dmg", arch: ["arm64"] }, { target: "zip", arch: ["arm64"] }])) {
 			bad(`mac.target changed (${JSON.stringify(config.mac.target)}) — expected names no longer hold`);
 		}
 	}
+	if (!isPlainObject(config.dmg) || config.dmg.artifactName !== "LearnHarness-Nightly-${version}-${arch}.${ext}") {
+		bad("dmg.artifactName changed — expected names no longer hold");
+	}
 	if (!isPlainObject(config.win)) bad("win section missing");
 	else {
-		if (config.win.artifactName !== "${productName}-${version}-${arch}-setup.${ext}") {
+		if (config.win.artifactName !== "LearnHarness-Nightly-${version}-${arch}-setup.${ext}") {
 			bad(`win.artifactName changed (${JSON.stringify(config.win.artifactName)}) — expected names no longer hold`);
 		}
 		if (!sameTargets(config.win.target, [{ target: "nsis", arch: ["x64"] }])) {
@@ -285,7 +290,7 @@ export function verifyConfigAssumptions(config: unknown, pkg: unknown): { ok: tr
 	}
 	if (!isPlainObject(config.linux)) bad("linux section missing");
 	else {
-		if (config.linux.artifactName !== "${productName}-${version}-${arch}.${ext}") {
+		if (config.linux.artifactName !== "LearnHarness-Nightly-${version}-${arch}.${ext}") {
 			bad(`linux.artifactName changed (${JSON.stringify(config.linux.artifactName)}) — expected names no longer hold`);
 		}
 		if (!sameTargets(config.linux.target, [{ target: "AppImage", arch: ["x64"] }, { target: "deb", arch: ["x64"] }])) {
@@ -343,7 +348,7 @@ export function feedExpectations(expected: ExpectedAssets): FeedExpectation[] {
 	return [
 		{ file: expected.mac.feed, urls: [expected.mac.zip, expected.mac.dmg], first: expected.mac.zip },
 		{ file: expected.win.feed, urls: [expected.win.exe] },
-		{ file: expected.linux.feed, urls: [expected.linux.appImage, expected.linux.deb] },
+		{ file: expected.linux.feed, urls: [expected.linux.appImage, expected.linux.deb].filter((name) => expected.files.includes(name)) },
 	];
 }
 
@@ -420,12 +425,14 @@ export function verifyMetadataFiles(
 		});
 		if (malformed) continue;
 		const urls = entries.map((entry) => entry.url);
-		for (const url of urls) {
+		for (const { url, size, sha512 } of entries) {
 			const asset = byName.get(url);
 			if (asset == null) {
 				errors.push(`${expectation.file}: references "${url}" which is not an asset of release #${release.id}`);
-			} else if (asset.size !== entries.find((entry) => entry.url === url)?.size) {
-				errors.push(`${expectation.file}: "${url}" size ${entries.find((entry) => entry.url === url)?.size} ≠ release asset size ${asset.size}`);
+			} else if (asset.size !== size) {
+				errors.push(`${expectation.file}: "${url}" size ${size} ≠ release asset size ${asset.size}`);
+			} else if (asset.sha512 != null && asset.sha512 !== sha512) {
+				errors.push(`${expectation.file}: "${url}" SHA-512 does not match the CI artifact`);
 			}
 		}
 		const expectedSet = [...expectation.urls].sort().join("\n");

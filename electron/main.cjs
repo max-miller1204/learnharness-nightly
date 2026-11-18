@@ -45,15 +45,10 @@ const { URL } = require("node:url");
 // renderer owns the number; this is the IPC widen target).
 const SIDEBAR_AUTOCLOSE = 928;
 
-const PRODUCT_NAME = "LearnHarness";
+const PRODUCT_NAME = "LearnHarness Nightly";
 
-// APP NAME → userData (owner, 2026-10-10): the Application Support dir is
-// exactly "LearnHarness" in dev AND packaged. Packaged Electron would
-// otherwise derive it from package.json "name" (now lowercase
-// "learnharness"), and productName metadata alone doesn't reach app.name.
-// Must run before the LH_DEV_URL suffix below — dev becomes
-// "LearnHarness-dev".
-app.setName(PRODUCT_NAME);
+// Set the profile name before resolving userData or taking the instance lock.
+app.setName(process.env.LH_DEV_URL ? "LearnHarness" : PRODUCT_NAME);
 const AUTH_FILE = () => path.join(app.getPath("userData"), "auth.json");
 const DATA_DIR = () => path.join(app.getPath("userData"), "data");
 
@@ -464,11 +459,10 @@ const ZOOM_LADDER = [0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
  * first re-checks: a release published since the download replaces it
  * (T3 Code's apps/desktop/src/updates/DesktopUpdates.ts rule).
  *
- * Feed: GitHub Releases (electron-builder.yml publish -> app-update.yml,
- * baked + signed into the bundle). macOS needs the app signed (it is -
- * Developer ID) and updates ride the zip target (Squirrel.Mac); blockmaps
- * give differential downloads for free. Windows uses NSIS; Linux uses
- * AppImage or DebUpdater (6.8.9 supports deb; installation can request
+ * Nightlies discover the exact GitHub tag through nightly/latest.json.
+ * macOS uses a Developer ID-signed app and the ZIP target (Squirrel.Mac).
+ * Windows uses NSIS with differential downloads. Linux uses AppImage
+ * or DebUpdater (6.8.9 supports deb; installation can request
  * administrator permission via the package manager - owner 2026-10-11).
  *
  * Hard rules:
@@ -482,8 +476,8 @@ const ZOOM_LADDER = [0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
  *    latest-mac.yml + zip + blockmap from any localhost HTTP dir and
  *    watch a real installed copy find/download/restart). Test-only seam.
  *
- * Release notes: electron-updater's releaseNotes (fullChangelog: one entry
- * per newer version) become ReleaseNoteGroup[] (electron/release-notes.cjs)
+ * Release notes from nightly/latest.json or the default GitHub updater
+ * become ReleaseNoteGroup[] (electron/release-notes.cjs)
  * for the pill; before installing they are saved to the data folder's
  * notes cache, which the What's new popup reads after the relaunch.
  *
@@ -643,15 +637,20 @@ function setupAutoUpdater() {
 	}
 	try {
 		autoUpdater = require("electron-updater").autoUpdater;
+		const feed = process.env.LH_UPDATE_FEED;
+		const { lhNightlyRepository } = require("../package.json");
+		if (feed) {
+			autoUpdater.setFeedURL({ provider: "generic", url: feed });
+			log(`auto-update: LH_UPDATE_FEED override -> ${feed}`);
+		} else if (lhNightlyRepository) {
+			const { NightlyProvider } = require("./nightly-updater.cjs");
+			autoUpdater.setFeedURL({ provider: "custom", updateProvider: NightlyProvider, repository: lhNightlyRepository });
+		}
 	} catch (err) {
+		autoUpdater = null;
 		log(`auto-update: electron-updater unavailable (${err?.message ?? err}) - updates disabled`);
 		reportUpdateStatus("disabled");
 		return;
-	}
-	const feed = process.env.LH_UPDATE_FEED;
-	if (feed) {
-		autoUpdater.setFeedURL({ provider: "generic", url: feed });
-		log(`auto-update: LH_UPDATE_FEED override -> ${feed}`);
 	}
 	autoUpdater.autoDownload = false;
 	autoUpdater.autoInstallOnAppQuit = false;
