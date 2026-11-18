@@ -37,6 +37,10 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
   // Files reserved before the session exists belong to this opening draft.
   const attachments = useAttachments(api);
   const [attachOpen, setAttachOpen] = useState(false);
+  // A start with files whose response was lost: the server may have saved it,
+  // and only the identical send can finish it, so the draft waits unchanged.
+  const [unconfirmedStart, setUnconfirmedStart] = useState(false);
+  const locked = busy || unconfirmedStart;
 
   useEffect(() => {
     if (!picking) return;
@@ -60,6 +64,7 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
     const scope = new AbortController();
     const signal = scope.signal;
     operation.current = scope;
+    setAttachOpen(false);
     setBusy(true);
     setError("");
     setRecent(undefined);
@@ -73,11 +78,14 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
       };
       const { id } = await api.post<CreateChatResponse>(PROTOCOL_ROUTES.startWithAttachments, body, signal);
       if (signal.aborted) return;
+      setUnconfirmedStart(false);
       attachments.accept(upload);
       open(id);
     } catch (error) {
       if (signal.aborted || connectionFault(error)) return;
-      setError(error instanceof ApiError && error.status < 500 ? errorText(error)
+      const refused = error instanceof ApiError && error.status < 500;
+      setUnconfirmedStart(!refused && !!attachments.rows.length);
+      setError(refused ? errorText(error)
         : "The server didn't confirm the start. Send again to finish it without creating a second session.");
     } finally {
       operation.current = null;
@@ -196,19 +204,19 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
       </ScrollView>
       <View style={{ paddingHorizontal: space.md, paddingBottom: space.md, gap: space.sm }}>
         {canPick && <View style={s.row}>
-          <Button disabled={busy} onPress={() => { setGraphError(""); setPicking(true); }} style={{ minHeight: 32, paddingHorizontal: space.md }}>
+          <Button disabled={locked} onPress={() => { setGraphError(""); setPicking(true); }} style={{ minHeight: 32, paddingHorizontal: space.md }}>
             {picks.length ? `Graph material (${picks.length})` : "Pick graph material"}
           </Button>
         </View>}
         {picks.length > 0 && <Text style={s.meta}>{picks.map(({ name }) => name).join(", ")}</Text>}
         <Notice>{error}</Notice>
         {recent?.map((chat) => <Button key={chat.id} onPress={() => open(chat.id, draft.trim())}>{chat.title}</Button>)}
-        {canAttach && attachOpen && !busy && <AttachMenu attachments={attachments} close={() => setAttachOpen(false)} />}
-        {canAttach && <DraftChips attachments={attachments} needsText={!draft.trim()} />}
+        {canAttach && attachOpen && !locked && <AttachMenu attachments={attachments} close={() => setAttachOpen(false)} />}
+        {canAttach && <DraftChips attachments={attachments} needsText={!draft.trim()} locked={locked} />}
         <View style={[s.dock, { flexDirection: "row", alignItems: "flex-end", gap: 6, padding: 6 }]}>
-          {canAttach && <AttachButton open={attachOpen} setOpen={setAttachOpen} disabled={busy} />}
+          {canAttach && <AttachButton open={attachOpen} setOpen={setAttachOpen} disabled={locked} />}
           <TextInput accessibilityLabel={prompt} placeholder={prompt} placeholderTextColor={c.muted} selectionColor={c.accent}
-            value={draft} onChangeText={setDraft} multiline editable={!busy}
+            value={draft} onChangeText={setDraft} multiline editable={!locked}
             style={{ flex: 1, minHeight: 40, maxHeight: 192, paddingHorizontal: 10, paddingVertical: 10, fontFamily: fonts.prose, fontSize: 16, lineHeight: 20, color: c.text, textAlignVertical: "top" }} />
           <Button primary label={busy ? "Starting…" : "Start session"} disabled={busy || !draft.trim() || (!!recent && recent.length > 0)} onPress={() => void create()}
             style={{ width: 40, paddingHorizontal: 0, borderRadius: radius.control }}>

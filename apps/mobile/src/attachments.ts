@@ -163,8 +163,9 @@ export class AttachmentDraft {
 
   remove(row: DraftFile) {
     this.rows = this.rows.filter((file) => file !== row);
-    row.cancel.abort();
-    // Let a running step settle before releasing the reservation.
+    // Like the web, let a running step finish rather than cancel it: the server
+    // refuses to release a file it is still receiving, and a reservation in
+    // flight has no ID yet. Its next step sees the row is gone.
     void (async () => {
       await row.work;
       if (row.grant) await this.discard(row.grant.id);
@@ -197,7 +198,13 @@ export class AttachmentDraft {
 
   /** Mounted again (React's development double mount): accept work once more. */
   open() {
-    if (this.lifetime.signal.aborted) this.lifetime = new AbortController();
+    if (!this.lifetime.signal.aborted) return;
+    this.lifetime = new AbortController();
+    for (const row of this.rows) {
+      if (!row.cancel.signal.aborted) continue;
+      row.cancel = new AbortController();
+      if (!row.ready) row.error ??= "Upload interrupted. Try again.";
+    }
   }
 
   dispose() {

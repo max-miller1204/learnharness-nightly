@@ -149,6 +149,7 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
     if (problem) return void submit({ type: "thinking", problemCallId: problem.toolCallId, text }, clear);
     if (!canAttach || !attachments.rows.length) return void submit({ type: "text", text }, clear);
     // Send can be pressed while files upload: wait for them, then send.
+    setAttachOpen(false);
     setSending(true);
     const upload = await attachments.prepare(JSON.stringify({ type: "text", text }));
     setSending(false);
@@ -246,7 +247,7 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
               {problem && controls && <Button disabled={blocked} onPress={() => discard(problem.toolCallId)}>Discard problem</Button>}
             </View>
           )}
-          {canAttach && attachOpen && !blocked && !busy && <AttachMenu attachments={attachments} close={() => setAttachOpen(false)} />}
+          {canAttach && attachOpen && !blocked && !busy && !sending && <AttachMenu attachments={attachments} close={() => setAttachOpen(false)} />}
           {canAttach && <DraftChips attachments={attachments} needsText={!draft.trim()} />}
           <View style={s.dock}>
             {problem && <View style={{ paddingHorizontal: space.md, paddingTop: space.sm }}><Label>Your thinking</Label></View>}

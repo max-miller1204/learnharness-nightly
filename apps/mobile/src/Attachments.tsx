@@ -74,7 +74,7 @@ function ChipAction({ label, name, onPress }: { label: string; name: string; onP
 }
 
 /** The draft's files above the text box: progress, then Retry or Remove. */
-export function DraftChips({ attachments, needsText }: { attachments: Attachments; needsText: boolean }) {
+export function DraftChips({ attachments, needsText, locked = false }: { attachments: Attachments; needsText: boolean; locked?: boolean }) {
   const { c, s } = useTheme();
   if (!attachments.rows.length && !attachments.notice) return null;
   return (
@@ -92,7 +92,7 @@ export function DraftChips({ attachments, needsText }: { attachments: Attachment
                 style={{ width: 48, height: 4, borderRadius: 2, backgroundColor: c.rail, overflow: "hidden" }}>
                 <View style={{ width: `${row.progress}%`, height: "100%", backgroundColor: c.text }} />
               </View>}
-            <ChipAction label="Remove" name={row.name} onPress={() => attachments.remove(row)} />
+            {!locked && <ChipAction label="Remove" name={row.name} onPress={() => attachments.remove(row)} />}
           </Chip>
         ))}
       </View>}

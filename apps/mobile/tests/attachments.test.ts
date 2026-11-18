@@ -113,6 +113,47 @@ test("Remove releases the reservation once its step settles", async () => {
   assert.deepEqual(calls.at(-1), { method: "DELETE", path: PROTOCOL_ROUTES.removeAttachment("grant-1"), body: undefined, auth: "Bearer native-token" });
 });
 
+test("Remove during an upload lets the PUT finish before releasing it", async () => {
+  let finish!: () => void;
+  const order: string[] = [];
+  const api = apiClient(async (url, init) => {
+    order.push(init.method);
+    if (init.method === "DELETE") return new Response(null, { status: 204 });
+    return Response.json({ id: "grant-1", uploadUrl: "/api/attachments/upload?id=grant-1&grant=sig", expiresAt: Date.now() + 600_000 }, { status: 201 });
+  }, origin, "native-token");
+  let putSignal: AbortSignal | undefined;
+  const put: PutFile = (_file, _url, _headers, _progress, signal) => {
+    putSignal = signal;
+    order.push("PUT");
+    return new Promise((resolve) => { finish = () => { order.push("PUT done"); resolve({ status: 204, body: "" }); }; });
+  };
+  const draft = new AttachmentDraft({ api, chatId: "chat-1", put, newId: () => "id", changed: () => {} });
+  draft.add([photo]);
+  await settle(); await settle();
+  draft.remove(draft.rows[0]!);
+  await settle();
+  assert.equal(putSignal!.aborted, false);
+  assert.deepEqual(order, ["POST", "PUT"]);
+  finish();
+  await settle(); await settle();
+  assert.deepEqual(order, ["POST", "PUT", "PUT done", "DELETE"]);
+});
+
+test("a remount revives cancelled uploads with Retry", async () => {
+  const { draft, puts } = harness({ chatId: "chat-1", putStatus: () => 204 });
+  draft.add([photo]);
+  draft.dispose();
+  await settle(); await settle();
+  draft.open();
+  const [row] = draft.rows;
+  assert.equal(row!.cancel.signal.aborted, false);
+  assert.equal(row!.error, "Upload interrupted. Try again.");
+  draft.retry(row!);
+  await settle(); await settle();
+  assert.equal(row!.ready, true);
+  assert.equal(puts.length, 1);
+});
+
 test("a send waits for uploads and reuses its send ID for the same message", async () => {
   const { draft } = harness({ chatId: "chat-1" });
   draft.add([photo, pdf]);
