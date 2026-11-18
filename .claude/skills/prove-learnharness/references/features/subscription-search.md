@@ -7,7 +7,7 @@ Settings → Agent → Tools → Search engine offers subscription accounts next
 - `picker`: each subscription row shows its account label (never blank), the plan usage disclosure, or the reason it is unavailable.
 - `chatgpt`: native Responses web search through the Sign in with ChatGPT lease.
 - `claude-code`: one headless `claude -p` run with only `WebSearch` (haiku, low effort). The account comes from `claude auth status --json`.
-- `grok-probe`: Grok is selectable only when the server starts with `LH_GROK_SEARCH_PROBE=1`, and then uses the Grok OAuth lease with the hosted `web_search` tool.
+- `grok-probe`: Grok is selectable only when the server starts with `LH_GROK_SEARCH_PROBE=1`, and then uses the Grok OAuth lease with the hosted `web_search` tool on grok-4.7 at low reasoning.
 - `research-sources`: a research job keeps the native links as sources and drops a source whose fetch returned a non-2xx status.
 - `no-fallback`: a failed search reports its reason and never uses another account, engine or key.
 

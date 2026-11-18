@@ -26,6 +26,7 @@ export async function searchGrok(
 		messages: [{ role: "user", content: query, timestamp: Date.now() }],
 	}), {
 		cacheRetention: "none",
+		reasoning: "low",
 		signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(45_000)]) : AbortSignal.timeout(45_000),
 		fetch: (input, init) => globalThis.fetch(input, { ...init, redirect: "error" }),
 		onPayload: (raw) => {

@@ -51,8 +51,9 @@ const CHATGPT_SEARCH_MODELS = [
 	"gpt-6-astra",
 ];
 
-// Grok OAuth models, cheapest published output rate first (the same proxy).
-const GROK_SEARCH_MODELS = ["grok-4.3", "grok-4.5", "grok-4.6", "grok-4.7"];
+// Owner decision: the latest small Grok model only, at low reasoning. No
+// other Grok model is tried when the connection does not offer it.
+const GROK_SEARCH_MODEL = "grok-4.7";
 
 /** The owner-approved single live probe: Grok is selectable only when the
  * isolated proof instance starts with this switch. */
@@ -185,10 +186,9 @@ export function subscriptionSearchProvider(settings: SearchSettings & { engine: 
 				case "xai-subscription": {
 					if (grokSearchProbe()) await refreshSubscriptionModels();
 					requireSelection(signal);
-					const model = GROK_SEARCH_MODELS
-						.map((id) => nativeSubscriptionModels().find((entry) => entry.provider === "xai-subscription" && entry.id === id && entry.input.includes("text")))
-						.find(Boolean);
-					if (!model) throw new Error("No Grok search model is available for this connection. Check the Grok connection in Providers and retry.");
+					const model = nativeSubscriptionModels().find((entry) =>
+						entry.provider === "xai-subscription" && entry.id === GROK_SEARCH_MODEL && entry.input.includes("text"));
+					if (!model) throw new Error(`Grok search needs ${GROK_SEARCH_MODEL}, which this Grok connection does not offer. Check the Grok connection in Providers and retry.`);
 					try {
 						return await searchGrok(model, query, count, (connectionId) => {
 							requireSelection(signal);

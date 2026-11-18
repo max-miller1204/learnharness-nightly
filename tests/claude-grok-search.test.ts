@@ -231,8 +231,9 @@ test("Grok search is offered only behind the probe switch and uses the OAuth lea
 	assert.match((await searchPickerStatus()).subscriptions[2]!.reason, /unavailable on the LearnHarness Grok OAuth connection/);
 	await assert.rejects(searchProvider()!.search("query", 5), /unavailable on the LearnHarness Grok OAuth connection/);
 
-	const catalog = piModels().getProvider("xai")!.getModels().filter(({ id }) => ["grok-4.5", "grok-4.3", "grok-4.7"].includes(id));
-	assert.equal(catalog.length, 3);
+	const fullCatalog = piModels().getProvider("xai")!.getModels().filter(({ id }) => ["grok-4.5", "grok-4.3", "grok-4.7"].includes(id));
+	assert.equal(fullCatalog.length, 3);
+	let catalog = fullCatalog;
 	const xai = { providerId: "xai", available: true, connected: true, pending: false, allowBackgroundUse: true, connectionId: "scratch-connection", epoch: 1, authorityRevision: 1, revision: 1 };
 	let leases = 0;
 	configureWebSubscriptionRuntime(async <T>(channel: string, op: string, fields: Record<string, unknown>) => {
@@ -269,7 +270,8 @@ test("Grok search is offered only behind the probe switch and uses the OAuth lea
 		{ type: "response.completed", response: { id: "r", status: "completed", output: [] } },
 	];
 	assert.deepEqual(await searchProvider()!.search("query", 5), [{ title: "Grok source", url: "https://example.org/grok", snippet: "Cite" }]);
-	assert.equal(bodies[0]!.model, "grok-4.3", "the cheapest eligible model is chosen");
+	assert.equal(bodies[0]!.model, "grok-4.7", "the latest small Grok model is chosen even when cheaper ones are offered");
+	assert.equal((bodies[0]!.reasoning as { effort?: string }).effort, "low");
 	assert.deepEqual(bodies[0]!.tools, [{ type: "web_search" }]);
 	assert.equal(bodies[0]!.tool_choice, "required");
 
@@ -277,6 +279,11 @@ test("Grok search is offered only behind the probe switch and uses the OAuth lea
 	await assert.rejects(searchProvider()!.search("query", 5), /Provider response: .*not included in this plan/);
 	assert.equal(bodies.length, 2, "a refusal is reported without a retry");
 	assert.equal(leases, 2);
+	catalog = fullCatalog.filter(({ id }) => id !== "grok-4.7");
+	xai.revision++;
+	await assert.rejects(searchProvider()!.search("query", 5), /needs grok-4\.7, which this Grok connection does not offer/);
+	assert.equal(bodies.length, 2, "no other Grok model is tried");
+	catalog = fullCatalog;
 	xai.allowBackgroundUse = false;
 	xai.revision++;
 	await assert.rejects(searchProvider()!.search("query", 5), /Grok background use is off/);
