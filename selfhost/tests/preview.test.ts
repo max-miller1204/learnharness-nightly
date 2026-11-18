@@ -5,7 +5,7 @@
  * /api/health and records its environment).
  */
 import assert from "node:assert/strict";
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
@@ -13,9 +13,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { DEFAULT_CONFIG } from "../src/config.ts";
+import { DEFAULT_CONFIG, writeConfig } from "../src/config.ts";
 import { layout } from "../src/paths.ts";
-import { parsePrNumber, previewConfig, previewFeedUrl, previewHome, previewLockPath } from "../src/preview.ts";
+import { parsePrNumber, previewConfig, previewFeedUrl, previewHome, previewLockPath, previewServeMarker } from "../src/preview.ts";
 
 const LH = path.join(import.meta.dirname, "..", "lh.ts");
 const VERSION = "0.6.1-preview.20261117.42";
@@ -36,7 +36,9 @@ describe("preview helpers", () => {
 	it("uses the real ports + 1 and keeps the Tailscale name", () => {
 		assert.deepEqual(previewConfig(DEFAULT_CONFIG), { port: 3775, tailscale: { enabled: false, port: 8444 } });
 		const real = { port: 4000, tailscale: { enabled: true, port: 9000, hostname: "box.tail.ts.net" }, chromePath: "/usr/bin/chromium", feedUrl: "x" };
-		assert.deepEqual(previewConfig(real, 5000), { port: 5000, tailscale: { enabled: true, port: 9001, hostname: "box.tail.ts.net" }, chromePath: "/usr/bin/chromium" });
+		assert.deepEqual(previewConfig(real, 4002), { port: 4002, tailscale: { enabled: true, port: 9002, hostname: "box.tail.ts.net" }, chromePath: "/usr/bin/chromium" });
+		assert.equal(previewConfig(real).tailscale.port, 9001);
+		assert.equal(previewConfig(real, 4000).tailscale.enabled, false, "never the real Tailscale port or an invalid one");
 		assert.equal(previewHome("/h", 7), path.join("/h", "previews", "pr-7"));
 		assert.equal(previewLockPath("/h", 7), path.join("/h", "previews", "pr-7.lock"));
 	});
@@ -166,10 +168,189 @@ describe("lh preview", { skip: process.platform !== "linux" }, () => {
 	});
 
 	it("refuses the real server's port and a bad PR number", () => {
-		for (const args of [["preview", "7", "--port", "3774"], ["preview", "abc"]]) {
-			let failed = false;
-			try { execFileSync(process.execPath, [LH, ...args], { env: { ...process.env, LH_HOME: home }, stdio: "pipe" }); } catch { failed = true; }
-			assert.ok(failed, args.join(" "));
+		for (const [args, message] of [[["preview", "7", "--port", "3774"], /your real server's port/], [["preview", "abc"], /usage: lh preview/]] as const) {
+			const r = spawnSync(process.execPath, [LH, ...args], { env: { ...process.env, LH_HOME: home }, encoding: "utf8" });
+			assert.equal(r.status, 1, args.join(" "));
+			assert.match(r.stderr, message);
+		}
+	});
+
+	// A stub `tailscale` on PATH that logs each call.
+	function stubTailscale(): { env: Record<string, string>; calls: () => string } {
+		const bin = path.join(work, "bin");
+		fs.mkdirSync(bin, { recursive: true });
+		const log = path.join(work, "tailscale.log");
+		fs.writeFileSync(path.join(bin, "tailscale"), `#!/bin/sh\necho "$*" >> "${log}"\n`, { mode: 0o755 });
+		return { env: { PATH: `${bin}:${process.env.PATH}` }, calls: () => { try { return fs.readFileSync(log, "utf8"); } catch { return ""; } } };
+	}
+
+	it("serves the preview on the shifted Tailscale port and turns it off when the terminal goes away", async () => {
+		const feedUrl = buildFeed(work);
+		const port = await freePort();
+		writeConfig(home, { port: port - 1, tailscale: { enabled: true, port: 8443, hostname: "box.tail.ts.net" } });
+		const ts = stubTailscale();
+		let output = "";
+		const child = spawn(process.execPath, [LH, "preview", "7", "--feed-url", feedUrl], {
+			env: { ...process.env, ...ts.env, LH_HOME: home, STUB_ENV_OUT: path.join(work, "env.json"), DISPLAY: "", WAYLAND_DISPLAY: "" },
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		child.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+		child.stderr?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+		await waitFor(child, /Ctrl\+C stops the preview/, () => output);
+		assert.match(ts.calls(), new RegExp(`serve --bg --https=8444 http://127\\.0\\.0\\.1:${port}`));
+		assert.match(output, /https:\/\/box\.tail\.ts\.net:8444\/pair#token=/);
+		assert.equal(fs.readFileSync(previewServeMarker(home, 7), "utf8").trim(), "8444");
+
+		// An SSH drop: the output pipes close, then SIGHUP.
+		child.stdout?.destroy();
+		child.stderr?.destroy();
+		child.kill("SIGHUP");
+		const code = await new Promise<number | null>((resolve) => child.once("exit", resolve));
+		assert.equal(code, 0);
+		assert.match(ts.calls(), /serve --https=8444 off/);
+		assert.equal(fs.existsSync(previewHome(home, 7)), false);
+		assert.equal(fs.existsSync(previewServeMarker(home, 7)), false);
+		assert.equal(fs.existsSync(previewLockPath(home, 7)), false);
+	});
+
+	it("clears what a crashed preview left, including its Tailscale port", async () => {
+		const ts = stubTailscale();
+		fs.mkdirSync(path.join(previewHome(home, 7), "userdata", "data"), { recursive: true });
+		fs.writeFileSync(path.join(previewHome(home, 7), "userdata", "data", "old.txt"), "old\n");
+		fs.writeFileSync(previewServeMarker(home, 7), "8444\n");
+		const port = await freePort();
+		const r = spawnSync(process.execPath, [LH, "preview", "7", "--port", String(port), "--feed-url", pathToFileURL(path.join(work, "nope", "latest.json")).href], { env: { ...process.env, ...ts.env, LH_HOME: home }, encoding: "utf8" });
+		assert.equal(r.status, 1);
+		assert.match(ts.calls(), /serve --https=8444 off/);
+		assert.equal(fs.existsSync(previewHome(home, 7)), false);
+		assert.equal(fs.existsSync(previewServeMarker(home, 7)), false);
+	});
+
+	it("refuses a port that is already in use", async () => {
+		const blocker = net.createServer();
+		const port = await new Promise<number>((resolve) => blocker.listen(0, "127.0.0.1", () => resolve((blocker.address() as net.AddressInfo).port)));
+		try {
+			const r = spawnSync(process.execPath, [LH, "preview", "7", "--port", String(port), "--feed-url", "file:///nope/latest.json"], { env: { ...process.env, LH_HOME: home }, encoding: "utf8" });
+			assert.equal(r.status, 1);
+			assert.match(r.stderr, new RegExp(`Port ${port} is in use`));
+		} finally {
+			blocker.close();
+		}
+	});
+});
+
+// pr-preview-check.sh, the publish gate, against a stub `gh` answering from
+// fixtures: pr.tsv (state, head, author, labeled), perm, labels (lines of
+// "<actor> <ISO time>" for `preview` label events), meta/ and selfhost-*/
+// (the build's artifacts).
+const CHECK = path.join(import.meta.dirname, "..", "scripts", "pr-preview-check.sh");
+const GH_STUB = `#!/usr/bin/env bash
+set -euo pipefail
+fx="$FIXTURES"
+if [ "$1" = run ] && [ "$2" = download ]; then
+  dest=""; name=""; pattern=""
+  shift 3
+  while [ $# -gt 0 ]; do case "$1" in -D) dest=$2; shift 2 ;; -n) name=$2; shift 2 ;; -p) pattern=$2; shift 2 ;; *) shift ;; esac; done
+  if [ -n "$name" ]; then [ -d "$fx/$name" ] || exit 1; cp -r "$fx/$name/." "$dest/"; exit 0; fi
+  for d in "$fx"/selfhost-*; do [ -d "$d" ] && cp -r "$d" "$dest/"; done
+  exit 0
+fi
+args="$*"
+case "$args" in
+  *"/permission"*) [ -f "$fx/perm" ] && cat "$fx/perm" || exit 1 ;;
+  *"/events"*) actor=$(printf '%s' "$args" | sed -n 's/.*actor.login == "\\([^"]*\\)".*/\\1/p'); [ -f "$fx/labels" ] && awk -v a="$actor" '$1 == a { print $2 }' "$fx/labels" ;;
+  *"/pulls/"*) cat "$fx/pr.tsv" ;;
+esac
+`;
+
+describe("publish gate (pr-preview-check.sh)", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = fs.mkdtempSync(path.join(os.tmpdir(), "lh-preview-gate-"));
+		fs.mkdirSync(path.join(dir, "bin"));
+		fs.writeFileSync(path.join(dir, "bin", "gh"), GH_STUB, { mode: 0o755 });
+	});
+	afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+	const RUN_AT = "2026-11-17T12:00:00Z";
+	interface Case { pr?: string; tsv?: string[]; perm?: string; actor?: string; labels?: string[]; version?: string; extra?: boolean; noMeta?: boolean }
+	function gate(c: Case): { code: number; out: Record<string, string>; log: string; files: string[]; outDir: string } {
+		const fx = fs.mkdtempSync(path.join(dir, "fx-"));
+		if (!c.noMeta) { fs.mkdirSync(path.join(fx, "preview-meta")); fs.writeFileSync(path.join(fx, "preview-meta", "pr"), `${c.pr ?? "12"}\n`); }
+		fs.writeFileSync(path.join(fx, "pr.tsv"), `${(c.tsv ?? ["open", "abc", "max", "false"]).join("\t")}\n`);
+		if (c.perm !== "") fs.writeFileSync(path.join(fx, "perm"), `${c.perm ?? "admin"}\n`);
+		if (c.labels) fs.writeFileSync(path.join(fx, "labels"), `${c.labels.join("\n")}\n`);
+		const version = c.version ?? "0.6.1-preview.20261117.5";
+		for (const arch of ["linux-x64", "linux-arm64"]) {
+			fs.mkdirSync(path.join(fx, `selfhost-${arch}`));
+			fs.writeFileSync(path.join(fx, `selfhost-${arch}`, `learnharness-${version}-${arch}.tar.gz`), arch);
+		}
+		if (c.extra) fs.writeFileSync(path.join(fx, "selfhost-linux-x64", "learnharness-9.9.9-preview.20261117.5-linux-x64.tar.gz"), "x");
+		const work = fs.mkdtempSync(path.join(dir, "work-"));
+		const output = path.join(work, "github-output");
+		fs.writeFileSync(output, "");
+		const result = spawnSync("bash", [CHECK], {
+			encoding: "utf8",
+			env: { ...process.env, PATH: `${path.join(dir, "bin")}:${process.env.PATH}`, FIXTURES: fx, GITHUB_OUTPUT: output, GH_REPO: "o/r", OWNER: "max", RUN_ID: "99", RUN_NUMBER: "5", RUN_CREATED_AT: RUN_AT, HEAD_SHA: "abc", ACTOR: c.actor ?? "max", FILES: path.join(work, "files"), OUT: path.join(work, "out") },
+		});
+		const out = Object.fromEntries(fs.readFileSync(output, "utf8").trim().split("\n").filter(Boolean).map((line) => line.split("=", 2) as [string, string]));
+		const outDir = path.join(work, "out");
+		return { code: result.status ?? -1, out, log: `${result.stdout}${result.stderr}`, files: fs.existsSync(outDir) ? fs.readdirSync(outDir).sort() : [], outDir };
+	}
+	const stranger = (labeled: boolean) => ["open", "abc", "stranger", String(labeled)];
+
+	it("publishes the owner's PR and checksums the archives itself", () => {
+		const r = gate({});
+		assert.equal(r.code, 0, r.log);
+		assert.deepEqual(r.out, { publish: "true", pr: "12", version: "0.6.1-preview.20261117.5", labeled: "false", by_owner: "true" });
+		assert.equal(r.files.length, 4);
+		const name = "learnharness-0.6.1-preview.20261117.5-linux-x64.tar.gz";
+		assert.equal(fs.readFileSync(path.join(r.outDir, `${name}.sha256`), "utf8"), `${createHash("sha256").update("linux-x64").digest("hex")}  ${name}\n`);
+	});
+
+	it("publishes an outside PR only for the run the owner's label started", () => {
+		const labeled = gate({ tsv: stranger(true), labels: ["max 2026-11-17T11:59:50Z"] });
+		assert.equal(labeled.out.publish, "true", labeled.log);
+		assert.equal(labeled.out.by_owner, "false");
+		// The label is still on, but this run came from a later action (an edit, another label).
+		const later = gate({ tsv: stranger(true), labels: ["max 2026-11-17T10:00:00Z"] });
+		assert.equal(later.out.publish, "false");
+		assert.match(later.log, /wasn't started by max adding the `preview` label/);
+		// Someone else added the label; the run's actor (max) only did something else.
+		const other = gate({ tsv: stranger(true), labels: ["helper 2026-11-17T11:59:55Z"] });
+		assert.equal(other.out.publish, "false");
+	});
+
+	it("skips what nobody with write access asked for", () => {
+		const cases: Array<[Case, RegExp]> = [
+			[{ tsv: stranger(false) }, /has no `preview` label/],
+			[{ tsv: stranger(true), perm: "read", actor: "stranger", labels: ["stranger 2026-11-17T11:59:59Z"] }, /no write access/],
+			[{ tsv: ["open", "abc", "learnharness-nightly-bot[bot]", "true"], perm: "", actor: "learnharness-nightly-bot[bot]" }, /no write access/],
+			[{ tsv: ["open", "def", "max", "false"] }, /moved on to def/],
+			[{ tsv: ["closed", "abc", "max", "false"] }, /is closed/],
+			[{ actor: "max; rm -rf /" }, /unexpected actor/],
+			[{ noMeta: true }, /left no PR number/],
+		];
+		for (const [c, message] of cases) {
+			const r = gate(c);
+			assert.equal(r.code, 0, r.log);
+			assert.equal(r.out.publish, "false", r.log);
+			assert.match(r.log, message);
+			assert.deepEqual(r.files, [], "nothing gathered");
+		}
+	});
+
+	it("fails on malformed build files", () => {
+		const cases: Array<[Case, RegExp]> = [
+			[{ pr: "12;rm" }, /no valid PR number/],
+			[{ version: "0.6.1-nightly.20261117.5" }, /Unexpected archive name/],
+			[{ version: "0.6.1-preview.20261117.6" }, /not from build run 5/],
+			[{ extra: true }, /Expected one linux-x64 archive, found 2/],
+		];
+		for (const [c, message] of cases) {
+			const r = gate(c);
+			assert.equal(r.code, 1, r.log);
+			assert.match(r.log, message);
 		}
 	});
 });

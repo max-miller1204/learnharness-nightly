@@ -7,11 +7,12 @@ name: PR preview publish
 #
 # Trusted half: workflow_run always runs main's copy of this file. It never
 # checks out or runs PR code; the build's files are data (exact names, a
-# version shape, checksums computed here). It publishes only when the PR is
-# open, its head is the built commit, the build was started by someone with
-# write access, and the PR is the owner's or carries the `preview` label. A
-# fork PR can edit its copy of pr-preview.yml, so none of that is taken from
-# the build. Built-in token only; never the fork bot App key.
+# version shape, checksums computed here). selfhost/scripts/pr-preview-check.sh
+# decides: the PR is open, its head is the built commit, the build was
+# started by someone with write access, and the PR is the owner's or that
+# person's adding of the `preview` label started the build. A fork PR can
+# edit its copy of pr-preview.yml, so none of that is taken from the build.
+# Built-in token only; never the fork bot App key.
 #
 # No concurrency group: GitHub keeps only the newest pending run of a group,
 # which would drop publishes of other PRs. Publishes of one PR can't race:
@@ -60,51 +61,12 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "26"
-      - uses: actions/download-artifact@v8
-        with:
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/preview-files
       - name: Check who asked, and the files
         id: check
-        run: |
-          set -euo pipefail
-          FILES="$RUNNER_TEMP/preview-files" OUT="$RUNNER_TEMP/preview-out"
-          skip() { echo "::notice::No preview published: $*"; echo "publish=false" >> "$GITHUB_OUTPUT"; exit 0; }
-          pr=$(head -c 16 "$FILES/preview-meta/pr" 2>/dev/null | tr -d '\n' || true)
-          [[ "$pr" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "::error::The build named no valid PR number."; exit 1; }
-          info=$(gh api "repos/$GH_REPO/pulls/$pr" --jq '[.state, .head.sha, .user.login, ([.labels[].name] | index("preview") != null)] | @tsv')
-          IFS=$'\t' read -r state head author labeled <<<"$info"
-          [ "$state" = open ] || skip "PR #$pr is $state."
-          [ "$head" = "$HEAD_SHA" ] || skip "PR #$pr moved on to $head; this build is of $HEAD_SHA."
-          perm=$(gh api "repos/$GH_REPO/collaborators/$ACTOR/permission" --jq .permission 2>/dev/null || echo none)
-          case "$perm" in admin|write) ;; *) skip "the build was started by $ACTOR, who has no write access." ;; esac
-          [ "$author" = "$OWNER" ] || [ "$labeled" = true ] || skip "PR #$pr is by $author and has no \`preview\` label."
-
-          # Files are data: exact names, one version for both arches, checksums computed here.
-          mkdir -p "$OUT"
-          version=""
-          for arch in linux-x64 linux-arm64; do
-            shopt -s nullglob
-            found=("$FILES/selfhost-$arch"/learnharness-*-"$arch".tar.gz)
-            shopt -u nullglob
-            [ "${#found[@]}" = 1 ] || { echo "::error::Expected one $arch archive, found ${#found[@]}."; exit 1; }
-            name=$(basename "${found[0]}")
-            [[ "$name" =~ ^learnharness-([0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]{8}\.([0-9]+))-$arch\.tar\.gz$ ]] || { echo "::error::Unexpected archive name $name."; exit 1; }
-            [ "${BASH_REMATCH[2]}" = "$RUN_NUMBER" ] || { echo "::error::$name is not from build run $RUN_NUMBER."; exit 1; }
-            [ -z "$version" ] || [ "$version" = "${BASH_REMATCH[1]}" ] || { echo "::error::The two arches have different versions."; exit 1; }
-            version=${BASH_REMATCH[1]}
-            [ -f "${found[0]}" ] && [ ! -L "${found[0]}" ] || { echo "::error::$name is not a regular file."; exit 1; }
-            cp "${found[0]}" "$OUT/$name"
-            (cd "$OUT" && sha256sum "$name" > "$name.sha256")
-          done
-          {
-            echo "publish=true"
-            echo "pr=$pr"
-            echo "version=$version"
-            echo "labeled=$labeled"
-            echo "by_owner=$([ "$author" = "$OWNER" ] && echo true || echo false)"
-          } >> "$GITHUB_OUTPUT"
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_CREATED_AT: ${{ github.event.workflow_run.created_at }}
+        run: FILES="$RUNNER_TEMP/preview-files" OUT="$RUNNER_TEMP/preview-out" selfhost/scripts/pr-preview-check.sh
       - name: Publish the preview release
         if: steps.check.outputs.publish == 'true'
         env:
@@ -127,7 +89,7 @@ jobs:
           NOTES
           # One release per PR: replace the old build. The tag only holds
           # files, so it points at main, never at the PR's commit.
-          gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
+          if gh release view "$tag" >/dev/null 2>&1; then gh release delete "$tag" --yes --cleanup-tag; fi
           gh release create "$tag" "$OUT"/*.tar.gz "$OUT"/*.sha256 "$OUT/latest.json" \
             --target "$GITHUB_SHA" --prerelease --latest=false \
             --title "PR #$PR preview (${HEAD_SHA::12})" --notes-file "$RUNNER_TEMP/notes.md"
@@ -183,8 +145,9 @@ jobs:
           gh release list --limit 1000 --json tagName --jq '.[].tagName | select(test("^preview-pr-[1-9][0-9]*$"))' |
           while read -r tag; do
             pr=${tag#preview-pr-}
-            state=$(gh api "repos/$GH_REPO/pulls/$pr" --jq .state 2>/dev/null || echo missing)
-            if [ "$state" != open ]; then
+            # Only an explicit `closed`: an API hiccup must not delete an open PR's preview.
+            state=$(gh api "repos/$GH_REPO/pulls/$pr" --jq .state 2>/dev/null || echo unknown)
+            if [ "$state" = closed ]; then
               echo "PR #$pr is $state: deleting $tag."
               gh release delete "$tag" --yes --cleanup-tag
             fi

@@ -33,17 +33,25 @@ export function previewLockPath(home: string, pr: number): string {
 	return path.join(home, "previews", `pr-${pr}.lock`);
 }
 
+/** The Tailscale Serve port a preview turned on, so a preview that died can have it turned off by the next run. */
+export function previewServeMarker(home: string, pr: number): string {
+	return path.join(home, "previews", `pr-${pr}.serve`);
+}
+
 /**
- * The preview's config.json: the real port + 1 and, when Tailscale is on,
- * the real Tailscale port + 1 on the same machine name. The preview server
- * reads it for the Tailscale address in pairing links.
+ * The preview's config.json: the real port + 1 (or --port) and, when
+ * Tailscale is on, the real Tailscale port shifted by the same amount, on
+ * the same machine name, so two previews on two ports never share one. The
+ * preview server reads it for the Tailscale address in pairing links.
  */
 export function previewConfig(real: LhConfig, port?: number): LhConfig {
-	const tailscale = real.tailscale.enabled && real.tailscale.hostname
-		? { enabled: true, port: real.tailscale.port + 1, hostname: real.tailscale.hostname }
-		: { enabled: false, port: real.tailscale.port + 1 };
+	const local = port ?? real.port + 1;
+	const tsPort = real.tailscale.port + (local - real.port);
+	const tailscale = real.tailscale.enabled && real.tailscale.hostname && tsPort > 0 && tsPort < 65536 && tsPort !== real.tailscale.port
+		? { enabled: true, port: tsPort, hostname: real.tailscale.hostname }
+		: { enabled: false, port: tsPort };
 	return {
-		port: port ?? real.port + 1,
+		port: local,
 		tailscale,
 		...(real.chromePath ? { chromePath: real.chromePath } : {}),
 	};

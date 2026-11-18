@@ -44,7 +44,7 @@ import { enableLinger, hasSystemd, lingerEnabled, repointService, shimPath, syst
 import { Supervisor, type UpdateRequestMarker } from "./src/supervisor.ts";
 import { serveOff, serveOn, tailscaleAvailable, tailscaleSelf } from "./src/tailscale.ts";
 import { pruneVersions } from "./src/versions.ts";
-import { parsePrNumber, previewConfig, previewFeedUrl, previewHome, previewLockPath } from "./src/preview.ts";
+import { parsePrNumber, previewConfig, previewFeedUrl, previewHome, previewLockPath, previewServeMarker } from "./src/preview.ts";
 import { QrCode } from "./src/qr.ts";
 
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -601,14 +601,25 @@ async function previewCommand(flags: Flags): Promise<void> {
 	const arch = currentArch() ?? fail("this platform has no self-hosted builds");
 	const lockPath = previewLockPath(home, pr);
 	const lock = tryAcquireLock(lockPath) ?? fail(`A preview of PR #${pr} is already running.`);
+	// A dropped SSH session closes stdout: writes must never stop the cleanup.
+	for (const stream of [process.stdout, process.stderr]) stream.on("error", () => { /* terminal gone */ });
+	const say = (line = "") => { try { out(line); } catch { /* terminal gone */ } };
 	const pHome = previewHome(home, pr);
 	const dirs = layout(pHome);
-	let served = false;
+	const serveMarker = previewServeMarker(home, pr);
 	let child: ReturnType<typeof spawn> | undefined;
-	const cleanup = () => {
-		if (served) serveOff(config.tailscale.port);
-		served = false;
+	let stopping = false;
+	/** Turn off the Tailscale port the marker names, and delete the preview's folder. */
+	const clearPreview = () => {
+		try {
+			const servedPort = Number(fs.readFileSync(serveMarker, "utf8").trim());
+			if (Number.isInteger(servedPort) && servedPort > 0) serveOff(servedPort);
+		} catch { /* not served */ }
+		fs.rmSync(serveMarker, { force: true });
 		fs.rmSync(pHome, { recursive: true, force: true });
+	};
+	const cleanup = () => {
+		clearPreview();
 		fs.rmSync(lockPath, { force: true });
 		lock.close();
 	};
@@ -616,12 +627,27 @@ async function previewCommand(flags: Flags): Promise<void> {
 		try { return fs.readFileSync(dirs.serverLog, "utf8").split("\n").slice(-40).join("\n"); } catch { return ""; }
 	};
 	const abort = (message: string): never => {
+		stopping = true;
 		if (child && child.exitCode === null) child.kill("SIGKILL");
 		cleanup();
 		return fail(message);
 	};
-	// A folder left by a crash: the lock above proves nothing runs from it.
-	fs.rmSync(pHome, { recursive: true, force: true });
+	const stop = () => {
+		if (stopping) return;
+		stopping = true;
+		const done = () => {
+			cleanup();
+			say("\nStopped the preview and deleted its folder.");
+			process.exit(0);
+		};
+		if (!child || child.exitCode !== null) return done();
+		child.once("exit", done);
+		child.kill("SIGTERM");
+		setTimeout(() => child?.kill("SIGKILL"), 15_000).unref();
+	};
+	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, stop);
+	// Leftovers of a preview that died without cleaning up (the lock proves none runs).
+	clearPreview();
 	if (!(await portFree(config.port))) abort(`Port ${config.port} is in use. Pick another with --port.`);
 
 	const feedUrl = typeof flags["feed-url"] === "string" ? flags["feed-url"] : previewFeedUrl(pr, real.feedUrl ?? DEFAULT_FEED_URL);
@@ -631,17 +657,20 @@ async function previewCommand(flags: Flags): Promise<void> {
 	} catch (error) {
 		return abort(`No preview build for PR #${pr} (${error instanceof Error ? error.message : String(error)}). Your PRs build one on every push; anyone else's when you add the \`preview\` label.`);
 	}
-	out(`Downloading the PR #${pr} preview ${feed.version} (${feed.sha.slice(0, 12)}).`);
+	say(`Downloading the PR #${pr} preview ${feed.version} (${feed.sha.slice(0, 12)}).`);
 	try {
 		await stageVersion(pHome, feed, arch);
 	} catch (error) {
 		abort(`Could not download the preview: ${error instanceof Error ? error.message : String(error)}`);
 	}
+	if (stopping) return;
 	if (config.tailscale.enabled) {
+		// Written first, so a crash between the two still lets the next run turn it off.
+		writeFileDurably(serveMarker, `${config.tailscale.port}\n`);
 		const ts = tailscaleAvailable() ? serveOn(config.tailscale.port, config.port) : { ok: false, output: "tailscale is not running" };
-		if (ts.ok) served = true;
-		else {
-			out(`Tailscale Serve on port ${config.tailscale.port} failed (${ts.output}); the preview is local only.`);
+		if (!ts.ok) {
+			fs.rmSync(serveMarker, { force: true });
+			say(`Tailscale Serve on port ${config.tailscale.port} failed (${ts.output}); the preview is local only.`);
 			config.tailscale = { enabled: false, port: config.tailscale.port };
 		}
 	}
@@ -652,40 +681,29 @@ async function previewCommand(flags: Flags): Promise<void> {
 	const log = fs.openSync(dirs.serverLog, "a");
 	child = spawn(p.node, [p.serverEntry], { cwd: p.serverDir, env: buildChildEnv({ home: pHome, config, serviceEnv: {} }), stdio: ["ignore", log, log] });
 	fs.closeSync(log);
-	let stopping = false;
+	child.once("error", (error) => { if (!stopping) abort(`Could not start the preview server: ${error.message}`); });
 	child.once("exit", (code, signal) => {
 		if (stopping) return;
-		process.stderr.write(`${logTail()}\n`);
+		try { process.stderr.write(`${logTail()}\n`); } catch { /* terminal gone */ }
 		abort(`The preview server exited (${signal ?? `code ${code}`}).`);
 	});
-	const stop = () => {
-		if (stopping) return;
-		stopping = true;
-		out("\nStopping the preview and deleting its folder.");
-		const done = () => { cleanup(); process.exit(0); };
-		if (!child || child.exitCode !== null) return done();
-		child.once("exit", done);
-		child.kill("SIGTERM");
-		setTimeout(() => child?.kill("SIGKILL"), 15_000).unref();
-	};
-	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, stop);
 
 	const deadline = Date.now() + 120_000;
 	while (!stopping && !(await fetchHealth(config.port, 3_000).catch(() => undefined))?.ok) {
 		if (Date.now() > deadline) {
-			process.stderr.write(`${logTail()}\n`);
+			try { process.stderr.write(`${logTail()}\n`); } catch { /* terminal gone */ }
 			abort("The preview never became healthy within 120s.");
 		}
 		await sleep(500);
 	}
 	if (stopping) return;
-	out("");
-	out(`PR #${pr} preview ${feed.version} (${feed.sha.slice(0, 12)}) is running, with fresh, empty data:`);
-	for (const url of urls(config)) out(`  ${url}`);
-	out("");
-	printPairingLink(pHome, config, `PR #${pr} preview`);
-	out(`Server log: ${dirs.serverLog}`);
-	out("Your real server, its data and its updates are untouched. Ctrl+C stops the preview and deletes it.");
+	say("");
+	say(`PR #${pr} preview ${feed.version} (${feed.sha.slice(0, 12)}) is running, with fresh, empty data:`);
+	for (const url of urls(config)) say(`  ${url}`);
+	say("");
+	try { printPairingLink(pHome, config, `PR #${pr} preview`); } catch { /* terminal gone */ }
+	say(`Server log: ${dirs.serverLog}`);
+	say("Your real server, its data and its updates are untouched. Ctrl+C stops the preview and deletes it.");
 	setInterval(() => { /* stay up until Ctrl+C */ }, 1 << 30);
 }
 
