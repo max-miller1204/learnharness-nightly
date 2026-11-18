@@ -6,14 +6,26 @@ name: Upstream sync
 # main contains everything). It never pushes to main. Merge the PR with
 # "Create a merge commit", never squash, so later syncs merge cleanly.
 #
+# When upstream's .github/ differs from what `upstream-main` holds now, it
+# pauses: it pushes nothing and leaves the Sync PR alone, and the run fails
+# listing the files. A push here runs the pushed branch's own workflows, so
+# read the diff, then run this workflow with allow_github_changes ticked.
+#
 # Authenticates as the fork bot GitHub App (FORK_BOT_CLIENT_ID and
-# FORK_BOT_PRIVATE_KEY secrets), so CI runs on the PR. PRs opened with the
-# built-in token don't run CI. See docs/fork-workflow.md.
+# FORK_BOT_PRIVATE_KEY, secrets of the main-only `fork-bot` environment), so CI
+# runs on the PR. PRs opened with the built-in token don't run CI. See
+# docs/fork-workflow.md and docs/specs/simplify-upstream-intake.md.
 
 on:
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
+    inputs:
+      allow_github_changes:
+        description: "Sync even though upstream changes .github/ (read the diff first: those workflows would run here)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -32,6 +44,10 @@ jobs:
     if: github.repository == 'max-miller1204/learnharness-nightly'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # The App key is a secret of this main-only environment (docs/fork-workflow.md).
+    environment:
+      name: fork-bot
+      deployment: false
     steps:
       # Compares against origin/main, so the checked-out ref doesn't matter.
       - uses: actions/checkout@v7
@@ -43,9 +59,25 @@ jobs:
           client-id: ${{ secrets.FORK_BOT_CLIENT_ID }}
           private-key: ${{ secrets.FORK_BOT_PRIVATE_KEY }}
       - name: Mirror upstream
+        env:
+          ALLOW_GITHUB_CHANGES: ${{ inputs.allow_github_changes }}
         run: |
-          git fetch --no-tags "https://github.com/${UPSTREAM_REPO}.git" "${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}"
-          git push --force origin "refs/remotes/upstream/${UPSTREAM_BRANCH}:refs/heads/${MIRROR_BRANCH}"
+          set -euo pipefail
+          upstream="refs/remotes/upstream/${UPSTREAM_BRANCH}"
+          git fetch --no-tags "https://github.com/${UPSTREAM_REPO}.git" "+${UPSTREAM_BRANCH}:${upstream}"
+          # Compared as trees with what upstream-main holds now (or, without
+          # it, with upstream's merge base with main).
+          if git rev-parse -q --verify "refs/remotes/origin/${MIRROR_BRANCH}" >/dev/null; then
+            base="refs/remotes/origin/${MIRROR_BRANCH}"
+          else
+            base=$(git merge-base origin/main "$upstream") || { echo "::error::No ${MIRROR_BRANCH} branch and no history shared with upstream to compare .github/ against."; exit 1; }
+          fi
+          changes=$(git diff --no-renames --name-only "$base" "$upstream" -- .github)
+          if [ -n "$changes" ] && [ "${ALLOW_GITHUB_CHANGES:-}" != true ]; then
+            echo "::error::Upstream changes .github/, so the sync is paused (nothing pushed, the Sync PR is unchanged): ${changes//$'\n'/ }. Read the diff (https://github.com/${GITHUB_REPOSITORY}/compare/${MIRROR_BRANCH}...${UPSTREAM_REPO%%/*}:${UPSTREAM_REPO#*/}:${UPSTREAM_BRANCH}), then run Upstream sync with allow_github_changes."
+            exit 1
+          fi
+          git push --force origin "${upstream}:refs/heads/${MIRROR_BRANCH}"
       - name: Open, update or close the Sync PR
         run: |
           set -euo pipefail

@@ -14,10 +14,10 @@
 # A hidden first line in the mirror body (`<!-- upstream-issue: <repo>#<N> -->`)
 # links it to its upstream issue; only issues the fork bot App opened count, so
 # an issue anyone else opens with that line can't stand in for a mirror.
-# Upstream references and authors are written as code and the copied text sits
-# in code blocks (see fence.jq), so mirroring pings no one and adds no
-# "mentioned this" entry upstream. (Upstream hears about a picked issue only
-# when a fork PR fixing it merges; see notify-upstream.sh.)
+# The body links the upstream issue by URL, so its timeline shows a "mentioned
+# this" entry pointing here (docs/specs/simplify-upstream-intake.md). Authors
+# are written as code and the copied text sits in code blocks (see fence.jq),
+# so mirroring @mentions no one.
 #
 # Writes only from the workflow (GITHUB_ACTIONS=true), as the fork bot App,
 # because mirrors anyone else opens aren't recognized and would be copied
@@ -97,7 +97,7 @@ include "fence";
 def day: .[0:10];
 def render($cs; $more; $cut):
 	"<!-- upstream-issue: \($up)#\(.number) -->\n"
-	+ "Mirrored from `\($up)#\(.number)` (`\(.html_url)`), opened by `\(.user)` on \(.created_at | day). "
+	+ "Mirrored from \(.html_url), opened by `\(.user)` on \(.created_at | day). "
 	+ "Copied once on \($today); later upstream edits and comments aren't synced.\n\n"
 	+ "<details open><summary>Original issue</summary>\n\n" + .fenced
 	+ (if $cut then "\nTruncated; read the rest upstream.\n" else "" end)

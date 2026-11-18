@@ -2,14 +2,15 @@ name: Fork bot token
 description: >-
   Mints a short-lived installation token for the fork bot GitHub App and makes
   it the gh and git credential for the rest of the job (GH_TOKEN plus
-  `gh auth setup-git`). Check out with persist-credentials false first. See
+  `gh auth setup-git`). Check out with persist-credentials false first. The
+  job needs the main-only `fork-bot` environment, which holds both secrets. See
   docs/specs/github-app.md.
 inputs:
   client-id:
-    description: The App's Client ID (secrets.FORK_BOT_CLIENT_ID)
+    description: The App's Client ID (secrets.FORK_BOT_CLIENT_ID, fork-bot environment)
     required: true
   private-key:
-    description: The App's private key (secrets.FORK_BOT_PRIVATE_KEY)
+    description: The App's private key (secrets.FORK_BOT_PRIVATE_KEY, fork-bot environment)
     required: true
 outputs:
   token:
@@ -25,7 +26,7 @@ runs:
         PRIVATE_KEY: ${{ inputs.private-key }}
       run: |
         if [ -z "$CLIENT_ID" ] || [ -z "$PRIVATE_KEY" ]; then
-          echo "::error::Add the FORK_BOT_CLIENT_ID and FORK_BOT_PRIVATE_KEY secrets (docs/fork-workflow.md)."
+          echo "::error::Add the FORK_BOT_CLIENT_ID and FORK_BOT_PRIVATE_KEY secrets to the fork-bot environment, and run this from main (docs/fork-workflow.md)."
           exit 1
         fi
 

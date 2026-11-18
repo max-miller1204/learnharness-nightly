@@ -8,8 +8,10 @@ name: Dependabot auto-merge
 #
 # pull_request_target, so GitHub always runs main's copy of this file: a bot PR
 # that bumps an action used here can't run the new version before it merges.
-# It also gets the normal Actions secrets (FORK_BOT_*). Never check out or run
-# the PR's code in this workflow.
+# Its ref is main, so it can use the main-only `fork-bot` environment (FORK_BOT_*).
+# Never check out or run the PR's code in this workflow. GitHub blocks
+# pull_request_target on public repositories by default from 2026-12-02; a
+# repository Actions policy allows it for this file only (docs/fork-workflow.md).
 
 on:
   pull_request_target:
@@ -34,6 +36,10 @@ jobs:
       cancel-in-progress: true
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    # The App key is a secret of this main-only environment (docs/fork-workflow.md).
+    environment:
+      name: fork-bot
+      deployment: false
     permissions:
       contents: read
       pull-requests: read

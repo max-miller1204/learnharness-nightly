@@ -2,6 +2,8 @@
 
 Status: approved by the owner on 2026-11-18. Builds on PR #132 (`docs/specs/fix-upstream-hardening.md`).
 
+**Superseded in part by [simplify-upstream-intake.md](simplify-upstream-intake.md) (2026-11-17):** the merge-time comment (`notify-upstream.yml`, the `Upstream:` line, `UPSTREAM_COMMENT_TOKEN`, the `upstream-notify` environment) is gone. The import and the mirror link their upstream item by URL from the start instead. Hand-picking, the `.github/` import guard and the daily `upstream-closed` sync stay as described here.
+
 Goal: rework roadmap item 13 (upstream intake, `docs/specs/upstream-issue-mirror.md`). Nothing from upstream (`amosblomqvist/learnharness`) is imported on its own any more. The owner picks each upstream issue or PR worth taking. When a fork PR that fixes or imports a picked item merges into `main`, upstream users can find it: the fork PR links the upstream item, and one short comment goes on the upstream item from the owner's account.
 
 ## Decided by the owner
