@@ -65,13 +65,17 @@ function createRemoteWindow({ BrowserWindow, session, origin, token, signal, ope
 		if (!belongs(details) || !atOrigin(details.url, origin)) return respond({});
 		const mainFrame = details.resourceType === "mainFrame";
 		if (!allowsRemoteRedirect(details, origin)) {
-			respond({ cancel: true });
-			if (mainFrame) {
-				let target;
-				try { target = new URL(redirectLocation(details), details.url); } catch { return; }
-				if (atOrigin(target, origin)) onProblem(true);
-				else if (details.method === "GET") void openInBrowser(target).catch(() => {});
+			let target;
+			try { target = new URL(redirectLocation(details), details.url); } catch { /* Cancel below. */ }
+			if (mainFrame && target && !atOrigin(target, origin)) {
+				// Cancelling here would replace the page with a Chromium error.
+				// will-redirect stops this navigation and keeps the current page.
+				respond({});
+				if (details.method === "GET") void openInBrowser(target).catch(() => {});
+				return;
 			}
+			respond({ cancel: true });
+			if (mainFrame && target) onProblem(true);
 			return;
 		}
 		const pairRewrite = rewritesToPairPage(details);
@@ -87,6 +91,10 @@ function createRemoteWindow({ BrowserWindow, session, origin, token, signal, ope
 		if (isRemotePage(target, origin)) return;
 		event.preventDefault();
 		if (!atOrigin(target, origin)) void openInBrowser(target).catch(() => {});
+	});
+	contents.on("will-redirect", (event) => {
+		// The redirected request is also refused in onBeforeSendHeaders.
+		if (event.isMainFrame && !isRemotePage(event.url, origin)) event.preventDefault();
 	});
 	contents.setWindowOpenHandler(({ url, postBody }) => {
 		// The web subscription client reserves about:blank synchronously.

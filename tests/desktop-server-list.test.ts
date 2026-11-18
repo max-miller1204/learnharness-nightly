@@ -343,6 +343,23 @@ test("remote browser handoff keeps the credential in main and leaves ordinary pa
 	assert.deepEqual(requests, [alpha + action]);
 	assert.deepEqual(browser, ["https://example.test/docs", "https://example.test/releases", provider]);
 	assert.equal(win.destroyed, false);
+	const outside = "https://elsewhere.example.test/landing";
+	const redirect = {
+		url: alpha + "/redirect", resourceType: "mainFrame", method: "GET", webContentsId: win.webContents.id,
+		statusCode: 303, responseHeaders: { Location: [outside] },
+	};
+	isolated.headersReceived!(redirect, (result) => assert.deepEqual(result, {}, "a cancel here would leave a Chromium error page"));
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.deepEqual(browser.at(-1), outside);
+	let stopped = 0;
+	win.webContents.emit("will-redirect", { url: outside, isMainFrame: true, preventDefault: () => { stopped++; } });
+	win.webContents.emit("will-redirect", { url: alpha + "/chat", isMainFrame: true, preventDefault: () => { stopped++; } });
+	assert.equal(stopped, 1, "only the outside redirect is stopped, keeping the current page");
+	isolated.beforeSend!({ url: outside, webContentsId: win.webContents.id, resourceType: "mainFrame", method: "GET", requestHeaders: {} },
+		(result) => assert.deepEqual(result, { cancel: true }, "the bearer never follows the redirect"));
+	isolated.headersReceived!({ ...redirect, resourceType: "xhr" }, (result) => assert.deepEqual(result, { cancel: true }));
+	assert.equal(browser.length, 4);
+	assert.deepEqual(problems, []);
 	const page = { url: alpha + "/chat/deleted", resourceType: "mainFrame", webContentsId: win.webContents.id, statusCode: 404 };
 	isolated.headersReceived!(page, (result) => assert.deepEqual(result, {}));
 	win.webContents.emit("did-fail-load", {}, -379, "", page.url, true);
@@ -351,4 +368,84 @@ test("remote browser handoff keeps the credential in main and leaves ordinary pa
 	win.webContents.emit("did-fail-load", {}, -105, "", page.url, true);
 	assert.deepEqual(problems, [false, false], "reauthenticate before classifying a connection failure");
 	win.destroy();
+});
+
+test("a new ChatGPT sign-in waits for the abandoned attempt's slow cancel before starting", { timeout: 10000 }, async (t) => {
+	const { AUTHORIZE } = require("../electron/chatgpt.cjs");
+	const directory = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-sign-in-"));
+	const originalFetch = globalThis.fetch;
+	t.after(async () => { globalThis.fetch = originalFetch; await fs.rm(directory, { recursive: true, force: true }); });
+	const operations: string[] = [];
+	const opened: string[] = [];
+	let releaseCancel!: () => void;
+	const slowCancel = new Promise<void>((resolve) => { releaseCancel = resolve; });
+	t.after(() => releaseCancel());
+	let port = 0;
+	globalThis.fetch = async (input, options) => {
+		const url = new URL(String(input));
+		const tokenFor = url.origin === alpha ? "alpha-secret" : "beta-secret";
+		switch (url.pathname) {
+			case PROTOCOL_ROUTES.serverInfo: return Response.json({ name: "Test server", protocolVersion: CLIENT_PROTOCOL_VERSION });
+			case PROTOCOL_ROUTES.token: return Response.json({ access_token: tokenFor, token_type: "Bearer" });
+			case PROTOCOL_ROUTES.session: return Response.json({ authenticated: true });
+			case "/api/subscriptions/browser": {
+				operations.push("browser");
+				const target = new URL(AUTHORIZE);
+				target.searchParams.set("redirect_uri", `http://127.0.0.1:${port}/auth/callback`);
+				target.searchParams.set("state", "fixture-state");
+				return new Response(null, { status: 303, headers: { Location: target.href } });
+			}
+			case "/api/subscriptions": {
+				assert.equal(url.origin, beta);
+				const body = JSON.parse(String(options?.body));
+				operations.push(body.op);
+				if (body.op === "cancel") {
+					if (operations.filter((op) => op === "cancel").length === 1) await slowCancel;
+					return Response.json({ value: {} });
+				}
+				port = body.desktopRedirectPort;
+				return Response.json({ value: {}, browserAction: "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001" });
+			}
+			default: throw new Error("Unexpected request " + url.pathname);
+		}
+	};
+	type FakeEvent = { sender: TestWindow["webContents"]; senderFrame: { url: string } };
+	let handler!: (event: FakeEvent, action: string, payload?: unknown) => Promise<unknown>;
+	const controller = await createServerList({
+		app: { getPath: () => directory }, BrowserWindow: TestWindow, safeStorage: fakeSafeStorage,
+		ipcMain: { handle: (_channel: string, callback: typeof handler) => { handler = callback; } },
+		session: { fromPartition: () => new TestSession() },
+		shell: { openExternal: async (url: string) => { opened.push(url); } },
+		startLocal: async () => "http://localhost:3000", stopLocal: async () => {},
+		createLocalWindow: () => new TestWindow(), setLocalMenu() {},
+	});
+	const panel = () => controller.show() as TestWindow;
+	const send = (action: string, value?: unknown) => {
+		const win = panel();
+		return handler({ sender: win.webContents, senderFrame: win.webContents.mainFrame }, action, value);
+	};
+	const until = async (ready: () => boolean) => {
+		for (let i = 0; i < 400 && !ready(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+		assert(ready(), "timed out waiting for the sign-in fixture");
+	};
+	t.after(() => {
+		controller.close();
+		for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
+	});
+	await controller.launch();
+	await send("pair", { origin: beta, code });
+	await send("sign-in");
+	await until(() => opened.length === 1);
+	await send("pair", { origin: alpha, code });
+	await until(() => operations.includes("cancel"));
+	await send("connect", beta);
+	await send("sign-in");
+	assert.equal((await send("state") as { signingIn: boolean }).signingIn, true, "the retry shows the existing pending state");
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.deepEqual(operations, ["login", "browser", "cancel"], "no new login while the old one is still cancelling");
+	releaseCancel();
+	await until(() => opened.length === 2);
+	assert.deepEqual(operations, ["login", "browser", "cancel", "login", "browser"]);
+	controller.close();
+	await until(() => operations.length === 6);
 });

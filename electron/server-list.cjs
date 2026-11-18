@@ -24,6 +24,8 @@ async function createServerList({ app, BrowserWindow, ipcMain, session, shell, s
 	let notice = "";
 	let connecting = null;
 	let login = null;
+	// Settles after the latest attempt, including any cancel it sends.
+	let lastLogin = Promise.resolve();
 	const rechecking = new WeakSet();
 	let closing = false;
 
@@ -184,7 +186,13 @@ async function createServerList({ app, BrowserWindow, ipcMain, session, shell, s
 		login = operation;
 		notice = "";
 		publish();
+		const previous = lastLogin;
+		let settled;
+		lastLogin = new Promise((resolve) => { settled = resolve; });
 		try {
+			// An abandoned attempt may still be cancelling on its server.
+			await previous;
+			operation.signal.throwIfAborted();
 			await remoteChatGPTSignIn(selection.server, selection.token, {
 				signal: operation.signal, openExternal: (url) => shell.openExternal(url),
 			});
@@ -192,6 +200,7 @@ async function createServerList({ app, BrowserWindow, ipcMain, session, shell, s
 		} catch (error) {
 			if (!operation.signal.aborted) notice = error instanceof ServerProblem ? error.message : "ChatGPT sign-in failed. Try again from Switch server.";
 		} finally {
+			settled();
 			if (login === operation) {
 				login = null;
 				publish();
