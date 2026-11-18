@@ -2,6 +2,7 @@
 
 import { createContext, Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
+import { SavedAttachmentChips, useAttachmentDraft } from "./attachment-draft";
 import { useChatSession } from "@/components/session";
 import { usePlugins } from "./plugins";
 import { PluginSubmissionRunner, SubmissionModelEpoch, type SubmissionAttempt } from "./plugin-submission-runner";
@@ -265,6 +266,7 @@ export function Chat({
 	chatId,
 	title,
 	initialMessages,
+	initialUnavailableAttachments,
 	initialError,
 	initialPrompt,
 	initiallyInFlight,
@@ -275,6 +277,7 @@ export function Chat({
 	chatId: string;
 	title: string;
 	initialMessages: LhMessage[];
+	initialUnavailableAttachments?: string[];
 	/** Memory-only settlement notice supplied on reopening. */
 	initialError?: string;
 	/** The session kind (practice sessions, owner 2026-10-04): practice
@@ -309,6 +312,9 @@ export function Chat({
 	const { canonicalMessages, reconciliation, reconcile, pluginQuestionAvailability, pluginQuestionDraft, pluginProblemAvailability, pluginProblemDraft, dismissPluginQuestion, readRecord, messages, nativeMessages, hasConfirmedConversation, contextTokens, send, continueIfOwed, steer, steerQueue, submitAnswer, dismissQuestion, dismissProblem, questionDraft, saveQuestionDraft, status, evaluating, error, stop, clearError, resumeStream, setReattachSettled } =
 		useChatSession({ chatId, initialMessages, initialError, initiallyInFlight });
 
+	const attachments = useAttachmentDraft(chatId);
+	const savedAttachments = useMemo(() => new Map(nativeMessages.filter(message => message.role === "user" && message.attachments?.length).map(message => [message.id, message.attachments!])), [nativeMessages]);
+	const unavailableAttachments = useMemo(() => new Set(initialUnavailableAttachments), [initialUnavailableAttachments]);
 	const controller = useOptionalInteractionLayers();
 	const sessionFindScopeRef = useRef<HTMLDivElement | null>(null);
 	const pathname = usePathname();
@@ -802,7 +808,7 @@ export function Chat({
 			}, attempt.accepted, undefined, attempt.refused);
 		});
 	};
-	const prepareText = (supplied?: string, openingAccepted?: () => void, beforePost?: (captured: string) => boolean) => {
+	const prepareText = (supplied?: string, openingAccepted?: () => void, beforePost?: (captured: string) => boolean, withAttachments = false) => {
 		const target = textTarget();
 		if (!target || pendingRef.current || pluginOwnsDock || activeProblemRef.current || compacting) return Promise.resolve(false);
 		if (!busyRef.current && zeroKeys) { setSetupOpen(true); return Promise.resolve(false); }
@@ -812,11 +818,22 @@ export function Chat({
 			if (prepared.type !== "text") return false;
 			if (!prepared.content.text.trim() && !prepared.content.images.length) throw new Error("Message text or images are required. Your input has been kept.");
 			if (beforePost && !beforePost(captured)) { attempt.cancel(); return false; }
+			const input: ChatInput = { type: "text", text: prepared.content.text, ...(prepared.content.images.length ? { images: prepared.content.images.map(image => ({ ...image })) } : {}) };
+			if (withAttachments && !input.text.trim()) throw new Error("Message text is required when attaching files.");
+			const upload = withAttachments ? await attachments.prepare(JSON.stringify(input)) : undefined;
+			if (upload === null) return false;
+			attempt.check();
+			if (upload && busyRef.current) throw new Error("A turn is already running — try again in a moment.");
 			draftRef.current = captured;
-			const accepted = () => { if (composerEditRevision.current === capturedRevision && textRef.current.trim() === captured) applyText(""); openingAccepted?.(); attempt.accepted(); };
+			const accepted = () => {
+				if (upload) attachments.accept(upload);
+				if (composerEditRevision.current === capturedRevision && textRef.current.trim() === captured) applyText("");
+				openingAccepted?.();
+				attempt.accepted();
+			};
 			attempt.deliver();
 			if (busyRef.current) return steer(prepared.content.text, prepared.content.images, accepted, attempt.refused);
-			return send({ type: "text", text: prepared.content.text, ...(prepared.content.images.length ? { images: prepared.content.images.map(image => ({ ...image })) } : {}) }, accepted, undefined, attempt.refused);
+			return send(input, accepted, undefined, attempt.refused, upload);
 		});
 	};
 
@@ -1550,7 +1567,7 @@ export function Chat({
 	const onSend = () => {
 		if (!isInteractionScopeEligible(sessionFindScopeRef.current, controller) || submissionRunner.occupied) return;
 		if (openingDraftRef.current !== null) { deliverOpeningPrompt(textRef.current.trim(), true); return; }
-		void prepareText();
+		void prepareText(undefined, undefined, undefined, attachments.files.length > 0);
 	};
 
 	/* STEER VS SEND (owner arc 2026-10-03): a send while a turn runs steers
@@ -1869,7 +1886,8 @@ export function Chat({
 												<div className="lh-prose whitespace-pre-wrap text-foreground">
 													<PathText text={m.parts.filter((p) => p.type === "text").map((p) => p.text).join("\n")} />
 												</div>
-												<SubmittedImages images={m.parts.filter((part) => part.type === "image").map(part => ({ type: "image" as const, data: part.data as string, mimeType: part.mimeType as string }))} />
+												{savedAttachments.has(m.id) && <SavedAttachmentChips files={savedAttachments.get(m.id)!} unavailable={unavailableAttachments} />}
+										<SubmittedImages images={m.parts.filter((part) => part.type === "image").map(part => ({ type: "image" as const, data: part.data as string, mimeType: part.mimeType as string }))} />
 											</div>
 									) : (
 									<Message from="assistant" className="max-w-full">
@@ -2118,6 +2136,7 @@ export function Chat({
 							onStop={abortInFlightTurn}
 							sendAllowed={sendAllowed}
 							dictationActive={dictation.active}
+							attachments={attachments}
 							onEscape={dictation.active ? dictation.cancel : undefined}
 							// The pause affordance (owner round 16): the placeholder
 							// IS the hint — empty state, exactly where Enter-on-empty

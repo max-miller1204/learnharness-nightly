@@ -1,4 +1,4 @@
-import { compactionInFlight, deleteChatSession, getChat, isTurnRunning, sessionCoverage, sessionCost, stores, turnFailure, type ChatDeleteMode, pluginQuestionAvailabilityOf, reconcilePluginQuestionCompatibility, type QuestionTypeResolver, getPluginQuestionTypeResolver, getPluginHost, pluginProblemAvailabilityOf, type ProblemTypeResolver } from "@/src/server";
+import { compactionInFlight, deleteChatSession, getChat, isTurnRunning, sessionCoverage, sessionCost, stores, turnFailure, type ChatDeleteMode, pluginQuestionAvailabilityOf, reconcilePluginQuestionCompatibility, type QuestionTypeResolver, getPluginQuestionTypeResolver, getPluginHost, pluginProblemAvailabilityOf, type ProblemTypeResolver, unavailableAttachmentIds } from "@/src/server";
 import { pendingPluginQuestionOf, activeProblemOf } from "@/src/core";
 import type { ChatResponse } from "@/src/server";
 
@@ -35,6 +35,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 	return Response.json({
 		...record,
 		messages: chat.messages,
+		unavailableAttachmentIds: unavailableAttachmentIds(chat.messages),
 		pluginQuestionAvailability: pluginQuestionAvailabilityOf(chat, questionResolver),
 		pluginProblemAvailability: pluginProblemAvailabilityOf(chat, problemResolver),
 		pricing: sessionCost(chat),

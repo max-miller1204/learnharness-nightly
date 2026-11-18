@@ -1,3 +1,4 @@
+import type { AttachmentSend } from "@/src/core";
 /**
  * THE SESSION MODEL (Wave D): the chat session's state machine, extracted
  * PURE — no React, one injectable fetch — so the attach/replay/settle/
@@ -556,8 +557,8 @@ export class SessionModel {
 	 *  retry waits out the running turn and re-POSTs the SAME body. Plugin
 	 *  question answers are excluded: a busy refusal needs explicit retry,
 	 *  never an automatic second grading attempt. */
-	async postInputEvent(input: ChatInput, signal?: AbortSignal, onPostPending?: (pending: boolean) => void): Promise<Response> {
-		const body = JSON.stringify({ chatId: this.chatId, input });
+	async postInputEvent(input: ChatInput, signal?: AbortSignal, onPostPending?: (pending: boolean) => void, attachments?: AttachmentSend): Promise<Response> {
+		const body = JSON.stringify({ chatId: this.chatId, input, ...attachments });
 		const init: RequestInit = {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -570,7 +571,7 @@ export class SessionModel {
 			finally { onPostPending?.(false); }
 		};
 		let response = await post();
-		if (input.type === "plugin-question-answer" || input.type === "plugin-problem-submission") return response;
+		if (attachments || input.type === "plugin-question-answer" || input.type === "plugin-problem-submission") return response;
 		let waited = 0;
 		while (response.status === 409) {
 			await response.body?.cancel().catch(() => {});
@@ -864,7 +865,7 @@ export class SessionModel {
 	 * POST + consume. Ready-gated: one turn per client at a time (the
 	 * server's 409 + identity retry covers the wake-race window).
 	 */
-	async send(input: ChatInput, onAccepted?: () => void, questionKey?: string, onDeliverySettled?: () => void): Promise<boolean> {
+	async send(input: ChatInput, onAccepted?: () => void, questionKey?: string, onDeliverySettled?: () => void, attachments?: AttachmentSend): Promise<boolean> {
 		let deliverySettled = false;
 		const settleDelivery = () => { if (!deliverySettled) { deliverySettled = true; onDeliverySettled?.(); } };
 		const refused = () => { settleDelivery(); return false; };
@@ -969,13 +970,13 @@ export class SessionModel {
 			// connection is Diet A's whole job.
 			let res: Response;
 			try {
-				res = await this.postInputEvent(input, undefined, imageBearing ? pending => this.imagePostPending(controller, pending) : undefined);
+				res = await this.postInputEvent(input, undefined, imageBearing ? pending => this.imagePostPending(controller, pending) : undefined, attachments);
 			} finally {
 				// The response follows optional processing and save. A detached or
 				// superseded request must never clear its successor's label.
 				if (this.evaluationOwner === controller) this.mutate(() => { this.evaluationOwner = null; });
 			}
-			if (res.status === 409) {
+			if (res.status === 409 && !attachments) {
 				settleDelivery();
 				throw new Error("A turn is already running — try again in a moment.");
 			}
@@ -985,7 +986,7 @@ export class SessionModel {
 				// flow parses them. Retry's 400s are ordinary user-facing
 				// guidance, so show their error text without JSON syntax.
 				let message = (await res.text()) || `The send failed (${res.status}).`;
-				if ((input.type === "retry" || input.type === "retry-question") && res.status === 400) {
+				if ((attachments && res.status !== 503) || ((input.type === "retry" || input.type === "retry-question") && res.status === 400)) {
 					try {
 						const refusal = JSON.parse(message) as { error?: unknown } | null;
 						if (typeof refusal?.error === "string" && refusal.error.length > 0) message = refusal.error;

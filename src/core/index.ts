@@ -110,3 +110,7 @@ export * from "./plugin-submissions.ts";
 export type * from "./plugin-ui.ts";
 export type * from "./plugin-tree.ts";
 export * from "./plugin-agents.ts";
+
+export { attachmentLimitError, ATTACHMENT_UNAVAILABLE } from "./attachment-limits.ts";
+export { ATTACHMENT_UPLOADS, hasCapability, PROTOCOL_ROUTES } from "../client-protocol/index.ts";
+export type { AttachmentGrantResponse, AttachmentReference, AttachmentSend, AttachmentTarget, ServerInfo, StartWithAttachmentsRequest } from "../client-protocol/index.ts";

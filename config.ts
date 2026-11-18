@@ -26,6 +26,10 @@ export const PATHS = {
 	/** Teacher system prompt — the agent's instructions (src/agent/). */
 	teacherPrompt: path.join(ROOT, "src", "agent", "system-prompt.md"),
 	data: DATA_ROOT,
+	/** The launcher snapshots and restores the data root independently of uploaded bytes. */
+	attachments: process.env.LH_SELFHOST === "1" && process.env.LH_HOME
+		? path.resolve(/* turbopackIgnore: true */ process.env.LH_HOME, "attachments")
+		: path.join(/* turbopackIgnore: true */ path.dirname(DATA_ROOT), `${path.basename(DATA_ROOT)}-attachments`),
 	/** Chat sessions (AI SDK UIMessage transcripts, one JSON file per chat). */
 	chats: path.join(/* turbopackIgnore: true */ DATA_ROOT, "chats"),
 	graph: path.join(/* turbopackIgnore: true */ DATA_ROOT, "graph"),

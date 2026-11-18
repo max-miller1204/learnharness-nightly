@@ -34,13 +34,14 @@ import { GET as serverInfoRoute } from "../app/.well-known/learnharness/server/r
 const RECORDED = {
 	protocolVersion: 1,
 	fingerprint: {
-		"src/client-protocol/index.ts": "5e4b8b2ac37e5a53",
+		"src/client-protocol/index.ts": "d45ccc37149e68f8",
+		"src/core/attachments.ts": "862b39375e996bb4",
 		"src/core/contracts/chat.ts": "937c52917f863b25",
 		"src/core/contracts/graph.ts": "b84d4803bd0c4acc",
 		"src/core/contracts/plan.ts": "feebc7e5e0e6e8cf",
 		"src/core/events.ts": "9024567ad9c36c27",
 		"src/core/input-events.ts": "bfc9d2408879952e",
-		"src/core/native-messages.ts": "e820a7ea1ecc9247",
+		"src/core/native-messages.ts": "7f195795c9eda09e",
 		"src/core/phases.ts": "c8f5be717bf1ff30",
 		"src/core/plugin-questions.ts": "2a40092a355d2315",
 		"src/core/plugin-submissions.ts": "41625a9ecd73afb7",
@@ -139,7 +140,7 @@ describe("server info", () => {
 		assert.equal(info.version, "0.6.1-nightly.1");
 		assert.equal(info.protocolVersion, 1);
 		assert.ok(info.name.length > 0);
-		assert.deepEqual(info.capabilities, []);
+		assert.deepEqual(info.capabilities, ["attachment-uploads-v1"]);
 		assert.deepEqual(info.auth, {
 			required: true,
 			bootstrapMethods: ["one-time-token"],

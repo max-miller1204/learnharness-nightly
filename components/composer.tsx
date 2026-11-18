@@ -4,6 +4,7 @@ import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { ArrowRightIcon, CornerDownLeftIcon, SquareIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PathInput } from "@/components/path-input";
+import { DraftAttachmentChips, type AttachmentDraft } from "./attachment-draft";
 import { AttachFilesButton } from "@/components/attach-files-button";
 import { useOptionalInteractionLayers } from "./interaction-layers";
 import { isInteractionScopeEligible } from "./plugin-input-focus";
@@ -61,6 +62,7 @@ export function ChatSessionComposer({
 	nextProblem,
 	onNext,
 	pendingInput = false,
+	attachments,
 }: {
 	busy: boolean;
 	value: string;
@@ -77,6 +79,7 @@ export function ChatSessionComposer({
 	nextProblem?: boolean;
 	onNext?: () => void;
 	pendingInput?: boolean;
+	attachments?: AttachmentDraft;
 }) {
 	const [draft, setDraft] = useState(value);
 	useLayoutEffect(() => { setDraft(value); }, [revision, value]);
@@ -100,6 +103,7 @@ export function ChatSessionComposer({
 			placeholder={placeholder}
 			nextProblem={nextProblem}
 			onNext={onNext}
+			attachments={attachments}
 		/>
 	);
 }
@@ -119,6 +123,7 @@ export function Composer({
 	onNext,
 	defaultDropTarget = true,
 	fileInsertion = true,
+	attachments,
 }: {
 	busy: boolean;
 	value: string;
@@ -147,6 +152,7 @@ export function Composer({
 	/** Neutral plugin composers opt out without changing core defaults. */
 	defaultDropTarget?: boolean;
 	fileInsertion?: boolean;
+	attachments?: AttachmentDraft;
 }) {
 	const controller = useOptionalInteractionLayers();
 	const act = () => {
@@ -158,6 +164,8 @@ export function Composer({
 	const ownInputRef = useRef<HTMLDivElement>(null);
 	const editorRef = inputRef ?? ownInputRef;
 	return (
+		<>
+		{attachments && <DraftAttachmentChips draft={attachments} />}
 		<form
 			data-testid="composer"
 			className="flex items-end gap-1.5 p-1.5"
@@ -197,7 +205,7 @@ export function Composer({
 				autoFocus={autoFocus}
 				className="field-sizing-content lh-input max-h-48 min-h-10 flex-1 resize-none bg-transparent px-2.5 py-2 outline-none placeholder:text-muted-foreground"
 			/>
-			<AttachFilesButton editorRef={editorRef} />
+			<AttachFilesButton editorRef={editorRef} upload={attachments?.enabled ? attachments.select : undefined} uploadDisabled={busy} />
 			{/* The button follows the text (owner report 2026-10-03): while
 				 a turn runs WITH text typed it stays the SEND affordance
 				 (click = steer — steering must be clickable, not Enter-only);
@@ -238,5 +246,6 @@ export function Composer({
 					</button>
 				)}
 		</form>
+		</>
 	);
 }

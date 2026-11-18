@@ -15,8 +15,8 @@ export const isApiPath = (pathname: string) => pathname === "/api" || pathname.s
 /** The login gate (T3 Code's model, no localhost bypass). Signed-out page
  * requests are rewritten to the pairing screen, because LearnHarness pages
  * render data on the server; signed-out API requests get 401. A request
- * naming another client protocol version gets 426 first. The one
- * streamed document route checks for itself, avoiding Next's silently
+ * naming another client protocol version gets 426 first. The streamed
+ * document and attachment routes check for themselves, avoiding Next's silently
  * truncated Proxy body clone. */
 export function proxy(request: NextRequest) {
 	const { pathname } = request.nextUrl;
@@ -57,6 +57,6 @@ export function proxy(request: NextRequest) {
 
 export const config = {
 	// Everything except static files (Next's own /_next/ assets, favicon and
-	// public/) and the exact streamed documents endpoint. Must remain static literals.
-	matcher: ["/((?!_next/|favicon\\.ico$|fonts/|siwc/|worklets/|plugin-loader\\.js$|api/plugins/[^/]+/documents/markdown/?$).*)"],
+	// public/) and the exact streaming endpoints. Must remain static literals.
+	matcher: ["/((?!_next/|favicon\\.ico$|fonts/|siwc/|worklets/|plugin-loader\\.js$|api/plugins/[^/]+/documents/markdown/?$|api/attachments/upload/?$).*)"],
 };

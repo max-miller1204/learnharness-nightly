@@ -81,7 +81,11 @@ function AttachmentPopup({ anchorRef, rootRef, open, close, children }: {
  * folder choice returns the directory itself, including an empty directory.
  * aria-disabled, not disabled, so the tooltip still shows.
  */
-export function AttachFilesButton({ editorRef }: { editorRef: React.RefObject<HTMLDivElement | null> }) {
+export function AttachFilesButton({ editorRef, upload, uploadDisabled }: {
+	editorRef: React.RefObject<HTMLDivElement | null>;
+	upload?: (files: File[]) => void;
+	uploadDisabled?: boolean;
+}) {
 	const controller = useOptionalInteractionLayers();
 	const pickerRef = useRef<HTMLInputElement>(null);
 	const desktop = useDesktopPaths();
@@ -151,21 +155,23 @@ export function AttachFilesButton({ editorRef }: { editorRef: React.RefObject<HT
 				data-testid="attach-files-input"
 				onChange={(e) => {
 					const resolve = window.lh?.getPathForFile;
-					const { paths } = resolve ? pathsForFiles(Array.from(e.currentTarget.files ?? []), resolve) : { paths: [] };
+					const files = Array.from(e.currentTarget.files ?? []);
+					if (!resolve && files.length && !uploadDisabled) upload?.(files);
+					const { paths } = resolve ? pathsForFiles(files, resolve) : { paths: [] };
 					if (paths.length > 0) editorRef.current?.dispatchEvent(new CustomEvent(INSERT_FILE_PATHS_EVENT, { detail: paths }));
 					e.currentTarget.value = ""; // allow re-picking the same file
 				}}
 			/>
-			<Hint label={desktop ? "Attach files or a folder" : BROWSER_NOTICE}>
+			<Hint label={desktop ? "Attach files or a folder" : upload ? "Attach files" : BROWSER_NOTICE}>
 				<button
 					ref={buttonRef}
 					type="button"
 					aria-label="Attach files"
-					aria-disabled={!desktop}
-					aria-haspopup="menu"
-					aria-expanded={open}
+					aria-disabled={!desktop && (!upload || uploadDisabled)}
+					aria-haspopup={desktop ? "menu" : undefined}
+					aria-expanded={desktop ? open : undefined}
 					data-testid="attach-files"
-					onClick={() => { if (desktop) { setNotice(""); setOpen(!open); } }}
+					onClick={() => { if (desktop) { setNotice(""); setOpen(!open); } else if (upload && !uploadDisabled) pickerRef.current?.click(); }}
 					className="flex size-10 shrink-0 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground aria-disabled:cursor-default aria-disabled:opacity-40 aria-disabled:hover:bg-transparent aria-disabled:hover:text-muted-foreground"
 				>
 					<PaperclipIcon className="size-4" />

@@ -1,3 +1,6 @@
+import { attachmentOperation, attachmentSubmission, type AttachmentSubmission } from "./attachment-submissions.ts";
+import { attachmentReferences, AttachmentError, claimedAttachmentPath, claimAttachments } from "../store/attachments.ts";
+import { saveOpeningChat } from "../store/chats.ts";
 import type { Usage } from "@earendil-works/pi-ai";
 import {
 	createPracticeAgent,
@@ -76,7 +79,7 @@ import {
 	type TurnInput,
 } from "../core/input-events.ts";
 import { steerDelivered } from "../core/contracts.ts";
-import type {CallUsage} from "../core/contracts.ts";
+import type { CallUsage, ChatRecord } from "../core/contracts.ts";
 import type { SendResponse } from "../client-protocol/index.ts";
 
 /**
@@ -187,22 +190,29 @@ export async function handleChatRequest(
 	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent,
 	sideContext: Pick<SideChatService, "snapshot"> = sideChats,
 ): Promise<Response> {
-	let body: { chatId?: unknown; input?: unknown };
+	let body: { chatId?: unknown; input?: unknown; attachmentUploadIds?: unknown; sendId?: unknown } | null;
 	try {
 		body = await req.json();
 	} catch {
 		return Response.json({ error: "Invalid JSON body" }, { status: 400 });
 	}
-	const chatId = typeof body.chatId === "string" ? body.chatId : "";
+	const chatId = typeof body?.chatId === "string" ? body.chatId : "";
 	if (!chatId) return Response.json({ error: "Unknown chat" }, { status: 404 });
 	let input: TurnInput;
 	try {
-		input = parseChatInput(body.input);
+		input = parseChatInput(body?.input);
 	} catch (err) {
 		if (err instanceof ChatInputError) {
 			return Response.json({ error: err.message }, { status: 400 });
 		}
 		throw err;
+	}
+	if (body?.attachmentUploadIds !== undefined || body?.sendId !== undefined) {
+		return attachmentOperation(req, owner => {
+			if (input.type !== "text" || !input.text.trim()) throw new AttachmentError(400, "Message text is required when attaching files.");
+			const submission = attachmentSubmission(req, owner, { chatId }, chatId, body.attachmentUploadIds, body.sendId);
+			return handleChatInput(chatId, input, buildAgent, sideContext, submission);
+		});
 	}
 	return handleChatInput(chatId, input, buildAgent, sideContext);
 }
@@ -217,9 +227,28 @@ export async function handleChatInput(
 	input: TurnInput,
 	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent,
 	sideContext: Pick<SideChatService, "snapshot"> = sideChats,
+	attachment?: AttachmentSubmission,
 ): Promise<Response> {
-	await reconcilePluginQuestionCompatibility(stores.chatStore, chatId);
-	const initialRecord = stores.chatStore.getChat(chatId);
+	const opening = attachment?.opening;
+	const acceptedAttachment = (existing: ChatRecord | null): Response | undefined => {
+		if (!attachment) return;
+		attachment.currentOwner();
+		const saved = existing?.messages.find(message => message.id === attachment.messageId);
+		if (saved) {
+			if (saved.attachments?.length !== attachment.ids.length ||
+				!saved.attachments.every(({ id }, index) => id === attachment.ids[index])) {
+				throw new AttachmentError(409, "This send ID was already used for another attachment send.");
+			}
+			return Response.json({ ok: true } satisfies SendResponse);
+		}
+		if (opening && existing) throw new AttachmentError(409, "This draft already started a chat.");
+		if (isTurnRunning(chatId)) throw new AttachmentError(409, "A turn is already running for this session.");
+	};
+	if (!opening) await reconcilePluginQuestionCompatibility(stores.chatStore, chatId);
+	const savedRecord = stores.chatStore.getChat(chatId);
+	const alreadyAccepted = acceptedAttachment(savedRecord);
+	if (alreadyAccepted) return alreadyAccepted;
+	const initialRecord = opening ?? savedRecord;
 	if (!initialRecord) {
 		return Response.json({ error: "Unknown chat" }, { status: 404 });
 	}
@@ -384,7 +413,7 @@ export async function handleChatInput(
 	};
 	const sideBudgetError = () => new Error(SIDE_CONTEXT_BUDGET_ERROR);
 	const beforeCompaction = record.messages;
-	await ensureCompacted(
+	if (!opening) await ensureCompacted(
 		{
 			chatStore: stores.chatStore,
 			engine: compactionEngine,
@@ -436,7 +465,10 @@ export async function handleChatInput(
 			console.error("[plugins] Agent contributions unavailable:", error);
 		}
 	}
-	const compactedRecord = stores.chatStore.getChat(chatId);
+	const currentRecord = stores.chatStore.getChat(chatId);
+	const racedAcceptance = acceptedAttachment(currentRecord);
+	if (racedAcceptance) return racedAcceptance;
+	const compactedRecord = opening ?? currentRecord;
 	if (!compactedRecord) return Response.json({ error: "Unknown chat" }, { status: 404 });
 	record = compactedRecord;
 	// Final admission seam: every image/preflight await is over. Resolve via
@@ -560,12 +592,12 @@ export async function handleChatInput(
 	// One turn per chat, ever. A second request while a turn runs means a
 	// stale/remounted client raced a live one — letting it through would
 	// double-run the teacher and clobber the first turn's persist.
-	if (!preparation && !beginTurn(chatId)) {
+	if (!attachment && !preparation && !beginTurn(chatId)) {
 		console.info(`[chat ${chatId}] turn already in flight — request rejected`);
 		return Response.json({ error: "A turn is already running for this session" }, { status: 409 });
 	}
 
-	turnClaimed = true;
+	turnClaimed = !attachment;
 
 	// Write-ahead persistence: the input's native appends go on disk BEFORE
 	// the turn starts - the learner's answer is durable the instant the
@@ -602,11 +634,24 @@ export async function handleChatInput(
 	const stagedAutomatic = isSubscriptionProvider(conversation.provider) && input.type === "steers";
 	let persistBaseCount = stagedAutomatic ? record.messages.length : agentMessages.length;
 	try {
-		if (!stagedAutomatic) {
+		if (attachment) {
+			const learner = appends.find(message => message.role === "user");
+			if (!learner) throw new AttachmentError(400, "Attachments require a learner message.");
+			claimAttachments(attachment.ids, attachment.owner, attachment.target, record.messages, refs => {
+				learner.id = attachment.messageId;
+				learner.attachments = refs;
+				if (opening) saveOpeningChat({ ...opening, messages: merged });
+				else stores.chatStore.saveMessages(chatId, merged, { atomic: true });
+			});
+			inputSaved = true;
+			// No await separates the final liveness check from the commit.
+			turnClaimed = beginTurn(chatId);
+		} else if (!stagedAutomatic) {
 			stores.chatStore.saveMessages(chatId, merged);
 			inputSaved = true;
 		}
 	} catch (err) {
+		if (err instanceof AttachmentError) throw err;
 		console.error(`[chat ${chatId}] write-ahead persist failed:`, err);
 		return new Response("Your input could not be saved. Please try again.", { status: 500 });
 	}
@@ -675,6 +720,12 @@ export async function handleChatInput(
 	let pendingSideBudgetError: Error | undefined;
 	const agentOpts: AgentBuildOptions = {
 		pluginContributions,
+		resolveAttachment: id => {
+			const current = stores.chatStore.getChat(chatId);
+			const ref = current && attachmentReferences(current.messages).find(item => item.id === id);
+			const filename = ref ? claimedAttachmentPath(id) : undefined;
+			return ref ? { name: ref.name, filename } : undefined;
+		},
 		engine,
 		callPurpose,
 		requestCycle,
@@ -971,7 +1022,7 @@ export async function handleChatInput(
 		return Response.json({ ok: true } satisfies SendResponse);
 	} catch (err) {
 		console.error(`[chat ${chatId}] turn failed to start:`, err);
-		if (preparation && inputSaved) {
+		if ((preparation || attachment) && inputSaved) {
 			// The answer and outcome are already durable. Report the later
 			// teacher failure through the existing retained stream notice.
 			rememberTurnFailure(chatId, "Failed to start the turn");
@@ -980,7 +1031,7 @@ export async function handleChatInput(
 		return Response.json({ error: "Failed to start the turn" }, { status: 500 });
 	}
 	} catch (err) {
-		if (preparation && inputSaved) {
+		if ((preparation || attachment) && inputSaved) {
 			console.error(`[chat ${chatId}] accepted answer continuation failed:`, err);
 			rememberTurnFailure(chatId, "Failed to start the turn");
 			return Response.json({ ok: true } satisfies SendResponse);

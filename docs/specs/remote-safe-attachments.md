@@ -14,6 +14,19 @@ The owner approved roadmap item 24 as two PRs on 2026-11-18. PR 1 delivers indiv
 - Sweep at startup and every 15 minutes. Pending files expire after 24 hours and partial files after one hour. Skip active uploads and claims. Chat deletion schedules retryable removal of unreferenced claimed bytes. Live references protect their files. Launcher snapshots do not retain bytes.
 - Store self-hosted attachment bytes beside `userdata`. Automatic rollback and `lh restore` leave those bytes in place. A restored message referencing missing bytes shows the file's original name and **“File unavailable. Attach it again to use it.”** The agent's read reports the file as unavailable. A manual full recovery copy includes both roots with the server stopped. This release adds no backup or export command.
 
+### Protocol 1 attachment contract
+
+The capability gates these routes and fields. UUIDs are version 4. Clients reuse the same send ID when retrying a submission after an uncertain response.
+
+| Operation | Request and response |
+| --- | --- |
+| Reserve one upload | `POST /api/attachments` with `name`, `mimeType`, `size` in bytes, and either `draftId` or `chatId`. Returns `201 { id, uploadUrl, expiresAt }`. Expiration is Unix time in milliseconds. |
+| Stream bytes | `PUT` to the returned relative URL with raw file bytes and the same pairing credential. Returns `204`. |
+| Remove pending file | `DELETE /api/attachments/:id` with the same pairing credential. Returns `204`. |
+| Open a chat and send | `POST /api/attachments/start` with `draftId`, `sendId`, `attachmentUploadIds`, and the session creation fields. `title` carries the full opening text. Returns `{ id, title }`. |
+| Send in an idle chat | `POST /api/chat` with the existing text input and optional top-level `attachmentUploadIds` and `sendId`. Watch the existing turn stream. |
+| Read the chat | Saved user messages can carry `attachments` entries with `id` and `name`. The open-chat response lists any missing IDs in optional `unavailableAttachmentIds`. The agent can pass `attachment:<id>` to `read`. |
+
 ## Pinned T3 parity
 
 The approved source audit used T3 stable v0.1.10 at `7d32075e3757ded707914e2450c3e392a9665765` and main at `d0a754d`. The individual-file composer, archive treatment, message and per-file size limits, and waiting for uploads on ordinary Send follow T3. [Stable composer guide](https://github.com/pingdotgg/t3code/blob/7d32075e3757ded707914e2450c3e392a9665765/docs/user/composer.md#attach-files) · [Stable send behavior](https://github.com/pingdotgg/t3code/blob/7d32075e3757ded707914e2450c3e392a9665765/apps/web/src/components/chat/useComposerSend.ts#L908-L925)

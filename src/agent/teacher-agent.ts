@@ -19,7 +19,7 @@ import { pluginProblemTools, isPluginProblemPoseAcknowledgment, type NativePlugi
 import { healToolRecord, withArgumentHeal } from "./tools/heal.ts";
 import { sendToUserApplies, sendToUserTool } from "./tools/send-to-user.ts";
 import { makeNarrationGuard, narrationGuardApplies, SEND_TO_USER_DELIVERY_RULE } from "./narration-guard.ts";
-import { createReadTool, readTool } from "./tools/read.ts";
+import { createReadTool, readTool, type ResolveAttachment } from "./tools/read.ts";
 import { quizInputObject, quizInputProblems } from "../core/question-core.ts";
 import { QUESTION_TOOLS, TOGGLEABLE_TOOLS, type EnabledTools } from "../core/pending.ts";
 import type { PluginToolContext } from "../core/plugins.ts";
@@ -155,6 +155,7 @@ export interface AgentBuildOptions {
 	 *  <chatId>.jsonl via providerEventObserver — the GLM-truncation /
 	 *  DeepSeek-id incident layer. Absent or env-off → no observer. */
 	chatId?: string;
+	resolveAttachment?: ResolveAttachment;
 }
 
 /**
@@ -219,7 +220,7 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 	// before resolving additive plugins. Explicit registries remain caller-owned.
 	const builtinTools = [
 		...tools.map((tool) => tool.name === "read" && tool.execute === readTool.execute
-			? { ...tool, execute: createReadTool(engine.model).execute as AgentTool<any>["execute"] }
+			? { ...tool, execute: createReadTool(engine.model, opts.resolveAttachment).execute as AgentTool<any>["execute"] }
 			: tool),
 		...(sendToUserApplies(kind, engine.model, opts.tools !== undefined)
 			? [withArgumentHeal(sendToUserTool)]
