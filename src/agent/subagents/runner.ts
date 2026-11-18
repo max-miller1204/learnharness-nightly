@@ -365,7 +365,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			.filter(Boolean)
 			.join("\n\n");
 
-		const fetchedUrls: string[] = [];
+		const fetchResponses = new Map<string, boolean>();
 		const subscriptionSources: ResearchResult["sources"] = [];
 		// Per-job PDF dir (researcher PDF wave, 2026-10-07): web_fetch_pdf
 		// downloads land here; every pdf tool is scoped to it; it dies with
@@ -377,6 +377,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			const brief = await runResearcherAgent(prompt, {
 				engine: model,
 				search: deps.searchProvider,
+				onFetchResponse: (url, ok) => { fetchResponses.set(url, ok); },
 				onSubscriptionResults: (hits) => {
 					for (const { url, title } of hits) {
 						if (subscriptionSources.length === 10) break;
@@ -389,16 +390,14 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 				// Money channel: each agent step is one model call — fold its
 				// usage into the record as it completes (progress write).
 				onUsage: (usage) => loop.onUsage(piUsageToStep(usage)),
-					onToolStart: (toolName, args) => {
+				onToolStart: (toolName, args) => {
 					const input = args as { query?: string; url?: string } | undefined;
-					if (typeof input?.url === "string" && (toolName === "web_fetch" || toolName === "web_fetch_pdf")) {
-						fetchedUrls.push(input.url);
-					}
 					jobStore.updateJob(jobId, { activity: activityLine(toolName, input) });
 				},
 			});
 			if (!brief.trim()) throw new Error("the researcher produced no text");
-			const sources = parseSources(brief.trim(), fetchedUrls, subscriptionSources);
+			const fetchedUrls = [...fetchResponses].filter(([, ok]) => ok).map(([url]) => url);
+			const sources = parseSources(brief.trim(), fetchedUrls, subscriptionSources, fetchResponses);
 			const research: ResearchResult = { brief: brief.trim(), sources };
 			await finishJob(jobId, research);
 		} catch (err) {
@@ -575,14 +574,19 @@ function hostOf(url: string | undefined): string {
 /** Preserve native subscription links ahead of citations in the brief, then
  * fill remaining slots with fetched URLs. For other engines, fetched URLs
  * supply the list when there are no citations. */
-export function parseSources(brief: string, fetchedUrls: string[], subscriptionSources: ResearchResult["sources"] = []): ResearchResult["sources"] {
-	const sources = subscriptionSources.filter(({ url }) => isWebSourceUrl(url));
-	const hasSubscriptionSources = sources.length > 0;
+export function parseSources(
+	brief: string,
+	fetchedUrls: string[],
+	subscriptionSources: ResearchResult["sources"] = [],
+	fetchResponses?: ReadonlyMap<string, boolean>,
+): ResearchResult["sources"] {
+	const sources = subscriptionSources.filter(({ url }) => isWebSourceUrl(url) && fetchResponses?.get(url) !== false);
+	const hasSubscriptionSources = subscriptionSources.length > 0;
 	const seen = new Set(sources.map(({ url }) => url));
 	for (const match of brief.matchAll(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g)) {
 		const title = (match[1] ?? "").trim();
 		const url = match[2]!;
-		if (!title || seen.has(url)) continue;
+		if (!title || seen.has(url) || fetchResponses?.get(url) === false) continue;
 		seen.add(url);
 		sources.push({ title, url });
 	}

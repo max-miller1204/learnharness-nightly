@@ -75,6 +75,7 @@ export interface ResearcherRunOptions {
 	 *  seam reads as unavailable; web_fetch remains usable without it. */
 	search?: () => SearchProvider | null;
 	onSubscriptionResults?: (results: SearchHit[]) => void;
+	onFetchResponse?: (url: string, ok: boolean) => void;
 	/** The researcher's PDF dir (PDF wave, 2026-10-07): when present, the
 	 *  toolset gains web_fetch_pdf + pdf_info/pdf_extract/pdf_search scoped
 	 *  to this per-job temp dir — PDFs from the web, read page-level. The
@@ -93,8 +94,8 @@ export interface ResearcherRunOptions {
  * the loop scripted.
  */
 export async function runResearcherAgent(prompt: string, opts: ResearcherRunOptions = {}): Promise<string> {
-	const tools = Object.values(createWebTools(opts.search ?? (() => null), opts.onSubscriptionResults));
-	if (opts.pdfDir) tools.push(...Object.values(createPdfReadTools(opts.pdfDir)));
+	const tools = Object.values(createWebTools(opts.search ?? (() => null), opts.onSubscriptionResults, opts.onFetchResponse));
+	if (opts.pdfDir) tools.push(...Object.values(createPdfReadTools(opts.pdfDir, opts.onFetchResponse)));
 	const { text } = await runSubagent(tools, {
 		role: "researcher",
 		prompt,

@@ -35,7 +35,7 @@ function chatGPTOption(): SubscriptionSearchOption {
 	const { activeId, accountSelection, accounts, available, allowBackgroundUse } = chatGPTStatus();
 	const active = accounts.find(({ id }) => id === activeId);
 	const account = active && isSearchAccountSelection(accountSelection)
-		? { label: active.email, selection: accountSelection }
+		? { label: active.email?.trim() || "ChatGPT account", selection: accountSelection }
 		: undefined;
 	if (!available) return { id: "chatgpt", available: false, reason: "ChatGPT sign-in is unavailable on this LearnHarness connection." };
 	if (!account || !chatGPTConnected()) {

@@ -14,7 +14,7 @@
  * tool depends on the PORT only and tests never touch the network.
  */
 
-import { isSubscriptionSearchEngineId, SEARCH_ENGINES, type KeyedSearchEngineId, type SearchHit, type SearchPickerStatus, type SearchProvider, type SearchStatus } from "../core/search.ts";
+import { isSubscriptionSearchEngineId, SEARCH_ENGINES, SUBSCRIPTION_SEARCH_ENGINES, type KeyedSearchEngineId, type SearchHit, type SearchPickerStatus, type SearchProvider, type SearchStatus } from "../core/search.ts";
 import { refreshChatGPTStatus } from "../agent/chatgpt-bridge.ts";
 import { keyValue } from "./keys.ts";
 import { effectiveSettings } from "./stores.ts";
@@ -280,9 +280,10 @@ export function searchStatus(): SearchStatus {
 	const pin = search.engine;
 	if (isSubscriptionSearchEngineId(pin)) {
 		const reason = subscriptionSearchReason(search);
+		const label = SUBSCRIPTION_SEARCH_ENGINES.find(({ id }) => id === pin)!.label;
 		return reason
 			? { available: false, engine: null, reason }
-			: { available: true, engine: pin, reason: "Search can use your ChatGPT plan allowance or credits." };
+			: { available: true, engine: pin, reason: `Search can use plan allowance or credits from your ${label}.` };
 	}
 	const { available, engine, reason } = resolveSearchEngineFor(pin, engineKeys());
 	return { available, engine, reason };

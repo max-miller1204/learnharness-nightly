@@ -80,7 +80,7 @@ function htmlToMarkdown(html: string): { title: string; content: string } | null
 	return { title: article.title ?? "", content: markdown };
 }
 
-async function fetchAndExtract(url: string): Promise<string> {
+async function fetchAndExtract(url: string, onFetchResponse?: (url: string, ok: boolean) => void): Promise<string> {
 	const resp = await safeFetch(url, {
 		headers: {
 			"User-Agent": USER_AGENT,
@@ -89,6 +89,7 @@ async function fetchAndExtract(url: string): Promise<string> {
 		},
 		signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 	});
+	onFetchResponse?.(url, resp.ok);
 	if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
 
 	// Final URL after redirects + status — the researcher's only way to
@@ -138,6 +139,7 @@ const webFetchInput = Type.Object({
 export function createWebTools(
 	search: () => SearchProvider | null,
 	onSubscriptionResults?: (results: WebSearchResult[]) => void,
+	onFetchResponse?: (url: string, ok: boolean) => void,
 ): Record<string, AgentTool<any>> {
 	return {
 		web_search: {
@@ -185,7 +187,7 @@ export function createWebTools(
 					return `web_fetch failed: invalid URL "${url}"`;
 				}
 				try {
-					return await fetchAndExtract(url);
+					return await fetchAndExtract(url, onFetchResponse);
 				} catch (err) {
 					return `web_fetch failed for ${url}: ${err instanceof Error ? err.message : String(err)}`;
 				}

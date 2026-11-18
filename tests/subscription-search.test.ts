@@ -70,6 +70,12 @@ test("shared search uses the bound OAuth account, preserves native sources, and 
 	const native = { type: "web_search_call", status: "completed" };
 	const complete = (output: unknown[]) => ({ type: "response.completed", response: { id: "scratch-response", status: "completed", output } });
 	let event: unknown = complete([native, cited]);
+	let streamedEvents: unknown[] = [
+		{ type: "response.web_search_call.completed", item_id: "search", output_index: 0 },
+		{ type: "response.output_text.annotation.added", item_id: "message", content_index: 0, annotation: cited.content[0]!.annotations[0] },
+		{ type: "response.output_text.done", item_id: "message", content_index: 0, text: cited.content[0]!.text },
+		complete([]),
+	];
 	const urls: string[] = [];
 	globalThis.fetch = async (input, init) => {
 		const request = new Request(input, init);
@@ -86,7 +92,8 @@ test("shared search uses the bound OAuth account, preserves native sources, and 
 		assert.equal(body.tool_choice, "required");
 		assert.match(JSON.stringify(body.input), /search query only/);
 		beforeResponse?.();
-		return new Response(`data: ${JSON.stringify(event)}\n\n`, { headers: { "Content-Type": "text/event-stream" } });
+		const bodyEvents = (streamedEvents.length ? streamedEvents : [event]).map((entry) => `data: ${JSON.stringify(entry)}\n\n`).join("");
+		return new Response(bodyEvents, { headers: { "Content-Type": "text/event-stream" } });
 	};
 
 	assert.equal(saveKey("TAVILY_API_KEY", "tvly-scratch-never-fallback").ok, true);
@@ -95,11 +102,16 @@ test("shared search uses the bound OAuth account, preserves native sources, and 
 	assert.equal(picker.subscriptions[0]?.account?.label, first.email);
 	assert.deepEqual(picker.subscriptions.slice(1).map(({ available }) => available), [false, false, false]);
 	assert.ok(!JSON.stringify(picker).includes("scratch-oauth-only"));
+	const email = first.email;
+	first.email = "  ";
+	assert.equal((await searchPickerStatus()).subscriptions[0]?.account?.label, "ChatGPT account");
+	first.email = email;
 
 	const select = (accountSelection = "selection-a") => {
 		writeSettings({ version: 1, agent: { search: { engine: "chatgpt", accountSelection } } });
 	};
 	select();
+	assert.match((await searchPickerStatus()).reason, /ChatGPT subscription/);
 	const source = { title: "Actual source", url: "https://example.org/article?a=1&b=2" };
 	const tools = createWebTools(searchProvider, (hits) => {
 		assert.deepEqual(hits, [{ ...source, snippet: "Evidence" }]);
@@ -109,6 +121,7 @@ test("shared search uses the bound OAuth account, preserves native sources, and 
 	assert.match(JSON.stringify(result.content), /example\.org/);
 	assert.equal(typeof tools.web_fetch?.execute, "function");
 	assert.deepEqual(urls, ["https://api.openai.com/v1/responses"]);
+	streamedEvents = [];
 
 	const search = () => searchProvider()!.search("search query only", 5);
 	event = { type: "response.failed", response: { error: { code: "subscription_sharing_usage_limit_exceeded" } } };
