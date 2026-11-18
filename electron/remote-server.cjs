@@ -85,29 +85,40 @@ function pause(ms, signal) {
 	});
 }
 
-function isTransportError(error) {
-	return error instanceof TypeError || error?.name === "TimeoutError" || error?.name === "AbortError";
+// Only real connectivity failures wait. Redirects (refused by
+// redirect: "error") and TLS or certificate errors fail at once.
+const CONNECTIVITY_CODES = new Set([
+	"ECONNREFUSED", "ECONNRESET", "ECONNABORTED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN",
+	"EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN", "ENETDOWN", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET",
+]);
+
+function isConnectivityError(error) {
+	if (error?.name === "TimeoutError") return true;
+	if (!(error instanceof TypeError)) return false;
+	const cause = error.cause;
+	const codes = [cause?.code, ...(Array.isArray(cause?.errors) ? cause.errors.map((item) => item?.code) : [])];
+	return codes.some((code) => CONNECTIVITY_CODES.has(code));
 }
 
 // `retry` waits out a starting server. The one-use pairing exchange never sets it.
 async function serverJSON(origin, pathname, { retry = false, ...options } = {}) {
-	// The whole wait, including a silent attempt's timeout, ends at the deadline.
+	// A hard limit: no attempt starts or runs past the deadline.
 	const deadline = Date.now() + retryTiming.windowMs;
+	const rest = () => deadline - Date.now();
 	try {
-		for (;;) {
-			const timeoutMs = retry ? Math.max(deadline - Date.now(), retryTiming.stepMs) : undefined;
+		for (let attempt = 0; ; attempt++) {
+			if (retry && attempt > 0 && rest() <= 0) throw unreachable();
 			let response;
 			try {
-				response = await requestServer(origin, pathname, { ...options, ...(timeoutMs && { timeoutMs }) });
+				response = await requestServer(origin, pathname, { ...options, ...(retry && { timeoutMs: Math.max(rest(), 1) }) });
 			} catch (error) {
-				const waiting = retry && Date.now() < deadline;
-				if (!waiting || options.signal?.aborted || !isTransportError(error)) throw error;
-				await pause(retryTiming.stepMs, options.signal);
+				if (!retry || options.signal?.aborted || !isConnectivityError(error)) throw error;
+				await pause(Math.max(Math.min(retryTiming.stepMs, rest()), 0), options.signal);
 				continue;
 			}
-			if (retry && Date.now() < deadline && TRANSIENT_STATUS.has(response.status)) {
+			if (retry && TRANSIENT_STATUS.has(response.status)) {
 				await response.body?.cancel().catch(() => {});
-				await pause(retryTiming.stepMs, options.signal);
+				await pause(Math.max(Math.min(retryTiming.stepMs, rest()), 0), options.signal);
 				continue;
 			}
 			if (response.status === 426) throw new ServerProblem("mismatch", "The desktop app and server use different client protocol versions.");

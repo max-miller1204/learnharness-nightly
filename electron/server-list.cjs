@@ -34,6 +34,8 @@ async function createServerList({
 	let problem = null;
 	let notice = "";
 	let connecting = null;
+	// A ghost-dashboard connect is in flight: launch and reopen wait on it.
+	let ghosting = false;
 	let login = null;
 	// Settles after the latest attempt, including any cancel it sends.
 	let lastLogin = Promise.resolve();
@@ -131,6 +133,7 @@ async function createServerList({
 		problem = null;
 		notice = "";
 		const ghost = quiet || server === "local";
+		ghosting = ghost;
 		if (!ghost) show();
 		publish();
 		const operation = new AbortController();
@@ -229,6 +232,7 @@ async function createServerList({
 			destroyContent();
 		} finally {
 			connecting = null;
+			ghosting = false;
 			busy = false;
 			publish();
 		}
@@ -296,10 +300,16 @@ async function createServerList({
 	return {
 		show,
 		async launch() {
+			if (ghosting) return this.reopen();
 			if (store.defaultServer) return connect(store.defaultServer, undefined, { quiet: true });
 			show();
 		},
 		reopen() {
+			if (ghosting) {
+				// Its window may not exist yet while the saved credential is read.
+				if (window && !window.isDestroyed()) window.focus();
+				return window;
+			}
 			if (active) return connect(active.server, undefined, { quiet: true });
 			if (problem || busy) return show();
 			return this.launch();

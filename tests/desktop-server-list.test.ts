@@ -15,7 +15,7 @@ const wire = require("../electron/remote-server.cjs");
 const { createRemoteWindow } = require("../electron/remote-window.cjs");
 const { createServerList } = require("../electron/server-list.cjs");
 const { openServerList } = require("../electron/server-list-store.cjs");
-const { hostLabel } = require("../electron/skeleton.cjs");
+const { hostLabel, coverWindow } = require("../electron/skeleton.cjs");
 // Quiet retries wait 15 s in the app; the fixtures need only a few steps.
 Object.assign(wire.retryTiming, { windowMs: 60, stepMs: 5 });
 const alpha = "https://one.example.test";
@@ -97,7 +97,7 @@ class TestView {
 	closed = false;
 	focused = false;
 	background = "";
-	bounds: object | null = null;
+	bounds: { width: number; height: number } | null = null;
 	webContents = Object.assign(new EventEmitter(), {
 		setWindowOpenHandler() {},
 		isDestroyed: () => this.closed,
@@ -111,7 +111,7 @@ class TestView {
 		this.options = options;
 		TestView.all.push(this);
 	}
-	setBounds(bounds: object) { this.bounds = bounds; }
+	setBounds(bounds: { width: number; height: number }) { this.bounds = bounds; }
 	setBackgroundColor(color: string) { this.background = color; }
 }
 
@@ -123,11 +123,13 @@ class TestWindow extends EventEmitter {
 		return { created, first: created[0]!, second: created[1]! };
 	}
 	options;
-	contentView = {
+	contentBounds = { x: 0, y: 0, width: 1440, height: 900 };
+	contentView = Object.assign(new EventEmitter(), {
 		children: [] as TestView[],
+		getBounds: () => this.contentBounds,
 		addChildView: (view: TestView) => { this.contentView.children.push(view); },
 		removeChildView: (view: TestView) => { this.contentView.children = this.contentView.children.filter((item) => item !== view); },
-	};
+	});
 	url = "";
 	destroyed = false;
 	shown = false;
@@ -148,7 +150,6 @@ class TestWindow extends EventEmitter {
 	}
 	isDestroyed() { return this.destroyed; }
 	isMinimized() { return false; }
-	getContentSize() { return [1440, 900]; }
 	focus() {}
 	show() { this.shown = true; }
 	destroy() { this.destroyed = true; this.emit("closed"); }
@@ -505,14 +506,15 @@ test("quiet retries wait out a starting server, but never repeat the one-use pai
 	t.after(() => { globalThis.fetch = originalFetch; });
 	let replies: (() => Response)[] = [];
 	let calls = 0;
+	const offline = (code: string) => new TypeError("fetch failed", { cause: Object.assign(new Error(code), { code }) });
 	globalThis.fetch = async () => {
 		calls++;
 		const next = replies.shift();
-		if (!next) throw new TypeError("fixture disconnected");
+		if (!next) throw offline("ECONNREFUSED");
 		return next();
 	};
 	const ok = () => Response.json({ name: "Test server", protocolVersion: CLIENT_PROTOCOL_VERSION });
-	replies = [() => new Response(null, { status: 503 }), () => { throw new TypeError("refused"); }, () => new Response(null, { status: 504 }), ok];
+	replies = [() => new Response(null, { status: 503 }), () => { throw offline("ENOTFOUND"); }, () => new Response(null, { status: 504 }), ok];
 	assert.equal((await wire.checkDescriptor(alpha, { retry: true })).name, "Test server");
 	assert.equal(calls, 4);
 	calls = 0;
@@ -526,7 +528,7 @@ test("quiet retries wait out a starting server, but never repeat the one-use pai
 	globalThis.fetch = async () => {
 		calls++;
 		const next = replies.shift();
-		if (!next) throw new TypeError("fixture disconnected");
+		if (!next) throw offline("ECONNREFUSED");
 		return next();
 	};
 	calls = 0;
@@ -541,6 +543,21 @@ test("quiet retries wait out a starting server, but never repeat the one-use pai
 	replies = [];
 	await assert.rejects(wire.checkSession(alpha, "secret", { retry: true }), { kind: "retry" });
 	assert(calls > 1, "network errors retry until the window closes");
+	for (const failure of [
+		new TypeError("fetch failed", { cause: new Error("unexpected redirect") }),
+		offline("CERT_HAS_EXPIRED"), offline("ERR_TLS_CERT_ALTNAME_INVALID"), new TypeError("fixture without a cause"),
+	]) {
+		calls = 0;
+		globalThis.fetch = async () => { calls++; throw failure; };
+		await assert.rejects(wire.checkSession(alpha, "secret", { retry: true }), { kind: "retry" });
+		assert.equal(calls, 1, `${failure.cause ?? failure.message} fails at once`);
+	}
+	const starts: number[] = [];
+	const begun = Date.now();
+	globalThis.fetch = async () => { starts.push(Date.now() - begun); throw offline("ECONNRESET"); };
+	await assert.rejects(wire.checkDescriptor(alpha, { retry: true }), { kind: "retry" });
+	assert(starts.length > 1);
+	assert(starts.every((start) => start <= wire.retryTiming.windowMs + 2), `no attempt starts after the deadline: ${starts}`);
 	assert.equal(hostLabel("https://max-desktop.tail1234.ts.net:8443"), "max-desktop");
 	assert.equal(hostLabel("https://100.64.0.5:8443"), "100.64.0.5");
 	assert.equal(hostLabel("https://[fd7a:115c::1]"), "fd7a:115c::1");
@@ -769,4 +786,76 @@ test("the setup screen offers two tiles, and a pasted pairing link fills the add
 	listener({ ...empty, busy: true });
 	assert.equal($("pair-submit").textContent, "Connecting…");
 	assert.equal($("pair-submit").disabled, true);
+});
+
+test("the skeleton keeps every input from the unseen page and covers the whole content area", () => {
+	const win = new TestWindow();
+	const skeleton = coverWindow(win, { WebContentsView: TestView, session: { fromPartition: () => new TestSession() }, mode: "dark", status: "Connecting to one…" });
+	const view = TestView.all.at(-1)!;
+	let prevented = 0;
+	const key = () => win.webContents.emit("before-input-event", { preventDefault: () => { prevented++; } }, { type: "keyDown", key: "a" });
+	key();
+	assert.equal(prevented, 1, "keys never reach the covered page");
+	win.emit("focus");
+	assert.equal(view.focused, true, "regaining window focus goes back to the skeleton");
+	win.contentBounds = { x: 0, y: 0, width: 1440, height: 875 };
+	win.contentView.emit("bounds-changed");
+	assert.equal(view.bounds?.height, 875, "the Alt menu bar's content change refits the skeleton");
+	skeleton.reveal();
+	view.focused = false;
+	key();
+	win.emit("focus");
+	assert.equal(prevented, 1, "the revealed page takes keys again");
+	assert.equal(view.focused, false);
+	assert.equal(win.contentView.children.length, 0);
+	assert.equal(view.closed, true);
+	win.destroy();
+});
+
+test("a second launch or Dock click during a quiet connect opens nothing new", async (t) => {
+	const directory = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-ghost-once-"));
+	const originalFetch = globalThis.fetch;
+	t.after(async () => { globalThis.fetch = originalFetch; await fs.rm(directory, { recursive: true, force: true }); });
+	const file = path.join(directory, "servers.json");
+	const saved = await openServerList(file, fakeSafeStorage);
+	await saved.savePairing(alpha, "alpha-secret");
+	await saved.saveDefault(alpha);
+	let answer!: () => void;
+	const slow = new Promise<void>((resolve) => { answer = resolve; });
+	globalThis.fetch = async (input) => {
+		const url = new URL(String(input));
+		if (url.pathname === PROTOCOL_ROUTES.serverInfo) {
+			await slow;
+			return Response.json({ name: "Test server", protocolVersion: CLIENT_PROTOCOL_VERSION });
+		}
+		return Response.json({ authenticated: true });
+	};
+	const controller = await createServerList({
+		app: { getPath: () => directory }, BrowserWindow: TestWindow, WebContentsView: TestView, safeStorage: fakeSafeStorage,
+		ipcMain: { handle() {} }, session: { fromPartition: () => new TestSession() }, shell: { openExternal: async () => {} },
+		startLocal: async () => "http://localhost:3000", stopLocal: async () => {},
+		createLocalWindow: () => { const win = new TestWindow(); return { win, load: (url: string) => win.loadURL(url) }; },
+		setLocalMenu() {},
+	});
+	t.after(() => {
+		controller.close();
+		for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
+	});
+	const before = TestWindow.all.length;
+	const pending = controller.launch();
+	// Before the window exists, while the saved credential is read.
+	controller.reopen();
+	void controller.launch();
+	assert.equal(TestWindow.all.length, before, "nothing opens before the ghost window");
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	// After it exists, while the server checks run.
+	assert.equal(TestWindow.all.length, before + 1);
+	controller.reopen();
+	await controller.launch();
+	assert.equal(TestWindow.all.length, before + 1, "the pending ghost window is focused instead");
+	answer();
+	await pending;
+	const { created, first: remote } = TestWindow.since(before);
+	assert.equal(created.length, 1, "one ghost window, and no list beside it");
+	assert.equal(remote.url, alpha);
 });

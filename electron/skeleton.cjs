@@ -30,14 +30,22 @@ function coverWindow(win, { WebContentsView, session, mode, status, frame }) {
 	contents.setWindowOpenHandler(() => ({ action: "deny" }));
 	contents.on("will-attach-webview", (event) => event.preventDefault());
 	view.setBackgroundColor(BACKGROUND[mode] ?? BACKGROUND.dark);
+	// The content view's bounds follow every content-area change, including
+	// the Alt menu bar on Windows and Linux, which fires no window resize.
 	const fit = () => {
 		if (win.isDestroyed()) return;
-		const [width, height] = win.getContentSize();
+		const { width, height } = win.contentView.getBounds();
 		view.setBounds({ x: 0, y: 0, width, height });
 	};
 	fit();
-	win.on("resize", fit);
+	win.contentView.on("bounds-changed", fit);
 	win.contentView.addChildView(view);
+	// Until the reveal, the unseen page takes no keys, and window focus goes
+	// back to the skeleton. The skeleton covers it for every mouse event.
+	const block = (event) => event.preventDefault();
+	const focus = () => { if (!contents.isDestroyed()) contents.focus(); };
+	win.webContents.on("before-input-event", block);
+	win.on("focus", focus);
 	// frame: "inset" (macOS traffic lights) or "hidden" for the frameless
 	// local window, whose top band drags it. Remote windows keep a frame.
 	const query = { mode: mode === "light" ? "light" : "dark", status, ...(frame && { frame }) };
@@ -46,13 +54,16 @@ function coverWindow(win, { WebContentsView, session, mode, status, frame }) {
 	function remove() {
 		if (removed) return;
 		removed = true;
-		win.off("resize", fit);
-		if (!win.isDestroyed()) win.contentView.removeChildView(view);
+		win.off("focus", focus);
+		if (!win.isDestroyed()) {
+			win.contentView.off("bounds-changed", fit);
+			win.webContents.off("before-input-event", block);
+			win.contentView.removeChildView(view);
+		}
 		if (!contents.isDestroyed()) contents.close();
 	}
 	win.once("closed", remove);
-	// While it covers the page, keys go to the skeleton, not the unseen page.
-	return { reveal: remove, focus: () => { if (!contents.isDestroyed()) contents.focus(); } };
+	return { reveal: remove, focus };
 }
 
 module.exports = { BACKGROUND, hostLabel, coverWindow };
