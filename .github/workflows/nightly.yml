@@ -1,17 +1,12 @@
 name: Nightly (self-hosted server)
 
-# After CI passes on a push to main, this builds the self-hosted server for
-# linux-x64, linux-arm64 and darwin-arm64 from that exact commit and
-# publishes one prerelease (v<version>-nightly.<date>.<run>), all or nothing:
-# CI's `Check` (typecheck, tests, lint, launcher tests, standalone builds)
-# already passed for the commit, and every bundle and archive smoke test
-# must pass here. Installs read the fixed `nightly` release's latest.json. See
-# docs/self-hosting.md, docs/fork-workflow.md and docs/specs/ci-foundation.md.
+# After CI passes on main, build the desktop and self-hosted server from
+# that commit and version. One prerelease holds the verified assets.
+# Installs and desktop update checks read the fixed nightly/latest.json.
+# Manual dry runs build any branch and save CI artifacts only.
+# Set PAUSE_NIGHTLY=true to pause publication.
 #
-# A manual run builds the head of main and refuses unless CI's `Check`
-# passed for it. A manual dry run (publishes nothing) builds any branch, so a
-# PR can make test archives (docs/specs/macos-selfhost.md). Pause with the
-# repository variable PAUSE_NIGHTLY=true.
+# Keep the workflow name stable for feed-check and existing dispatches.
 
 on:
   workflow_run:
@@ -50,7 +45,7 @@ jobs:
   meta:
     name: Version
     if: >-
-      vars.PAUSE_NIGHTLY != 'true' && (
+      (vars.PAUSE_NIGHTLY != 'true' || inputs.dry_run) && (
         github.event_name == 'workflow_dispatch' ||
         (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
       )
@@ -63,7 +58,6 @@ jobs:
       sha: ${{ steps.sha.outputs.sha }}
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
-      short_sha: ${{ steps.meta.outputs.short_sha }}
       skip: ${{ steps.meta.outputs.skip }}
     steps:
       - id: sha
@@ -97,16 +91,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.sha.outputs.sha }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
         run: |
           base=$(node -p "require('./package.json').version")
-          version="${base}-nightly.$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          echo "short_sha=${SHA::12}" >> "$GITHUB_OUTPUT"
+          # Use the original run's date so a re-run reuses the same draft.
+          created=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.created_at')
+          day=$(date -u -d "$created" +%Y%m%d)
+          version="${base}-nightly.${day}.${GITHUB_RUN_NUMBER}"
+          { echo "version=$version"; echo "tag=v$version"; } >> "$GITHUB_OUTPUT"
           shipped=$(gh release download nightly -p latest.json -O - 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).sha)}catch{console.log("")}})' || true)
           skip=false
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] && [ -n "$shipped" ]; then
-            if [ "$shipped" = "$SHA" ]; then
+          if [ "$DRY_RUN" != "true" ] && [ -n "$shipped" ]; then
+            if [ "$shipped" = "$SHA" ] && [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
               echo "The newest nightly already ships $SHA."
               skip=true
             else
@@ -133,12 +129,31 @@ jobs:
       version: ${{ needs.meta.outputs.version }}
       include_macos: true
 
+  desktop:
+    name: Desktop
+    needs: meta
+    if: needs.meta.outputs.skip != 'true'
+    uses: ./.github/workflows/nightly-desktop.yml
+    with:
+      sha: ${{ needs.meta.outputs.sha }}
+      version: ${{ needs.meta.outputs.version }}
+      dry_run: ${{ inputs.dry_run || false }}
+    secrets:
+      MAC_CSC_LINK: ${{ !inputs.dry_run && secrets.MAC_CSC_LINK || '' }}
+      MAC_CSC_KEY_PASSWORD: ${{ !inputs.dry_run && secrets.MAC_CSC_KEY_PASSWORD || '' }}
+      APPLE_API_KEY: ${{ !inputs.dry_run && secrets.APPLE_API_KEY || '' }}
+      APPLE_API_KEY_ID: ${{ !inputs.dry_run && secrets.APPLE_API_KEY_ID || '' }}
+      APPLE_API_ISSUER: ${{ !inputs.dry_run && secrets.APPLE_API_ISSUER || '' }}
+
   release:
     name: Publish
-    needs: [meta, bundle]
+    needs: [meta, bundle, desktop]
     if: needs.meta.outputs.skip != 'true' && !inputs.dry_run
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
+    concurrency:
+      group: nightly-feed
+      cancel-in-progress: false
     permissions:
       contents: write
       # The AI release notes read the PR descriptions of the range.
@@ -161,6 +176,12 @@ jobs:
           pattern: selfhost-*
           merge-multiple: true
           path: dist-selfhost
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: dist-desktop
+      - run: npm ci --ignore-scripts
       # Release notes (docs/specs/t3-style-updates.md, section 2): an AI
       # summary of the user-facing changes through OpenRouter (T3 Code's
       # approach), or the plain commit list when that fails. The items go into
@@ -168,9 +189,9 @@ jobs:
       - name: Previous tag and feed
         id: prev
         run: |
-          prev=$(git tag --list 'v*-nightly.*' --sort=-creatordate | head -n 1)
-          echo "tag=$prev" >> "$GITHUB_OUTPUT"
           gh release download nightly -p latest.json -O previous-latest.json 2>/dev/null || echo '{}' > previous-latest.json
+          prev=$(node -p 'require("./previous-latest.json").tag ?? ""')
+          echo "tag=$prev" >> "$GITHUB_OUTPUT"
           echo "published_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - name: AI release notes
         continue-on-error: true
@@ -197,7 +218,7 @@ jobs:
             if [ "$(node -p 'require("./notes.json").items.length')" != "0" ]; then
               echo "### What's changed"
               echo
-              node -e 'for (const item of require("./notes.json").items) console.log(`- ${item}`)'
+              node -e 'for (const item of require("./notes.json").items) console.log("- " + item)'
               echo
             fi
             if [ -n "$PREV" ]; then
@@ -205,14 +226,14 @@ jobs:
               echo "<summary>Full changelog</summary>"
               echo
               echo "### Changes since $PREV"
-              git log --no-merges --format='- %s (%h)' "$PREV..$SHA" | head -n 200
+              git log -n 200 --no-merges --format='- %s (%h)' "$PREV..$SHA"
               echo
               echo "</details>"
               echo
             fi
             echo "Nightly build of \`${SHA::12}\` from \`main\`."
             echo
-            echo "Install or update: see [self-hosting](${FORK_HOMEPAGE}/blob/main/docs/self-hosting.md)."
+            echo "Desktop installers are in Assets. For the server, see [self-hosting](${FORK_HOMEPAGE}/blob/main/docs/self-hosting.md)."
           } > notes.md
           cat notes.md >> "$GITHUB_STEP_SUMMARY"
       - name: Feed entry
@@ -221,11 +242,33 @@ jobs:
         run: |
           node selfhost/scripts/make-feed.ts --version "$VERSION" --tag "$TAG" --sha "$SHA" --repo "$GITHUB_REPOSITORY" \
             --dir dist-selfhost --published-at "$PUBLISHED_AT" --notes notes.json --previous previous-latest.json > dist-selfhost/latest.json
-      - name: Create the prerelease
+      - name: Stage or resume one draft for this commit
+        id: draft
         run: |
-          gh release create "$TAG" dist-selfhost/*.tar.gz dist-selfhost/*.sha256 dist-selfhost/latest.json \
-            --target "$SHA" --prerelease --latest=false \
-            --title "LearnHarness Nightly $VERSION (${SHA::12})" --notes-file notes.md
+          existing=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq -ce --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)]')
+          if [ "$(jq length <<< "$existing")" = 0 ]; then
+            gh release create "$TAG" --target "$SHA" --draft --prerelease --latest=false \
+              --title "LearnHarness Nightly $VERSION (${SHA::12})" --notes-file notes.md
+            draft_id=$(gh release view "$TAG" --json databaseId --jq '.databaseId')
+          else
+            draft_id=$(jq -er --arg sha "$SHA" \
+              'select(length == 1) | .[0] | select(.draft and .prerelease and .target_commitish == $sha) | .id' <<< "$existing")
+            gh release edit "$TAG" --notes-file notes.md
+          fi
+          if git show-ref --verify --quiet "refs/tags/$TAG" && [ "$(git rev-parse "$TAG^{commit}")" != "$SHA" ]; then
+            echo "::error::$TAG already points at a different commit"
+            exit 1
+          fi
+          echo "id=$draft_id" >> "$GITHUB_OUTPUT"
+          gh release upload "$TAG" dist-desktop/* dist-selfhost/* --clobber
+      - name: Verify draft and publish the combined prerelease
+        env:
+          DRAFT_ID: ${{ steps.draft.outputs.id }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_ID" > draft.json
+          node scripts/verify-nightly.ts "$VERSION" "$SHA" "$GITHUB_REPOSITORY" dist-desktop dist-selfhost draft.json
+          gh release edit "$TAG" --draft=false --prerelease --latest=false
       - name: Point the `nightly` feed at it
         run: |
           if ! gh release view nightly >/dev/null 2>&1; then
@@ -237,7 +280,7 @@ jobs:
           gh release upload nightly dist-selfhost/latest.json dist-selfhost/install.sh --clobber
       - name: Prune beyond the newest 30 nightlies
         run: |
-          gh release list --limit 1000 --json tagName,createdAt --jq '[.[] | select(.tagName | test("^v.*-nightly\\."))] | sort_by(.createdAt) | reverse | .[30:] | .[].tagName' |
+          gh release list --limit 1000 --exclude-drafts --json tagName,publishedAt --jq '[.[] | select(.tagName | test("^v.*-nightly\\."))] | sort_by(.publishedAt) | reverse | .[30:] | .[].tagName' |
           while read -r old; do
             [ -n "$old" ] && gh release delete "$old" --yes --cleanup-tag
           done

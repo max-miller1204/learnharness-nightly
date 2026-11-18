@@ -37,7 +37,7 @@ jobs:
           node --input-type=module -e '
             import fs from "node:fs";
             const {version} = JSON.parse(fs.readFileSync("package.json", "utf8"));
-            if (process.env.GITHUB_REF_NAME !== `v${version}`) {
+            if (process.env.GITHUB_REF_NAME !== "v" + version) {
               console.error("Release tag must equal v" + version);
               process.exit(1);
             }
@@ -177,13 +177,13 @@ jobs:
         run: |
           case "$RUNNER_OS" in
             macOS)
-              app="dist/mac-arm64/LearnHarness.app/Contents"
+              app="dist/mac-arm64/LearnHarness Nightly.app/Contents"
               payload="$app/Resources/server/standalone"
-              runtime="$app/MacOS/LearnHarness"
+              runtime="$app/MacOS/LearnHarness Nightly"
               ;;
             Windows)
               payload="dist/win-unpacked/resources/server/standalone"
-              runtime="dist/win-unpacked/LearnHarness.exe"
+              runtime="dist/win-unpacked/LearnHarness Nightly.exe"
               ;;
             Linux)
               payload="dist/linux-unpacked/resources/server/standalone"
@@ -196,11 +196,11 @@ jobs:
         run: |
           case "$RUNNER_OS" in
             macOS)
-              app="dist/mac-arm64/LearnHarness.app/Contents"
-              node scripts/smoke-demo-runtime.mjs --standalone "$app/Resources/server/standalone" --runtime "$app/MacOS/LearnHarness" --browser
+              app="dist/mac-arm64/LearnHarness Nightly.app/Contents"
+              node scripts/smoke-demo-runtime.mjs --standalone "$app/Resources/server/standalone" --runtime "$app/MacOS/LearnHarness Nightly" --browser
               ;;
             Windows)
-              node scripts/smoke-demo-runtime.mjs --standalone dist/win-unpacked/resources/server/standalone --runtime dist/win-unpacked/LearnHarness.exe --browser
+              node scripts/smoke-demo-runtime.mjs --standalone dist/win-unpacked/resources/server/standalone --runtime dist/win-unpacked/LearnHarness Nightly.exe --browser
               ;;
             Linux)
               xvfb-run -a node scripts/smoke-demo-runtime.mjs --standalone dist/linux-unpacked/resources/server/standalone --runtime dist/linux-unpacked/learnharness --browser
