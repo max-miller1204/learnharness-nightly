@@ -39,6 +39,7 @@ const planScopes = (tokens) => !!tokens?.accessToken && SCOPES.every((scope) => 
 function validateState(state) {
 	if (!state || state.version !== 1 || !nonempty(state.hostId) || !Array.isArray(state.registrations) || !(state.activeId === null || nonempty(state.activeId))) throw fail("storage");
 	if (Object.hasOwn(state, "allowBackgroundUse") && typeof state.allowBackgroundUse !== "boolean") throw fail("storage");
+	if (Object.hasOwn(state, "accountSelection") && !nonempty(state.accountSelection)) throw fail("storage");
 	const ids = new Set(); const clients = new Set();
 	for (const r of state.registrations) {
 		if (!r || !nonempty(r.id) || ids.has(r.id) || !nonempty(r.clientId) || r.clientId === "dynamic_agent_client" || clients.has(r.clientId) || r.issuer !== ISSUER || !nonempty(r.subject) || (Object.hasOwn(r, "background") && typeof r.background !== "boolean") || (r.email !== undefined && typeof r.email !== "string") || (Object.hasOwn(r, "reconnectRequired") && r.reconnectRequired !== true)) throw fail("storage");
@@ -188,6 +189,9 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 		if (!storageDenied) { storageDenied = true; lastError = publicError(err); stop(); }
 	}
 	async function save(next) {
+		// Keep search selections stable over restarts and token refresh, but
+		// invalidate them even if a user switches away and later switches back.
+		if (next.activeId !== state.activeId) next.accountSelection = crypto.randomUUID();
 		try { validateState(next); await store.write(next); } catch (err) {
 			// A rotated token may already have invalidated its predecessor. Fail closed.
 			denyStorage(err);
@@ -203,6 +207,7 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 			pending: !!pending,
 			allowBackgroundUse: backgroundAllowed(),
 			activeId: state?.activeId ?? null,
+			...(state?.activeId && { accountSelection: state.accountSelection ?? state.activeId }),
 			accounts: accountGroups().map((members) => {
 				// Preserve the actual active registration ID at the private transport
 				// boundary; inactive groups prefer a usable registration, then a

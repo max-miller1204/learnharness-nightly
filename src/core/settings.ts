@@ -34,7 +34,7 @@ import { AUTH_PROVIDER_KEYS } from "./auth-keys.ts";
 import { CLAUDE_CODE_PROVIDER } from "./contracts/claude-code.ts";
 import type { ModelRole } from "../../config.ts";
 import type { ChatSettings } from "./contracts/chat.ts";
-import { isSearchEngineId, type SearchEngineId } from "./search.ts";
+import { isSearchAccountSelection, isSearchEngineId, isSubscriptionSearchEngineId, type SearchSettings } from "./search.ts";
 import { isDictationLanguage, type DictationLanguage } from "./dictation.ts";
 import { parseFileAccessSettings, type FileAccessSettings } from "./file-access.ts";
 import { COLOR_OVERRIDE_KEYS, isThemeId, type AppearanceColorOverrides } from "./themes.ts";
@@ -366,7 +366,7 @@ export interface AgentSettings {
 	 *  pins the preference (e.g. when BOTH keys are present); the chosen
 	 *  engine must still have its key, else search is honestly unavailable.
 	 *  Absent + no key = unavailable (no silent fallback, no default). */
-	search?: { engine?: SearchEngineId };
+	search?: SearchSettings;
 	/** Prober graph tools (wave 7, owner ruling 2026-09-23): read-only
 	 *  knowledge-graph views for the prober agent — a session list +
 	 *  per-session propositions with understanding levels. Its SUBJECT
@@ -747,8 +747,13 @@ function sanitizeAgent(raw: Record<string, unknown>): AgentSettings {
 	// the write side's parser is strict — a stale client can't brick the
 	// record, it just loses the pin and auto-detection resumes).
 	if (raw.search !== null && typeof raw.search === "object" && !Array.isArray(raw.search)) {
-		const engine = (raw.search as Record<string, unknown>).engine;
-		if (isSearchEngineId(engine)) out.search = { engine };
+		const { engine, accountSelection } = raw.search as Record<string, unknown>;
+		if (isSearchEngineId(engine)) {
+			out.search = {
+				engine,
+				...(isSubscriptionSearchEngineId(engine) && isSearchAccountSelection(accountSelection) && { accountSelection }),
+			};
+		}
 	}
 	// Prober graph tools (wave 7): its own agent-section subsection —
 	// lenient read side (a bad shape drops the key and the default ON

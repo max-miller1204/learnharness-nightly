@@ -5,6 +5,8 @@ export interface ChatGPTStatus {
 	/** App-wide ChatGPT background permission, independent of account selection. */
 	allowBackgroundUse: boolean;
 	activeId: string | null;
+	/** Non-secret ID of the current account selection, stable across restarts. */
+	accountSelection?: string;
 	accounts: {
 		id: string; email: string; registration: string; connected: boolean; planEnabled?: boolean;
 		/** Main-owned authorization recovery eligibility. Missing means unknown, not eligible.

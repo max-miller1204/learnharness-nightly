@@ -366,6 +366,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			.join("\n\n");
 
 		const fetchedUrls: string[] = [];
+		const subscriptionSources: ResearchResult["sources"] = [];
 		// Per-job PDF dir (researcher PDF wave, 2026-10-07): web_fetch_pdf
 		// downloads land here; every pdf tool is scoped to it; it dies with
 		// the job (never enters the record).
@@ -376,6 +377,12 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			const brief = await runResearcherAgent(prompt, {
 				engine: model,
 				search: deps.searchProvider,
+				onSubscriptionResults: (hits) => {
+					for (const { url, title } of hits) {
+						if (subscriptionSources.length === 10) break;
+						if (!subscriptionSources.some((source) => source.url === url)) subscriptionSources.push({ url, title });
+					}
+				},
 				pdfDir,
 				abortSignal: loop.abortSignal,
 				chatId: loop.chatId,
@@ -391,7 +398,8 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 				},
 			});
 			if (!brief.trim()) throw new Error("the researcher produced no text");
-			const research: ResearchResult = { brief: brief.trim(), sources: parseSources(brief.trim(), fetchedUrls) };
+			const sources = parseSources(brief.trim(), fetchedUrls, subscriptionSources);
+			const research: ResearchResult = { brief: brief.trim(), sources };
 			await finishJob(jobId, research);
 		} catch (err) {
 			// Real-kill abort (2026-09): the abort path flipped the record and
@@ -564,12 +572,11 @@ function hostOf(url: string | undefined): string {
 	}
 }
 
-/** Sources for the result: markdown links cited in the brief, else fetched
- * URLs. Fetched URLs are recorded before the fetch tool validates their scheme;
- * only http(s) sources may become links, including in previously saved jobs. */
-export function parseSources(brief: string, fetchedUrls: string[]): ResearchResult["sources"] {
-	const sources: ResearchResult["sources"] = [];
-	const seen = new Set<string>();
+/** Preserve native subscription links ahead of citations in the brief.
+ * Fetched URLs supply the list when there are no citations. */
+export function parseSources(brief: string, fetchedUrls: string[], subscriptionSources: ResearchResult["sources"] = []): ResearchResult["sources"] {
+	const sources = subscriptionSources.filter(({ url }) => isWebSourceUrl(url));
+	const seen = new Set(sources.map(({ url }) => url));
 	for (const match of brief.matchAll(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g)) {
 		const title = (match[1] ?? "").trim();
 		const url = match[2]!;

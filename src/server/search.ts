@@ -5,23 +5,20 @@
  * agent-layer tool both read.
  *
  * Owner decisions (2026-09-20) baked in:
- *  - NO default engine: an engine is live iff its key is present (auth
- *    store or env — env wins, keyed via server/keys.ts keyValue).
- *  - Setting a key is ALL the user does — auto-detection: explicit
- *    agent.search.engine pins the preference (when several keys are
- *    present the order is Tavily → Brave → Exa → Firecrawl → Ollama);
- *    without a pin, the first keyed engine wins.
- *  - An explicit choice does NOT silently fall back to another engine:
- *    engine pinned but its key missing = honestly unavailable (reason
- *    says so) — no guessing what the user meant.
+ *  - Automatic chooses the first configured key in Tavily → Brave → Exa →
+ *    Firecrawl → Ollama order. Environment keys take precedence over files.
+ *  - Explicit keyed and subscription choices resolve only that engine.
+ *    Subscription choices are bound to the selected account.
  *
  * The adapters are injected dependencies (fetch-shaped) so the agent-layer
  * tool depends on the PORT only and tests never touch the network.
  */
 
-import { SEARCH_ENGINES, type SearchEngineId, type SearchHit, type SearchProvider, type SearchStatus } from "../core/search.ts";
+import { isSubscriptionSearchEngineId, SEARCH_ENGINES, type KeyedSearchEngineId, type SearchHit, type SearchPickerStatus, type SearchProvider, type SearchStatus } from "../core/search.ts";
+import { refreshChatGPTStatus } from "../agent/chatgpt-bridge.ts";
 import { keyValue } from "./keys.ts";
 import { effectiveSettings } from "./stores.ts";
+import { subscriptionSearchOptions, subscriptionSearchProvider, subscriptionSearchReason } from "./subscription-search.ts";
 
 /** The wire-callable shape the adapters close over (tests inject a stub). */
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
@@ -227,15 +224,15 @@ function searchHit(title: unknown, url: unknown, snippet: unknown): SearchHit[] 
 
 /** The engine's key (env-or-file; env wins) — null when the engine is
  *  not keyed, which by owner decision means NOT LIVE. */
-function engineKey(id: SearchEngineId): string | null {
+function engineKey(id: KeyedSearchEngineId): string | null {
 	const envVar = SEARCH_ENGINES.find((e) => e.id === id)?.envVar;
 	const value = envVar ? keyValue(envVar) : undefined;
 	return value ? value : null;
 }
 
 /** Every engine's live key, read fresh (the resolver's input). */
-function engineKeys(): Partial<Record<SearchEngineId, string>> {
-	const keys: Partial<Record<SearchEngineId, string>> = {};
+function engineKeys(): Partial<Record<KeyedSearchEngineId, string>> {
+	const keys: Partial<Record<KeyedSearchEngineId, string>> = {};
 	for (const { id } of SEARCH_ENGINES) {
 		const key = engineKey(id);
 		if (key) keys[id] = key;
@@ -247,9 +244,9 @@ function engineKeys(): Partial<Record<SearchEngineId, string>> {
  *  explicit engine (if pinned) wins but must be keyed; absent pin → first
  *  keyed engine in preference order. Never throws. */
 export function resolveSearchEngineFor(
-	pinned: SearchEngineId | undefined,
+	pinned: KeyedSearchEngineId | undefined,
 	/** Per-engine live keys (absent engine = absent property is fine). */
-	keys: Partial<Record<SearchEngineId, string | undefined>>,
+	keys: Partial<Record<KeyedSearchEngineId, string | undefined>>,
 ): SearchStatus & { key: string | null } {
 	const pinnedKey = pinned ? keys[pinned] ?? null : null;
 	if (pinned) {
@@ -279,11 +276,21 @@ export function resolveSearchEngineFor(
  *  settings record's pin + the auth store fresh each call, so a key saved
  *  mid-session activates on the next check (no restart). */
 export function searchStatus(): SearchStatus {
-	const { available, engine, reason } = resolveSearchEngineFor(
-		effectiveSettings().agent.search?.engine,
-		engineKeys(),
-	);
+	const search = effectiveSettings().agent.search;
+	const pin = search?.engine;
+	if (search && isSubscriptionSearchEngineId(pin)) {
+		const reason = subscriptionSearchReason(search);
+		return reason
+			? { available: false, engine: null, reason }
+			: { available: true, engine: pin, reason: "Search can use your ChatGPT plan allowance or credits." };
+	}
+	const { available, engine, reason } = resolveSearchEngineFor(pin, engineKeys());
 	return { available, engine, reason };
+}
+
+export async function searchPickerStatus(): Promise<SearchPickerStatus> {
+	await refreshChatGPTStatus().catch(() => { /* runtime connection changes are reflected by the bridge */ });
+	return { ...searchStatus(), subscriptions: subscriptionSearchOptions() };
 }
 
 /** Search status only — research itself remains available without a key. */
@@ -295,7 +302,12 @@ export function searchAvailable(): boolean {
  *  the tool layer (Teacher stream) calls this once per search, so key
  *  rotations take effect immediately. */
 export function searchProvider(): SearchProvider | null {
-	const resolved = resolveSearchEngineFor(effectiveSettings().agent.search?.engine, engineKeys());
+	const search = effectiveSettings().agent.search;
+	const pin = search?.engine;
+	// Keep an explicit subscription adapter even when unavailable so the
+	// tool can surface the actual reason without resolving any keyed engine.
+	if (isSubscriptionSearchEngineId(pin)) return subscriptionSearchProvider({ ...search, engine: pin });
+	const resolved = resolveSearchEngineFor(pin, engineKeys());
 	if (!resolved.available || !resolved.key) return null;
 	switch (resolved.engine) {
 		case "tavily":
