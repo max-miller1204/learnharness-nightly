@@ -16,7 +16,15 @@ export const CHATGPT_PASTE_COPY = {
 	label: "Sign-in tab address",
 	placeholder: "http://127.0.0.1:…/auth/callback?…",
 	submit: "Finish sign-in",
+	ahead: "On this device, ChatGPT's last page will say it can't be reached. That's expected: copy its address, then come back here to paste it.",
+	clipboard: "Paste",
+	clipboardLabel: "Paste sign-in tab address from clipboard",
+	clipboardDenied: "Clipboard access isn't allowed here. Paste into the field instead.",
 };
+/** Clipboard reads need a secure context (https or loopback) and the async Clipboard API. */
+function canReadClipboard(): boolean {
+	return typeof window !== "undefined" && window.isSecureContext === true && typeof navigator !== "undefined" && typeof navigator.clipboard?.readText === "function";
+}
 /** The browser is on the machine running LearnHarness, so OpenAI's 127.0.0.1 redirect reaches it. */
 export function loopbackHost(hostname: string): boolean {
 	const host = hostname.toLowerCase();
@@ -70,6 +78,11 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 	const [pasted, setPasted] = useState("");
 	const [pasteError, setPasteError] = useState<string | null>(null);
 	const [pasting, setPasting] = useState(false);
+	const [clipboardBlocked, setClipboardBlocked] = useState(false);
+	const [reading, setReading] = useState(false);
+	// Bumped by every edit or submit, so a clipboard read that resolves later never overwrites them.
+	const pasteEdits = useRef(0);
+	const pasteField = useRef<HTMLInputElement>(null);
 	const operation = useRef<"login" | "cancel" | "change" | "disconnect" | null>(null);
 	const generation = useRef(0);
 	const statusSequence = useRef(0);
@@ -162,7 +175,7 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 		setBackground(statusRef.current.allowBackgroundUse);
 		setBackgroundDirty(false);
 		setRegistration(accountId);
-		setPasteOpen(false); setPasted(""); setPasteError(null); setPasting(false);
+		setPasteOpen(false); setPasted(""); setPasteError(null); setPasting(false); setClipboardBlocked(false); setReading(false);
 		setError(null);
 		setDismissedError(status.error);
 		const owner: Dialog = { kind: "connect" };
@@ -250,7 +263,7 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 		loginAttempt.current = attempt; operation.current = "login";
 		const request = ++statusSequence.current;
 		setBusy(true); setError(null); setDismissedError(null);
-		setPasteOpen(false); setPasted(""); setPasteError(null); setPasting(false);
+		setPasteOpen(false); setPasted(""); setPasteError(null); setPasting(false); setClipboardBlocked(false); setReading(false);
 		try {
 			let value: unknown = await bridge.login(registration || undefined);
 			if (!owns(attempt) || attempt.phase === "consent") return;
@@ -277,6 +290,7 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 		const attempt = loginAttempt.current;
 		if (!bridge || pasting || !pasted.trim() || !attempt) return;
 		const request = ++statusSequence.current;
+		pasteEdits.current++;
 		setPasting(true); setPasteError(null);
 		try {
 			const value: unknown = await bridge.complete(pasted);
@@ -286,6 +300,19 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 			if (request === statusSequence.current) receive.current(value);
 		} catch { if (owns(attempt)) setPasteError(CONTROL_ERROR); }
 		finally { if (owns(attempt)) setPasting(false); }
+	}
+	/** Fills the field only; the user still chooses Finish sign-in. */
+	async function pasteFromClipboard() {
+		const attempt = loginAttempt.current;
+		if (!attempt || clipboardBlocked || reading) return;
+		const edits = pasteEdits.current;
+		setReading(true);
+		try {
+			const text = (await navigator.clipboard.readText()).trim();
+			if (owns(attempt) && text && edits === pasteEdits.current) { setPasted(text.slice(0, 8192)); setPasteError(null); }
+		} catch {
+			if (owns(attempt)) { setClipboardBlocked(true); pasteField.current?.focus(); }
+		} finally { if (owns(attempt)) setReading(false); }
 	}
 	const sameMachine = !web || (typeof window !== "undefined" && loopbackHost(window.location?.hostname ?? ""));
 	const context = {
@@ -324,6 +351,7 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 						{registration && <Button variant="ghost" size="xs" disabled={busy} onClick={() => context.manage(registration)}>Manage…</Button>}
 					</div>}
 					<p className="mt-3 text-xs leading-relaxed text-muted-foreground" data-testid="chatgpt-privacy-notice">{chatGPTNotice(web)}</p>
+					{!sameMachine && !status.pending && <p className="mt-2 text-xs leading-relaxed text-muted-foreground" data-testid="chatgpt-remote-ahead">{CHATGPT_PASTE_COPY.ahead}</p>}
 				</> : null}
 				<div className={`mt-4 flex items-center gap-3 text-xs text-foreground ${busy && operation.current === "change" && status.available && !status.pending ? "[&>button:disabled]:cursor-auto" : ""}`} data-testid="chatgpt-global-background">
 					<Toggle label={BACKGROUND_LABEL} checked={dialog.kind === "connect" ? background : status.allowBackgroundUse} disabled={busy || status.pending || !status.available} onChange={(enabled) => {
@@ -343,9 +371,11 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 					: <form data-testid="chatgpt-paste" className="mt-3 flex flex-col gap-2 text-xs text-muted-foreground" onSubmit={(event) => { event.preventDefault(); void submitPaste(); }}>
 						<p className="leading-relaxed">{CHATGPT_PASTE_COPY.remote}</p>
 						<div className="flex flex-wrap items-center gap-2">
-							<input type="text" autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} aria-label={CHATGPT_PASTE_COPY.label} placeholder={CHATGPT_PASTE_COPY.placeholder} value={pasted} maxLength={8192} disabled={pasting} onChange={(event) => { setPasted(event.target.value); setPasteError(null); }} className="min-w-0 flex-1 rounded-sm border border-border bg-background px-2 py-1.5 text-foreground placeholder:text-muted-foreground" />
+							<input type="text" autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} aria-label={CHATGPT_PASTE_COPY.label} placeholder={CHATGPT_PASTE_COPY.placeholder} value={pasted} maxLength={8192} disabled={pasting} ref={pasteField} onChange={(event) => { pasteEdits.current++; setPasted(event.target.value); setPasteError(null); }} className="min-w-0 flex-1 rounded-sm border border-border bg-background px-2 py-1.5 text-foreground placeholder:text-muted-foreground" />
+							{web && canReadClipboard() && <Button type="button" variant="ghost" size="sm" data-testid="chatgpt-paste-clipboard" aria-label={CHATGPT_PASTE_COPY.clipboardLabel} disabled={pasting || reading || clipboardBlocked} onClick={() => void pasteFromClipboard()} className="cursor-pointer disabled:cursor-not-allowed">{CHATGPT_PASTE_COPY.clipboard}</Button>}
 							<Button type="submit" variant="outline" size="sm" data-testid="chatgpt-paste-submit" disabled={pasting || !pasted.trim()} className="cursor-pointer disabled:cursor-not-allowed">{CHATGPT_PASTE_COPY.submit}</Button>
 						</div>
+						{clipboardBlocked && <p role="status" className="text-xs text-muted-foreground" data-testid="chatgpt-clipboard-denied">{CHATGPT_PASTE_COPY.clipboardDenied}</p>}
 						{pasteError && <p role="alert" className="text-xs text-error">{pasteError}</p>}
 					</form>)}
 				{context.error && <p role="alert" className="mt-3 text-xs text-error">{context.error}</p>}
