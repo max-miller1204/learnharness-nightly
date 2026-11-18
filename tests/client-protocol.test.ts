@@ -38,7 +38,7 @@ const RECORDED = {
 		"src/core/contracts/chat.ts": "937c52917f863b25",
 		"src/core/contracts/graph.ts": "b84d4803bd0c4acc",
 		"src/core/contracts/plan.ts": "feebc7e5e0e6e8cf",
-		"src/core/events.ts": "65c8c72c82ae3c97",
+		"src/core/events.ts": "9024567ad9c36c27",
 		"src/core/input-events.ts": "bfc9d2408879952e",
 		"src/core/native-messages.ts": "e820a7ea1ecc9247",
 		"src/core/phases.ts": "c8f5be717bf1ff30",
