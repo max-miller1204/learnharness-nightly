@@ -31,6 +31,8 @@
  * Rules are tried in order; `times` limits how often a rule may fire.
  * `{{lastText}}` in a reply text is replaced with the first 200 characters
  * of the last message's text, so a reply can echo a tool result back.
+ * `{{attachmentRef}}` in any reply string becomes the first
+ * `attachment:<id>` the app sent, so a rule can browse an upload.
  */
 import * as fs from "node:fs";
 import * as http from "node:http";
@@ -88,22 +90,23 @@ function pick(body) {
 }
 
 /** `{{env:NAME}}` in any reply string becomes that environment variable (per-run fixture paths). */
-function fillEnv(value) {
-	if (typeof value === "string") return value.replace(/\{\{env:([A-Z0-9_]+)\}\}/g, (_, name) => process.env[name] ?? "");
-	if (Array.isArray(value)) return value.map(fillEnv);
-	if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fillEnv(v)]));
+function fillEnv(value, attachmentRef = "") {
+	if (typeof value === "string") return value.replace(/\{\{env:([A-Z0-9_]+)\}\}/g, (_, name) => process.env[name] ?? "").replaceAll("{{attachmentRef}}", attachmentRef);
+	if (Array.isArray(value)) return value.map((item) => fillEnv(item, attachmentRef));
+	if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fillEnv(v, attachmentRef)]));
 	return value;
 }
 
 function render(reply, body) {
 	const last = (body.messages ?? []).at(-1);
 	const lastText = textOf(last?.content).slice(0, 200);
-	if (reply.text !== undefined) return { text: fillEnv(String(reply.text)).replaceAll("{{lastText}}", lastText) };
+	const attachmentRef = (body.messages ?? []).map((x) => textOf(x.content)).join("\n").match(/attachment:[0-9a-f-]{36}/)?.[0] ?? "";
+	if (reply.text !== undefined) return { text: fillEnv(String(reply.text), attachmentRef).replaceAll("{{lastText}}", lastText) };
 	return {
 		toolCalls: (reply.toolCalls ?? []).map((call, i) => ({
 			id: `call_prove_${requests}_${i}`,
 			type: "function",
-			function: { name: call.name, arguments: JSON.stringify(fillEnv(call.arguments ?? {})) },
+			function: { name: call.name, arguments: JSON.stringify(fillEnv(call.arguments ?? {}, attachmentRef)) },
 		})),
 	};
 }

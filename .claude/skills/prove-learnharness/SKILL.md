@@ -36,6 +36,7 @@ Follow each changed file to the surfaces and flows it reaches. Internal code cou
 |---|---|---|---|
 | `app/**` (not api), `components/**`, `public/**` | no | web | [teaching session](references/features/teaching-session.md) and the page the file renders |
 | `src/client-protocol/**`, `app/.well-known/**` | yes: the client protocol contract and server info | api, web, agent | [client protocol](references/features/client-protocol.md) |
+| `app/api/attachments/**`, `src/store/attachment*.ts`, `src/server/attachment-*.ts`, `src/core/attachment*.ts`, `components/attach*`, `components/file-path-drop-zone.tsx`, `src/agent/tools/{learner-file,fs-shared,ls,find,grep}.ts` | yes: uploads, claimed copies and the learner-file tools | api, web, agent | [remote attachments](references/features/remote-attachments.md) |
 | `app/api/chat/**`, `app/api/chats/**` | yes: turns and sessions | api, web, agent | [teaching session](references/features/teaching-session.md) |
 | `app/api/**` (other) | no | api, web | the route's callers; [api.md](references/api.md) |
 | `app/api/updates/**`, `app/api/health/**`, `src/server/self-update.ts` | yes: update protocol | api, web, selfhost A+B | [update and rollback](references/features/update-rollback.md) |

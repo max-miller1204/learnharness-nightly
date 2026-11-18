@@ -12,7 +12,7 @@ export function attachmentsForChat(chatId: string) {
 	return (id: string) => {
 		const current = stores.chatStore.getChat(chatId);
 		const ref = current && attachmentReferences(current.messages).find(item => item.id === id);
-		return ref ? { name: ref.name, filename: claimedAttachmentPath(id) } : undefined;
+		return ref ? { name: ref.name, filename: claimedAttachmentPath(id), folder: ref.fileCount !== undefined } : undefined;
 	};
 }
 

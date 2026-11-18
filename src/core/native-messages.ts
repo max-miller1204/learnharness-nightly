@@ -723,8 +723,9 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 			const user = { ...expandUserCitations(native) };
 			if (attachments?.length) {
 				const content = typeof user.content === "string" ? [{ type: "text" as const, text: user.content }] : user.content;
-				const files = attachments.map(({ id, name }) => `${ATTACHMENT_PREFIX}${id} ${JSON.stringify(name)}`).join("\n");
-				user.content = [...content, { type: "text", text: `Attached files (use the attachment reference with read, pdf, show_image, or visual's image input as appropriate):\n${files}` }];
+				const files = attachments.map(({ id, name, fileCount }) => `${ATTACHMENT_PREFIX}${id} ${JSON.stringify(name)}${fileCount === undefined ? ""
+					: ` (folder, ${fileCount} ${fileCount === 1 ? "file" : "files"}. Browse it with ls, find or grep, and open files as ${ATTACHMENT_PREFIX}${id}/<path>)`}`).join("\n");
+				user.content = [...content, { type: "text", text: `Attached files and folders (use the attachment reference with read, pdf, show_image, or visual's image input as appropriate):\n${files}` }];
 			}
 			out.push(user);
 		} else out.push(native as Message);

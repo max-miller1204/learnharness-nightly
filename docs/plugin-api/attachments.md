@@ -14,6 +14,7 @@ Supporting declaration used by a public type. This is not an additional runtime 
 export interface AttachmentReference {
     id: string;
     name: string;
+    fileCount?: number;
 }
 ```
 
@@ -21,6 +22,7 @@ export interface AttachmentReference {
 
 - [id](#attachmentreference-id)
 - [name](#attachmentreference-name)
+- [fileCount](#attachmentreference-filecount)
 
 ### AttachmentReference id
 
@@ -32,4 +34,12 @@ id: string;
 
 ```ts
 name: string;
+```
+
+### AttachmentReference fileCount
+
+Present only on an uploaded folder: the number of files inside it.
+
+```ts
+fileCount?: number;
 ```

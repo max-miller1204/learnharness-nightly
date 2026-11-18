@@ -21,6 +21,9 @@ import { sendToUserApplies, sendToUserTool } from "./tools/send-to-user.ts";
 import { makeNarrationGuard, narrationGuardApplies, SEND_TO_USER_DELIVERY_RULE } from "./narration-guard.ts";
 import type { ResolveAttachment } from "./tools/learner-file.ts";
 import { createReadTool, readTool } from "./tools/read.ts";
+import { createLsTool, lsTool } from "./tools/ls.ts";
+import { createFindTool, findTool } from "./tools/find.ts";
+import { createGrepTool, grepTool } from "./tools/grep.ts";
 import { quizInputObject, quizInputProblems } from "../core/question-core.ts";
 import { QUESTION_TOOLS, TOGGLEABLE_TOOLS, type EnabledTools } from "../core/pending.ts";
 import type { PluginToolContext } from "../core/plugins.ts";
@@ -217,11 +220,18 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 		? composeInstructions(kind, opts.promptSwitches)
 		: composedInstructions[kind]!;
 	const builtinPrompt = narrationGuard ? `${composedPrompt}\n\n---\n\n${SEND_TO_USER_DELIVERY_RULE}` : composedPrompt;
-	// Bind native read and preserve the kind/model-aware Claude output gate
-	// before resolving additive plugins. Explicit registries remain caller-owned.
+	// Bind native read and the folder readers to this chat's uploads, and
+	// preserve the kind/model-aware Claude output gate before resolving
+	// additive plugins. Explicit registries remain caller-owned.
+	const bound: Record<string, [unknown, () => AgentTool<any>]> = {
+		read: [readTool.execute, () => createReadTool(engine.model, opts.resolveAttachment)],
+		ls: [lsTool.execute, () => createLsTool(opts.resolveAttachment)],
+		find: [findTool.execute, () => createFindTool(opts.resolveAttachment)],
+		grep: [grepTool.execute, () => createGrepTool(opts.resolveAttachment)],
+	};
 	const builtinTools = [
-		...tools.map((tool) => tool.name === "read" && tool.execute === readTool.execute
-			? { ...tool, execute: createReadTool(engine.model, opts.resolveAttachment).execute as AgentTool<any>["execute"] }
+		...tools.map((tool) => bound[tool.name]?.[0] === tool.execute
+			? { ...tool, execute: bound[tool.name]![1]().execute as AgentTool<any>["execute"] }
 			: tool),
 		...(sendToUserApplies(kind, engine.model, opts.tools !== undefined)
 			? [withArgumentHeal(sendToUserTool)]

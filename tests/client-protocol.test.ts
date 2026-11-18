@@ -34,8 +34,8 @@ import { GET as serverInfoRoute } from "../app/.well-known/learnharness/server/r
 const RECORDED = {
 	protocolVersion: 1,
 	fingerprint: {
-		"src/client-protocol/index.ts": "d45ccc37149e68f8",
-		"src/core/attachments.ts": "862b39375e996bb4",
+		"src/client-protocol/index.ts": "a07230aad81b77e6",
+		"src/core/attachments.ts": "a2fda90879239dc8",
 		"src/core/contracts/chat.ts": "937c52917f863b25",
 		"src/core/contracts/graph.ts": "b84d4803bd0c4acc",
 		"src/core/contracts/plan.ts": "feebc7e5e0e6e8cf",
@@ -140,7 +140,7 @@ describe("server info", () => {
 		assert.equal(info.version, "0.6.1-nightly.1");
 		assert.equal(info.protocolVersion, 1);
 		assert.ok(info.name.length > 0);
-		assert.deepEqual(info.capabilities, ["attachment-uploads-v1"]);
+		assert.deepEqual(info.capabilities, ["attachment-uploads-v1", "attachment-folders-v1"]);
 		assert.deepEqual(info.auth, {
 			required: true,
 			bootstrapMethods: ["one-time-token"],
