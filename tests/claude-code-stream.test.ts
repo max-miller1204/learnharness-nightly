@@ -1090,6 +1090,79 @@ test("an MCP request for a call the CLI rejected as unparseable is never admitte
 	await assertCleanedUp(getOnlyCall(calls));
 });
 
+// A tool-use message whose MCP request reaches the bridge before its own message_stop (the CLI
+// runs harness calls while the message is still streaming).
+function toEarlyMcpToolUseMessage(toolUse: ToolUse): string[] {
+	const lines = toToolUseMessage([toolUse]);
+	return [
+		...lines.slice(0, -2),
+		JSON.stringify({ fake: "start-call", id: toolUse.id, name: toolUse.name, arguments: toolUse.arguments }),
+		JSON.stringify({ fake: "sleep", ms: 200 }),
+		...lines.slice(-2),
+	];
+}
+
+test("a retry whose MCP request arrives before its message_stop is admitted after a late unparseable rejection", async (t) => {
+	const bad: ToolUse = { id: "toolu_invalid_early_bad", name: "read", arguments: {} };
+	const retry: ToolUse = { id: "toolu_invalid_early_retry", name: "read", arguments: { path: "a" } };
+	const { runClaude, calls } = createFakeRun(t, [
+		...toToolUseMessage([bad]), rejectInvalidInput(bad), ...toEarlyMcpToolUseMessage(retry), REPLY,
+	]);
+	const stream = createClaudeCodeStreamFunction(runClaude);
+	const message = await runTurn(stream, [HI]);
+	assert.deepEqual(message.content, [{ type: "toolCall", ...retry }]);
+	const reply = await runTurn(stream, [HI, message, toToolResult(retry, "contents of a")]);
+	assert.equal(getText(reply), "contents of a");
+	await assertCleanedUp(getOnlyCall(calls));
+});
+
+test("after a valid sibling's continuation, an early-MCP retry for its rejected sibling is admitted", async (t) => {
+	const good: ToolUse = { id: "toolu_invalid_early_sibling_good", name: "read", arguments: { path: "a" } };
+	const bad: ToolUse = { id: "toolu_invalid_early_sibling_bad", name: "read", arguments: { path: "b" } };
+	const retry: ToolUse = { id: "toolu_invalid_early_sibling_retry", name: "read", arguments: { path: "b" } };
+	const { runClaude, calls } = createFakeRun(t, [
+		...toToolUseMessage([good, bad]), callTool(good), rejectInvalidInput(bad), ...toEarlyMcpToolUseMessage(retry), REPLY,
+	]);
+	const stream = createClaudeCodeStreamFunction(runClaude);
+	const message = await runTurn(stream, [HI]);
+	assert.deepEqual(message.content, [{ type: "toolCall", ...good }]);
+	const history = [HI, message, toToolResult(good, "A")];
+	const second = await runTurn(stream, history);
+	assert.deepEqual(second.content, [{ type: "toolCall", ...retry }]);
+	const reply = await runTurn(stream, [...history, second, toToolResult(retry, "B")]);
+	assert.equal(getText(reply), "A | B");
+	assert.equal(calls.length, 1);
+	await assertCleanedUp(getOnlyCall(calls));
+});
+
+test("a held MCP request for a call the CLI then rejects as unparseable fails at once", async (t) => {
+	const bad: ToolUse = { id: "toolu_invalid_held", name: "read", arguments: { path: "a" } };
+	const message = toToolUseMessage([bad]);
+	const { events, calls } = await runScenario(t, [
+		...message.slice(0, -2),
+		JSON.stringify({ fake: "start-call", id: bad.id, name: bad.name, arguments: bad.arguments }),
+		JSON.stringify({ fake: "sleep", ms: 200 }),
+		rejectInvalidInput(bad), ...message.slice(-2), ...readFixtureLines("text.jsonl"), HOLD,
+	]);
+	assert.match(getErrorMessage(events) ?? "", /does not match its streamed tool intent/);
+	assert.equal(events.some((event) => event.type === "toolcall_start" || event.type === "toolcall_end"), false);
+	await assertCleanedUp(getOnlyCall(calls));
+});
+
+test("one CLI line mixing an unparseable rejection with another refusal fails as refused", async (t) => {
+	const bad: ToolUse = { id: "toolu_mixed_invalid", name: "read", arguments: {} };
+	const denied: ToolUse = { id: "toolu_mixed_denied", name: "read", arguments: { path: "a" } };
+	const invalid = JSON.parse(rejectInvalidInput(bad)) as { message: { content: object[] } };
+	const line = JSON.stringify({ type: "user", message: { content: [
+		...invalid.message.content,
+		{ type: "tool_result", tool_use_id: denied.id, is_error: true, content: "Denied by managed policy" },
+	] } });
+	const { events, calls } = await runScenario(t, [...toToolUseMessage([bad, denied]), line, HOLD]);
+	assert.match(getErrorMessage(events) ?? "", /refused.*before MCP admission/);
+	assert.equal(events.some((event) => event.type === "toolcall_end"), false);
+	await assertCleanedUp(getOnlyCall(calls));
+});
+
 test("any other CLI refusal printed before message_stop still fails as refused", async (t) => {
 	const read: ToolUse = { id: "toolu_denied_early", name: "read", arguments: { path: "a" } };
 	const message = toToolUseMessage([read]);

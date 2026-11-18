@@ -585,6 +585,8 @@ class ClaudeProcess implements LiveProcess {
 			// model sees the error. Drop the call and wait for the retry, as for bare names.
 			for (const id of invalidInput) this.invalidInputIds.add(id);
 			this.sourceCalls = this.sourceCalls.filter((call) => !this.invalidInputIds.has(call.id));
+			// An MCP request already held for a rejected call must fail now, not wait.
+			if (invalidInput.length > 0) this.flushAdmissions();
 			return;
 		}
 		// Moving on before held calls were answered means the CLI did not
@@ -600,6 +602,9 @@ class ClaudeProcess implements LiveProcess {
 		if (event.type === "messageStart") {
 			this.contextProbe?.refresh();
 			this.messageIntentStart = this.turn.getIntents().length;
+			// Nothing is waiting here (checked just above): the new message's calls must not be
+			// matched against an earlier message's emptied batch, even when MCP is early.
+			this.sourceComplete = false;
 		}
 		this.turn.handle(event);
 		if (this.turn.finished) { this.kill(); return; }

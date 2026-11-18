@@ -20,11 +20,12 @@ A background Extract files run with Claude Code `haiku` in all slots intermitten
   - An InputValidationError result for such an intent drops that call for good (`invalidInputIds`): it is removed from `sourceCalls` and never shown to Pi.
   - Any other CLI result for an unadmitted intent fails the turn with `refused a harness tool call before MCP admission`, now also when the CLI prints it before `message_stop`.
   - At `message_stop`, if every intent of that message was a bare-name call or an InputValidationError rejection, the turn stays open for the model's next message, exactly like the existing bare-name tolerance. Otherwise the usable intents wait for MCP admission as before.
-  - An MCP request for a call the CLI already rejected fails at once with `MCP call does not match its streamed tool intent`, instead of being held.
+  - An MCP request for a call the CLI already rejected fails at once with `MCP call does not match its streamed tool intent`, instead of being held, whether it arrives before or after the rejection.
+  - Each new CLI message starts with no batch waiting (the "moved on" guard has just checked that), so the retry's MCP request is matched against the retry even when it reaches the bridge before the retry's `message_stop`.
 
 ## Done looks like
 
-- A message whose only harness call the CLI rejects as unparseable, followed by a valid retry, ends the turn as `toolUse` with only the retry (in either line order); its result continues the held process.
+- A message whose only harness call the CLI rejects as unparseable, followed by a valid retry, ends the turn as `toolUse` with only the retry (in either line order, and also when the retry's MCP request arrives before its `message_stop`); its result continues the held process.
 - An unparseable call beside a valid one: only the valid call is admitted, and the later rejection does not fail the continuation.
 - An unparseable call followed by a text answer ends the turn normally (`stop`), with no tool call.
 - A live Extract files run with Claude Code `haiku` over a small folder including a copy of `p-limit/readme.md` completes every job, several runs in a row; no `moved on` error in the app log.
