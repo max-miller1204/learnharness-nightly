@@ -266,6 +266,8 @@ What LearnHarness already has toward this: a standalone, versioned, self-updatin
 
 ### 21. Client protocol and server info
 
+**Status.** **Built** (2026-11-17), T3 Code's model: a public server-info route (`/.well-known/learnharness/server`), an exact protocol version match (a mismatched client gets `426`), the protocol 1 routes for the phone app's core chat flow, and a typed contract in `src/client-protocol/`. See [docs/specs/client-protocol.md](specs/client-protocol.md), which settles the open questions below. The rest of this entry is the original proposal.
+
 **Why.** Today the API is internal Next.js routes that change freely. That's fine while the server ships its own UI, but any client released separately (a native phone app, a desktop app pointed at a remote server) lags behind the server and needs a contract it can rely on.
 
 **Decided.** Exact protocol version match between client and server, like T3 (chosen over a version range).

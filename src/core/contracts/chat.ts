@@ -324,6 +324,23 @@ export interface ChatListItem extends ChatSummary {
 	compacting: boolean;
 }
 
+/** One session's coverage read: the chat view's ring meter and popover
+ *  data, scoped to one chat (GET /api/chats/:id `coverage`). Uncovered is
+ *  derived per request from the transcript and the coverage ledger.
+ *  lastFoldedAt is the newest coverage row's fold time, null before the
+ *  session's first fold. */
+export interface SessionCoverage {
+	totalMessages: number;
+	coveredCount: number;
+	uncoveredCount: number;
+	coveredTokens: number;
+	uncoveredTokens: number;
+	/** True while a chat-kind extraction run is registered for this session. */
+	running: boolean;
+	/** ISO of the newest fold in this session's coverage rows; null before any. */
+	lastFoldedAt: string | null;
+}
+
 // ─── Learner images in the lesson (issue #363) ──────────────────────────────
 
 /** One upright, metadata-free picture, stored once per session. */

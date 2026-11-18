@@ -77,6 +77,7 @@ import {
 } from "../core/input-events.ts";
 import { steerDelivered } from "../core/contracts.ts";
 import type {CallUsage} from "../core/contracts.ts";
+import type { SendResponse } from "../client-protocol/index.ts";
 
 /**
  * One chat turn over the server-owned native record. Framework-free (plain
@@ -967,14 +968,14 @@ export async function handleChatInput(
 		// turn itself is a server-side process (ruling 2026-09-25) — it never
 		// needed this connection, only a view did.
 		if (stagedAutomatic && requestCycle && !(await requestCycle.admission)) return Response.json({ error: "Automatic follow-up remains deferred in its queue." }, { status: 403 });
-		return Response.json({ ok: true });
+		return Response.json({ ok: true } satisfies SendResponse);
 	} catch (err) {
 		console.error(`[chat ${chatId}] turn failed to start:`, err);
 		if (preparation && inputSaved) {
 			// The answer and outcome are already durable. Report the later
 			// teacher failure through the existing retained stream notice.
 			rememberTurnFailure(chatId, "Failed to start the turn");
-			return Response.json({ ok: true });
+			return Response.json({ ok: true } satisfies SendResponse);
 		}
 		return Response.json({ error: "Failed to start the turn" }, { status: 500 });
 	}
@@ -982,7 +983,7 @@ export async function handleChatInput(
 		if (preparation && inputSaved) {
 			console.error(`[chat ${chatId}] accepted answer continuation failed:`, err);
 			rememberTurnFailure(chatId, "Failed to start the turn");
-			return Response.json({ ok: true });
+			return Response.json({ ok: true } satisfies SendResponse);
 		}
 		if (err instanceof ChatInputError) return Response.json({ error: err.message }, { status: 400 });
 		if (preparation?.signal.aborted) {

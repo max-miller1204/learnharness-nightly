@@ -1,5 +1,6 @@
 import type { Agent, AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import { ToolCallIdUniquifier } from "./call-ids.ts";
+import type { TurnStreamEvent } from "../../client-protocol/index.ts";
 import type { ChatGPTRequestCycle } from "../../agent/chatgpt-request-cycle.ts";
 import { pluginQuestionLedgerFor } from "../../agent/plugin-question-tools.ts";
 
@@ -66,12 +67,11 @@ import { pluginQuestionLedgerFor } from "../../agent/plugin-question-tools.ts";
  * costs the content once, never the chunk count.
  */
 
-/** The wire event: a pi AgentEvent (with our slim message_update — see the
- * WIRE DIET note above), or one of the two app events. */
-export type TurnWireEvent =
-	| AgentEvent
-	| { type: "message_update"; message: AgentMessage }
-	| { type: "error"; errorText: string };
+/** The wire event: a pi AgentEvent (with our slim message_update, see the
+ * WIRE DIET note above), or the loop-level error. The client protocol's
+ * TurnStreamEvent (src/client-protocol) is the source; turn-settled is the
+ * terminal turn-runs writes when no turn is running. */
+export type TurnWireEvent = Exclude<TurnStreamEvent, { type: "turn-settled" }>;
 
 export interface PiTurnSpec {
 	/** Fresh reference cargo for an already-selected native run, including
