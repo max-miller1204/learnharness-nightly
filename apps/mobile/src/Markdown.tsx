@@ -1,10 +1,29 @@
 import { useMemo, useState } from "react";
-import { Text, useWindowDimensions } from "react-native";
+import { Alert, Linking, useWindowDimensions } from "react-native";
 import { WebView } from "react-native-webview";
-import { renderMarkdown } from "./render-markdown";
-import { colors, styles } from "./ui";
+import { httpsLink, parseMarkdown, renderMarkdown } from "./render-markdown";
+import { NativeMarkdown } from "./NativeMarkdown";
+import { colors } from "./ui";
+
+function confirmExternalLink(value: string) {
+  const url = httpsLink(value);
+  if (!url) return;
+  Alert.alert("Open in browser?", url, [
+    { text: "Cancel", style: "cancel" },
+    { text: "Open", onPress: () => {
+      void Linking.openURL(url).catch(() => Alert.alert("Couldn't open the browser."));
+    } },
+  ]);
+}
 
 export function Markdown({ text }: { text: string }) {
+  const parsed = useMemo(() => parseMarkdown(text), [text]);
+  if (!parsed.tokens.length) return null;
+  if (!parsed.hasMath) return <NativeMarkdown tokens={parsed.tokens} openLink={confirmExternalLink} />;
+  return <MathMarkdown parsed={parsed} />;
+}
+
+function MathMarkdown({ parsed }: { parsed: ReturnType<typeof parseMarkdown> }) {
   const { fontScale } = useWindowDimensions();
   const [height, setHeight] = useState(26);
   const [failed, setFailed] = useState(false);
@@ -19,30 +38,39 @@ export function Markdown({ text }: { text: string }) {
         #content > :first-child { margin-top:0; }
         #content > :last-child { margin-bottom:0; }
         pre, .katex-display { overflow-x:auto; }
+        a { color:${colors.accent}; }
         pre, code { background:${colors.accentLight}; border-radius:4px; }
         pre { padding:8px; }
         blockquote { margin-inline:0; padding-inline-start:10px; border-inline-start:3px solid ${colors.border}; }
         td,th { padding:4px; border-bottom:1px solid ${colors.border}; }
-      </style></head><body><div id="content">${renderMarkdown(text)}</div>
+      </style></head><body><div id="content">${renderMarkdown(parsed)}</div>
       <script nonce="lh-size">
         const content = document.getElementById('content');
         function resize() { ReactNativeWebView.postMessage(String(Math.ceil(content.getBoundingClientRect().height))); }
+        document.addEventListener('click', (event) => {
+          const link = event.target.closest?.('a[href]');
+          if (!link) return;
+          event.preventDefault();
+          ReactNativeWebView.postMessage(link.href);
+        });
+        document.addEventListener('contextmenu', (event) => {
+          if (event.target.closest?.('a[href]')) event.preventDefault();
+        });
         window.addEventListener('load', resize);
         new ResizeObserver(resize).observe(content);
       </script></body></html>`,
-  }), [fontScale, text]);
-  if (!text.trim()) return null;
-  if (failed || !/[\n*_$()[\]{}<>`#\\]/.test(text)) return <Text selectable style={styles.text}>{text}</Text>;
+  }), [fontScale, parsed]);
+  if (failed) return <NativeMarkdown tokens={parsed.tokens} openLink={confirmExternalLink} />;
 
-  // Local, sanitized markup and MathML only. The sizing script is the
-  // only script allowed. This view never receives an origin or a bearer.
+  // The local document reports its size and link taps. It cannot navigate or load external content.
   return (
     <WebView source={source} originWhitelist={["*"]} onShouldStartLoadWithRequest={(request) => request.url === "about:blank"}
-      scrollEnabled={false} allowFileAccess={false} setSupportMultipleWindows={false} domStorageEnabled={false}
+      scrollEnabled={false} allowsLinkPreview={false} allowFileAccess={false} setSupportMultipleWindows={false} domStorageEnabled={false}
       style={{ backgroundColor: "transparent", height }} containerStyle={{ flex: 0, height }}
       onError={() => setFailed(true)} onMessage={({ nativeEvent }) => {
         const measured = Number(nativeEvent.data);
         if (Number.isFinite(measured) && measured > 0) setHeight(measured + 2);
+        else confirmExternalLink(nativeEvent.data);
       }} />
   );
 }

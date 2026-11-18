@@ -4,7 +4,7 @@ import { PROTOCOL_HEADER, PROTOCOL_ROUTES, type LhMessage, type TurnStreamEvent 
 import { ApiError, apiClient, bearerKey, browserDestination, readPairingLink } from "../src/protocol.ts";
 import { consumeSse } from "../src/sse.ts";
 import { inputWasSaved, turnReplay } from "../src/live-turn.ts";
-import { renderMarkdown } from "../src/render-markdown.ts";
+import { httpsLink, parseMarkdown, renderMarkdown } from "../src/render-markdown.ts";
 
 const origin = "https://test.learnharness.example:8443";
 const other = "https://other.learnharness.example";
@@ -102,9 +102,28 @@ test("reconciles the same text or thinking only if a new saved occurrence exists
   assert.equal(inputWasSaved([user, thinking], new Set(["old"]), { type: "thinking", problemCallId: "p2", text: "work" }), true);
 });
 
-test("practice markdown renders local math and strips active HTML/navigation", () => {
-  const html = renderMarkdown("**Solve** $x^2=4$\n\n\\[x=2\\]\n\n<img onerror=alert(1)> [external](https://other.example)");
+test("only parsed math opts a message into the WebView", () => {
+  assert.equal(parseMarkdown("## Heading\n\n**Text** followed by [a link](https://example.test).").hasMath, false);
+  assert.equal(parseMarkdown("It costs $10. Here is code: `$x^2$`.").hasMath, false);
+  assert.equal(parseMarkdown("An inline equation $x^2=4$.").hasMath, true);
+  assert.equal(parseMarkdown("> Display math:\n> \\[x=2\\]").hasMath, true);
+});
+
+test("only HTTPS links leave the transcript through the confirmation handler", () => {
+  const parsed = parseMarkdown("https://example.test/source [HTTP](http://example.test) [local](/chat/one) [email](mailto:me@example.test)");
+  const hrefs = parsed.tokens.flatMap(({ children }) => children ?? [])
+    .filter(({ type }) => type === "link_open").map((token) => httpsLink(token.attrGet("href")));
+  assert.deepEqual(hrefs, ["https://example.test/source", undefined, undefined, undefined]);
+  assert.equal(httpsLink("//example.test/source"), undefined);
+  assert.equal(httpsLink("HTTPS://EXAMPLE.TEST/source"), "https://example.test/source");
+  assert.equal(httpsLink("https://"), undefined);
+});
+
+test("math markup renders local math and passes only escaped HTTPS links to the host", () => {
+  const html = renderMarkdown(parseMarkdown("**Solve** $x^2=4$\n\n\\[x=2\\]\n\n<img onerror=alert(1)> [external](https://example.test/?a=1&b=2) [plain](http://example.test)"));
   assert.match(html, /<strong>Solve<\/strong>/);
   assert.equal(html.match(/<math\b/g)?.length, 2);
-  assert.doesNotMatch(html, /<(img|a)\b/);
+  assert.match(html, /<a href="https:\/\/example.test\/\?a=1&amp;b=2">external<\/a> plain/);
+  assert.equal(html.match(/<a\b/g)?.length, 1);
+  assert.doesNotMatch(html, /<img\b/);
 });
