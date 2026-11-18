@@ -43,7 +43,9 @@ export default defineConfig([
 							target: "./components",
 							from: "./src",
 							// NOTE: the plugin resolves `except` relative to the zone's `from` path.
-							except: ["./core/index.ts"],
+							// plan-layout.ts: pure, but kept out of the barrel so its dagre and d3
+							// load only where the plan diagram renders (mobile follow-up 1).
+							except: ["./core/index.ts", "./core/plan-layout.ts"],
 							message:
 								"Browser shell imports ONLY the pure core barrel: `from \"@/src/core\"` (architecture: docs/architecture.md).",
 						},

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  PRACTICE_CONTROL_ROUTES, PROTOCOL_ROUTES,
+  LESSON_VIEW_ROUTES, PRACTICE_CONTROL_ROUTES, PROTOCOL_ROUTES,
   type AbortTurnResponse, type ChatResponse, type LhMessage, type SendResponse, type TurnStreamEvent,
 } from "../../../src/client-protocol/index.ts";
 import { ApiError, type MobileApi } from "./protocol";
@@ -13,7 +13,7 @@ interface UnconfirmedInput {
   input: SessionInput;
   priorIds: ReadonlySet<string>;
   failure: string;
-  accepted: () => void;
+  accepted: (result?: unknown) => void;
 }
 
 export function useSession(api: MobileApi, id: string, active: boolean, connectionFault: (error: unknown) => boolean) {
@@ -168,22 +168,27 @@ export function useSession(api: MobileApi, id: string, active: boolean, connecti
     };
   }, [active, api, connectionFault, id, refresh]);
 
-  async function submit(input: SessionInput, accepted = () => {}) {
+  /** `accepted` receives the server's answer body (absent when a lost response is confirmed from the record). */
+  async function submit(input: SessionInput, accepted: (result?: unknown) => void = () => {}) {
     const before = latest.current;
     if (!active || !before || writingNow.current || pending.current || refreshError || before.compacting) return;
-    if (before.turnInFlight && input.type !== "dismiss-problem") return;
+    // Discards and skips may land mid-turn: the server parks them for the settle.
+    if (before.turnInFlight && input.type !== "dismiss-problem" && input.type !== "dismiss") return;
     const signal = write.current.signal;
     writingNow.current = true;
     setWriting(true);
     setWriteError("");
     setStreamError("");
     try {
+      let result: unknown;
       if (input.type === "dismiss-problem") {
-        await api.post(PRACTICE_CONTROL_ROUTES.dismiss(id), { input }, signal);
+        result = await api.post(PRACTICE_CONTROL_ROUTES.dismiss(id), { input }, signal);
+      } else if (input.type === "dismiss") {
+        result = await api.post(LESSON_VIEW_ROUTES.dismiss(id), { input }, signal);
       } else {
-        await api.post<SendResponse>(PROTOCOL_ROUTES.send, { chatId: id, input }, signal);
+        result = await api.post<SendResponse>(PROTOCOL_ROUTES.send, { chatId: id, input }, signal);
       }
-      if (!signal.aborted) accepted();
+      if (!signal.aborted) accepted(result);
     } catch (error) {
       if (signal.aborted || connectionFault(error)) return;
       if (!(error instanceof ApiError) || error.status >= 500) {
@@ -204,7 +209,8 @@ export function useSession(api: MobileApi, id: string, active: boolean, connecti
     }
   }
 
-  async function stop() {
+  /** `quiet` keeps a failed stop off the screen (the follow-up stop after a skip). */
+  async function stop(quiet = false) {
     if (stoppingNow.current) return;
     const signal = write.current.signal;
     stoppingNow.current = true;
@@ -212,7 +218,7 @@ export function useSession(api: MobileApi, id: string, active: boolean, connecti
     try {
       await api.post<AbortTurnResponse>(PROTOCOL_ROUTES.abort, { kind: "turn", id }, signal);
     } catch (error) {
-      if (!signal.aborted && !connectionFault(error)) setWriteError(errorText(error));
+      if (!signal.aborted && !connectionFault(error) && !quiet) setWriteError(errorText(error));
     } finally {
       if (!signal.aborted) {
         refresh();

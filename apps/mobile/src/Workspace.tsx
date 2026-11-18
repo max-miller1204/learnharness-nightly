@@ -33,6 +33,7 @@ export function Workspace({ api, initialInfo, active, servers, connectionFault }
   const [info, setInfo] = useState(initialInfo);
   const [offline, setOffline] = useState(false);
   const chatReload = useRef<((reconnect?: boolean) => void) | null>(null);
+  const jobsReload = useRef<(() => void) | null>(null);
   const listing = page.type === "list";
   const back = () => setPage({ type: "list" });
 
@@ -46,6 +47,7 @@ export function Workspace({ api, initialInfo, active, servers, connectionFault }
     if (!frame) {
       if (listing) setRevision((value) => value + 1);
       chatReload.current?.(true);
+      jobsReload.current?.();
       return;
     }
     switch (frame.event) {
@@ -56,6 +58,9 @@ export function Workspace({ api, initialInfo, active, servers, connectionFault }
       case "compaction-changed":
         if (listing) setRevision((value) => value + 1);
         if (page.type === "session" && "chatId" in frame.data && frame.data.chatId === page.id) chatReload.current?.();
+        break;
+      case "jobs-changed":
+        if (page.type === "session" && (frame.data.chatId == null || frame.data.chatId === page.id)) jobsReload.current?.();
         break;
       case "plugins-changed":
         chatReload.current?.();
@@ -78,7 +83,7 @@ export function Workspace({ api, initialInfo, active, servers, connectionFault }
     <>
       {offline && <View style={{ paddingHorizontal: space.lg, paddingVertical: space.sm }}><Notice>Live updates disconnected. Reconnecting…</Notice></View>}
       {page.type === "session" && <Session key={page.id} api={api} info={info} id={page.id} initialText={page.draft} sendInitialText={page.sendDraft}
-        active={active} reloadRef={chatReload} back={back} connectionFault={connectionFault} />}
+        active={active} reloadRef={chatReload} jobsRef={jobsReload} back={back} connectionFault={connectionFault} />}
       {page.type === "new" && <NewSession api={api} info={info} kind={page.kind} back={back}
         open={(id, draft, sendDraft) => setPage({ type: "session", id, draft, sendDraft })} connectionFault={connectionFault} />}
       {listing && (

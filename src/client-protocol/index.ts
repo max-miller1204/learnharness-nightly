@@ -28,8 +28,10 @@ import type { ChatInput } from "../core/input-events.ts";
 import type { AttachmentReference } from "../core/attachments.ts";
 import type { GraphContextPick, LhMessage } from "../core/native-messages.ts";
 import type { SessionPricing } from "../core/prices.ts";
+import type { JobKind, JobRecord, JobStatus } from "../core/contracts/jobs.ts";
+import type { QuestionAnswerData } from "../core/question-core.ts";
 
-export type { AttachmentReference, ChatInput, ChatKind, ChatListItem, ChatRecord, GraphContextPick, ImageSnapshot, LhMessage, ServerEvents, ServerEventType, SessionCoverage, SessionPricing };
+export type { AttachmentReference, ChatInput, ChatKind, ChatListItem, ChatRecord, GraphContextPick, ImageSnapshot, JobKind, JobRecord, JobStatus, LhMessage, QuestionAnswerData, ServerEvents, ServerEventType, SessionCoverage, SessionPricing };
 
 // ─── Version ────────────────────────────────────────────────────────────────
 
@@ -311,3 +313,30 @@ export interface PairingTokenResponse {
 	label?: string;
 	tailscaleOrigin?: string;
 }
+
+/** Optional protocol 1 extension: the session's background helpers (research,
+ * PDF reader, plugin workers) with live status, and skipping a built-in
+ * question. Refetch `jobs` on a `jobs-changed` event for the chat (or one
+ * without a chatId) and on reconnect. */
+export const LESSON_VIEW_V1 = "lesson-view-v1";
+
+export const LESSON_VIEW_ROUTES = {
+	/** GET -> JobsResponse. */
+	jobs: (chatId: string) => `/api/jobs?chatId=${segment(chatId)}`,
+	/** POST QuestionDismissRequest -> QuestionDismissResponse. The same route
+	 * as PRACTICE_CONTROL_ROUTES.dismiss. Starts no turn: the skip rides the
+	 * learner's next input. */
+	dismiss: (chatId: string) => `/api/chats/${segment(chatId)}/dismiss`,
+} as const;
+
+export interface JobsResponse {
+	jobs: JobRecord[];
+	turnInFlight: boolean;
+}
+
+export interface QuestionDismissRequest {
+	input: { type: "dismiss"; toolCallId: string; answer: QuestionAnswerData };
+}
+
+/** 200 when saved, 202 when parked for the active turn's settlement. */
+export type QuestionDismissResponse = { ok: true; parked?: true };
