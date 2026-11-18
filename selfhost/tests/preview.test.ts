@@ -15,7 +15,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { DEFAULT_CONFIG, writeConfig } from "../src/config.ts";
 import { layout } from "../src/paths.ts";
-import { parsePrNumber, previewConfig, previewFeedUrl, previewHome, previewLockPath, previewPidPath, previewServeMarker } from "../src/preview.ts";
+import { isPreviewServer, parsePrNumber, previewConfig, previewFeedUrl, previewHome, previewLockPath, previewPidPath, previewServeMarker, processStartTime } from "../src/preview.ts";
 
 const LH = path.join(import.meta.dirname, "..", "lh.ts");
 const VERSION = "0.6.1-preview.20261117.42";
@@ -41,6 +41,49 @@ describe("preview helpers", () => {
 		assert.equal(previewConfig(real, 4000).tailscale.enabled, false, "never the real Tailscale port or an invalid one");
 		assert.equal(previewHome("/h", 7), path.join("/h", "previews", "pr-7"));
 		assert.equal(previewLockPath("/h", 7), path.join("/h", "previews", "pr-7.lock"));
+	});
+
+	it("reads a process's start time from ps in a fixed locale", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lh-preview-ps-"));
+		const savedPath = process.env.PATH;
+		try {
+			const log = path.join(dir, "calls");
+			fs.writeFileSync(path.join(dir, "ps"), `#!/bin/sh\necho "LC_ALL=$LC_ALL $*" >> "${log}"\n[ "$4" = 4242 ] || exit 1\necho "Wed Nov 18 09:41:07 2026"\n`, { mode: 0o755 });
+			process.env.PATH = `${dir}:${savedPath}`;
+			assert.equal(processStartTime(4242), "Wed Nov 18 09:41:07 2026");
+			assert.equal(processStartTime(4243), undefined, "no such process");
+			assert.equal(fs.readFileSync(log, "utf8"), "LC_ALL=C -o lstart= -p 4242\nLC_ALL=C -o lstart= -p 4243\n");
+		} finally {
+			process.env.PATH = savedPath;
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+		// The real ps takes the same arguments.
+		const started = processStartTime(process.pid);
+		assert.ok(started, "this process has a start time");
+		assert.equal(processStartTime(process.pid), started, "and it does not change");
+	});
+
+	it("knows a preview server off Linux by its recorded start time", () => {
+		const started = "Wed Nov 18 09:41:07 2026";
+		const asked: number[] = [];
+		const ps = (output: string | undefined) => ({ platform: "darwin", startTime: (pid: number) => { asked.push(pid); return output; } });
+		assert.equal(isPreviewServer(4242, "/h/previews/pr-7", started, ps(started)), true, "the process we started");
+		assert.deepEqual(asked, [4242]);
+		assert.equal(isPreviewServer(4242, "/h/previews/pr-7", started, ps("Wed Nov 18 11:02:33 2026")), false, "a later process that reused the pid");
+		assert.equal(isPreviewServer(4242, "/h/previews/pr-7", started, ps(undefined)), false, "the process is gone");
+		assert.equal(isPreviewServer(4242, "/h/previews/pr-7", undefined, ps(started)), false, "no start time recorded");
+	});
+
+	it("knows a preview server on Linux by its environment", { skip: process.platform !== "linux" }, async () => {
+		const server = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { env: { ...process.env, LH_HOME: "/h/previews/pr-7" }, stdio: "ignore" });
+		try {
+			const never = { platform: "linux", startTime: () => assert.fail("Linux reads /proc, not ps") };
+			assert.equal(isPreviewServer(server.pid ?? 0, "/h/previews/pr-7", undefined, never), true);
+			assert.equal(isPreviewServer(server.pid ?? 0, "/h/previews/pr-8", undefined, never), false, "another preview's server");
+		} finally {
+			server.kill("SIGKILL");
+			await new Promise((resolve) => server.once("exit", resolve));
+		}
 	});
 });
 
