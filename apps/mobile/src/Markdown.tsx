@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Alert, Linking, useWindowDimensions } from "react-native";
 import { WebView } from "react-native-webview";
-import { httpsLink, parseMarkdown, renderMarkdown } from "./render-markdown";
+import { httpsLink, parseMarkdown, proseType, renderMarkdown } from "./render-markdown";
 import { NativeMarkdown } from "./NativeMarkdown";
 import { useTheme } from "./theme";
 
@@ -16,25 +16,26 @@ export function confirmExternalLink(value: string) {
   ]);
 }
 
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, small }: { text: string; small?: boolean }) {
   const parsed = useMemo(() => parseMarkdown(text), [text]);
   if (!parsed.tokens.length) return null;
-  if (!parsed.hasMath) return <NativeMarkdown tokens={parsed.tokens} openLink={confirmExternalLink} />;
-  return <MathMarkdown parsed={parsed} />;
+  if (!parsed.hasMath) return <NativeMarkdown tokens={parsed.tokens} openLink={confirmExternalLink} small={small} />;
+  return <MathMarkdown parsed={parsed} small={small} />;
 }
 
-function MathMarkdown({ parsed }: { parsed: ReturnType<typeof parseMarkdown> }) {
+function MathMarkdown({ parsed, small }: { parsed: ReturnType<typeof parseMarkdown>; small?: boolean }) {
   const { c } = useTheme();
   const { fontScale } = useWindowDimensions();
   const [height, setHeight] = useState(26);
   const [failed, setFailed] = useState(false);
+  const type = proseType(small);
   const source = useMemo(() => ({
     html: `<!doctype html><html><head>
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-lh-size'; base-uri 'none'; form-action 'none'">
       <style>
         html,body { margin:0; padding:0; background:transparent; color:${c.text};
-          font: ${16 * fontScale}px/1.5 system-ui,sans-serif; overflow-wrap:anywhere; }
+          font: ${type.fontSize * fontScale}px/${type.lineHeight * fontScale}px system-ui,sans-serif; overflow-wrap:anywhere; }
         #content { display:flow-root; }
         #content > :first-child { margin-top:0; }
         #content > :last-child { margin-bottom:0; }
@@ -64,8 +65,8 @@ function MathMarkdown({ parsed }: { parsed: ReturnType<typeof parseMarkdown> }) 
         window.addEventListener('load', resize);
         new ResizeObserver(resize).observe(content);
       </script></body></html>`,
-  }), [c, fontScale, parsed]);
-  if (failed) return <NativeMarkdown tokens={parsed.tokens} openLink={confirmExternalLink} />;
+  }), [c, fontScale, parsed, type.fontSize, type.lineHeight]);
+  if (failed) return <NativeMarkdown tokens={parsed.tokens} openLink={confirmExternalLink} small={small} />;
 
   // The local document reports its size and link taps. It cannot navigate or load external content.
   return (

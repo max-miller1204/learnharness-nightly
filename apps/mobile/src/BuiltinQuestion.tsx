@@ -68,14 +68,14 @@ function Option({ label, multi, selected, disabled, onPress }: {
         backgroundColor: selected || pressed ? c.hover : "transparent", opacity: disabled ? 0.5 : 1,
       })}>
       <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{
-        marginTop: 4, width: 16, height: 16, alignItems: "center", justifyContent: "center", borderWidth: 1,
+        marginTop: 2, width: 16, height: 16, alignItems: "center", justifyContent: "center", borderWidth: 1,
         borderRadius: multi ? radius.sm : 8, borderColor: selected ? c.primary : c.rail, backgroundColor: selected ? c.primary : "transparent",
       }}>
         {selected && (multi ? <Text style={{ color: c.onPrimary, fontSize: 12, lineHeight: 14 }}>✓</Text>
           : <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: c.onPrimary }} />)}
       </View>
       {/* The math view would take the tap, so the whole row stays the button. */}
-      <View pointerEvents="none" style={{ flex: 1 }}><Markdown text={label} /></View>
+      <View pointerEvents="none" style={{ flex: 1 }}><Markdown text={label} small /></View>
     </Pressable>
   );
 }

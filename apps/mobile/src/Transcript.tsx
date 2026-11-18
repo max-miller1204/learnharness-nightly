@@ -116,7 +116,7 @@ function Part({ part, context }: { part: LhViewPart; context: PartContext }) {
             {!!status && <Text selectable style={s.prose}>{status}</Text>}
             {/* The learner's own words stay plain; the chosen options render math like the question (answered-card.tsx). */}
             {!status && !!answer.text && <Text selectable style={s.prose}>{answer.text}</Text>}
-            {!status && answer.answers?.map(({ label }, index) => <Markdown key={index} text={label} />)}
+            {!status && answer.answers?.map(({ label }, index) => <Markdown key={index} text={label} small />)}
             {!status && !!answer.other && <Text selectable style={s.prose}>{answer.other}</Text>}
             {typeof answer.correct === "boolean" && !answer.dismissed && !answer.dontKnow &&
               <Text style={[s.label, { color: answer.correct ? c.success : c.error }]}>{answer.correct ? "Correct" : "Incorrect"}</Text>}

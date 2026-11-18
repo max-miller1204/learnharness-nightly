@@ -1,6 +1,6 @@
 import { Fragment, memo, type ReactNode } from "react";
 import { Text, View } from "react-native";
-import { httpsLink, type MarkdownToken } from "./render-markdown";
+import { httpsLink, proseType, type MarkdownToken } from "./render-markdown";
 import { fonts, radius, space, useTheme } from "./theme";
 
 interface Node {
@@ -23,11 +23,13 @@ function tokenTree(tokens: MarkdownToken[]): Node[] {
   return root;
 }
 
-export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }: {
+export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink, small }: {
   tokens: MarkdownToken[];
   openLink: (url: string) => void;
+  small?: boolean;
 }) {
   const { c, s } = useTheme();
+  const prose = small ? [s.prose, proseType(true)] : s.prose;
   const heading = { h1: 25, h2: 20 } as Record<string, number>;
 
   // Each weight and slant is its own font file, so nested emphasis picks the combined face.
@@ -66,7 +68,7 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
         case "paragraph_open":
           return <Fragment key={index}>{blocks(children)}</Fragment>;
         case "inline":
-          return <Text key={index} selectable style={s.prose}>{inline(children)}</Text>;
+          return <Text key={index} selectable style={prose}>{inline(children)}</Text>;
         case "heading_open": {
           const size = heading[token.tag] ?? 16;
           return <Text key={index} accessibilityRole="header" selectable
@@ -79,7 +81,7 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
             <View key={index} style={{ gap: space.xs, paddingLeft: space.sm }}>
               {children.map((item, itemIndex) => (
                 <View key={itemIndex} style={{ flexDirection: "row", gap: space.sm }}>
-                  <Text style={s.prose}>{token.type === "bullet_list_open" ? "•" : `${start + itemIndex}.`}</Text>
+                  <Text style={prose}>{token.type === "bullet_list_open" ? "•" : `${start + itemIndex}.`}</Text>
                   <View style={{ flex: 1, gap: space.xs }}>{blocks(item.children)}</View>
                 </View>
               ))}
@@ -95,7 +97,7 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
           return <View key={index} style={{ flexDirection: "row", borderBottomWidth: 1, borderColor: c.border }}>{blocks(children)}</View>;
         case "th_open":
         case "td_open":
-          return <Text key={index} selectable style={[s.prose, { flex: 1, paddingHorizontal: space.sm, paddingVertical: space.xs, borderLeftWidth: 1, borderColor: c.border, marginLeft: -1 },
+          return <Text key={index} selectable style={[prose, { flex: 1, paddingHorizontal: space.sm, paddingVertical: space.xs, borderLeftWidth: 1, borderColor: c.border, marginLeft: -1 },
             token.type === "th_open" && { fontFamily: fonts.proseBold }]}>{inline(children)}</Text>;
         case "hr":
           return <View key={index} style={s.divider} />;
@@ -107,7 +109,7 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
             </View>
           );
         case "math_block":
-          return <Text key={index} selectable style={s.prose}>{token.content.trim()}</Text>;
+          return <Text key={index} selectable style={prose}>{token.content.trim()}</Text>;
         default:
           return <View key={index} style={{ gap: space.sm }}>{blocks(children)}</View>;
       }

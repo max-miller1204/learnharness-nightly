@@ -10,6 +10,11 @@ const markdown = new MarkdownIt({ html: false, linkify: true }).use(katex, {
 
 export type MarkdownToken = ReturnType<typeof markdown.parse>[number];
 
+/** Reading text, or the web's smaller text-sm (quiz choices sit at 14px under a 16px question). */
+export function proseType(small = false) {
+  return small ? { fontSize: 14, lineHeight: 20 } : { fontSize: 16, lineHeight: 24 };
+}
+
 export function httpsLink(href: unknown): string | undefined {
   if (typeof href !== "string" || !/^https:\/\//i.test(href)) return;
   try {
