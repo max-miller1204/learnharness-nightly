@@ -7,12 +7,16 @@ const { openServerList } = require("./server-list-store.cjs");
 const { ServerProblem, parseOrigin, normalizeCode, parsePairLink, checkDescriptor, checkSession, pairServer } = require("./remote-server.cjs");
 const { remoteChatGPTSignIn } = require("./remote-chatgpt.cjs");
 const { createRemoteWindow } = require("./remote-window.cjs");
+const { BACKGROUND, hostLabel, coverWindow } = require("./skeleton.cjs");
 
 const SHELL = path.join(__dirname, "server-list.html");
 const CHANNEL = "lh:server-list";
 const CHANGED = "lh:server-list:changed";
 
-async function createServerList({ app, BrowserWindow, ipcMain, session, shell, safeStorage, startLocal, stopLocal, createLocalWindow, setLocalMenu }) {
+async function createServerList({
+	app, BrowserWindow, WebContentsView, ipcMain, session, shell, safeStorage,
+	startLocal, stopLocal, createLocalWindow, setLocalMenu, themeMode = () => "dark", platform = process.platform,
+}) {
 	const file = path.join(app.getPath("userData"), "servers.json");
 	const store = await openServerList(file, safeStorage);
 
@@ -62,6 +66,14 @@ async function createServerList({ app, BrowserWindow, ipcMain, session, shell, s
 		}
 		return controls;
 	}
+	function closeList() {
+		const panel = controls;
+		controls = null;
+		if (panel && !panel.isDestroyed()) panel.destroy();
+	}
+	function cover(win, status, frame) {
+		return coverWindow(win, { WebContentsView, session, mode: themeMode(), status, frame });
+	}
 	function destroyContent() {
 		login?.abort();
 		login = null;
@@ -104,75 +116,110 @@ async function createServerList({ app, BrowserWindow, ipcMain, session, shell, s
 			}
 		} finally { rechecking.delete(win); }
 	}
-	async function connect(server, code) {
+	// Launch, Dock reopen and "This computer" open the app window at once with
+	// the ghost dashboard. Other connects keep "Connecting…" in the list.
+	async function connect(server, code, { quiet = false } = {}) {
 		if (busy || closing) return;
 		busy = true;
 		problem = null;
 		notice = "";
-		show();
+		const ghost = quiet || server === "local";
+		if (!ghost) show();
 		publish();
 		const operation = new AbortController();
 		connecting = operation;
-		const options = { signal: operation.signal };
+		const options = { signal: operation.signal, retry: true };
+		// Closing the ghost dashboard cancels the connect quietly.
+		const hold = (win) => win.once("closed", () => { if (connecting === operation) operation.abort(); });
 		try {
 			const previous = active?.server;
 			destroyContent();
 			setLocalMenu(false);
 			if (previous === "local" && server !== "local") await stopLocal();
 			if (server === "local") {
+				const local = createLocalWindow();
+				const skeleton = cover(local.win, "Starting LearnHarness…", platform === "darwin" ? "inset" : "hidden");
+				registerContent(local.win);
+				hold(local.win);
+				local.win.show();
+				skeleton.focus();
+				closeList();
 				const url = await startLocal(operation.signal);
 				operation.signal.throwIfAborted();
 				if (!store.damaged && !store.defaultServer) await store.saveDefault(server);
 				operation.signal.throwIfAborted();
+				// As before, the bundled app's own load errors stay in its window.
+				await local.load(url).catch(() => {});
+				operation.signal.throwIfAborted();
 				active = { server };
-				registerContent(createLocalWindow(url));
 				setLocalMenu(true);
+				skeleton.reveal();
+				local.win.focus();
+				local.win.webContents.focus();
 			} else {
+				// A saved bearer is read before the window exists, so the
+				// skeleton can show while the checks wait on the server.
+				let token = code ? null : await store.readToken(server);
+				let win;
+				let skeleton;
+				const open = () => {
+					const selection = { server, token };
+					const lifetime = new AbortController();
+					const created = createRemoteWindow({
+						BrowserWindow, session, origin: server, token, signal: lifetime.signal,
+						backgroundColor: BACKGROUND[themeMode()] ?? BACKGROUND.dark,
+						openExternal: (target) => shell.openExternal(target),
+						onProblem: (mainFrame) => { void recheck(created, selection, mainFrame, lifetime.signal); },
+					});
+					created.once("closed", () => lifetime.abort());
+					registerContent(created);
+					return created;
+				};
+				if (quiet) {
+					win = open();
+					skeleton = cover(win, `Connecting to ${hostLabel(server)}…`);
+					hold(win);
+					win.show();
+					skeleton.focus();
+				}
 				await checkDescriptor(server, options);
-				let token;
 				if (code) {
 					await store.requireEncryption();
 					token = await pairServer(server, code, options);
 					await store.savePairing(server, token);
-				} else {
-					token = await store.readToken(server);
 				}
 				await checkSession(server, token, options);
-				const selection = { server, token };
-				const lifetime = new AbortController();
-				const win = createRemoteWindow({
-					BrowserWindow, session, origin: server, token, signal: lifetime.signal,
-					openExternal: (target) => shell.openExternal(target),
-					onProblem: (mainFrame) => { void recheck(win, selection, mainFrame, lifetime.signal); },
-				});
-				win.once("closed", () => lifetime.abort());
-				registerContent(win);
+				win ??= open();
 				try {
 					await win.loadURL(server).catch((error) => {
 						if (error.code !== "ERR_HTTP_RESPONSE_CODE_FAILURE") throw error;
 					});
 					// Older protocol-compatible servers may still rewrite a
-					// late revocation to /pair. Keep the first load hidden.
+					// late revocation to /pair. Keep the first load unseen,
+					// hidden or under the skeleton, until this check passes.
 					await checkSession(server, token, options);
 					operation.signal.throwIfAborted();
 					if (!store.defaultServer) await store.saveDefault(server);
 					operation.signal.throwIfAborted();
-					active = selection;
-					win.show();
+					active = { server, token };
+					if (skeleton) skeleton.reveal();
+					else win.show();
 					win.focus();
+					win.webContents.focus();
 				} catch (error) {
-					if (win === window) destroyContent();
-					if (!(error instanceof ServerProblem)) await checkSession(server, token, options);
+					// This reclassification still doesn't retry, as before.
+					if (!operation.signal.aborted && !(error instanceof ServerProblem)) await checkSession(server, token, { signal: operation.signal });
 					throw error;
 				}
 			}
-			const panel = controls;
-			controls = null;
-			if (panel && !panel.isDestroyed()) panel.destroy();
+			closeList();
 			return window;
 		} catch (error) {
 			if (server === "local") await stopLocal();
-			if (!closing) fail(server, error);
+			// Show the list before closing the window, so the app never
+			// runs out of windows on the way to the problem.
+			if (!operation.signal.aborted) fail(server, error);
+			destroyContent();
 		} finally {
 			connecting = null;
 			busy = false;
@@ -241,11 +288,11 @@ async function createServerList({ app, BrowserWindow, ipcMain, session, shell, s
 	return {
 		show,
 		async launch() {
+			if (store.defaultServer) return connect(store.defaultServer, undefined, { quiet: true });
 			show();
-			if (store.defaultServer) return connect(store.defaultServer);
 		},
 		reopen() {
-			if (active) return connect(active.server);
+			if (active) return connect(active.server, undefined, { quiet: true });
 			if (problem || busy) return show();
 			return this.launch();
 		},

@@ -13,6 +13,9 @@ const wire = require("../electron/remote-server.cjs");
 const { createRemoteWindow } = require("../electron/remote-window.cjs");
 const { createServerList } = require("../electron/server-list.cjs");
 const { openServerList } = require("../electron/server-list-store.cjs");
+const { hostLabel } = require("../electron/skeleton.cjs");
+// Quiet retries wait 15 s in the app; the fixtures need only a few steps.
+Object.assign(wire.retryTiming, { windowMs: 60, stepMs: 5 });
 const alpha = "https://one.example.test";
 const beta = "https://two.example.test:8443";
 const code = "23456789ABCD";
@@ -79,9 +82,44 @@ class TestSession {
 	};
 }
 
+class TestView {
+	static all: TestView[] = [];
+	options;
+	url = "";
+	closed = false;
+	focused = false;
+	background = "";
+	bounds: object | null = null;
+	webContents = Object.assign(new EventEmitter(), {
+		setWindowOpenHandler() {},
+		isDestroyed: () => this.closed,
+		close: () => { this.closed = true; },
+		focus: () => { this.focused = true; },
+		loadFile: async (file: string, { query = {} }: { query?: Record<string, string> } = {}) => {
+			this.url = `${pathToFileURL(file).href}?${new URLSearchParams(query)}`;
+		},
+	});
+	constructor(options: { webPreferences: Record<string, unknown> }) {
+		this.options = options;
+		TestView.all.push(this);
+	}
+	setBounds(bounds: object) { this.bounds = bounds; }
+	setBackgroundColor(color: string) { this.background = color; }
+}
+
 class TestWindow extends EventEmitter {
 	static all: TestWindow[] = [];
+	/** The windows created since `before`, in order. */
+	static since(before: number) {
+		const created = TestWindow.all.slice(before);
+		return { created, first: created[0]!, second: created[1]! };
+	}
 	options;
+	contentView = {
+		children: [] as TestView[],
+		addChildView: (view: TestView) => { this.contentView.children.push(view); },
+		removeChildView: (view: TestView) => { this.contentView.children = this.contentView.children.filter((item) => item !== view); },
+	};
 	url = "";
 	destroyed = false;
 	shown = false;
@@ -91,16 +129,18 @@ class TestWindow extends EventEmitter {
 		id: TestWindow.all.length,
 		mainFrame: { url: "" },
 		isDestroyed: () => this.destroyed,
+		focus() {},
 		setWindowOpenHandler: (handler: typeof this.windowOpen) => { this.windowOpen = handler; },
 		send: (_channel: string, snapshot: typeof this.snapshot) => { this.snapshot = snapshot; },
 	});
-	constructor(options: { webPreferences?: { preload?: string; session?: TestSession } } = {}) {
+	constructor(options: { backgroundColor?: string; webPreferences?: { preload?: string; session?: TestSession } } = {}) {
 		super();
 		this.options = options;
 		TestWindow.all.push(this);
 	}
 	isDestroyed() { return this.destroyed; }
 	isMinimized() { return false; }
+	getContentSize() { return [1440, 900]; }
 	focus() {}
 	show() { this.shown = true; }
 	destroy() { this.destroyed = true; this.emit("closed"); }
@@ -145,12 +185,12 @@ test("the app-owned switch flow keeps defaults, enforces preflight and isolates 
 	let localStarts = 0;
 	let localStops = 0;
 	const boot = () => createServerList({
-		app: { getPath: () => directory }, BrowserWindow: TestWindow, safeStorage: fakeSafeStorage,
+		app: { getPath: () => directory }, BrowserWindow: TestWindow, WebContentsView: TestView, safeStorage: fakeSafeStorage,
 		ipcMain: { handle: (_channel: string, callback: typeof handler) => { handler = callback; } },
 		session: { fromPartition: () => new TestSession() },
 		startLocal: async () => { localStarts++; return "http://localhost:3000"; },
 		stopLocal: async () => { localStops++; },
-		createLocalWindow: (url: string) => { const win = new TestWindow(); win.loadURL(url); return win; },
+		createLocalWindow: () => { const win = new TestWindow(); return { win, load: (url: string) => win.loadURL(url) }; },
 		setLocalMenu() {},
 	});
 	let controller = await boot();
@@ -412,12 +452,12 @@ test("a new ChatGPT sign-in waits for the abandoned attempt's slow cancel before
 	type FakeEvent = { sender: TestWindow["webContents"]; senderFrame: { url: string } };
 	let handler!: (event: FakeEvent, action: string, payload?: unknown) => Promise<unknown>;
 	const controller = await createServerList({
-		app: { getPath: () => directory }, BrowserWindow: TestWindow, safeStorage: fakeSafeStorage,
+		app: { getPath: () => directory }, BrowserWindow: TestWindow, WebContentsView: TestView, safeStorage: fakeSafeStorage,
 		ipcMain: { handle: (_channel: string, callback: typeof handler) => { handler = callback; } },
 		session: { fromPartition: () => new TestSession() },
 		shell: { openExternal: async (url: string) => { opened.push(url); } },
 		startLocal: async () => "http://localhost:3000", stopLocal: async () => {},
-		createLocalWindow: () => new TestWindow(), setLocalMenu() {},
+		createLocalWindow: () => { const win = new TestWindow(); return { win, load: (url: string) => win.loadURL(url) }; }, setLocalMenu() {},
 	});
 	const panel = () => controller.show() as TestWindow;
 	const send = (action: string, value?: unknown) => {
@@ -448,4 +488,224 @@ test("a new ChatGPT sign-in waits for the abandoned attempt's slow cancel before
 	assert.deepEqual(operations, ["login", "browser", "cancel", "login", "browser"]);
 	controller.close();
 	await until(() => operations.length === 6);
+});
+
+test("quiet retries wait out a starting server, but never repeat the one-use pairing exchange", async (t) => {
+	const originalFetch = globalThis.fetch;
+	t.after(() => { globalThis.fetch = originalFetch; });
+	let replies: (() => Response)[] = [];
+	let calls = 0;
+	globalThis.fetch = async () => {
+		calls++;
+		const next = replies.shift();
+		if (!next) throw new TypeError("fixture disconnected");
+		return next();
+	};
+	const ok = () => Response.json({ name: "Test server", protocolVersion: CLIENT_PROTOCOL_VERSION });
+	replies = [() => new Response(null, { status: 503 }), () => { throw new TypeError("refused"); }, () => new Response(null, { status: 504 }), ok];
+	assert.equal((await wire.checkDescriptor(alpha, { retry: true })).name, "Test server");
+	assert.equal(calls, 4);
+	calls = 0;
+	const started = Date.now();
+	globalThis.fetch = (_input, init) => new Promise((_resolve, reject) => {
+		calls++;
+		init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+	});
+	await assert.rejects(wire.checkSession(alpha, "secret", { retry: true }), { kind: "retry" });
+	assert(Date.now() - started < 1000, "a silent server's attempt ends at the retry deadline");
+	globalThis.fetch = async () => {
+		calls++;
+		const next = replies.shift();
+		if (!next) throw new TypeError("fixture disconnected");
+		return next();
+	};
+	calls = 0;
+	replies = [() => new Response(null, { status: 502 })];
+	await assert.rejects(wire.checkDescriptor(alpha), { kind: "retry" });
+	assert.equal(calls, 1, "a connect without retry fails at once");
+	calls = 0;
+	replies = [() => new Response(null, { status: 503 }), ok];
+	await assert.rejects(wire.pairServer(alpha, code, { retry: true }), { kind: "retry" });
+	assert.equal(calls, 1, "the pairing exchange is sent once");
+	calls = 0;
+	replies = [];
+	await assert.rejects(wire.checkSession(alpha, "secret", { retry: true }), { kind: "retry" });
+	assert(calls > 1, "network errors retry until the window closes");
+	assert.equal(hostLabel("https://max-desktop.tail1234.ts.net:8443"), "max-desktop");
+	assert.equal(hostLabel("https://100.64.0.5:8443"), "100.64.0.5");
+	assert.equal(hostLabel("https://[fd7a:115c::1]"), "fd7a:115c::1");
+});
+
+test("a launch with a default skips the list and keeps the server page under the ghost dashboard until both session checks pass", async (t) => {
+	const directory = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-ghost-"));
+	const originalFetch = globalThis.fetch;
+	t.after(async () => { globalThis.fetch = originalFetch; await fs.rm(directory, { recursive: true, force: true }); });
+	let transient = 0;
+	let offline = false;
+	let revokeLoaded = false;
+	const checks: { covered: number; shown: boolean; url: string }[] = [];
+	globalThis.fetch = async (input) => {
+		const url = new URL(String(input));
+		if (offline) throw new TypeError("fixture disconnected");
+		switch (url.pathname) {
+			case PROTOCOL_ROUTES.serverInfo:
+				if (transient > 0) { transient--; return new Response(null, { status: 503 }); }
+				return Response.json({ name: "Test server", protocolVersion: CLIENT_PROTOCOL_VERSION });
+			case PROTOCOL_ROUTES.token: return Response.json({ access_token: "alpha-secret", token_type: "Bearer" });
+			case PROTOCOL_ROUTES.session: {
+				const win = TestWindow.all.at(-1)!;
+				checks.push({ covered: win.contentView.children.length, shown: win.shown, url: win.url });
+				return Response.json({ authenticated: !(revokeLoaded && win.url === alpha) });
+			}
+			default: throw new Error("Unexpected request " + url.pathname);
+		}
+	};
+	type FakeEvent = { sender: TestWindow["webContents"]; senderFrame: { url: string } };
+	let handler!: (event: FakeEvent, action: string, payload?: unknown) => Promise<unknown>;
+	const boot = () => createServerList({
+		app: { getPath: () => directory }, BrowserWindow: TestWindow, WebContentsView: TestView, safeStorage: fakeSafeStorage,
+		ipcMain: { handle: (_channel: string, callback: typeof handler) => { handler = callback; } },
+		session: { fromPartition: () => new TestSession() }, shell: { openExternal: async () => {} },
+		startLocal: async () => "http://localhost:3000", stopLocal: async () => {},
+		createLocalWindow: () => { const win = new TestWindow(); return { win, load: (url: string) => win.loadURL(url) }; },
+		setLocalMenu() {}, themeMode: () => "dark",
+	});
+	const isList = (win: TestWindow) => win.url.endsWith("/server-list.html");
+	let controller = await boot();
+	await controller.launch();
+	const first = TestWindow.all.at(-1)!;
+	assert(isList(first), "first run shows the list");
+	await handler({ sender: first.webContents, senderFrame: first.webContents.mainFrame }, "pair", { origin: alpha, code });
+	assert.deepEqual(checks.map(({ covered }) => covered), [0, 0], "a connect from the list keeps the server window hidden instead");
+	controller.close();
+	for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
+
+	checks.length = 0;
+	transient = 2;
+	controller = await boot();
+	let before = TestWindow.all.length;
+	await controller.launch();
+	const { created, first: remote } = TestWindow.since(before);
+	assert.equal(created.length, 1, "no server list opens");
+	assert.equal(transient, 0, "503 answers are retried quietly");
+	assert.equal(remote.url, alpha);
+	assert.equal(remote.options.backgroundColor, "#141414");
+	assert.deepEqual(checks, [
+		{ covered: 1, shown: true, url: "" },
+		{ covered: 1, shown: true, url: alpha },
+	], "the skeleton shows at once and covers the loaded page through the second check");
+	assert.equal(remote.contentView.children.length, 0, "the verified page is revealed");
+	const ghost = TestView.all.at(-1)!;
+	const page = new URL(ghost.url);
+	assert(page.pathname.endsWith("/skeleton.html"));
+	assert.equal(page.searchParams.get("status"), "Connecting to one…");
+	assert.equal(page.searchParams.get("mode"), "dark");
+	assert.equal(page.searchParams.get("frame"), null, "the framed remote window has no drag band");
+	assert.equal(ghost.closed, true);
+	assert.equal(ghost.focused, true, "keys go to the skeleton while it covers the page");
+	assert.deepEqual(Object.entries(ghost.options.webPreferences).filter(([key]) => key !== "session"), [
+		["sandbox", true], ["contextIsolation", true], ["nodeIntegration", false],
+	]);
+
+	remote.destroy();
+	before = TestWindow.all.length;
+	await controller.reopen();
+	const { created: reopenedAll, first: reopened } = TestWindow.since(before);
+	assert.equal(reopenedAll.length, 1, "Dock reopen also connects without the list");
+	assert.equal(reopened.url, alpha);
+	assert.equal(reopened.shown, true);
+	assert.equal(TestView.all.at(-1)!.closed, true);
+
+	reopened.destroy();
+	revokeLoaded = true;
+	before = TestWindow.all.length;
+	await controller.reopen();
+	const { first: revoked, second: list } = TestWindow.since(before);
+	assert.equal(revoked.destroyed, true);
+	assert.equal(revoked.contentView.children.length, 1, "a late revocation is never revealed");
+	assert(isList(list));
+	assert.equal(list.snapshot?.problem?.kind, "pair");
+	list.destroy();
+
+	before = TestWindow.all.length;
+	await controller.reopen();
+	assert.deepEqual(TestWindow.all.slice(before).map(isList), [true], "a waiting problem reopens the list");
+	controller.close();
+	for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
+
+	revokeLoaded = false;
+	offline = true;
+	controller = await boot();
+	before = TestWindow.all.length;
+	await controller.launch();
+	const { first: unreachable, second: recovery } = TestWindow.since(before);
+	assert.equal(unreachable.destroyed, true);
+	assert(isList(recovery));
+	assert.equal(recovery.snapshot?.problem?.kind, "retry");
+	controller.close();
+	for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
+});
+
+test("This computer opens the ghost dashboard before the bundled server starts, and closing it cancels quietly", async (t) => {
+	const directory = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-ghost-local-"));
+	t.after(() => fs.rm(directory, { recursive: true, force: true }));
+	type FakeEvent = { sender: TestWindow["webContents"]; senderFrame: { url: string } };
+	let handler!: (event: FakeEvent, action: string, payload?: unknown) => Promise<unknown>;
+	let release!: (url: string) => void;
+	let refuse!: (error: Error) => void;
+	let stops = 0;
+	const controller = await createServerList({
+		app: { getPath: () => directory }, BrowserWindow: TestWindow, WebContentsView: TestView, safeStorage: fakeSafeStorage,
+		ipcMain: { handle: (_channel: string, callback: typeof handler) => { handler = callback; } },
+		session: { fromPartition: () => new TestSession() },
+		startLocal: (signal: AbortSignal) => new Promise((resolve, reject) => {
+			release = resolve;
+			refuse = reject;
+			signal.addEventListener("abort", () => reject(signal.reason));
+		}),
+		stopLocal: async () => { stops++; },
+		createLocalWindow: () => { const win = new TestWindow(); return { win, load: (url: string) => win.loadURL(url) }; },
+		setLocalMenu() {}, themeMode: () => "light", platform: "darwin",
+	});
+	t.after(() => {
+		controller.close();
+		for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
+	});
+	const isList = (win: TestWindow) => win.url.endsWith("/server-list.html");
+	await controller.launch();
+	const list = TestWindow.all.at(-1)!;
+	assert(isList(list));
+	const pending = handler({ sender: list.webContents, senderFrame: list.webContents.mainFrame }, "connect", "local");
+	const local = TestWindow.all.at(-1)!;
+	assert.equal(local.shown, true, "the main window opens before the list closes");
+	assert.equal(list.destroyed, true);
+	assert.equal(local.contentView.children.length, 1);
+	const ghost = new URL(TestView.all.at(-1)!.url);
+	assert.equal(ghost.searchParams.get("status"), "Starting LearnHarness…");
+	assert.equal(ghost.searchParams.get("mode"), "light");
+	assert.equal(ghost.searchParams.get("frame"), "inset", "the band clears the macOS traffic lights");
+	assert.equal(TestView.all.at(-1)!.background, "#f5f5f3");
+	release("http://localhost:3000");
+	await pending;
+	assert.equal(local.url, "http://localhost:3000");
+	assert.equal(local.contentView.children.length, 0, "the app is revealed after it loads");
+
+	local.destroy();
+	let before = TestWindow.all.length;
+	const cancelled = controller.reopen();
+	const closing = TestWindow.all.at(-1)!;
+	assert.equal(closing.contentView.children.length, 1);
+	closing.destroy();
+	await cancelled;
+	assert.equal(TestWindow.all.length, before + 1, "closing the ghost dashboard opens no list");
+	assert.equal(stops, 1);
+
+	before = TestWindow.all.length;
+	const failing = controller.reopen();
+	refuse(new Error("fixture server crashed"));
+	await failing;
+	const { first: broken, second: recovery } = TestWindow.since(before);
+	assert.equal(broken.destroyed, true);
+	assert(isList(recovery));
+	assert.equal(recovery.snapshot?.problem?.kind, "retry");
 });

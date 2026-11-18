@@ -10,6 +10,10 @@ const SERVER_INFO_PATH = "/.well-known/learnharness/server";
 const TOKEN_PATH = "/oauth/token";
 const SESSION_PATH = "/api/auth/session";
 const PAIRING_CODE = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{12}$/;
+// Like T3's bootstrap retry: a server that is starting or restarting
+// answers with a network error or a gateway status for a moment.
+const TRANSIENT_STATUS = new Set([502, 503, 504]);
+const retryTiming = { windowMs: 15000, stepMs: 500 };
 
 class ServerProblem extends Error {
 	constructor(kind, message) {
@@ -48,10 +52,10 @@ function atOrigin(value, origin) {
 	} catch { return false; }
 }
 
-function requestServer(origin, pathname, { request = fetch, signal, redirect = "error", token, headers, ...options } = {}) {
+function requestServer(origin, pathname, { request = fetch, signal, redirect = "error", token, headers, timeoutMs = 15000, ...options } = {}) {
 	const url = new URL(pathname, origin);
 	if (parseOrigin(origin) !== origin || !atOrigin(url, origin)) throw new Error("Expected a request to the selected server.");
-	const timeout = AbortSignal.timeout(15000);
+	const timeout = AbortSignal.timeout(timeoutMs);
 	return request(url, {
 		...options, redirect, credentials: "omit", cache: "no-store",
 		headers: { [PROTOCOL_HEADER]: String(CLIENT_PROTOCOL_VERSION), ...headers, ...(token && { authorization: `Bearer ${token}` }) },
@@ -63,11 +67,44 @@ function unreachable() {
 	return new ServerProblem("retry", "Couldn’t reach the LearnHarness server. Check the address and connection, then retry.");
 }
 
-async function serverJSON(origin, pathname, options) {
+function pause(ms, signal) {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) return reject(signal.reason);
+		const done = () => { signal?.removeEventListener("abort", stop); resolve(); };
+		const timer = setTimeout(done, ms);
+		const stop = () => { clearTimeout(timer); reject(signal.reason); };
+		signal?.addEventListener("abort", stop, { once: true });
+	});
+}
+
+function isTransportError(error) {
+	return error instanceof TypeError || error?.name === "TimeoutError" || error?.name === "AbortError";
+}
+
+// `retry` waits out a starting server. The one-use pairing exchange never sets it.
+async function serverJSON(origin, pathname, { retry = false, ...options } = {}) {
+	// The whole wait, including a silent attempt's timeout, ends at the deadline.
+	const deadline = Date.now() + retryTiming.windowMs;
 	try {
-		const response = await requestServer(origin, pathname, options);
-		if (response.status === 426) throw new ServerProblem("mismatch", "The desktop app and server use different client protocol versions.");
-		return { response, data: await response.json() };
+		for (;;) {
+			const timeoutMs = retry ? Math.max(deadline - Date.now(), retryTiming.stepMs) : undefined;
+			let response;
+			try {
+				response = await requestServer(origin, pathname, { ...options, ...(timeoutMs && { timeoutMs }) });
+			} catch (error) {
+				const waiting = retry && Date.now() < deadline;
+				if (!waiting || options.signal?.aborted || !isTransportError(error)) throw error;
+				await pause(retryTiming.stepMs, options.signal);
+				continue;
+			}
+			if (retry && Date.now() < deadline && TRANSIENT_STATUS.has(response.status)) {
+				await response.body?.cancel().catch(() => {});
+				await pause(retryTiming.stepMs, options.signal);
+				continue;
+			}
+			if (response.status === 426) throw new ServerProblem("mismatch", "The desktop app and server use different client protocol versions.");
+			return { response, data: await response.json() };
+		}
 	} catch (error) {
 		if (error instanceof ServerProblem) throw error;
 		throw unreachable();
@@ -97,7 +134,7 @@ async function checkSession(origin, token, options) {
 
 async function pairServer(origin, code, options) {
 	const { response, data } = await serverJSON(origin, TOKEN_PATH, {
-		...options,
+		...options, retry: false,
 		method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
 		body: new URLSearchParams({
 			grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -172,7 +209,7 @@ function allowsRemoteRedirect(details, origin) {
 }
 
 module.exports = {
-	CLIENT_PROTOCOL_VERSION, PROTOCOL_HEADER, SERVER_INFO_PATH, TOKEN_PATH, SESSION_PATH, ServerProblem,
+	CLIENT_PROTOCOL_VERSION, PROTOCOL_HEADER, SERVER_INFO_PATH, TOKEN_PATH, SESSION_PATH, ServerProblem, retryTiming,
 	parseOrigin, normalizeCode, parsePairLink, requestServer, checkDescriptor, checkSession, pairServer, validToken,
 	atOrigin, remoteHeaders, isRemotePage, rewritesToPairPage, allowsRemoteRedirect, redirectLocation,
 };

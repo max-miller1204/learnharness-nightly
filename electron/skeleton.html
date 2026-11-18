@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<title>LearnHarness</title>
+	<script src="./window-mode.js"></script>
+	<link rel="stylesheet" href="./skeleton.css">
+	<script src="./skeleton.js" defer></script>
+</head>
+<body aria-busy="true">
+	<div class="drag"></div>
+	<aside class="sidebar" aria-hidden="true">
+		<div class="band"><span class="bone mark"></span><span class="bone toggle"></span></div>
+		<div class="rows">
+			<div class="row"><span class="bone icon"></span><span class="bone line w-teaching"></span></div>
+			<div class="row"><span class="bone icon"></span><span class="bone line w-practice"></span></div>
+		</div>
+		<div class="search"><span class="bone line w-label"></span><span class="field"></span></div>
+		<div class="filter"><span class="bone"></span><span class="bone"></span><span class="bone"></span></div>
+		<div class="sessions">
+			<span class="bone session w-1"></span>
+			<span class="bone session w-2"></span>
+			<span class="bone session w-3"></span>
+			<span class="bone session w-4"></span>
+			<span class="bone session w-5"></span>
+		</div>
+		<div class="footer">
+			<div class="row"><span class="bone line w-activity"></span></div>
+			<div class="row"><span class="bone icon"></span><span class="bone line w-settings"></span></div>
+		</div>
+	</aside>
+	<main>
+		<div class="dock">
+			<div class="composer">
+				<p id="status" role="status"></p>
+				<span class="bone button"></span>
+				<span class="bone button"></span>
+			</div>
+			<div class="controls" aria-hidden="true">
+				<span class="switch"><span class="bone"></span><span class="bone"></span></span>
+				<span class="bone pill"></span>
+			</div>
+		</div>
+	</main>
+</body>
+</html>

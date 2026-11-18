@@ -6,11 +6,11 @@ const { atOrigin, isRemotePage, allowsRemoteRedirect, redirectLocation, rewrites
 const { isBrowserAction, openWebSubscriptionBrowser } = require("./web-subscription-browser.cjs");
 const EXTERNAL_SCHEMES = new Set(["http:", "https:", "mailto:"]);
 
-function createRemoteWindow({ BrowserWindow, session, origin, token, signal, openExternal, onProblem }) {
+function createRemoteWindow({ BrowserWindow, session, origin, token, signal, backgroundColor, openExternal, onProblem }) {
 	const isolated = session.fromPartition(`remote-server-${randomUUID()}`, { cache: false });
 	const win = new BrowserWindow({
 		width: 1440, height: 900, minWidth: 640, minHeight: 600,
-		show: false, title: "LearnHarness", autoHideMenuBar: true,
+		show: false, title: "LearnHarness", autoHideMenuBar: true, ...(backgroundColor && { backgroundColor }),
 		webPreferences: { session: isolated, sandbox: true, contextIsolation: true, nodeIntegration: false },
 	});
 	const contents = win.webContents;
