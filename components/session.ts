@@ -1,4 +1,3 @@
-import type { AttachmentSend } from "@/src/core";
 "use client";
 
 /**
@@ -16,7 +15,7 @@ import type { AttachmentSend } from "@/src/core";
  */
 
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
-import type { ChatInput, LhMessage, QuestionAnswerData } from "@/src/core";
+import type { AttachmentSend, ChatInput, LhMessage, QuestionAnswerData } from "@/src/core";
 import { SessionModel, type SessionState } from "@/components/session-core";
 
 export interface UseChatSessionOptions {
