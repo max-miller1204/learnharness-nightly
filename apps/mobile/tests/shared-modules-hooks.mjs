@@ -3,10 +3,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const app = fileURLToPath(new URL("..", import.meta.url));
 const shared = path.resolve(app, "../../src") + path.sep;
-const anchor = pathToFileURL(path.join(app, "package.json")).href;
+export const appAnchor = path.join(app, "package.json");
+const anchorURL = pathToFileURL(appAnchor).href;
+
+export const isBare = (specifier) => !/^(\.|\/|#|[a-z]+:)/i.test(specifier);
+export const fromShared = (file) => typeof file === "string" && file.startsWith(shared);
 
 export function resolve(specifier, context, nextResolve) {
-  const bare = !/^(\.|\/|#|[a-z]+:)/i.test(specifier);
-  const fromShared = context.parentURL?.startsWith("file:") && fileURLToPath(context.parentURL).startsWith(shared);
-  return nextResolve(specifier, bare && fromShared ? { ...context, parentURL: anchor } : context);
+  const parent = context.parentURL?.startsWith("file:") ? fileURLToPath(context.parentURL) : undefined;
+  return nextResolve(specifier, isBare(specifier) && fromShared(parent) ? { ...context, parentURL: anchorURL } : context);
 }
