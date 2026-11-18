@@ -23,8 +23,9 @@ export function subscriptionHistory(context: TranscriptContext, logical: Model<A
 function empty(model: Model<Api>): AssistantMessage {
 	return { role: "assistant", api: model.api, provider: model.provider, model: model.id, content: [], stopReason: "error", timestamp: Date.now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 }
-/** Direct native provider dispatch bypasses Models' ambient credential resolution entirely. */
-export function nativeSubscriptionStream(provider: Provider, background: () => boolean, lifecycle?: SubscriptionDispatchLifecycle): StreamFunction<Api, SimpleStreamOptions> {
+/** Direct native provider dispatch bypasses Models' ambient credential resolution entirely.
+ * providerDetail appends the provider's own error text (Grok search). */
+export function nativeSubscriptionStream(provider: Provider, background: () => boolean, lifecycle?: SubscriptionDispatchLifecycle, providerDetail = false): StreamFunction<Api, SimpleStreamOptions> {
 	return (logicalModel, context, options) => {
 		const output = new AssistantMessageEventStream();
 		const nativeId = nativeSubscriptionId(logicalModel.provider);
@@ -82,7 +83,9 @@ export function nativeSubscriptionStream(provider: Provider, background: () => b
 			} catch (error) {
 				if (terminal) return;
 				if (!committed) { markUnadmittedUsage(partial.usage); lifecycle?.noDispatch(await subscriptionDenial(scope, controller, options?.signal?.aborted === true, purpose)); }
-				partial = { ...partial, stopReason: signal.aborted ? "aborted" : "error", errorMessage: nativeSubscriptionError(logicalModel.provider, error instanceof Error ? error.message : "") };
+				const message = error instanceof Error ? error.message : "";
+				const detail = providerDetail && committed && message ? ` Provider response: ${message.slice(0, 500)}` : "";
+				partial = { ...partial, stopReason: signal.aborted ? "aborted" : "error", errorMessage: nativeSubscriptionError(logicalModel.provider, message) + detail };
 				output.push({ type: "error", reason: partial.stopReason as "error" | "aborted", error: partial });
 			} finally { release(); output.end(); }
 		})();

@@ -75,3 +75,7 @@ export { authenticate } from "./auth.ts";
 export { serverInfo } from "./server-info.ts";
 export type { AbortTurnResponse, ChatListResponse, ChatResponse, CreateChatResponse, PracticePropositionsResponse } from "../client-protocol/index.ts";
 export { browserSession, createPairingToken, listClients, revokeClient, revokeOtherClients, sessionState, tokenExchange } from "./auth-routes.ts";
+
+export { reserveAttachmentRequest, uploadAttachmentRequest, discardAttachmentRequest, startAttachmentRequest } from "./attachment-routes.ts";
+export { initialChatSettings, initialGraphContext } from "./chat-creation.ts";
+export { unavailableAttachmentIds } from "../store/attachments.ts";

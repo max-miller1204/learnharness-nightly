@@ -23,6 +23,14 @@
  * log tail for diagnosis. The child is ALWAYS killed before exit — a
  * leaked server holds its port against the next run (learned the hard
  * way, same day).
+ *
+ * Packaged mode: --standalone <dir> --runtime <app binary> boots an
+ * installed or unpacked app's own server with the app's own executable,
+ * the way electron/main.cjs does. It keeps the import guard on, so a
+ * package missing from the payload cannot resolve from the checkout.
+ * The Windows installer turns Next's linked packages into plain copies,
+ * so only the installed copy proves Windows page routes (2026-11-18:
+ * shiki's helpers were missing there and `/` answered 500).
  */
 import { spawn } from "node:child_process";
 import { probeEnv, verifyDemoRuntime } from "./smoke-demo-runtime.mjs";
@@ -37,22 +45,36 @@ import * as http from "node:http";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
-const SOURCE_STANDALONE = path.join(ROOT, ".next", "standalone");
+const option = (name) => {
+	const at = process.argv.indexOf(name);
+	if (at === -1) return undefined;
+	const value = process.argv[at + 1];
+	if (!value || value.startsWith("--")) throw new Error(`${name} needs a value`);
+	return path.resolve(value);
+};
+const PACKAGED_STANDALONE = option("--standalone");
+const PACKAGED_RUNTIME = option("--runtime");
+if (Boolean(PACKAGED_STANDALONE) !== Boolean(PACKAGED_RUNTIME)) throw new Error("--standalone and --runtime go together");
+const PACKAGED_MODE = Boolean(PACKAGED_STANDALONE);
+const SOURCE_STANDALONE = PACKAGED_STANDALONE ?? path.join(ROOT, ".next", "standalone");
 const ISOLATED_MODE = process.argv.includes("--isolated");
 const BROWSER_MODE = process.argv.includes("--browser");
 let isolatedRoot;
-const ELECTRON_MODE = process.argv.includes("--electron");
-const RUNTIME = ELECTRON_MODE ? createRequire(import.meta.url)("electron") : process.execPath;
+const ELECTRON_MODE = PACKAGED_MODE || process.argv.includes("--electron");
+const RUNTIME = PACKAGED_RUNTIME ?? (ELECTRON_MODE ? createRequire(import.meta.url)("electron") : process.execPath);
 
 const POLL_MS = 500;
 const BOOT_TIMEOUT_MS = 30_000;
 /** GET-only probes — the routes that exercised today's failure class. */
 const PROBES = ["/api/graph", "/api/models", "/api/settings", "/api/plugins"];
+/** Signed-in page routes render the app shell, unlike the API probes. */
+const PAGES = ["/", "/chat/new"];
 
 if (!fs.existsSync(path.join(SOURCE_STANDALONE, "server.js"))) {
-	console.error("[smoke-server] .next/standalone/server.js missing — run next build first.");
+	console.error(`[smoke-server] ${path.join(SOURCE_STANDALONE, "server.js")} missing. Run next build first.`);
 	process.exit(1);
 }
 
@@ -112,13 +134,14 @@ async function main() {
 	// session into the store the server will read, the way `lh` does.
 	const auth = { authorization: `Bearer ${issueSession(dataDir, { method: "cli", client: { label: "smoke-server", deviceType: "bot" } }).token}` };
 	const imports = [];
-	if (ISOLATED_MODE) {
+	if (ISOLATED_MODE || PACKAGED_MODE) {
 		// Reject absolute import escapes as well as incidental upward resolution.
 		const guard = path.join(home, "payload-import-guard.mjs");
 		fs.writeFileSync(guard, `import {registerHooks} from 'node:module'; import {realpathSync} from 'node:fs'; import path from 'node:path'; import {fileURLToPath} from 'node:url';
 const roots = ${JSON.stringify([standalone, path.join(home, "data", "plugins")])}.map(p=>realpathSync(p));
 registerHooks({resolve(specifier,context,next){ const result=next(specifier,context); if(result.url.startsWith('file:')) { const file=realpathSync(fileURLToPath(result.url)); if(!roots.some(root=>file===root || file.startsWith(root+path.sep))) throw new Error('Import escaped standalone/plugin payload: '+file); } return result; }});`);
-		imports.push("--import", guard);
+		// --import takes a URL; a bare C:\ path fails on Windows.
+		imports.push("--import", pathToFileURL(guard).href);
 	}
 
 	const tail = []; // rolling log tail for failure diagnosis
@@ -138,7 +161,7 @@ registerHooks({resolve(specifier,context,next){ const result=next(specifier,cont
 		for (const line of tail.slice(-40)) if (line.trim()) console.error(`    ${line}`);
 	};
 
-	console.log(`[smoke-server] runtime: ${ELECTRON_MODE ? "Electron bundled Node" : "host Node"}`);
+	console.log(`[smoke-server] runtime: ${PACKAGED_MODE ? `packaged app ${RUNTIME}` : ELECTRON_MODE ? "Electron bundled Node" : "host Node"}`);
 	const child = spawn(RUNTIME, [...imports, server], {
 		cwd: standalone,
 		env: {
@@ -190,6 +213,11 @@ registerHooks({resolve(specifier,context,next){ const result=next(specifier,cont
 		}
 		if (boot !== 200) throw new Error(`server never answered 200 on ${url} (last status: ${boot})`);
 		console.log(`[smoke-server] boot ok: GET / → 200 (${url})`);
+		for (const page of PAGES) {
+			const status = await get(url + page, auth);
+			if (status < 200 || status > 299) throw new Error(`GET ${page} → ${status} (expected 2xx)`);
+			console.log(`[smoke-server] GET ${page} → ${status}`);
+		}
 
 		// 2) API surface: every probe must be 200, and 401 without a login.
 		const signedOut = await get(url + "/api/settings");

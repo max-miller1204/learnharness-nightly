@@ -35,29 +35,41 @@ function chatFile(id: string): string {
  *  turn-settled, which the sidebar refetches on. Silence here is law,
  *  not oversight. */
 function createChat(title: string, kind?: "practice"): ChatRecord {
+	const record = newChatRecord(`chat_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`, title, kind);
+	fs.mkdirSync(PATHS.chats, { recursive: true });
+	writeChat(record);
+	emit("chats-changed", {});
+	return record;
+}
+
+/** Build a record in memory so opening sends can finish admission before the
+ *  first write makes the chat visible. */
+export function newChatRecord(id: string, title: string, kind?: "practice"): ChatRecord {
 	const now = new Date().toISOString();
-	const record: ChatRecord = {
-		id: `chat_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`,
+	return {
+		id,
 		title: title.trim() || "Untitled session",
 		createdAt: now,
 		updatedAt: now,
 		messages: [],
-		// Practice sessions carry the marker; teach stays ABSENT (absence
-		// reads as teach — pre-practice records never migrate).
-		...(kind === "practice" ? { kind: "practice" as const } : {}),
+		version: CURRENT_CHAT_VERSION,
+		// Absence reads as teach, including in pre-practice records.
+		...(kind === "practice" ? { kind } : {}),
 	};
+}
+
+export function saveOpeningChat(record: ChatRecord): void {
 	fs.mkdirSync(PATHS.chats, { recursive: true });
-	writeChat(record);
-	emit("chats-changed", {});
-	return { ...record, version: CURRENT_CHAT_VERSION }; // the in-memory twin of what landed on disk
+	if (fs.existsSync(chatFile(record.id))) throw new Error("Chat already exists");
+	writeChat(record, false);
 }
 
 /** THE WRITE CHOKE POINT (schema-versioning wave, owner 2026-10-10): every
  *  record persist goes through here and carries the CURRENT version stamp —
  *  lazy migration means existing files only get stamped on their next write.
  *  A future-version guard lives on the read side (getChat). */
-function writeChat(record: ChatRecord): void {
-	writeFileAtomicSync(chatFile(record.id), JSON.stringify({ ...record, version: CURRENT_CHAT_VERSION }, null, "\t"), { allowInPlaceFallback: true });
+function writeChat(record: ChatRecord, allowInPlaceFallback = true): void {
+	writeFileAtomicSync(chatFile(record.id), JSON.stringify({ ...record, version: CURRENT_CHAT_VERSION }, null, "\t"), { allowInPlaceFallback });
 }
 
 function getChat(id: string): ChatRecord | null {
@@ -129,14 +141,14 @@ function listChats(): ChatSummary[] {
 /** Persist the full native message list (the record IS the agent state —
  *  Wave B: replay is state.messages = record.messages). SILENT by the
  *  events law — see the SILENCE LAW comment at createChat. */
-function saveMessages(id: string, messages: LhMessage[]): void {
+function saveMessages(id: string, messages: LhMessage[], options?: { atomic: boolean }): void {
 	const record = getChat(id);
 	if (!record) throw new Error(`Chat not found: ${id}`);
 	// Side-delivery watermarks are part of the appended native entries,
 	// so input + updates commit together without mutating thread history.
 	record.messages = messages;
 	record.updatedAt = new Date().toISOString();
-	writeChat(record);
+	writeChat(record, !options?.atomic);
 }
 
 /** A synchronous read/merge/write keeps concurrent worker and turn writes from losing snapshots. */

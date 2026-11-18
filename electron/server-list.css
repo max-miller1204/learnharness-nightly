@@ -1,0 +1,22 @@
+:root {
+	color-scheme: light dark;
+	font: 15px/1.45 system-ui, sans-serif;
+	background: Canvas;
+	color: CanvasText;
+}
+body { margin: 0; }
+main { padding: 1.75rem; }
+h1 { margin: 0 0 1.25rem; font-size: 1.35rem; }
+p { margin: .75rem 0; }
+p:empty { display: none; }
+label { display: grid; gap: .35rem; margin-bottom: .9rem; }
+input, button { font: inherit; border: 1px solid GrayText; border-radius: .35rem; padding: .45rem .65rem; }
+input { min-width: 0; }
+button:not(:disabled) { cursor: pointer; }
+button:focus-visible, input:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
+ul { padding: 0; list-style: none; }
+li { display: flex; align-items: center; gap: .6rem; padding: .6rem 0; border-bottom: 1px solid GrayText; }
+li span { flex: 1; overflow-wrap: anywhere; }
+li small { display: block; }
+li button { flex: none; }
+.actions { display: flex; flex-wrap: wrap; gap: .5rem; }

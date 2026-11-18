@@ -21,9 +21,8 @@ function fixture({ packaged = true, updaterMissing = false } = {}) {
 	const timeouts: { callback: () => void; delay: number }[] = [];
 	const handles = new Map<string, (event: unknown) => unknown>();
 	const windows: FakeWindow[] = [];
-	let enumerationFails = false;
 	let userData = "/fixture/custom-user-data";
-	let menu: { submenu?: { label?: string; click?: () => void }[] }[] = [];
+	let menu: { submenu?: { label?: string; click?: () => void | Promise<void> }[] }[] = [];
 	class FakeUpdater extends EventEmitter {
 		checks = 0;
 		downloads = 0;
@@ -80,9 +79,9 @@ function fixture({ packaged = true, updaterMissing = false } = {}) {
 		restore() { this.minimized = false; }
 		focus() { this.focused = true; }
 		show() {}
-		static getAllWindows() {
-			if (enumerationFails) throw new Error("window enumeration failed");
-			return windows;
+		close() {
+			windows.splice(windows.indexOf(this), 1);
+			this.emit("closed");
 		}
 		static fromWebContents(contents: FakeWebContents) { return windows.find(win => win.webContents === contents); }
 	}
@@ -127,8 +126,12 @@ function fixture({ packaged = true, updaterMissing = false } = {}) {
 		process: { argv: [], env: { LH_DEV_URL: "http://127.0.0.1:9000" }, platform: "darwin", on() {} },
 		__dirname: path.dirname(mainFile), URL, AbortController,
 		setInterval: (callback: () => void, delay: number) => intervals.push({ callback, delay }),
-		setTimeout: (callback: () => void, delay: number) => timeouts.push({ callback, delay }),
-		fixtureChild: { kill: (signal: string) => order.push(signal) },
+		setTimeout: (callback: () => void, delay: number) => {
+			timeouts.push({ callback, delay });
+			return { unref() {} };
+		},
+		clearTimeout() {},
+		fixtureChild: Object.assign(new EventEmitter(), { kill: (signal: string) => order.push(signal) }),
 	});
 	runInContext(mainSource, context, { filename: mainFile });
 	const run = (code: string) => runInContext(code, context);
@@ -136,8 +139,8 @@ function fixture({ packaged = true, updaterMissing = false } = {}) {
 		run, updater, windows, intervals, timeouts, handles, settingsReads, order, app,
 		setSettings: (value: unknown) => { settings = JSON.stringify(value); },
 		setSettingsFailure: (value: string | Error) => { settings = value; },
-		setEnumerationFailure: (value: boolean) => { enumerationFails = value; },
-		window: () => new FakeWindow(),
+		window: () => run("createWindow(process.env.LH_DEV_URL)") as FakeWindow,
+		untrustedWindow: () => new FakeWindow(),
 		state: () => JSON.parse(JSON.stringify(run("updateState"))),
 		check: async (manual = false) => { run(`checkForUpdates({ manual: ${manual} })`); await Promise.resolve(); await Promise.resolve(); },
 		menuCheck: () => menu[0]!.submenu!.find(item => item.label === "Check for Updates…")!.click!(),
@@ -247,13 +250,14 @@ describe("status observation never controls the updater", () => {
 		assert.equal(f.state().status, "idle");
 	});
 
-	it("window enumeration/send failures do not break checks or the next window's notification", async () => {
+	it("a local send failure does not block the next local window, and untrusted windows receive no update IPC", async () => {
 		const f = fixture(); const bad = f.window(); bad.webContents.fails = true; const good = f.window();
+		const remote = f.untrustedWindow();
 		f.run("setupAutoUpdater()"); await f.check();
 		assert.equal(good.webContents.messages.at(-1)!.channel, "lh:update-status");
-		f.setEnumerationFailure(true); await f.check();
-		f.setEnumerationFailure(false); await f.check();
-		assert.equal(f.updater.checks, 3);
+		assert.deepEqual(remote.webContents.messages, []);
+		await f.check();
+		assert.equal(f.updater.checks, 2);
 	});
 
 	it("OFF does not cancel in-flight events; Install re-checks, then kills the server before installing", async () => {
@@ -330,7 +334,7 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 		assert.equal(f.intervals.length, 1); assert.equal(f.intervals[0]!.delay, 4 * 60 * 60 * 1000);
 		f.setSettings({ general: { autoUpdate: true } }); f.intervals[0]!.callback(); await Promise.resolve();
 		assert.equal(f.updater.checks, 1);
-		f.windows.length = 0; f.intervals[0]!.callback(); await Promise.resolve();
+		f.windows[0]!.close(); f.intervals[0]!.callback(); await Promise.resolve();
 		assert.equal(f.updater.checks, 2, "checks also work with every window closed");
 	});
 
@@ -374,7 +378,7 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 
 	it("menu reopens a window and delivers General after load; loading existing windows are covered too", async () => {
 		const f = fixture(); f.setSettings({ general: { autoUpdate: false } }); await f.run("main()");
-		f.windows.length = 0; f.menuCheck();
+		f.windows[0]!.close(); await f.menuCheck();
 		assert.equal(f.windows.length, 1); assert.equal(f.updater.checks, 1);
 		const win = f.windows[0]!;
 		assert.ok(!win.webContents.messages.some(message => message.channel === "lh:open-settings"));

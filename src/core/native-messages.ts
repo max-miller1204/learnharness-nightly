@@ -1,3 +1,4 @@
+import { ATTACHMENT_PREFIX, type AttachmentReference } from "./attachments.ts";
 /**
  * THE NATIVE MESSAGE RECORD (Wave B, owner-approved 2026-09-26): chat
  * records store pi's own message shapes — the exact history the agent
@@ -103,6 +104,7 @@ declare module "@earendil-works/pi-agent-core" {
 /** A record message: a native pi message (or our marker) plus the record id. */
 export type LhMessage = (UserMessage | AssistantMessage | ToolResultMessage | LhMarkerMessage) & {
 	id: string;
+	attachments?: AttachmentReference[];
 	/** CLI-reported effective context budget, not a catalog model maximum.
 	 * App-only metadata: never transmitted as provider/model message content. */
 	cliContextWindow?: number;
@@ -714,10 +716,18 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 			continue;
 		}
 		// Strip app-only id/CLI context metadata: the wire carries the native shape only.
-		const { id: _id, cliContextWindow: _cliContextWindow, lhQuestions: _lhQuestions, lhQuestionOccurrence: _lhQuestionOccurrence, ...native } = m as LhMessage;
+		const { id: _id, cliContextWindow: _cliContextWindow, lhQuestions: _lhQuestions, lhQuestionOccurrence: _lhQuestionOccurrence, attachments, ...native } = m as LhMessage;
 		// Learner citations are links in the record; the wire carries them
 		// expanded (core/citations.ts) — the one model-facing rewrite.
-		out.push(role === "user" ? expandUserCitations(native as UserMessage) : (native as Message));
+		if (native.role === "user") {
+			const user = { ...expandUserCitations(native) };
+			if (attachments?.length) {
+				const content = typeof user.content === "string" ? [{ type: "text" as const, text: user.content }] : user.content;
+				const files = attachments.map(({ id, name }) => `${ATTACHMENT_PREFIX}${id} ${JSON.stringify(name)}`).join("\n");
+				user.content = [...content, { type: "text", text: `Attached files (use the attachment reference with read, pdf, show_image, or visual's image input as appropriate):\n${files}` }];
+			}
+			out.push(user);
+		} else out.push(native as Message);
 		// Repair unanswered calls from completed generations, not calls in
 		// failed generations. Pi filters error/aborted assistants itself;
 		// adding results for their unexecuted calls would leave orphans.

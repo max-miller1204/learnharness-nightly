@@ -35,7 +35,8 @@ import { configurationForReuse, conversationForReuse } from "./reuse-context.ts"
 import { BRIDGE_SERVER_NAME, createToolBridge, toolNameFromMcp, type PendingToolCall, type ToolBridge } from "./tool-bridge.ts";
 import { toClaudeInput, toStreamJsonLine } from "./transcript.ts";
 
-type RunClaudeOptions = { cwd: string; env: NodeJS.ProcessEnv; signal?: AbortSignal };
+/** detached: a new process group (search only; chat keeps the server's group). */
+type RunClaudeOptions = { cwd: string; env: NodeJS.ProcessEnv; signal?: AbortSignal; detached?: boolean };
 
 type ClaudeChild = ChildProcessWithoutNullStreams | null;
 export type RunClaude = (args: string[], options: RunClaudeOptions) => ClaudeChild | Promise<ClaudeChild>;

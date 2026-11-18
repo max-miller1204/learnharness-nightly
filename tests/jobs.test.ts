@@ -666,6 +666,43 @@ describe("research runner (async protocol §3)", () => {
 		assert.equal(isSubagentFailure("research", done.result as ResearchResult), false);
 	});
 
+	it("research persists native and successful fetch sources, excluding HTTP failures even if cited", async () => {
+		const native = { title: "Native source", url: "https://example.com/native", snippet: "Evidence" };
+		const good = "https://example.com/readable";
+		const dead = "https://example.com/missing";
+		const deadPdf = "https://example.com/missing.pdf";
+		const chat = chatStore.createChat("Test: save fetched sources");
+		trackChat(chat.id);
+		chatStore.saveMessages(chat.id, nativeToolMessages("verify sources", "research", "call-source-status", RESEARCH_INPUT));
+		const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-source-status" });
+		trackJob(job.id);
+		const runner = createJobRunner({
+			chatStore, jobStore, deliver: fakeDeliver().deliver,
+			searchProvider: () => ({ id: "chatgpt", search: async () => [native, { title: "Missing", url: dead, snippet: "" }] }),
+		});
+		safeFetchOverride.current = async (url) => new Response(url === good ? "Readable content" : "Not found", {
+			status: url === good ? 200 : 404, headers: { "content-type": "text/plain" },
+		});
+		researchModelOverride.current = fauxEngine([
+			fauxAssistantMessage([fauxToolCall("web_search", { query: "verify sources" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([
+				fauxToolCall("web_fetch", { url: good }, { id: "good" }),
+				fauxToolCall("web_fetch", { url: dead }, { id: "dead" }),
+				fauxToolCall("web_fetch_pdf", { url: deadPdf }, { id: "dead-pdf" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText(`## Summary\nSee [missing PDF](${deadPdf}) and [missing page](${dead}).`)]),
+		]);
+		try {
+			await runner.runJob(job.id);
+		} finally {
+			researchModelOverride.current = undefined;
+			safeFetchOverride.current = undefined;
+		}
+		assert.deepEqual((jobStore.getJob(job.id)?.result as ResearchResult).sources, [
+			{ title: native.title, url: native.url }, { title: "example.com", url: good },
+		]);
+	});
+
 	it("a failing runner still steers (the teacher learns the outcome) and the job lands error", async () => {
 		const chat = chatStore.createChat("Test: runner failure");
 		trackChat(chat.id);

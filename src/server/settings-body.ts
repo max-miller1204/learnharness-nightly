@@ -30,7 +30,7 @@ import type {
 } from "../core/settings.ts";
 import { BACKGROUND_MODEL_ROLES, CACHE_RETENTIONS, COMPACTION_THRESHOLD_FLOOR, CUSTOM_MODEL_PIN_FLOOR, EXTRACTION_CHUNK_TOKENS_FLOOR, MODEL_SLOTS } from "../core/settings.ts";
 import { WRITABLE_TOOL_KEYS } from "../core/pending.ts";
-import { isSearchEngineId, SEARCH_ENGINES } from "../core/search.ts";
+import { isSearchAccountSelection, isSearchEngineId, isSubscriptionSearchEngineId, SEARCH_ENGINES, SUBSCRIPTION_SEARCH_ENGINES } from "../core/search.ts";
 import { isDictationLanguage } from "../core/dictation.ts";
 import { parseFileAccessSettings } from "../core/file-access.ts";
 
@@ -201,9 +201,15 @@ export function parseAgentSettingsBody(body: unknown): SettingsBodyResult<AgentS
 		if (!search) return { ok: false, error: "search must be an object" };
 		if (search.engine !== undefined) {
 			if (!isSearchEngineId(search.engine)) {
-				return { ok: false, error: `search.engine must be ${SEARCH_ENGINES.map((engine) => `"${engine.id}"`).join(", ")}` };
+				return { ok: false, error: `search.engine must be ${[...SEARCH_ENGINES, ...SUBSCRIPTION_SEARCH_ENGINES].map((engine) => `"${engine.id}"`).join(", ")}` };
 			}
 			settings.search = { engine: search.engine };
+		}
+		if (search.accountSelection !== undefined) {
+			if (!isSubscriptionSearchEngineId(search.engine) || !isSearchAccountSelection(search.accountSelection)) {
+				return { ok: false, error: "search.accountSelection must identify a subscription selection" };
+			}
+			settings.search!.accountSelection = search.accountSelection;
 		}
 	}
 	// Prober graph tools (wave 7, owner ruling 2026-09-23): an agent-section

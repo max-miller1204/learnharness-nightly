@@ -10,6 +10,7 @@ on:
   workflow_run:
     workflows: ["Nightly (self-hosted server)"]
     types: [completed]
+    branches: [main]
   schedule:
     - cron: "41 6 * * *"
   workflow_dispatch:
@@ -17,14 +18,20 @@ on:
 permissions:
   contents: write
 
-# Its own group: sharing `nightly` would let a queued check cancel a queued
-# nightly. Racing a publish is harmless; the repair is idempotent.
+# Separate workflow queue. The job shares a lock with publication so a
+# repair cannot overwrite a pointer advanced by a release in flight.
 concurrency:
   group: feed-check
   cancel-in-progress: false
 
 jobs:
   check:
+    # Only automatic main nightlies can trigger a repair. A manual dry run
+    # must have no release side effects, including on main.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'workflow_run'
+    concurrency:
+      group: nightly-feed
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -33,8 +40,8 @@ jobs:
       - name: Compare and repair
         run: |
           set -euo pipefail
-          newest=$(gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName,isDraft,createdAt \
-            --jq '[.[] | select(.isDraft | not) | select(.tagName | test("^v.*-nightly\\."))] | sort_by(.createdAt) | last | .tagName // ""')
+          newest=$(gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName,isDraft,publishedAt \
+            --jq '[.[] | select(.isDraft | not) | select(.tagName | test("^v.*-nightly\\."))] | sort_by(.publishedAt) | last | .tagName // ""')
           if [ -z "$newest" ]; then echo "No nightly published yet."; exit 0; fi
           work=$(mktemp -d)
           if ! gh release download "$newest" -R "$GITHUB_REPOSITORY" -p 'latest.json' -p '*.sha256' -D "$work/release"; then

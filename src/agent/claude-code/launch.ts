@@ -27,6 +27,6 @@ export function createClaudeLauncher({
 			throw new ClaudeLaunchError("Claude Code's version could not be checked. Check your installation outside LearnHarness and try again.");
 		}
 		if (options.signal?.aborted) throw new ClaudeLaunchError("Request was aborted");
-		return spawnProcess(binary, args, { cwd: options.cwd, env: options.env, stdio: "pipe" });
+		return spawnProcess(binary, args, { cwd: options.cwd, env: options.env, stdio: "pipe", ...(options.detached && { detached: true }) });
 	};
 }

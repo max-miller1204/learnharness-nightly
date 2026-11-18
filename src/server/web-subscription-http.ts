@@ -1,3 +1,4 @@
+import { authenticate } from "./auth.ts";
 import { NATIVE_SUBSCRIPTIONS } from "../core/contracts/subscriptions.ts";
 import { subscriptionRequestOrigin } from "./desktop-access.ts";
 import { webSubscriptionOwner, webSubscriptionsEnabled, webSubscriptionStatus } from "./web-subscriptions.ts";
@@ -42,6 +43,14 @@ export async function subscriptionControlsResponse(request: Request): Promise<Re
 		if (providerId !== "chatgpt" && !NATIVE_SUBSCRIPTIONS.some((provider) => provider.providerId === providerId)) return error("Unsupported connection.", 400);
 		const allowed = providerId === "chatgpt" ? ["login", "cancel", "complete", "select", "disconnect", "logout", "consent"] : ["login", "cancel", "respond", "open", "retry", "disconnect", "consent"];
 		if (typeof fields.op !== "string" || !allowed.includes(fields.op)) return error("Unsupported control.", 400);
+		if (Object.hasOwn(fields, "desktopRedirectPort")) {
+			const port = fields.desktopRedirectPort;
+			if (providerId !== "chatgpt" || fields.op !== "login" || typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
+				return error("Invalid desktop callback port.", 400);
+			}
+			const auth = authenticate(request);
+			if (!auth.ok || auth.via !== "bearer") return error("A paired desktop session is required.", 403);
+		}
 		return Response.json(await webSubscriptionOwner().control(providerId as string, fields, subscriptionRequestOrigin(request)!), { headers: HEADERS });
 	} catch {
 		return error("The subscription connection could not be changed. Retry or reconnect in Providers.", 400);

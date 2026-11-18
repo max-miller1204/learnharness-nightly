@@ -304,43 +304,13 @@ What LearnHarness already has toward this: a standalone, versioned, self-updatin
 
 **Why.** Let the desktop app use either its own built-in server or a remote one (your self-hosted box), the way T3 and OpenBot let you pick a server.
 
-**Decided.** Relates to item 1 (desktop nightlies). Owner decisions (2026-11-17/18): one backend per person (all knowledge on one server; desktop, web and phone are windows onto it). The app shows one server at a time and opens a server the owner chooses as the default; the server list exists to repoint, not to merge several servers like T3. On first launch the app asks "Run my LearnHarness here" (local server on) or "Connect to my server" (pair; local server off), changeable later in Settings. When connected to a remote server, the desktop app catches the ChatGPT sign-in redirect on its own 127.0.0.1 and passes the result to the server, so desktop sign-in needs no error page or pasting (web and phone keep the paste-back flow from PR #238).
-
-**Proposed design (not approved).**
-- The Electron shell keeps a server list: "This computer" (today's spawned local server) plus remote servers, each an address and a pairing token from item 6.
-- For a remote server, the window loads that server's own UI, so UI and server versions always match and the shell needs no copy of the app code.
-- Desktop-only bridge features (`window.lh`: folder picker, local file paths, native updates) are offered only for "This computer", or replaced by the protocol in 21 (for example uploads from 24).
-- Switching servers never moves data; each server keeps its own.
-
-**Open questions.** How are remote servers found (typed address, QR code, Tailscale names)?
-
-**Build outline.** Server list storage and UI in the shell, remote window loading with the pairing token, gating of bridge features, then a test against a self-hosted install.
-
-**Touches core.** Moderate (`electron/main.cjs`, `electron/preload.cjs`, small UI changes).
+**Approved (2026-11-18).** The first slice adds the desktop server list, direct HTTPS pairing, native switching, an explicit default, shell recovery, and the app-owned ChatGPT callback. Each window uses one backend. The second slice adds coordinated server and desktop updates for macOS, Windows NSIS, and Linux AppImage. [Desktop server list spec](specs/desktop-server-list.md)
 
 ### 24. Remote-safe attachments
 
 **Why.** Today the desktop paperclip inserts a file or folder **path**, and the agent reads the original in place on the server machine (`docs/getting-started.md`: "This is not an upload"). That only works when the client and the server are the same machine; browsers can't attach local files to a session at all.
 
-**Decided.** Nothing yet.
-
-**Facts.** T3 Code's method (`apps/server/src/assets/AttachmentUpload.ts`, `attachmentStore.ts`, `attachmentPaths.ts`):
-1. The client asks the server for a short-lived, server-signed upload URL whose token names the file, its type and its exact size.
-2. The client streams the bytes. The server writes a temporary `.part` file, hashes it while receiving, checks the exact size, then moves it into the attachments folder under a pending ID.
-3. Sending the message claims the file and renames it to a thread-scoped ID. Unsent pending uploads are deleted after 24 hours, interrupted ones after 1 hour.
-4. IDs must match a strict pattern, and a path check refuses anything outside the attachments folder.
-5. The agent reads the server's copy (T3 adds the attachments folder as an agent working directory). Large things like code aren't uploaded: they live on the machine where the agent runs.
-
-LearnHarness already uploads in two places (the graph's **Extract files** import and learner images) and snapshots displayed images into the session, which can be reused.
-
-**Proposed design (not approved).** Hybrid:
-- Client and server on the **same machine** (desktop with its local server): keep path attachments, so folders and live files keep working.
-- **Remote** clients (phone, browser, desktop pointed at a remote server): T3-style signed uploads into a session-owned attachments folder under the data folder. The message carries a path to that copy, so the existing file tools and file-access guards work unchanged.
-- Advertise it as a capability (item 21). T3's code is MIT, so it can be adapted with its license notice kept.
-
-**Open questions.** Folder attachments: upload as several files, as an archive, or keep folders local-only? Per-file and per-session size limits? When are uploaded copies deleted (with the session, by age)? Should copies count toward the launcher's pre-update snapshot?
-
-**Build outline.** Signing key and upload route, pending store with sweeping, claim-on-send, composer upload UI for remote clients, then tests for size mismatch, traversal attempts and expiry.
+**Decided.** The owner approved two PRs. PR 1 adds individual uploads in paired browsers on opening and later idle-chat sends. PR 2 starts from merged PR 1 and adds remote folders with browsable layout. The [approved remote-safe attachments spec](specs/remote-safe-attachments.md) records the behavior, limits, recovery rules, and pinned T3 references. Live server paths remain in place.
 
 **Touches core.** Yes (new routes, composer, attachment handling).
 

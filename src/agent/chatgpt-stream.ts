@@ -45,7 +45,7 @@ export function chatGPTHistory(context: TranscriptContext, logicalModel: Model<A
 function empty(model: Model<Api>): AssistantMessage {
 	return { role: "assistant", api: model.api, provider: "chatgpt", model: model.id, content: [], stopReason: "error", timestamp: Date.now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 }
-export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDispatchLifecycle): StreamFunction<Api, SimpleStreamOptions> {
+export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDispatchLifecycle, webSearch = false): StreamFunction<Api, SimpleStreamOptions> {
 	return (logicalModel, context, options) => {
 		const output = new AssistantMessageEventStream();
 		const purpose = background();
@@ -80,11 +80,16 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 						if (committed) throw new Error("ChatGPT does not retry admitted requests");
 						lifecycle?.beforeDispatch(scope!);
 						committed = true;
-						return delegate(input, init);
+						return delegate(input, webSearch ? { ...init, redirect: "error" } : init);
 					},
 					onPayload: async (raw, model) => {
 						const replacement = await options?.onPayload?.(raw, model);
 						const payload = chatGPTPayload(replacement === undefined ? raw : replacement, logicalModel.id);
+						if (webSearch) {
+							if (payload.tools) throw new Error("ChatGPT search accepts only the hosted web search tool");
+							payload.tools = [{ type: "web_search", search_context_size: "low" }];
+							payload.tool_choice = "required";
+						}
 						check();
 						capturePreparedBackgroundPayload(payload, logicalModel);
 						return payload;
@@ -111,7 +116,14 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 			} catch (err) {
 				if (terminal) return;
 				if (!committed) lifecycle?.noDispatch(await chatGPTDenial(scope, controller, options?.signal?.aborted === true, purpose));
-				partial = { ...partial, stopReason: signal.aborted ? "aborted" : "error", errorMessage: chatGPTStreamError(err instanceof Error ? err.message : "") };
+				const message = err instanceof Error ? err.message : "";
+				let errorMessage = chatGPTStreamError(message);
+				if (webSearch && /subscription_sharing_usage_unavailable|rate_limit|usage_limit/i.test(message)) {
+					errorMessage = `ChatGPT plan usage is limited or unavailable. Check usage at ${USAGE} before retrying.`;
+				} else if (webSearch && /web_search|unsupported_tool|tool_not_supported/i.test(message)) {
+					errorMessage = "ChatGPT web search is unavailable on this model or account. Check your ChatGPT workspace policy or explicitly choose another Search engine.";
+				}
+				partial = { ...partial, stopReason: signal.aborted ? "aborted" : "error", errorMessage };
 				output.push({ type: "error", reason: partial.stopReason as "error" | "aborted", error: partial });
 			} finally { release(); output.end(); }
 		})();

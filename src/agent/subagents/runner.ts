@@ -32,6 +32,7 @@ import { runDemoBuilder } from "./demo-builder.ts";
 import { runPdfReaderAgent } from "./pdf-reader.ts";
 import { runResearcherAgent } from "./researcher.ts";
 import { runVisualMaker } from "./visual-maker.ts";
+import type { ResolveAttachment } from "../tools/learner-file.ts";
 import { loadLearnerImage, type LearnerImage } from "../tools/learner-image.ts";
 
 /**
@@ -69,6 +70,7 @@ type JobToolInput = ResearchToolInput | DemoToolInput | VisualToolInput | PdfToo
 
 export interface JobRunnerDeps {
 	chatStore: ChatStore;
+	attachmentsForChat?: (chatId: string) => ResolveAttachment;
 	jobStore: JobStore;
 	/**
 	 * Hand a finished job's steer to the session delivery registry. The
@@ -365,7 +367,8 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			.filter(Boolean)
 			.join("\n\n");
 
-		const fetchedUrls: string[] = [];
+		const fetchResponses = new Map<string, boolean>();
+		const subscriptionSources: ResearchResult["sources"] = [];
 		// Per-job PDF dir (researcher PDF wave, 2026-10-07): web_fetch_pdf
 		// downloads land here; every pdf tool is scoped to it; it dies with
 		// the job (never enters the record).
@@ -376,22 +379,28 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			const brief = await runResearcherAgent(prompt, {
 				engine: model,
 				search: deps.searchProvider,
+				onFetchResponse: (url, ok) => { fetchResponses.set(url, ok); },
+				onSubscriptionResults: (hits) => {
+					for (const { url, title } of hits) {
+						if (subscriptionSources.length === 10) break;
+						if (!subscriptionSources.some((source) => source.url === url)) subscriptionSources.push({ url, title });
+					}
+				},
 				pdfDir,
 				abortSignal: loop.abortSignal,
 				chatId: loop.chatId,
 				// Money channel: each agent step is one model call — fold its
 				// usage into the record as it completes (progress write).
 				onUsage: (usage) => loop.onUsage(piUsageToStep(usage)),
-					onToolStart: (toolName, args) => {
+				onToolStart: (toolName, args) => {
 					const input = args as { query?: string; url?: string } | undefined;
-					if (typeof input?.url === "string" && (toolName === "web_fetch" || toolName === "web_fetch_pdf")) {
-						fetchedUrls.push(input.url);
-					}
 					jobStore.updateJob(jobId, { activity: activityLine(toolName, input) });
 				},
 			});
 			if (!brief.trim()) throw new Error("the researcher produced no text");
-			const research: ResearchResult = { brief: brief.trim(), sources: parseSources(brief.trim(), fetchedUrls) };
+			const fetchedUrls = [...fetchResponses].filter(([, ok]) => ok).map(([url]) => url);
+			const sources = parseSources(brief.trim(), fetchedUrls, subscriptionSources, fetchResponses);
+			const research: ResearchResult = { brief: brief.trim(), sources };
 			await finishJob(jobId, research);
 		} catch (err) {
 			// Real-kill abort (2026-09): the abort path flipped the record and
@@ -465,7 +474,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			let image: LearnerImage | undefined;
 			if (imagePath !== undefined) {
 				jobStore.updateJob(jobId, { activity: "loading image" });
-				image = await loadLearnerImage(imagePath, loop.abortSignal);
+				image = await loadLearnerImage(imagePath, loop.abortSignal, deps.attachmentsForChat?.(job.chatId));
 			}
 			jobStore.updateJob(jobId, { activity: image ? "annotating image" : "drawing figure" });
 			const result = await runVisualMaker(
@@ -514,6 +523,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 				engine: model,
 				abortSignal: loop.abortSignal,
 				chatId: loop.chatId,
+				resolveAttachment: deps.attachmentsForChat?.(job.chatId),
 				onUsage: (usage) => loop.onUsage(piUsageToStep(usage)),
 				onActivity: (line) => jobStore.updateJob(jobId, { activity: line }),
 			},
@@ -564,21 +574,28 @@ function hostOf(url: string | undefined): string {
 	}
 }
 
-/** Sources for the result: markdown links cited in the brief, else fetched
- * URLs. Fetched URLs are recorded before the fetch tool validates their scheme;
- * only http(s) sources may become links, including in previously saved jobs. */
-export function parseSources(brief: string, fetchedUrls: string[]): ResearchResult["sources"] {
-	const sources: ResearchResult["sources"] = [];
-	const seen = new Set<string>();
+/** Preserve native subscription links ahead of citations in the brief, then
+ * fill remaining slots with fetched URLs. For other engines, fetched URLs
+ * supply the list when there are no citations. */
+export function parseSources(
+	brief: string,
+	fetchedUrls: string[],
+	subscriptionSources: ResearchResult["sources"] = [],
+	fetchResponses?: ReadonlyMap<string, boolean>,
+): ResearchResult["sources"] {
+	const sources = subscriptionSources.filter(({ url }) => isWebSourceUrl(url) && fetchResponses?.get(url) !== false);
+	const hasSubscriptionSources = subscriptionSources.length > 0;
+	const seen = new Set(sources.map(({ url }) => url));
 	for (const match of brief.matchAll(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g)) {
 		const title = (match[1] ?? "").trim();
 		const url = match[2]!;
-		if (!title || seen.has(url)) continue;
+		if (!title || seen.has(url) || fetchResponses?.get(url) === false) continue;
 		seen.add(url);
 		sources.push({ title, url });
 	}
-	if (sources.length === 0) {
+	if (hasSubscriptionSources || sources.length === 0) {
 		for (const url of fetchedUrls) {
+			if (sources.length >= 10) break;
 			if (seen.has(url) || !isWebSourceUrl(url)) continue;
 			seen.add(url);
 			sources.push({ title: hostOf(url), url });

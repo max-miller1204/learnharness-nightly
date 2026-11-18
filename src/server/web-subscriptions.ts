@@ -66,7 +66,7 @@ export function createWebSubscriptionOwner(options: {
 		async control(providerId: string, command: Record<string, unknown>, origin: string) {
 			const targets: string[] = [];
 			const value = await launches.run(targets, () => providerId === "chatgpt"
-				? chatGPTControl(command, chatgpt)
+				? chatGPTControl(command, chatgpt, typeof command.desktopRedirectPort === "number" ? command.desktopRedirectPort : undefined)
 				: subscriptionControl({ ...command, providerId }, native));
 			let browserAction: string | undefined;
 			const target = targets[0];

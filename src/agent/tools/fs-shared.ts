@@ -2,7 +2,7 @@ import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AUTH_FILE } from "../../../config.ts";
+import { AUTH_FILE, PATHS } from "../../../config.ts";
 import { comparisonPath, guardSourcePath, isWithin, realSourcePath as realOrMissing, resolvePolicy, type ResolvedFileAccessPolicy } from "./file-access.ts";
 
 /**
@@ -154,19 +154,21 @@ export function sensitiveHomeLocations(
 /** One snapshot per resolution/walk, not per visited entry. Resolve protected
  *  roots too: a sensitive directory or AUTH_FILE can itself be a symlink to
  *  a location outside home. Never read credential contents or app records. */
-function sourcePathCheck(home = os.homedir()): (absolute: string) => boolean {
+function sourcePathCheck(home = os.homedir(), allowClaim = false): (absolute: string) => boolean {
 	const homeRoots = sensitiveHomeLocations(home).map(protectedRealPath);
 	const files = credentialFiles(AUTH_FILE).map(protectedRealPath);
 	const credentialDir = protectedRealPath(path.dirname(AUTH_FILE));
-	return (absolute) => isSensitivePath(absolute, home) ||
+	const attachmentRoot = protectedRealPath(PATHS.attachments);
+	return (absolute) => (!allowClaim && (isWithin(absolute, PATHS.attachments) || isWithin(absolute, attachmentRoot))) ||
+		isSensitivePath(absolute, home) ||
 		homeRoots.some((p) => isWithin(absolute, p, true)) ||
 		files.some((p) => isWithin(absolute, p)) || isCredentialTemp(absolute, credentialDir, path.basename(comparisonPath(AUTH_FILE)));
 }
 
-function checkedSourcePath(absolute: string, denied: (absolute: string) => boolean): string {
+function checkedSourcePath(absolute: string, denied: (absolute: string) => boolean, display = absolute): string {
 	const refuse = () => {
 		throw new Error(
-			`Access denied: ${absolute} is a protected location. Learner file tools cannot open it. ` +
+			`Access denied: ${display} is a protected location. Learner file tools cannot open it. ` +
 			"Do not paste credentials or private transcripts into chat. Use another source or a manually reviewed, non-sensitive excerpt.",
 		);
 	};
@@ -185,6 +187,26 @@ export function resolveSourcePath(p?: string, policy?: ResolvedFileAccessPolicy)
 		? path.join(home, p.slice(1))
 		: path.resolve(home, p);
 	return guardSourcePath(checkedSourcePath(resolved, sourcePathCheck(home)), policy);
+}
+
+/** The caller already verified an opaque reference against the current
+ * chat's record. Keep mandatory named/canonical checks, and also reject a
+ * symlink out of the private copy store. */
+export function resolveClaimedAttachment(file: string, name: string, source: string): string {
+	const root = path.join(/* turbopackIgnore: true */ PATHS.attachments, "claimed");
+	const denied = sourcePathCheck(os.homedir(), true);
+	const canonical = checkedSourcePath(file, denied, source);
+	if (denied(path.join(root, path.basename(name.replaceAll("\\", "/"))))) {
+		throw new Error("Access denied: the uploaded filename identifies a protected file.");
+	}
+	if (!fsSync.lstatSync(PATHS.attachments).isDirectory() || !fsSync.lstatSync(root).isDirectory() ||
+		!isWithin(canonical, protectedRealPath(root)) || !fsSync.lstatSync(file).isFile()) {
+		throw new Error("Access denied: invalid claimed attachment location.");
+	}
+	// Validate the live file-access configuration even though this individual
+	// copy is explicitly allowed by the current chat.
+	resolvePolicy();
+	return canonical;
 }
 
 /** Explicit paths retain their HOME meaning. Only an omitted directory in

@@ -11,7 +11,7 @@ The desktop app opens LearnHarness in its own window, backed by its own bundled 
 
 ## How to get to it
 
-- Packaged app (AppImage or deb on Linux; here `dist/linux-unpacked/learnharness`).
+- Packaged app (AppImage or deb on Linux; here `dist/linux-unpacked/learnharness-nightly`).
 - `npm run desktop:dev` (dev shell on `next dev`; prove runs use the production head server instead).
 
 ## Driving it

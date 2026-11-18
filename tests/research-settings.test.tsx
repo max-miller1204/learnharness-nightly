@@ -6,16 +6,23 @@ import { parseHTML } from "linkedom";
 import { AgentSection } from "../components/settings/agent-section.tsx";
 import { InteractionLayersProvider } from "../components/interaction-layers.tsx";
 import type { AgentSettings } from "../src/core/index.ts";
-import { SEARCH_ENGINES } from "../src/core/search.ts";
+import { SEARCH_ENGINES, SUBSCRIPTION_SEARCH_ENGINES, type SubscriptionSearchOption } from "../src/core/search.ts";
 import { installModalDom } from "./modal-dom.ts";
 
-it("keyless settings keep Research interactive while search-engine setup retains its own disabled state", async () => {
+const unavailableSubscriptions: SubscriptionSearchOption[] = SUBSCRIPTION_SEARCH_ENGINES.map(({ id }) => ({
+	id, available: false, reason: "Subscription search unavailable.",
+}));
+
+it("keyless settings keep Research interactive and let the user select a connected subscription", async () => {
 	const dom = parseHTML("<html><body><div id='root'></div></body></html>");
 	const globals = globalThis as Record<string, unknown>;
 	const previous = new Map<string, PropertyDescriptor | undefined>();
 	const reason = "No search engine is configured.";
 	const bodies: Record<string, unknown> = {
-		"/api/search": { available: false, engine: null, reason },
+		"/api/search": { available: false, engine: null, reason, subscriptions: [
+			{ id: "chatgpt", available: true, reason: "Uses plan allowance or credits.", account: { label: "test@example.invalid", selection: "selected-account" } },
+			...unavailableSubscriptions.filter(({ id }) => id !== "chatgpt"),
+		] },
 		"/api/keys": { keys: SEARCH_ENGINES.map(({ envVar }) => ({ id: envVar, present: false })) },
 		"/api/models": { models: [], slots: { strong: null, cheap: null, vision: null } },
 		"/api/settings/prompts": { prober: [], teacher: [], practice: [] },
@@ -25,6 +32,7 @@ it("keyless settings keep Research interactive while search-engine setup retains
 		document: dom.document,
 		navigator: globals.navigator ?? { userAgent: "", platform: "" },
 		HTMLElement: dom.window.HTMLElement,
+		Element: dom.window.Element,
 		IS_REACT_ACT_ENVIRONMENT: true,
 		fetch: async (url: string) => {
 			assert.ok(url in bodies, `unexpected request: ${url}`);
@@ -35,6 +43,7 @@ it("keyless settings keep Research interactive while search-engine setup retains
 		Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
 	}
 	const { createRoot } = await import("react-dom/client");
+	const restoreModalDom = installModalDom(dom);
 	const root = createRoot(document.getElementById("root")!);
 	let written: AgentSettings | undefined;
 	try {
@@ -59,12 +68,21 @@ it("keyless settings keep Research interactive while search-engine setup retains
 		act(() => { toggle.click(); });
 		assert.equal(written?.tools?.research, false, "the keyless toggle emits the same stored boolean");
 		const engine = document.querySelector<HTMLButtonElement>('[data-testid="search-engine-trigger"]')!;
-		assert.ok(engine.className.includes("cursor-not-allowed"), "search engine preference retains its own key gate");
-		act(() => { engine.click(); });
-		assert.equal(document.querySelector('[data-testid="search-engine-menu"]'), null, "keyless engine preference does not open");
 		assert.ok(document.querySelector('[data-testid="search-engine-row"]')?.textContent?.includes(reason));
+		assert.equal(engine.disabled, false);
+		await act(async () => engine.click());
+		const chatgpt = document.querySelector<HTMLButtonElement>('[data-testid="engine-option-chatgpt"]')!;
+		assert.equal(chatgpt.disabled, false);
+		assert.match(chatgpt.textContent ?? "", /test@example\.invalid/);
+		assert.match(chatgpt.textContent ?? "", /plan allowance or credits/);
+		const grok = document.querySelector<HTMLButtonElement>('[data-testid="engine-option-xai-subscription"]')!;
+		assert.equal(grok.disabled, true);
+		assert.match(grok.textContent ?? "", /Subscription search unavailable/);
+		act(() => chatgpt.click());
+		assert.deepEqual(written?.search, { engine: "chatgpt", accountSelection: "selected-account" });
 	} finally {
 		act(() => { root.unmount(); });
+		restoreModalDom();
 		for (const [key, descriptor] of previous) {
 			if (descriptor) Object.defineProperty(globalThis, key, descriptor);
 			else delete globals[key];
@@ -79,7 +97,7 @@ it(`a ${label}-only key enables the engine menu and selecting ${label} saves the
 	const globals = globalThis as Record<string, unknown>;
 	const previous = new Map<string, PropertyDescriptor | undefined>();
 	const bodies: Record<string, unknown> = {
-		"/api/search": { available: true, engine: id, reason: `search engine: ${id} (auto)` },
+		"/api/search": { available: true, engine: id, reason: `search engine: ${id} (auto)`, subscriptions: unavailableSubscriptions },
 		"/api/keys": { keys: [{ id: envVar, present: true }] },
 		"/api/models": { models: [], slots: { strong: null, cheap: null, vision: null } },
 		"/api/settings/prompts": { prober: [], teacher: [], practice: [] },
@@ -110,7 +128,7 @@ it(`a ${label}-only key enables the engine menu and selecting ${label} saves the
 		assert.ok(!trigger.hasAttribute("disabled"));
 		await act(async () => trigger.click());
 		const optionIds = [...document.querySelectorAll('[data-testid^="engine-option-"]')].map((row) => row.getAttribute("data-testid"));
-		assert.deepEqual(optionIds, ["engine-option-auto", ...SEARCH_ENGINES.map(({ id }) => `engine-option-${id}`)]);
+		assert.deepEqual(optionIds, ["engine-option-auto", ...[...SEARCH_ENGINES, ...SUBSCRIPTION_SEARCH_ENGINES].map(({ id }) => `engine-option-${id}`)]);
 		const option = document.querySelector<HTMLButtonElement>(`[data-testid="engine-option-${id}"]`);
 		assert.ok(option);
 		assert.ok(option.textContent?.includes(label));

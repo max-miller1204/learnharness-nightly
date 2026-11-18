@@ -25,10 +25,11 @@ import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ChatKind, ChatListItem, ChatRecord, ImageSnapshot, SessionCoverage } from "../core/contracts/chat.ts";
 import type { ServerEvents, ServerEventType } from "../core/events.ts";
 import type { ChatInput } from "../core/input-events.ts";
+import type { AttachmentReference } from "../core/attachments.ts";
 import type { GraphContextPick, LhMessage } from "../core/native-messages.ts";
 import type { SessionPricing } from "../core/prices.ts";
 
-export type { ChatInput, ChatKind, ChatListItem, ChatRecord, GraphContextPick, ImageSnapshot, LhMessage, ServerEvents, ServerEventType, SessionCoverage, SessionPricing };
+export type { AttachmentReference, ChatInput, ChatKind, ChatListItem, ChatRecord, GraphContextPick, ImageSnapshot, LhMessage, ServerEvents, ServerEventType, SessionCoverage, SessionPricing };
 
 // ─── Version ────────────────────────────────────────────────────────────────
 
@@ -51,6 +52,8 @@ export interface ProtocolIncompatibleResponse {
 // ─── Server info ────────────────────────────────────────────────────────────
 
 /** Public, no credential. A client reads it before pairing and on every connect. */
+export const ATTACHMENT_UPLOADS = "attachment-uploads-v1";
+
 export const SERVER_INFO_PATH = "/.well-known/learnharness/server";
 
 export type AuthBootstrapMethod = "one-time-token" | "desktop-bootstrap";
@@ -73,7 +76,7 @@ export interface ServerInfo {
 		/** Where a native client trades a pairing code for a bearer token. */
 		tokenEndpoint: string;
 	};
-	/** Additive features beyond the base protocol. */
+	/** Additive features available on this server. */
 	capabilities: string[];
 }
 
@@ -118,6 +121,10 @@ export const PROTOCOL_ROUTES = {
 	abort: "/api/activity/abort",
 	/** GET, server-sent events: `event: <ServerEventType>` + `data: <payload JSON>`; `: ping` every 25 s. */
 	events: "/api/events",
+	/** attachment-uploads-v1 */
+	attachments: "/api/attachments",
+	removeAttachment: (id: string) => `/api/attachments/${segment(id)}`,
+	startWithAttachments: "/api/attachments/start",
 	/** GET -> ImageSnapshot. */
 	image: (chatId: string, snapshotId: string) => `/api/chats/${segment(chatId)}/images/${segment(snapshotId)}`,
 } as const;
@@ -184,12 +191,36 @@ export type ChatResponse = Omit<ChatRecord, "imageSnapshots"> & {
 	turnInFlight: boolean;
 	turnError?: string;
 	compacting: boolean;
+	unavailableAttachmentIds?: string[];
 	coverage: SessionCoverage | null;
 };
+
+export type AttachmentTarget = { draftId: string } | { chatId: string };
+
+export type AttachmentGrantRequest = AttachmentTarget & {
+	name: string;
+	mimeType: string;
+	size: number;
+};
+
+export interface AttachmentGrantResponse {
+	id: string;
+	uploadUrl: string;
+	expiresAt: number;
+}
+
+export interface AttachmentSend {
+	attachmentUploadIds: string[];
+	sendId: string;
+}
+
+export type StartWithAttachmentsRequest = CreateChatRequest & AttachmentSend & { draftId: string };
 
 export interface SendRequest {
 	chatId: string;
 	input: ChatInput;
+	attachmentUploadIds?: string[];
+	sendId?: string;
 }
 
 /** The turn started (or the input was stored): watch it on turnStream. One

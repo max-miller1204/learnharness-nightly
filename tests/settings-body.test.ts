@@ -94,7 +94,11 @@ describe("parseAgentSettingsBody", () => {
 		assert.ok(ollama.ok);
 		assert.deepEqual(ollama.settings.search, { engine: "ollama" });
 		assert.equal(parseAgentSettingsBody({ search: { engine: "deepseek" } }).ok, false);
-		assert.equal(parseAgentSettingsBody({ search: { engine: "chatgpt" } }).ok, false);
+		const subscription = parseAgentSettingsBody({ search: { engine: "chatgpt", accountSelection: "scratch-selection" } });
+		assert.ok(subscription.ok);
+		assert.deepEqual(subscription.settings.search, { engine: "chatgpt", accountSelection: "scratch-selection" });
+		assert.equal(parseAgentSettingsBody({ search: { engine: "chatgpt", accountSelection: 1 } }).ok, false);
+		assert.equal(parseAgentSettingsBody({ search: { engine: "tavily", accountSelection: "scratch-selection" } }).ok, false);
 		const clear = parseAgentSettingsBody({ search: {} });
 		assert.ok(clear.ok);
 		assert.equal(clear.settings.search, undefined, "absent engine = back to auto-detect");
