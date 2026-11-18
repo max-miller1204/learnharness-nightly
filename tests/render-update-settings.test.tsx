@@ -12,7 +12,7 @@ import { installModalDom } from "./modal-dom.ts";
 import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
 import { UpdateSettings, updateStatusText, MANUAL_UPDATE_HINT, AUTO_UPDATE_HINT, type UpdateState } from "../components/settings/update-settings.tsx";
-import { SidebarUpdatePill } from "../components/sidebar-update-pill.tsx";
+import { hasUnsentMessage, SidebarUpdatePill } from "../components/sidebar-update-pill.tsx";
 import { ServerEventsProvider } from "../components/server-events.tsx";
 import { ReleaseNoteSections } from "../components/release-notes-view.tsx";
 import WhatsNewDialog, { WhatsNewBody } from "../components/whats-new-dialog.tsx";
@@ -296,6 +296,35 @@ describe("General update rows", () => {
 
 		await b.push(state({ status: "up-to-date", revision: 2, runningVersion: "0.6.1-nightly.20261118.64" }));
 		assert.equal(pill().getAttribute("data-action"), "check", "same version as the page: no reload");
+	});
+
+	it("after a rollback (server older than the page) it offers a reload too, with its own wording", async () => {
+		bridge(state({ status: "error", revision: 1, runningVersion: "0.6.1-nightly.20261118.64" }));
+		let reloads = 0;
+		const host = await mount(<SidebarUpdatePill pageVersion="0.6.1-nightly.20261118.65" reload={() => { reloads++; }} />);
+		const pill = q(host, "update-pill")!;
+		assert.equal(pill.getAttribute("data-action"), "reload");
+		assert.equal(pill.getAttribute("aria-label"), "Server is on 0.6.1-nightly.20261118.64. Click to reload.");
+		await click(pill); assert.equal(reloads, 1);
+	});
+
+	it("unsent text in any editable text field asks first; read-only, disabled, hidden and search boxes don't", () => {
+		const box = document.createElement("div");
+		const field = (html: string) => { box.innerHTML = html; return hasUnsentMessage(box); };
+		assert.equal(field('<textarea aria-label="Side question">why?</textarea>'), true, "the side-question box (a textarea)");
+		assert.equal(field('<textarea>  </textarea>'), false, "whitespace only");
+		assert.equal(field('<input type="text" value="a comment">'), true, "a text input");
+		assert.equal(field('<input value="no type is text">'), true);
+		assert.equal(field('<div role="textbox" contenteditable="true">a draft</div>'), true, "a PathInput");
+		assert.equal(field('<textarea readonly>shown text</textarea>'), false, "read-only");
+		assert.equal(field('<input type="text" disabled value="x">'), false, "disabled");
+		assert.equal(field('<div hidden><textarea>x</textarea></div>'), false, "hidden");
+		assert.equal(field('<input type="text" placeholder="Search…" value="algebra">'), false, "a search box");
+		assert.equal(field('<input placeholder="Find in session…" value="x">'), false, "a find box");
+		assert.equal(field('<input type="search" value="x">'), false, "type=search");
+		assert.equal(field('<input type="checkbox" value="on">'), false, "not a text field");
+		assert.equal(field('<input type="number" value="3">'), false);
+		assert.equal(field('<div role="textbox" contenteditable="false">x</div>'), false);
 	});
 
 	it("the pill's hover shows T3-style notes: What's changed, Changes in X, Read more", async () => {

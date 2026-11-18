@@ -12,7 +12,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { CHECK_AFTER_COMMIT_MS, CHECK_INTERVAL_MS, createSelfUpdater, type SelfUpdaterDeps } from "../src/server/self-update.ts";
+import { CHECK_AFTER_COMMIT_MS, CHECK_INTERVAL_MS, createSelfUpdater, healthIdle, publicUpdateState, type SelfUpdaterDeps } from "../src/server/self-update.ts";
 import type { ReleaseNoteGroup } from "../src/core/release-notes.ts";
 import { dataLockPath, tryAcquireDataLock } from "../src/server/data-lock.ts";
 import type { ChildMessage } from "../selfhost/src/protocol.ts";
@@ -242,6 +242,46 @@ describe("self-hosted updater", () => {
 		assert.equal(again.state().notice, null, "a dismissed notice is not adopted again at boot");
 		assert.equal(again.state().message, null, "nor its text (Settings shows it only while undismissed)");
 		assert.notEqual(again.state().instance, u.state().instance, "each server process has its own instance id");
+	});
+});
+
+describe("GET /api/health's update fields", () => {
+	it("callers that aren't signed in learn that an update failed, but not the error text", async () => {
+		const f = fake();
+		f.flags.auto = false;
+		f.flags.state = { protocol: 1, activeVersion: CURRENT, badVersions: [NEXT], update: { id: "u", fromVersion: CURRENT, targetVersion: NEXT, status: "rolled-back", reason: "ENOSPC: /home/someone/.learnharness", at: 5 } };
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		const full = u.state();
+		assert.match(full.message ?? "", /ENOSPC/, "signed in: the details");
+		const open = publicUpdateState(full);
+		assert.equal(open.status, "error", "still says it failed");
+		assert.equal(open.message, null);
+		assert.equal(open.notice?.kind, "rolled-back");
+		assert.equal(open.notice?.text, `Update to version ${NEXT} failed to start and was rolled back.`);
+		assert.doesNotMatch(JSON.stringify(open), /ENOSPC|someone/);
+		assert.equal(open.runningVersion, CURRENT, "runningVersion stays public");
+
+		// A rejected install request: error text from the launcher.
+		const g = fake();
+		const v = createSelfUpdater(g.deps);
+		v.start();
+		await settle();
+		await v.install();
+		g.toParent({ type: "update-rejected", reason: "Not enough disk space under /home/someone" });
+		assert.match(v.state().message ?? "", /disk space/);
+		assert.equal(publicUpdateState(v.state()).message, null);
+		assert.equal(publicUpdateState(v.state()).status, "error");
+		// Non-error messages are not error details.
+		assert.equal(publicUpdateState({ ...v.state(), status: "downloaded", message: "Restarting to install version x…" }).message, "Restarting to install version x…");
+	});
+
+	it("is not idle while an update is checked for or downloaded (the launcher's relaunch waits for idle)", () => {
+		assert.equal(healthIdle(true, { status: "downloading" }), false);
+		assert.equal(healthIdle(true, { status: "checking" }), false);
+		assert.equal(healthIdle(true, { status: "downloaded" }), true);
+		assert.equal(healthIdle(true, { status: "up-to-date" }), true);
+		assert.equal(healthIdle(false, { status: "idle" }), false);
 	});
 });
 

@@ -1,12 +1,13 @@
 /**
  * GET /api/health: liveness + version + idle state for the self-hosted
  * launcher's health check and `lh status` (self-hosting plan, A3).
- * Read-only; behind the same browser-only guard as every API route.
+ * Read-only and public (the launcher calls it without a credential), so update
+ * error text is only included for a signed-in or paired caller.
  */
-import { healthSnapshot } from "@/src/server";
+import { authenticate, healthSnapshot } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-export function GET(): Response {
-	return Response.json(healthSnapshot(), { headers: { "Cache-Control": "no-store" } });
+export function GET(request: Request): Response {
+	return Response.json(healthSnapshot({ details: authenticate(request).ok }), { headers: { "Cache-Control": "no-store" } });
 }

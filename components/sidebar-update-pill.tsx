@@ -38,13 +38,15 @@ import { ReleaseNoteSections } from "@/components/release-notes-view";
 import { APP_VERSION, HOMEPAGE, useUpdateState, type UpdateState } from "@/components/settings/update-settings";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { isNewerVersion } from "@/selfhost/src/version-order.ts";
+import { isExactVersion, isNewerVersion } from "@/selfhost/src/version-order.ts";
 
 export type UpdateControlKind = "check" | "checking" | "unavailable" | "download" | "downloading" | "install" | "dismiss-notice" | "reload";
 
-/** True when the server runs a newer exact version than the code of this page. */
+/** True when the server runs a different exact version than the code of this
+ *  page: newer after an update, older after a rollback. Either way, reload. */
 export function pageIsStale(state: UpdateState | null, pageVersion: string = APP_VERSION): boolean {
-	return isNewerVersion(state?.runningVersion, pageVersion);
+	const running = state?.runningVersion;
+	return !!running && isExactVersion(running) && isExactVersion(pageVersion) && running !== pageVersion;
 }
 
 /** The one place that picks the button's state (T3's resolveSidebarUpdatePresentation order). */
@@ -64,9 +66,11 @@ export const UNAVAILABLE_TITLE = "Updates unavailable";
 export const UNAVAILABLE_DETAIL = "Automatic updates are not available in this build.";
 
 /** The tooltip, and the popover's title line (T3's wording, plus LearnHarness's notice and reload). */
-export function updateControlTooltip(state: UpdateState, kind: UpdateControlKind): string {
+export function updateControlTooltip(state: UpdateState, kind: UpdateControlKind, pageVersion: string = APP_VERSION): string {
 	switch (kind) {
-		case "reload": return `Updated to ${state.runningVersion}. Click to reload.`;
+		case "reload": return isNewerVersion(state.runningVersion, pageVersion)
+			? `Updated to ${state.runningVersion}. Click to reload.`
+			: `Server is on ${state.runningVersion}. Click to reload.`;
 		case "checking": return "Checking for updates…";
 		case "unavailable": return UNAVAILABLE_TITLE;
 		case "download": return state.version ? `Update ${state.version} ready to download` : "Update available ready to download";
@@ -80,10 +84,28 @@ export function updateControlTooltip(state: UpdateState, kind: UpdateControlKind
 /** The second tooltip line of "unavailable" (T3's getDesktopUpdateDisabledReason fallback). */
 export const unavailableDetail = (state: UpdateState) => state.message?.trim() || UNAVAILABLE_DETAIL;
 
-/** Any message box on the page holding text that hasn't been sent: the chat
- *  composer, the home topic box, answer and thinking fields (every PathInput). */
+const TEXT_INPUT_TYPES = new Set(["", "text", "email", "url", "tel"]);
+/** Search and filter boxes hold a query, not a draft: no prompt for those. */
+const SEARCH_LIKE = /^(search|find|filter)\b/i;
+
+function isDraftField(field: Element): boolean {
+	const hidden = typeof (field as HTMLElement).checkVisibility === "function" ? !(field as HTMLElement).checkVisibility() : !!field.closest("[hidden]");
+	if (hidden || field.getAttribute("aria-disabled") === "true") return false;
+	const label = `${field.getAttribute("placeholder") ?? ""}`.trim() || `${field.getAttribute("aria-label") ?? ""}`.trim();
+	if (SEARCH_LIKE.test(label) || field.getAttribute("role") === "searchbox" || field.getAttribute("role") === "combobox") return false;
+	const editable = (input: HTMLInputElement | HTMLTextAreaElement) =>
+		!input.readOnly && !input.disabled && !input.hasAttribute("readonly") && !input.hasAttribute("disabled") && input.value.trim().length > 0;
+	if (field instanceof HTMLTextAreaElement) return editable(field);
+	if (field instanceof HTMLInputElement) return TEXT_INPUT_TYPES.has(field.getAttribute("type")?.toLowerCase() ?? "") && editable(field);
+	// The chat composer, the home topic box, answer and thinking fields (PathInput).
+	return field.getAttribute("contenteditable") !== "false" && (field.textContent ?? "").trim().length > 0;
+}
+
+/** Any user-editable text field on the page holding text that hasn't been sent:
+ *  composers and answer fields, the side-question box, the comment editor,
+ *  rename fields. Skips read-only, disabled, hidden and search or filter boxes. */
 export function hasUnsentMessage(root: ParentNode = document): boolean {
-	return Array.from(root.querySelectorAll('[role="textbox"][contenteditable]')).some((box) => (box.textContent ?? "").trim().length > 0);
+	return Array.from(root.querySelectorAll('[role="textbox"][contenteditable], textarea, input')).some(isDraftField);
 }
 
 /** T3's check-spin latch rule: show the spinning icon while checking, or while a started turn finishes. */
@@ -106,10 +128,11 @@ function useReducedMotion(): boolean {
 	return reduced;
 }
 
-/** Pause a running spin while the tab is hidden (T3's observeVisibleAnimation, visibility part). */
+/** Pause a running spin while the tab is hidden (T3's observeVisibleAnimation,
+ *  visibility part). Inline, so the class's `animation` shorthand can't reset it. */
 function pauseWhileHidden(element: SVGSVGElement | null) {
 	if (!element) return;
-	const update = () => element.style.setProperty("--lh-spin-state", document.visibilityState === "hidden" ? "paused" : "running");
+	const update = () => { element.style.animationPlayState = document.visibilityState === "hidden" ? "paused" : "running"; };
 	update();
 	document.addEventListener("visibilitychange", update);
 	return () => document.removeEventListener("visibilitychange", update);
@@ -146,7 +169,7 @@ function ControlIcon({ kind, spinning, onIteration }: { kind: UpdateControlKind;
 			data-spinning={spinning || undefined}
 			ref={spinning ? pauseWhileHidden : undefined}
 			onAnimationIteration={onIteration}
-			className={cn("size-4", spinning && "motion-safe:animate-spin [animation-play-state:var(--lh-spin-state,running)]")}
+			className={cn("size-4", spinning && "motion-safe:animate-spin")}
 		/>
 	);
 }
@@ -213,7 +236,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	const onIteration = useCallback(() => setLatched(continuesCheckSpin(isChecking, reducedMotion)), [isChecking, reducedMotion]);
 
 	if (!state || !kind) return null;
-	const tooltip = updateControlTooltip(state, kind);
+	const tooltip = updateControlTooltip(state, kind, pageVersion);
 	const detail = kind === "unavailable" ? unavailableDetail(state) : null;
 	const disabled = kind === "checking" || kind === "downloading" || kind === "unavailable" || pending;
 	const surface = kind !== "check" && kind !== "checking" && kind !== "unavailable";

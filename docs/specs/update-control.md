@@ -6,7 +6,7 @@ T3 Code reference: github.com/pingdotgg/t3code at 7e4c429 (MIT), `SidebarUpdateC
 ## Bugs fixed
 
 1. **Automatic checks never ran after an update.** A server started by an update runs as the launcher's trial, which skips the startup check, so the next automatic check was 4 hours away. Now the server checks 15 s after the launcher commits it (when "Check for updates automatically" is on). Not at once: the launcher deletes leftover `*.tmp` version folders right after a commit, which would delete a download being unpacked (found in the prove run); T3 also checks 15 s after launch. The interval stays 4 hours, like T3 (owner decision). The GitHub "Pre-release" flag is not involved: automatic and manual checks read the same `nightly/latest.json`, never `releases/latest`.
-2. **The update icon stayed after Install until a reload.** Behind Tailscale Serve, the reconnect during the restart gets a 502, and EventSource then closes for good, so the page never heard anything again. The events channel now opens a new EventSource 3 s after one closes, and the open refetches as any reconnect does.
+2. **The update icon stayed after Install until a reload.** Behind Tailscale Serve, the reconnect during the restart gets a 502, and EventSource then closes for good, so the page never heard anything again. The events channel now opens a new EventSource when one closes: after 1 s, doubling per failed try up to 5 min (T3's connection supervisor), never while the tab is hidden, and at once when it shows again. The open refetches as any reconnect does.
 3. **The "Settings (⌘,)" hint stayed up after closing Settings.** The dialog hands focus back to the Settings button, and the tooltip opened on any focus. Tooltips now open on focus only when it is `:focus-visible` (keyboard), as the update pill already did.
 
 ## The sidebar update control
@@ -15,7 +15,7 @@ One round button (`size-8 rounded-full`, 16 px glyph) at the right end of the si
 
 | State | Icon | Tooltip | Click |
 |---|---|---|---|
-| reload (server newer than the page) | RotateCw with check badge | "Updated to X. Click to reload." | reload, confirming first when a message box (any typed-text box: the chat composer, the home topic box, answer fields) has unsent text: "You have an unsent message. Reload anyway?" (Cancel / Reload) |
+| reload (server version differs from the page's) | RotateCw with check badge | server newer: "Updated to X. Click to reload."; server older (after a rollback): "Server is on X. Click to reload." | reload, confirming first when any editable text field on the page has unsent text: "You have an unsent message. Reload anyway?" (Cancel / Reload) |
 | checking | RefreshCw, spinning, disabled | "Checking for updates…" | nothing |
 | downloading | download arrow, no ring (no progress is measured), disabled | "Downloading update" | nothing |
 | downloaded | RotateCw with check badge | "Update X downloaded. Click to restart and install." | the install confirm dialog |
@@ -26,9 +26,11 @@ One round button (`size-8 rounded-full`, 16 px glyph) at the right end of the si
 
 The release notes popover opens on hover for downloaded and available when there are notes, as before.
 
-Spin: a click latches the spin and remounts the icon so it starts from zero; it turns at least once and keeps turning while the state is `checking`, then stops at the next turn boundary. `motion-safe` only; paused while the tab is hidden.
+Spin: a click latches the spin and remounts the icon so it starts from zero; it turns at least once and keeps turning while the state is `checking`, then stops at the next turn boundary. `motion-safe` only; paused while the tab is hidden (an inline `animation-play-state`, so the class's `animation` shorthand can't undo it).
 
-Reload: GET /api/updates carries `runningVersion`; the page compares it with its own build version. It never reloads on its own.
+Reload: GET /api/updates carries `runningVersion`; the page compares it with its own build version and offers a reload whenever they differ (owner decision). It never reloads on its own. Unsent text: any non-empty, user-editable text field (PathInput boxes, textareas such as the side-question box and the comment editor, text inputs), skipping read-only, disabled and hidden fields and search, find or filter boxes.
+
+GET /api/health stays public (the launcher calls it without a credential) and keeps `runningVersion` and the update state, but update error text (`message` while `status` is "error", the reason in a rollback notice) only goes to a signed-in or paired caller; others still see `status: "error"` and a generic rollback notice (owner decision). `lh status` asks with its CLI session, so it still shows the details. Health's `idle` is false while an update is checked for or downloaded, so a launcher relaunch (which waits for idle) can't stop the server mid-download after the post-commit check.
 
 What's new waits for the reload (owner decision): while the server runs a newer version than the page's code, the "What's new" popup is held back (not shown, not marked seen), so the reload button stays visible. It shows once on the first page that runs the new version, after the reload or the next time the app opens. GET /api/whats-new already answers the running version, so the page compares that with its own build version.
 

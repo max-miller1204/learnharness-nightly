@@ -351,13 +351,33 @@ export function selfUpdater(): SelfUpdater {
 	return updater;
 }
 
-/** GET /api/health: what the launcher's health check and `lh status` read. */
-export function healthSnapshot(): { ok: true; version: string; selfhost: boolean; idle: boolean; update: SelfUpdateState } {
+/** Health's `idle`: nothing running, and no update being checked for or
+ *  downloaded (the launcher's relaunch waits for idle, and stopping the
+ *  server mid-download would waste it). */
+export function healthIdle(appIdle: boolean, update: Pick<SelfUpdateState, "status">): boolean {
+	return appIdle && update.status !== "checking" && update.status !== "downloading";
+}
+
+/** The update state for callers that aren't signed in (the launcher, `lh status`
+ *  of an old launcher, anyone who can reach the port): it still says an update
+ *  failed (status "error", the rollback notice), but not the error text. */
+export function publicUpdateState(state: SelfUpdateState): SelfUpdateState {
+	return {
+		...state,
+		message: state.status === "error" ? null : state.message,
+		notice: state.notice ? { ...state.notice, text: `Update to version ${state.notice.version} failed to start and was rolled back.` } : null,
+	};
+}
+
+/** GET /api/health: what the launcher's health check and `lh status` read.
+ *  `details` (a signed-in or paired caller) includes update error text. */
+export function healthSnapshot({ details = false }: { details?: boolean } = {}): { ok: true; version: string; selfhost: boolean; idle: boolean; update: SelfUpdateState } {
+	const update = selfUpdater().state();
 	return {
 		ok: true,
 		version: process.env.LH_VERSION ?? "",
 		selfhost: selfhostEnabled(),
-		idle: appIsIdle(),
-		update: selfUpdater().state(),
+		idle: healthIdle(appIsIdle(), update),
+		update: details ? update : publicUpdateState(update),
 	};
 }
