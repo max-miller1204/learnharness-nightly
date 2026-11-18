@@ -29,6 +29,8 @@ const KIND_BY_EXTENSION = new Map<string, ImportKind>([
 /** The kind of an accepted file name, or undefined when Extract files doesn't take it.
  * The client check, server check and picker `accept` all derive from these lists. */
 export function importKind(fileName: string): ImportKind | undefined {
+	// Chromium may send a folder pick's relative path as the multipart file name ("my-app/Makefile").
+	fileName = fileName.slice(fileName.lastIndexOf("/") + 1);
 	if (CODE_NAMES.has(fileName)) return "code";
 	const dot = fileName.lastIndexOf(".");
 	if (dot <= 0 || dot === fileName.length - 1) return undefined;

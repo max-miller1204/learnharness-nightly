@@ -48,6 +48,10 @@ it("kinds: the seven document formats, images with HEIC, code by extension and b
 	for (const name of ["a.ts", "a.py", "a.rs", "a.json", "a.yml", "Makefile", "Dockerfile", "CMakeLists.txt"]) assert.equal(importKind(name), "code", name);
 	for (const name of ["a.xlsx", "a.ods", "a.csv", "a.doc", "a.class", "LICENSE", "makefile.bak"]) assert.equal(importKind(name), undefined, name);
 	assert.equal(importKind("notes.txt"), "notes");
+	// Chromium sends a folder pick's relative path as the file name (prove run, 2026-11-17).
+	assert.equal(importKind("my-app/Makefile"), "code");
+	assert.equal(importKind("my.app/CMakeLists.txt"), "code");
+	assert.equal(importKind("my.app/README"), undefined);
 });
 
 // ── route: documents ──
@@ -111,6 +115,19 @@ it("a folder's code group is one source named after the folder, files in path or
 	assert.equal(seen[0]!.filePath, "my-app");
 	assert.equal(seen[0]!.label, "my-app (3 code files)");
 	assert.deepEqual(seen[0]!.codeFiles!.map((f) => f.path), ["my-app/Makefile", "my-app/src/a.ts", "my-app/src/b.ts"]);
+});
+
+it("a code group whose multipart names are relative paths (Chromium) keeps name-only code files", async () => {
+	const seen = capture();
+	const form = new FormData();
+	for (const [name, path] of [["app/Makefile", "app/Makefile"], ["app/src/CMakeLists.txt", "app/src/CMakeLists.txt"], ["app/a.ts", "app/a.ts"]]) {
+		form.append("files", new File(["x"], name!));
+		form.append("paths", path!);
+	}
+	form.append("group", "app");
+	const results = await resultsOf(new Request("http://localhost/api/graph/import", { method: "POST", body: form }));
+	assert.deepEqual(results.map((r) => [r.filePath, r.ok]), [["app", true]]);
+	assert.deepEqual(seen[0]!.codeFiles!.map((f) => f.path), ["app/a.ts", "app/Makefile", "app/src/CMakeLists.txt"]);
 });
 
 it("the server re-checks a code group: caps, per-file size, binaries, and malformed groups", async () => {
@@ -224,6 +241,13 @@ it("cost summary folds an image's description into the extraction stage and the 
 		stages: { extractor: { model: "m:e", steps: [step] }, auditor: { model: "m:a", steps: [step] }, imageReader: { model: "m:v", steps: [step] } } }] }] } as never, () => 1);
 	assert.equal(summary.stages.extraction.dollars, 2);
 	assert.equal(summary.runs[0]!.dollars, 3);
+	const mixed = graphCostSummary({ chats: [], namings: [], sources: [{ filePath: "b.png", extractions: [{ startedAt: 2, at: "2026-11-17T00:00:00Z", durationMs: 1,
+		stages: { extractor: { model: "m:e", steps: [step] }, auditor: { model: "m:a", steps: [step] }, imageReader: { model: "m:unpriced", steps: [step] } } }] }] } as never, (_call, model) => model === "m:unpriced" ? null : 1);
+	assert.equal(mixed.stages.extraction.unpricedRuns, 1, "the unknown Vision cost marks the stage incomplete");
+	assert.equal(mixed.stages.extraction.runs, 1);
+	const both = graphCostSummary({ chats: [], namings: [], sources: [{ filePath: "c.png", extractions: [{ startedAt: 3, at: "2026-11-17T00:00:00Z", durationMs: 1,
+		stages: { extractor: { model: "m:unpriced", steps: [step] }, auditor: { model: "m:a", steps: [step] }, imageReader: { model: "m:unpriced", steps: [step] } } }] }] } as never, (_call, model) => model === "m:unpriced" ? null : 1);
+	assert.equal(both.stages.extraction.unpricedRuns, 1, "one run counts once");
 });
 
 // ── folder picks ──

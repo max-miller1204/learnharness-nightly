@@ -141,12 +141,15 @@ export function graphCostSummary(input: CostSummaryInput, price: CallPricer): Gr
 		// An image's description (item 26) is part of extracting from that file.
 		const image = stages.imageReader;
 		const imgDollars = image ? stageDollars(image.model, image.steps, price) : null;
+		// One run counts once: an unknown Vision cost makes the stage's dollars incomplete ("—", owner
+		// 2026-11-17) only when the extractor's part didn't already.
+		const extCounted = isSubscriptionModel(stages.extractor.model) || extDollars === null;
 		if (image) {
 			mergeTokens(extraction.tokens, image.steps);
 			if (isSubscriptionModel(image.model)) {
-				extraction.subscriptionRuns = (extraction.subscriptionRuns ?? 0) + 1;
+				if (!extCounted) extraction.subscriptionRuns = (extraction.subscriptionRuns ?? 0) + 1;
 				extraction.subscriptionProviders = [...new Set([...(extraction.subscriptionProviders ?? []), ...subscriptionLabels([image.model])])];
-			} else if (imgDollars === null) extraction.unpricedRuns++;
+			} else if (imgDollars === null) { if (!extCounted) extraction.unpricedRuns++; }
 			else extraction.dollars += imgDollars;
 		}
 
