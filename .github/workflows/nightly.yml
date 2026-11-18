@@ -193,6 +193,8 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      # The AI release notes read the PR descriptions of the range.
+      pull-requests: read
     env:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.meta.outputs.version }}
@@ -211,21 +213,66 @@ jobs:
           pattern: selfhost-*
           merge-multiple: true
           path: dist-selfhost
-      - name: Release notes
+      # Release notes (docs/specs/t3-style-updates.md, section 2): an AI
+      # summary of the user-facing changes through OpenRouter (T3 Code's
+      # approach), or the plain commit list when that fails. The items go into
+      # the release body and into latest.json, where the app reads them.
+      - name: Previous tag and feed
+        id: prev
         run: |
           prev=$(git tag --list 'v*-nightly.*' --sort=-creatordate | head -n 1)
+          echo "tag=$prev" >> "$GITHUB_OUTPUT"
+          gh release download nightly -p latest.json -O previous-latest.json 2>/dev/null || echo '{}' > previous-latest.json
+          echo "published_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      - name: AI release notes
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'anthropic/claude-haiku-5.5' }}
+          PREV: ${{ steps.prev.outputs.tag }}
+          PUBLISHED_AT: ${{ steps.prev.outputs.published_at }}
+        run: |
+          node scripts/generate-release-notes.ts --repository "$GITHUB_REPOSITORY" --tag "$TAG" \
+            --ref "$SHA" --previous-tag "$PREV" --version "$VERSION" --published-at "$PUBLISHED_AT" --output notes.json
+      - name: Release notes
+        env:
+          PREV: ${{ steps.prev.outputs.tag }}
+          PUBLISHED_AT: ${{ steps.prev.outputs.published_at }}
+        run: |
+          if [ ! -f notes.json ]; then
+            echo "::warning::No AI release notes; using the commit list."
+            node scripts/generate-release-notes.ts --fallback --ref "$SHA" --previous-tag "$PREV" \
+              --version "$VERSION" --published-at "$PUBLISHED_AT" --output notes.json
+          fi
           {
+            if [ "$(node -p 'require("./notes.json").items.length')" != "0" ]; then
+              echo "### What's changed"
+              echo
+              node -e 'for (const item of require("./notes.json").items) console.log(`- ${item}`)'
+              echo
+            fi
+            if [ -n "$PREV" ]; then
+              echo "<details>"
+              echo "<summary>Full changelog</summary>"
+              echo
+              echo "### Changes since $PREV"
+              git log --no-merges --format='- %s (%h)' "$PREV..$SHA" | head -n 200
+              echo
+              echo "</details>"
+              echo
+            fi
             echo "Nightly build of \`${SHA::12}\` from \`main\`."
             echo
             echo "Install or update: see [self-hosting](${FORK_HOMEPAGE}/blob/main/docs/self-hosting.md)."
-            echo
-            if [ -n "$prev" ]; then
-              echo "### Changes since $prev"
-              git log --no-merges --format='- %s (%h)' "$prev..$SHA" | head -n 200
-            fi
           } > notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
       - name: Feed entry
-        run: node selfhost/scripts/make-feed.ts --version "$VERSION" --tag "$TAG" --sha "$SHA" --repo "$GITHUB_REPOSITORY" --dir dist-selfhost > dist-selfhost/latest.json
+        env:
+          PUBLISHED_AT: ${{ steps.prev.outputs.published_at }}
+        run: |
+          node selfhost/scripts/make-feed.ts --version "$VERSION" --tag "$TAG" --sha "$SHA" --repo "$GITHUB_REPOSITORY" \
+            --dir dist-selfhost --published-at "$PUBLISHED_AT" --notes notes.json --previous previous-latest.json > dist-selfhost/latest.json
       - name: Create the prerelease
         run: |
           gh release create "$TAG" dist-selfhost/*.tar.gz dist-selfhost/*.sha256 dist-selfhost/latest.json \

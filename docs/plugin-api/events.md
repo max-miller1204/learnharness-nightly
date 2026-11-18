@@ -69,6 +69,7 @@ export interface ServerEvents {
         data?: unknown;
     };
     "update-changed": Record<string, never>;
+    "whats-new-changed": Record<string, never>;
 }
 ```
 
@@ -97,6 +98,7 @@ export interface ServerEvents {
 - ["plugin-message".topic](#serverevents-plugin-messagetopic)
 - ["plugin-message".data](#serverevents-plugin-messagedata)
 - ["update-changed"](#serverevents-update-changed)
+- ["whats-new-changed"](#serverevents-whats-new-changed)
 
 ### ServerEvents "turn-started"
 
@@ -285,6 +287,14 @@ Self-hosted update state changed; refetch GET /api/updates.
 
 ```ts
 "update-changed": Record<string, never>;
+```
+
+### ServerEvents "whats-new-changed"
+
+The server's What's new record changed (seen on some device); refetch GET /api/whats-new.
+
+```ts
+"whats-new-changed": Record<string, never>;
 ```
 
 ## ServerEventType

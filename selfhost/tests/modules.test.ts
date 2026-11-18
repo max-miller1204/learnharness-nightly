@@ -17,7 +17,7 @@ import { lockIsHeld, tryAcquireLock } from "../src/locks.ts";
 import { boundLog } from "../src/logs.ts";
 import { layout, versionPaths } from "../src/paths.ts";
 import { ENV, parseChildMessage, parseParentMessage } from "../src/protocol.ts";
-import { compareVersions, installedVersions, isInstalled, parseFeed, readState, stageVersion, writeState, type LatestFeed } from "../src/release.ts";
+import { compareVersions, FEED_NOTES_KEEP, installedVersions, isInstalled, mergeFeedNotes, parseFeed, readState, stageVersion, writeState, type LatestFeed } from "../src/release.ts";
 import { renderUnit, repointUnitText, unitVersion } from "../src/service.ts";
 import { pruneVersions } from "../src/versions.ts";
 
@@ -40,6 +40,48 @@ describe("versions and feed", () => {
 		assert.throws(() => parseFeed({ ...good, assets: { "linux-x64": { url: "u", sha256: "nope" } } }));
 		assert.throws(() => parseFeed({ ...good, version: "latest" }));
 		assert.throws(() => parseFeed({ ...good, launcherProtocol: undefined }));
+	});
+
+	it("reads optional release notes, dropping malformed entries instead of failing", () => {
+		const good = { version: V("20261116", 1), tag: "v1", sha: "abc", publishedAt: "now", launcherProtocol: 1, minLauncherProtocol: 1, assets: {} };
+		assert.equal(parseFeed(good).notes, undefined, "a feed without notes still parses");
+		const feed = parseFeed({ ...good, notes: [
+			{ version: V("20261116", 1), publishedAt: "t", items: ["a", 3, ""] },
+			{ version: "latest", items: ["x"] },
+			{ version: V("20261115", 1) },
+			"junk",
+			{ version: V("20261116", 1), items: ["dupe"] },
+		] });
+		assert.deepEqual(feed.notes, [{ version: V("20261116", 1), publishedAt: "t", items: ["a"] }]);
+		assert.deepEqual(parseFeed({ ...good, notes: "nope" }).notes, []);
+	});
+
+	it("merges this release's notes over the previous feed's, newest first, newest 30 kept", () => {
+		const previous = Array.from({ length: 35 }, (_, i) => ({ version: V("20261101", i + 1), publishedAt: "", items: [`old ${i + 1}`] }));
+		const merged = mergeFeedNotes({ version: V("20261117", 1), publishedAt: "", items: ["new"] }, [{ version: V("20261117", 1), publishedAt: "", items: ["stale"] }, ...previous]);
+		assert.equal(merged.length, FEED_NOTES_KEEP);
+		assert.deepEqual(merged[0], { version: V("20261117", 1), publishedAt: "", items: ["new"] });
+		assert.equal(merged[1]!.version, V("20261101", 35));
+	});
+
+	it("make-feed writes the notes history into latest.json", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lh-feed-"));
+		try {
+			const version = V("20261117", 2);
+			fs.writeFileSync(path.join(dir, `learnharness-${version}-linux-x64.tar.gz.sha256`), `${"b".repeat(64)}  file\n`);
+			fs.writeFileSync(path.join(dir, "notes.json"), JSON.stringify({ version, publishedAt: "t", items: ["**New.** thing"] }));
+			fs.writeFileSync(path.join(dir, "previous.json"), JSON.stringify({ version: V("20261116", 1), notes: [{ version: V("20261116", 1), publishedAt: "s", items: ["older"] }] }));
+			const script = path.join(import.meta.dirname, "..", "scripts", "make-feed.ts");
+			const out = execFileSync(process.execPath, [script, "--version", version, "--tag", `v${version}`, "--sha", "abc", "--repo", "o/r", "--dir", dir,
+				"--notes", path.join(dir, "notes.json"), "--previous", path.join(dir, "previous.json")], { encoding: "utf8" });
+			const feed = parseFeed(JSON.parse(out));
+			assert.deepEqual(feed.notes?.map((n) => n.version), [version, V("20261116", 1)]);
+			const bare = execFileSync(process.execPath, [script, "--version", version, "--tag", `v${version}`, "--sha", "abc", "--repo", "o/r", "--dir", dir,
+				"--previous", path.join(dir, "missing.json")], { encoding: "utf8" });
+			assert.deepEqual(parseFeed(JSON.parse(bare)).notes, [], "no notes and no previous feed: an empty history");
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 

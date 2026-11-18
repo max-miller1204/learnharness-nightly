@@ -42,6 +42,8 @@ export interface ServerEvents {
 	"plugin-message": { pluginId: string; topic: string; data?: unknown };
 	/** Self-hosted update state changed; refetch GET /api/updates. */
 	"update-changed": Record<string, never>;
+	/** The server's What's new record changed (seen on some device); refetch GET /api/whats-new. */
+	"whats-new-changed": Record<string, never>;
 }
 
 export type ServerEventType = keyof ServerEvents;
@@ -63,6 +65,7 @@ export const SERVER_EVENT_TYPES = [
 	"plugins-changed",
 	"plugin-message",
 	"update-changed",
+	"whats-new-changed",
 ] as const satisfies readonly ServerEventType[];
 
 /** One notification: distribute over the vocabulary so narrowing `type`

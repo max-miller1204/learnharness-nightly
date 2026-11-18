@@ -9,7 +9,7 @@ How to read an entry:
 - **Touches core** says whether the work edits app code. That's allowed: this fork is expected to change the core heavily, and upstream arrives only through a reviewed Sync PR. The note is there so you can judge how much each item adds to future Sync PR conflicts.
 
 Baseline the entries build on (the self-hosting plan):
-- Update logic lives in the server (`src/server/self-update.ts`, `/api/updates`, `/api/health`), and the desktop update banner and Settings row are reused through a web transport.
+- Update logic lives in the server (`src/server/self-update.ts`, `/api/updates`, `/api/health`), and the sidebar update button and Settings row are shared with the desktop through a web transport.
 - The separate `lh` launcher in `selfhost/` swaps versions, health-checks, rolls back and keeps snapshots.
 - Versioned installs under `~/.learnharness/runtime/versions/`, and the `learnharness.service` systemd user unit.
 - The server binds 127.0.0.1:3774, with optional Tailscale Serve on 8443.
@@ -31,7 +31,7 @@ Rows are in build order. **Order** is the planned sequence, after the self-hosti
 | Later | 3 | macOS self-hosting | Desktop + distribution | none | No |
 | Later | 4 | Docker image | Desktop + distribution | none | No |
 | Later | 5 | LAN mode | Access + security | 6 | Small |
-| Later | 7 | Update deadline | Ops + polish | none | Small (`self-update.ts`) |
+| Done | 7 | Updates like T3 Code, plus What's new | Ops + polish | none | Medium (`self-update.ts`, desktop updater, sidebar) |
 | Later | 8 | Chromium on demand | Ops + polish | none | No |
 | Later | 10 | Side-by-side installs | Desktop + distribution | 11 | No |
 | Later | 11 | Stable channel | Desktop + distribution | none | Small (update UI channel picker) |
@@ -453,17 +453,9 @@ Where things stand, so the entries below start from facts:
 
 ## Ops + polish
 
-### 7. Update deadline
+### 7. Updates like T3 Code, plus What's new
 
-**Why.** Updates apply only when idle. A stuck background job or a chat left `busy` could block updates forever.
-
-**Decided.** First release: wait for idle with no deadline. "Restart" in the UI or `lh update --now` forces it.
-
-**Proposed design (not approved).** An `updateDeadlineHours` setting (off by default) in `self-update.ts`. Once a staged version has waited that long, apply it at the next moment with no *main* chat turn running, even if background jobs are. If it's still never idle, apply at 2× the deadline. Show the countdown in Settings → Updates.
-
-**Open questions.** What default? Should background jobs ever be interrupted?
-
-**Touches core.** Small.
+**Done.** Reworked by the user from "Update deadline" into T3 Code's model: download in the background (server) or on click (desktop), install only when the user confirms, a sidebar update button with release notes, a one-time What's new popup, and AI release notes at nightly time. The idle-apply rule, and with it the deadline question, is gone. Spec: [specs/t3-style-updates.md](specs/t3-style-updates.md).
 
 ### 8. Chromium on demand
 

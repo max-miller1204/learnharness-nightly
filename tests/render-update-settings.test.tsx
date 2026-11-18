@@ -12,7 +12,11 @@ import { installModalDom } from "./modal-dom.ts";
 import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
 import { UpdateSettings, updateStatusText, MANUAL_UPDATE_HINT, AUTO_UPDATE_HINT, type UpdateState } from "../components/settings/update-settings.tsx";
-import UpdateBanner from "../components/update-banner.tsx";
+import { SidebarUpdatePill } from "../components/sidebar-update-pill.tsx";
+import { ServerEventsProvider } from "../components/server-events.tsx";
+import { ReleaseNoteSections } from "../components/release-notes-view.tsx";
+import WhatsNewDialog, { WhatsNewBody } from "../components/whats-new-dialog.tsx";
+import { InstallUpdateDialog } from "../components/install-update-dialog.tsx";
 import { SettingsDialogBody, SettingsDialogProvider } from "../components/settings/settings-dialog.tsx";
 import nextConfig from "../next.config.ts";
 
@@ -36,7 +40,7 @@ function deferred<T>() {
 
 function bridge(initial = state(), snapshot = Promise.resolve(initial)) {
 	const listeners = new Set<(value: UpdateState) => void>();
-	const calls = { check: 0, install: 0, get: 0 };
+	const calls = { check: 0, install: 0, get: 0, download: 0 };
 	let onOpen: ((section: string) => void) | null = null;
 	let checkFailure: Error | null = null;
 	window.lh = {
@@ -45,6 +49,7 @@ function bridge(initial = state(), snapshot = Promise.resolve(initial)) {
 		onUpdateStatus: cb => { listeners.add(cb); return () => { listeners.delete(cb); }; },
 		checkForUpdates: async () => { calls.check++; if (checkFailure) throw checkFailure; },
 		installUpdate: () => { calls.install++; },
+		downloadUpdate: async () => { calls.download++; },
 		onOpenSettings: cb => { onOpen = cb; return () => { onOpen = null; }; },
 	};
 	return {
@@ -90,10 +95,11 @@ describe("version and contextual copy", () => {
 		assert.equal(updateStatusText(state({ status: "checking" })), "Checking for updates…");
 		assert.equal(updateStatusText(state({ status: "downloading", version: "0.3.8" })), "Downloading version 0.3.8…");
 		assert.equal(updateStatusText(state({ status: "up-to-date" })), "No newer version was found at the last check.");
-		assert.equal(updateStatusText(state({ status: "downloaded", version: "0.3.8" })), "Version 0.3.8 is ready. It will install when you quit the app.");
+		assert.equal(updateStatusText(state({ status: "downloaded", version: "0.3.8" })), "Version 0.3.8 is ready to install.");
+		assert.equal(updateStatusText(state({ status: "available", version: "0.3.8" })), "Version 0.3.8 is available.");
 		assert.equal(updateStatusText(state({ status: "error" })), "Couldn’t check for updates. Try again later.");
 		assert.equal(updateStatusText(state({ status: "downloading" })), "Downloading an update…");
-		assert.equal(updateStatusText(state({ status: "downloaded" })), "An update is ready. It will install when you quit the app.");
+		assert.equal(updateStatusText(state({ status: "downloaded" })), "An update is ready to install.");
 	});
 });
 
@@ -139,8 +145,48 @@ describe("General update rows", () => {
 		assert.equal(q(host, "update-status")!.textContent, "Downloading version 0.3.8…");
 		assert.equal((q(host, "update-check") as HTMLButtonElement).disabled, true);
 		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 3 }));
-		assert.equal(q(host, "update-check"), null); assert.ok(q(host, "update-status")!.textContent!.includes("quit the app"));
-		await click(q(host, "update-restart")); assert.equal(b.calls.install, 1);
+		assert.equal(q(host, "update-check"), null); assert.equal(q(host, "update-status")!.textContent, "Version 0.3.8 is ready to install.");
+		await click(q(host, "update-install"));
+		assert.equal(b.calls.install, 0, "Install confirms first");
+		assert.equal(q(document, "install-update-title")!.textContent, "Install update 0.3.8 and restart LearnHarness?");
+		await click(q(document, "install-update-confirm")); assert.equal(b.calls.install, 1);
+	});
+
+	it("a restarted self-hosted server (new instance) is not ignored for counting revisions from 0 again", async () => {
+		let body: UpdateState = state({ status: "downloaded", version: "0.3.8", revision: 9, instance: "old" });
+		const handlers = new Map<string, (data: string) => void>();
+		const source = { close() {}, onOpen() {}, onEvent: (name: string, cb: (data: string) => void) => { handlers.set(name, cb); } };
+		const connect = () => source;
+		globalThis.fetch = async () => Response.json(body);
+		const host = await mount(<ServerEventsProvider connect={connect}><SidebarUpdatePill /></ServerEventsProvider>);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "install");
+		body = state({ status: "up-to-date", revision: 1, instance: "new" });
+		await act(async () => { handlers.get("update-changed")!("{}"); await new Promise((resolve) => setTimeout(resolve, 0)); });
+		assert.equal(q(host, "update-pill"), null, "the new server's lower revision is accepted");
+	});
+
+	it("an undismissed rollback stays explained in Settings after a later check clears the message", () => {
+		const notice = { kind: "rolled-back" as const, version: "0.3.8", text: "Update to version 0.3.8 failed to start and was rolled back.", at: 1 };
+		assert.equal(updateStatusText(state({ status: "up-to-date", notice, message: null })), notice.text);
+		assert.equal(updateStatusText(state({ status: "downloaded", version: "0.3.9", notice })), "Version 0.3.9 is ready to install.");
+	});
+
+	it("desktop available offers Download (downloads only on click)", async () => {
+		const b = bridge(); const host = await mount(<UpdateSettings {...props} />);
+		await b.push(state({ status: "available", version: "0.3.8", revision: 1 }));
+		assert.equal(q(host, "update-status")!.textContent, "Version 0.3.8 is available.");
+		assert.equal(b.calls.download, 0);
+		await click(q(host, "update-download")); assert.equal(b.calls.download, 1);
+	});
+
+	it("Cancel in the confirm dialog installs nothing", async () => {
+		const b = bridge(state({ status: "downloaded", version: "0.3.8", revision: 1 }));
+		const host = await mount(<UpdateSettings {...props} />);
+		await click(q(host, "update-install"));
+		await click(q(document, "install-update-cancel"));
+		assert.equal(q(document, "install-update-dialog"), null);
+		assert.equal(b.calls.install, 0);
 	});
 
 	it("up-to-date and failure statuses allow another manual check", async () => {
@@ -160,58 +206,65 @@ describe("General update rows", () => {
 		assert.ok(!host.textContent!.includes("sensitive"));
 	});
 
-	it("late Settings and banner subscribers recover the staged update without an event", async () => {
+	it("late Settings and pill subscribers recover the staged update without an event", async () => {
 		const b = bridge(state({ status: "downloaded", version: "0.3.8", revision: 5 }));
-		const host = await mount(<><UpdateSettings {...props} /><UpdateBanner /></>);
-		assert.ok(q(host, "update-restart")); assert.ok(q(host, "update-banner"));
-		assert.ok(q(host, "update-banner")!.textContent!.includes("0.3.8"));
-		await click(q(host, "update-banner")!.querySelector("button")); assert.equal(b.calls.install, 1);
+		const host = await mount(<><UpdateSettings {...props} /><SidebarUpdatePill /></>);
+		assert.ok(q(host, "update-install")); assert.ok(q(host, "update-pill"));
+		assert.equal(q(host, "update-pill")!.getAttribute("aria-label"), "Update 0.3.8 downloaded. Click to restart and install.");
+		await click(q(host, "update-pill"));
+		assert.equal(b.calls.install, 0, "the pill confirms first");
+		await click(q(document, "install-update-confirm")); assert.equal(b.calls.install, 1);
 		assert.equal(b.calls.check, 0);
 	});
 
-	for (const version of ["0.3.8", null]) {
-		it(`dismisses ${version ?? "an unnamed update"} without installing, keeps Settings available, and shows a new version`, async () => {
-			const b = bridge(state({ status: "downloaded", version, revision: 1 }));
-			const host = await mount(<><UpdateSettings {...props} /><UpdateBanner /></>);
-			const dismiss = host.querySelector<HTMLElement>("[aria-label='Dismiss update notification']");
-			await click(dismiss);
-			assert.equal(q(host, "update-banner"), null);
-			assert.equal(b.calls.install, 0, "dismiss must not restart or install");
-			assert.equal(b.calls.check, 0, "dismiss must not check for updates");
+	it("the pill shows only when there is something to act on, and stays until acted on", async () => {
+		const b = bridge(); const host = await mount(<SidebarUpdatePill />);
+		for (const [revision, status] of [[1, "idle"], [2, "checking"], [3, "up-to-date"], [4, "error"], [5, "disabled"]] as const) {
+			await b.push(state({ status, revision }));
+			assert.equal(q(host, "update-pill"), null, status);
+		}
+		await b.push(state({ status: "available", version: "0.3.8", revision: 6 }));
+		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "download");
+		await click(q(host, "update-pill")); assert.equal(b.calls.download, 1);
+		await b.push(state({ status: "downloading", version: "0.3.8", revision: 7 }));
+		assert.equal(q(host, "update-pill")!.getAttribute("aria-disabled"), "true");
+		await click(q(host, "update-pill")); assert.equal(b.calls.download, 1);
+		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 8 }));
+		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "install");
+	});
 
-			await b.push(state({ status: "downloaded", version, revision: 2 }));
-			assert.equal(q(host, "update-banner"), null, "repeated status must stay dismissed");
-			await click(q(host, "update-restart"));
-			assert.equal(b.calls.install, 1, "Settings still offers installation");
+	it("the pill's hover shows T3-style notes: What's changed, Changes in X, Read more", async () => {
+		const notes = [
+			{ version: "0.3.9", items: ["**Cards.** Practice with cards.", "Plain item"] },
+			{ version: "0.3.8", items: ["Older change"] },
+		];
+		bridge(state({ status: "downloaded", version: "0.3.9", revision: 1, releaseNotes: notes, omittedReleaseCount: 2 }));
+		const host = await mount(<SidebarUpdatePill />);
+		const pill = q(host, "update-pill")!;
+		await act(async () => { pill.dispatchEvent(new window.Event("pointerover", { bubbles: true })); pill.dispatchEvent(new window.Event("pointerenter")); });
+		const popover = q(document, "update-pill-notes");
+		assert.ok(popover, "hover opens the notes");
+		const headings = [...popover!.querySelectorAll("h3")].map((h) => h.textContent);
+		assert.deepEqual(headings, ["What's changed", "Changes in 0.3.8"]);
+		assert.equal(popover!.querySelector("strong")!.textContent, "Cards.");
+	});
 
-			await b.push(state({ status: "downloaded", version: "0.4.0", revision: 3 }));
-			assert.ok(q(host, "update-banner")!.textContent!.includes("0.4.0"));
-		});
-	}
-
-	it("dismissal survives status transitions but is forgotten when the banner remounts", async () => {
-		const b = bridge(state({ status: "downloaded", version: "0.4.1", revision: 1 }));
-		const host = await mount(<UpdateBanner />);
-		await click(host.querySelector("[aria-label='Dismiss update notification']"));
-		await b.push(state({ status: "checking", revision: 2 }));
-		await b.push(state({ status: "downloaded", version: "0.4.1", revision: 3 }));
-		assert.equal(q(host, "update-banner"), null, "the same staged version stays hidden");
-
-		const { root } = roots.pop()!;
-		await act(async () => { root.unmount(); });
-		host.remove();
-		assert.equal(b.listeners.size, 0);
-		bridge(state({ status: "downloaded", version: "0.4.1", revision: 3 }));
-		const reopened = await mount(<UpdateBanner />);
-		assert.ok(q(reopened, "update-banner"), "dismissal is local state, not a persisted preference");
+	it("release note sections link each group's release (Read more) and the older ones", () => {
+		const html = renderToStaticMarkup(<ReleaseNoteSections homepage="https://github.com/o/r" omittedReleaseCount={2}
+			groups={[{ version: "0.3.9", items: ["a"] }, { version: "0.3.8", items: [] }]} />);
+		assert.ok(html.includes('href="https://github.com/o/r/releases/tag/v0.3.9"'));
+		assert.ok(html.includes('href="https://github.com/o/r/releases/tag/v0.3.8"'));
+		assert.equal(html.match(/Read more/g)?.length, 2);
+		assert.ok(html.includes('href="https://github.com/o/r/releases"'));
+		assert.ok(html.includes("2 older releases on GitHub"));
 	});
 
 	it("a delayed older snapshot cannot overwrite a newer push in Settings or the banner", async () => {
 		const snapshot = deferred<UpdateState>(); const b = bridge(state(), snapshot.promise);
-		const host = await mount(<><UpdateSettings {...props} /><UpdateBanner /></>);
+		const host = await mount(<><UpdateSettings {...props} /><SidebarUpdatePill /></>);
 		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 4 }));
 		await act(async () => { snapshot.resolve(state({ status: "checking", revision: 3 })); });
-		assert.ok(q(host, "update-restart")); assert.ok(q(host, "update-banner"));
+		assert.ok(q(host, "update-install")); assert.ok(q(host, "update-pill"));
 	});
 
 	it("snapshot rejection cannot erase an already received event and late callbacks are unsubscribed", async () => {
@@ -219,7 +272,7 @@ describe("General update rows", () => {
 		const host = await mount(<UpdateSettings {...props} />);
 		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 1 }));
 		await act(async () => { snapshot.reject(new Error("IPC disconnected")); });
-		assert.ok(q(host, "update-restart"));
+		assert.ok(q(host, "update-install"));
 		const { root } = roots.pop()!; await act(async () => { root.unmount(); }); host.remove();
 		assert.equal(b.listeners.size, 0);
 	});
@@ -230,6 +283,45 @@ describe("General update rows", () => {
 		await act(async () => { snapshot.reject(new Error("sensitive error")); });
 		assert.equal(q(host, "update-status")!.textContent, "Couldn’t check for updates. Try again later.");
 		assert.ok(!host.textContent!.includes("sensitive"));
+	});
+});
+
+describe("install confirm and What's new", () => {
+	it("the confirm dialog lists the running work it will interrupt", async () => {
+		globalThis.fetch = async (input) => {
+			assert.equal(String(input), "/api/updates/running");
+			return Response.json({ items: [{ kind: "turn", title: "Calculus" }, { kind: "job", title: "Research" }, { kind: "plugin-worker", title: "Cards" }, { kind: "extraction", title: "notes.pdf" }, { kind: "compaction", title: "Algebra" }] });
+		};
+		await mount(<InstallUpdateDialog open version="0.3.8" onClose={() => {}} onConfirm={() => {}} />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		assert.equal(q(document, "install-update-line")!.textContent, "Any running tasks will be interrupted. Make sure you're ready before continuing.");
+		const lines = [...q(document, "install-update-running")!.querySelectorAll("li")].map((li) => li.textContent);
+		assert.deepEqual(lines, ["Chat turn: Calculus", "Background job: Research", "Plugin worker: Cards", "Extraction: notes.pdf", "Compaction: Algebra"]);
+	});
+
+	it("What's new shows the groups, or Updated to X with Read more when there are none", () => {
+		const html = renderToStaticMarkup(<WhatsNewBody homepage="https://github.com/o/r" onDone={() => {}}
+			whatsNew={{ version: "0.3.9", releaseNotes: [{ version: "0.3.9", items: ["x"] }, { version: "0.3.8", items: ["y"] }], omittedReleaseCount: 0 }} />);
+		assert.ok(html.includes("What&#x27;s new in 0.3.9") || html.includes("What's new in 0.3.9"));
+		assert.ok(html.includes("Changes in 0.3.8"));
+		const empty = renderToStaticMarkup(<WhatsNewBody homepage="https://github.com/o/r" onDone={() => {}} whatsNew={{ version: "0.3.9", releaseNotes: [], omittedReleaseCount: 0 }} />);
+		assert.ok(empty.includes("Updated to version 0.3.9."));
+		assert.ok(empty.includes('href="https://github.com/o/r/releases/tag/v0.3.9"'));
+	});
+
+	it("Got it marks the running version seen on the server and closes the popup", async () => {
+		const posts: unknown[] = [];
+		globalThis.fetch = async (input, init) => {
+			if (String(input) === "/api/whats-new/seen") { posts.push(JSON.parse(String(init?.body))); return new Response(null, { status: 204 }); }
+			assert.equal(String(input), "/api/whats-new");
+			return Response.json({ version: "0.3.9", releaseNotes: [], omittedReleaseCount: 0 });
+		};
+		await mount(<WhatsNewDialog />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		assert.ok(q(document, "whats-new-dialog"));
+		await click(q(document, "whats-new-done"));
+		assert.equal(q(document, "whats-new-dialog"), null);
+		assert.deepEqual(posts, [{ version: "0.3.9" }]);
 	});
 });
 

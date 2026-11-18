@@ -8,7 +8,6 @@ import { AppShell, SidebarProvider } from "@/components/sidebar";
 import { ActivityProvider } from "@/components/activity-dock";
 import { ServerEventsProvider } from "@/components/server-events";
 import { AppearanceProvider } from "@/components/settings/appearance";
-import UpdateBanner from "@/components/update-banner";
 import { PluginsProvider } from "@/components/plugins";
 import { SIDEBAR_BOOT_SCRIPT } from "@/components/sidebar-boot";
 import { PairScreen } from "@/components/pair-screen";
@@ -68,9 +67,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 						</SidebarProvider>
 					</AppearanceProvider>
 				</PluginsProvider>
-				{/* Auto-update banner (Wave C): fixed card. Inside the events
-				    provider so self-hosted installs refetch on "update-changed". */}
-				<UpdateBanner />
 			</ServerEventsProvider>
 		</body>
 		</html>

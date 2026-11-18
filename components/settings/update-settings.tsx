@@ -4,11 +4,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { BrailleSpinner } from "@/components/braille-spinner";
 import { useNotifyHub } from "@/components/server-events";
+import { InstallUpdateDialog } from "@/components/install-update-dialog";
+import type { ReleaseNoteGroup } from "@/src/core";
 import { SettingsRow, Toggle } from "./controls.tsx";
 
-/** The outcome of the last self-hosted switch (GET /api/updates `notice`). */
+/** A rolled-back self-hosted switch (GET /api/updates `notice`), shown until dismissed. */
 export type UpdateNotice = {
-	kind: "updated" | "rolled-back";
+	kind: "rolled-back";
 	version: string;
 	text: string;
 	at: number;
@@ -16,24 +18,31 @@ export type UpdateNotice = {
 
 /** Observational snapshot from electron/main.cjs (desktop) or GET /api/updates
  * (self-hosted); never updater permission. `message` and `notice` exist only
- * on the self-hosted transport. */
+ * on the self-hosted transport; "available" (found, not downloaded) only on
+ * the desktop, which downloads on click (docs/specs/t3-style-updates.md). */
 export type UpdateState = {
-	status: "idle" | "checking" | "downloading" | "up-to-date" | "downloaded" | "error" | "disabled";
+	status: "idle" | "checking" | "available" | "downloading" | "up-to-date" | "downloaded" | "error" | "disabled";
 	version: string | null;
 	revision: number;
+	/** Self-hosted only: the server process; a restarted server counts revisions from 0 again. */
+	instance?: string;
 	message?: string | null;
 	notice?: UpdateNotice | null;
+	/** Newest first: versions newer than the running one up to the offered one. */
+	releaseNotes?: ReleaseNoteGroup[];
+	omittedReleaseCount?: number;
 };
 
 /** Which updater this window talks to: the Electron shell, or the self-hosted server. */
 export type UpdateTransport = "desktop" | "web";
 
 export const APP_VERSION = process.env.LH_VERSION ?? "";
-const HOMEPAGE = process.env.LH_HOMEPAGE ?? "";
-export const MANUAL_UPDATE_HINT = "Checking downloads available updates. Downloaded updates install when you quit the app.";
-export const AUTO_UPDATE_HINT = "Check at startup and every 24 hours. Turning this off does not stop updates already in progress or ready to install.";
-export const WEB_MANUAL_UPDATE_HINT = "Checking downloads available updates. Downloaded updates install automatically when no agent is working, or right away with Restart.";
-export const WEB_AUTO_UPDATE_HINT = "Check at startup and every 15 minutes. Turning this off does not stop an update that is already downloaded.";
+export const HOMEPAGE = process.env.LH_HOMEPAGE ?? "";
+export const MANUAL_UPDATE_HINT = "Check for updates looks for a newer version. Download and Install happen when you click them.";
+export const AUTO_UPDATE_HINT = "Check 15 seconds after launch and every 4 hours. Nothing downloads or installs until you click.";
+export const WEB_MANUAL_UPDATE_HINT = "Check for updates downloads a newer version. It installs when you click Install.";
+export const WEB_AUTO_UPDATE_HINT = "Check at startup and every 4 hours, and download new versions in the background. Nothing installs until you click Install.";
+export const AUTO_UPDATE_LABEL = "Check for updates automatically";
 const UPDATE_ERROR = "Couldn’t check for updates. Try again later.";
 
 const isUpdateState = (value: unknown): value is UpdateState =>
@@ -61,7 +70,13 @@ export function useUpdateState() {
 	const [transport, setTransport] = useState<UpdateTransport | null>(null);
 	const hub = useNotifyHub();
 	const revisionRef = useRef(-1);
+	const instanceRef = useRef<string | undefined>(undefined);
 	const accept = useCallback((next: UpdateState) => {
+		// A restarted server (new instance) starts its revisions over: its first state wins.
+		if (next.instance !== instanceRef.current) {
+			instanceRef.current = next.instance;
+			revisionRef.current = -1;
+		}
 		if (next.revision < revisionRef.current) return;
 		revisionRef.current = next.revision;
 		setState(next);
@@ -95,26 +110,36 @@ export function useUpdateState() {
 		accept(await fetchWebState("/api/updates/check", "POST"));
 	}, [accept]);
 
+	/** Apply now. Callers confirm first (InstallUpdateDialog). */
 	const install = useCallback((): void => {
 		if (window.lh) { window.lh.installUpdate?.(); return; }
 		void fetchWebState("/api/updates/install", "POST").then(accept).catch(() => setFailed(true));
 	}, [accept]);
 
-	return { state, failed, transport, check, install };
+	/** Desktop only: download the "available" version. */
+	const download = useCallback((): void => {
+		const pending = window.lh?.downloadUpdate?.();
+		if (pending) void pending.catch(() => setFailed(true));
+	}, []);
+
+	/** Self-hosted only: hide the rollback notice on every browser of this server. */
+	const dismissNotice = useCallback((): void => {
+		void fetchWebState("/api/updates/notice/dismiss", "POST").then(accept).catch(() => { /* stays visible; retry on next click */ });
+	}, [accept]);
+
+	return { state, failed, transport, check, install, download, dismissNotice };
 }
 
 export function updateStatusText(state: UpdateState | null, transport: UpdateTransport | null = "desktop"): string | null {
 	if (state?.message) return state.message;
+	// A rollback stays explained here until dismissed, even after a later check clears the message.
+	if (state?.notice && state.status !== "downloaded" && state.status !== "available" && state.status !== "downloading") return state.notice.text;
 	switch (state?.status) {
 		case "checking": return "Checking for updates…";
+		case "available": return state.version ? `Version ${state.version} is available.` : "An update is available.";
 		case "downloading": return state.version ? `Downloading version ${state.version}…` : "Downloading an update…";
 		case "up-to-date": return "No newer version was found at the last check.";
-		case "downloaded": {
-			const what = state.version ? `Version ${state.version}` : "An update";
-			return transport === "web"
-				? `${what} is ready. It installs automatically when no agent is working.`
-				: `${what} is ready. It will install when you quit the app.`;
-		}
+		case "downloaded": return state.version ? `Version ${state.version} is ready to install.` : "An update is ready to install.";
 		case "error": return UPDATE_ERROR;
 		default: return null;
 	}
@@ -133,12 +158,13 @@ export function UpdateSettings({
 	version?: string;
 	homepage?: string;
 }) {
-	const { state, failed, transport, check: checkNow, install } = useUpdateState();
+	const { state, failed, transport, check: checkNow, install, download } = useUpdateState();
 	const [checkFailed, setCheckFailed] = useState(false);
+	const [confirming, setConfirming] = useState(false);
 	useEffect(() => setCheckFailed(false), [state]);
 	const active = state !== null && state.status !== "disabled";
 	const busy = state?.status === "checking" || state?.status === "downloading";
-	const status = state?.status === "downloaded" || state?.message ? updateStatusText(state, transport)
+	const status = state?.status === "downloaded" || state?.status === "available" || state?.message || state?.notice ? updateStatusText(state, transport)
 		: failed || checkFailed ? UPDATE_ERROR : updateStatusText(state, transport);
 	const releaseNotes = version && homepage ? `${homepage}/releases/tag/v${version}` : null;
 	const web = transport === "web";
@@ -161,7 +187,9 @@ export function UpdateSettings({
 				}
 			>
 				{active && (state.status === "downloaded" ? (
-					<Button type="button" size="xs" className="cursor-pointer" data-testid="update-restart" onClick={install}>Restart</Button>
+					<Button type="button" size="xs" className="cursor-pointer" data-testid="update-install" onClick={() => setConfirming(true)}>Install</Button>
+				) : state.status === "available" ? (
+					<Button type="button" size="xs" className="cursor-pointer" data-testid="update-download" onClick={download}>Download</Button>
 				) : (
 					<Button type="button" size="xs" variant="outline" className="cursor-pointer disabled:cursor-not-allowed" data-testid="update-check" disabled={busy} aria-busy={busy} onClick={check}>
 						{busy && <BrailleSpinner label={state.status === "downloading" ? "Downloading update" : "Checking for updates"} />}
@@ -170,10 +198,16 @@ export function UpdateSettings({
 				))}
 			</SettingsRow>
 			{active && (
-				<SettingsRow label="Automatic updates" hint={web ? WEB_AUTO_UPDATE_HINT : AUTO_UPDATE_HINT} testid="row-auto-update">
+				<SettingsRow label={AUTO_UPDATE_LABEL} hint={web ? WEB_AUTO_UPDATE_HINT : AUTO_UPDATE_HINT} testid="row-auto-update">
 					<Toggle checked={autoUpdate} label="auto update" onChange={onAutoUpdateChange} />
 				</SettingsRow>
 			)}
+			<InstallUpdateDialog
+				open={confirming && state?.status === "downloaded"}
+				version={state?.version ?? null}
+				onClose={() => setConfirming(false)}
+				onConfirm={() => { setConfirming(false); install(); }}
+			/>
 		</>
 	);
 }
