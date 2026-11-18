@@ -24,7 +24,7 @@ Start from a topic, bring a problem, or resume a session. Create with `POST /api
 
 `apps/mobile` is an independent Expo npm project with its own lockfile, TypeScript, ESLint, Metro and EAS configuration. It imports the shared protocol and portable core source. React and React Native resolve from the mobile installation; the root Next app excludes mobile files from its typecheck and lint. Required CI **Check** includes an isolated mobile install, Expo dependency checks, lint, typecheck, tests, and iOS and Android bundle exports for mobile, shared-source and CI changes.
 
-Both stores display **LearnHarness Nightly**. The iOS bundle ID is `com.learnharness.LearnHarness.Nightly` and the Android package is `com.learnharness.learnharness.nightly`. EAS builds store binaries for TestFlight and Play internal testing. Beta updates are fresh signed binaries. The owner designates accounts, testers and a tailnet test server before signing and submission. See the [mobile release runbook](../../apps/mobile/README.md).
+Both stores display **LearnHarness Nightly**. The iOS bundle ID and the Android package are both `com.maxmiller.learnharness.nightly`, under the owner's namespace rather than upstream's `com.learnharness`. EAS builds store binaries for TestFlight and Play internal testing. Beta updates are fresh signed binaries. The owner designates accounts, testers and a tailnet test server before signing and submission. See the [mobile release runbook](../../apps/mobile/README.md).
 
 ## Acceptance proof
 
