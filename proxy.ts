@@ -26,6 +26,7 @@ export function proxy(request: NextRequest) {
 		// days, so a cookie in use is set again, as often as last seen is.
 		if (seen && result.via === "cookie" && result.session.expiresAt === NEVER_EXPIRES) {
 			response.headers.append("Set-Cookie", sessionCookie(request, result.token));
+			response.headers.set("Cache-Control", CREDENTIAL_HEADERS["Cache-Control"]);
 		}
 		return response;
 	}
@@ -36,7 +37,11 @@ export function proxy(request: NextRequest) {
 	// sees a different origin, it fetches the rewrite over the network.
 	// That hop uses the local HTTP listener, even behind a TLS proxy.
 	const pair = request.nextUrl.clone();
+	// URL omits 443 from an HTTPS URL. Preserve the listener port when
+	// switching schemes so an HTTP listener on 443 still works.
+	const port = pair.port || (pair.protocol === "https:" ? "443" : "");
 	pair.protocol = "http:";
+	pair.port = port;
 	pair.pathname = "/pair";
 	pair.search = "";
 	return NextResponse.rewrite(pair);

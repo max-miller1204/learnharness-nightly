@@ -12,7 +12,7 @@ import {
 import { restore, snapshot } from "../src/backup.ts";
 import { writeConfig } from "../src/config.ts";
 import { layout } from "../src/paths.ts";
-import { terminalQr } from "../src/qr.ts";
+import { QrCode } from "../src/qr.ts";
 import { writeState } from "../src/release.ts";
 
 let home: string;
@@ -70,6 +70,20 @@ describe("pairing codes", () => {
 });
 
 describe("lh pair output", () => {
+	function assertQr(rows: string[], url: string) {
+		const qr = QrCode.encodeText(url, QrCode.Ecc.MEDIUM);
+		assert.equal(rows.length, Math.ceil((qr.size + 4) / 2));
+		for (const [rowIndex, row] of rows.entries()) {
+			assert.equal(row.length, qr.size + 4);
+			for (const [column, glyph] of [...row].entries()) {
+				const x = column - 2;
+				const y = 2 * rowIndex - 2;
+				assert.equal(glyph === "▀" || glyph === "█", qr.getModule(x, y));
+				assert.equal(glyph === "▄" || glyph === "█", qr.getModule(x, y + 1));
+			}
+		}
+	}
+
 	it("prints the local link first, then the remote QR and link right above the code", () => {
 		writeState(home, { protocol: 1, activeVersion: "0.6.1", badVersions: [] });
 		const hostname = "box.tail.ts.net";
@@ -83,15 +97,21 @@ describe("lh pair output", () => {
 		assert.ok(code);
 		const local = pairingUrl("http://127.0.0.1:3774", code);
 		const remote = pairingUrl(`https://${hostname}:8443`, code);
-		assert.ok(output.includes(`On this machine only:\n  ${local}\n${terminalQr(remote)}\nFrom your other devices:\n  ${remote}\nCode: ${formatCode(code)} `));
+		const lines = output.trimEnd().split("\n");
+		assert.deepEqual(lines.slice(1, 3), ["On this machine only:", `  ${local}`]);
+		assert.deepEqual(lines.slice(-3, -1), ["From your other devices:", `  ${remote}`]);
+		assert.ok(lines.at(-1)?.startsWith(`Code: ${formatCode(code)} `));
+		assertQr(lines.slice(3, -3), remote);
 
 		writeConfig(home, { port: 3774, tailscale: { enabled: false, port: 8443 } });
 		const localOutput = pair();
 		const localCode = /#token=([A-Z2-9]{12})/.exec(localOutput)?.[1];
 		assert.ok(localCode);
 		const localOnly = pairingUrl("http://127.0.0.1:3774", localCode);
-		assert.ok(localOutput.includes(`On this machine only:\n  ${localOnly}\n${terminalQr(localOnly)}\nCode: ${formatCode(localCode)} `));
-		assert.doesNotMatch(localOutput, /From your other devices/);
+		const localLines = localOutput.trimEnd().split("\n");
+		assert.deepEqual(localLines.slice(1, 3), ["On this machine only:", `  ${localOnly}`]);
+		assert.ok(localLines.at(-1)?.startsWith(`Code: ${formatCode(localCode)} `));
+		assertQr(localLines.slice(3, -1), localOnly);
 	});
 });
 

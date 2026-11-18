@@ -45,6 +45,10 @@ describe("signed out", () => {
 			headers: { "x-forwarded-proto": "https", "x-forwarded-host": "box.tail.ts.net:8443" },
 		}));
 		assert.equal(response.headers.get("x-middleware-rewrite"), "http://localhost:3774/pair");
+		const defaultPort = proxy(new NextRequest("https://localhost:443/", {
+			headers: { "x-forwarded-proto": "https", "x-forwarded-host": "box.tail.ts.net:8443" },
+		}));
+		assert.equal(defaultPort.headers.get("x-middleware-rewrite"), "http://localhost:443/pair");
 	});
 
 	it("the pairing screen, the exchanges and health stay public", () => {
@@ -85,6 +89,7 @@ describe("signed in", () => {
 		const request = new NextRequest(`${origin}/api/settings`, { headers: { cookie, "x-forwarded-proto": "https" } });
 		const response = proxy(request);
 		assert.ok(passes(response));
+		assert.equal(response.headers.get("cache-control"), "no-store");
 		const renewed = response.headers.get("set-cookie") ?? "";
 		assert.equal(renewed.split(";")[0], cookie);
 		assert.match(renewed, /; Path=\/; Expires=[^;]+; HttpOnly; SameSite=Lax; Secure$/);
