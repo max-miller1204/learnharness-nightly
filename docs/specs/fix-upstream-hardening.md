@@ -14,9 +14,10 @@ Base: main at 3454c1b (includes PR #16, the issue mirror).
 ## Change
 
 - New `selfhost/scripts/fence.jq`, shared by both scripts (`jq -L <scripts dir>`, `include "fence";`): `fence($empty)` wraps the text in a `markdown` tilde block whose fence is one tilde longer than the longest tilde run anywhere in the text, and at least 4. The text is copied unchanged. Empty or null text becomes `$empty` (`(none)` for a PR description, `(empty)` for an issue body or comment, as before).
+- The fence finds the longest tilde run in one pass, and the mirror fences each comment once before fitting the body under the size cap (and the issue body again only after each cut), so a large, tilde-heavy upstream issue can't stall the hourly job.
 - The import script renders the description with `fence("(none)")`; the mirror script uses `fence("(empty)")` for the body and each comment. Everything else in both bodies is unchanged.
 - The mirror script counts a fork issue as a mirror only if `user.login` is `FORK_BOT_LOGIN` (default `learnharness-nightly-bot[bot]`, the login every existing mirror has) and its first line is the marker. This applies to both the new-mirror pass and the `upstream-closed` pass.
-- The mirror script writes only when `GITHUB_ACTIONS=true` (the workflow, as the bot). Otherwise it exits 1 with "run locally with DRY_RUN=1" before any call, unless `DRY_RUN=1`.
+- The mirror script writes only when `GITHUB_ACTIONS=true` (the workflow, as the bot). Otherwise it exits 1 with "run locally with DRY_RUN=1" before any call (even the `gh repo view` that finds the fork), unless `DRY_RUN=1`.
 - The mirror script's loops and label list read from files written by a prior jq command, so a jq error fails the run (`set -e`) before any summary line.
 - `selfhost/tests/upstream-scripts.test.ts` runs both scripts offline with stub `gh`, `git` and `sleep` and a `jq` wrapper that can inject a failure; it runs in CI's Launcher tests job.
 - Docs: `docs/specs/upstream-issue-mirror.md` and `docs/fork-workflow.md` describe the fence, the bot-only matching and the workflow-only writes.
@@ -27,7 +28,8 @@ Base: main at 3454c1b (includes PR #16, the issue mirror).
 2. A fork issue opened by anyone other than the bot with a marker for upstream #N does not stop #N from being mirrored, and is never edited by the label pass. The bot's own mirrors are recognized exactly as before: a real `DRY_RUN=1` against upstream prints the same plan as main.
 3. Without `DRY_RUN=1` and outside the workflow, the mirror script exits 1 and makes no `gh` call. With `DRY_RUN=1` it makes only read calls.
 4. An injected jq failure in the new-mirror list, a mirror's label list or the `upstream-closed` pass makes the run exit non-zero without printing the summary.
-5. CI `Check` is green, with the new tests in Launcher tests.
+5. An issue whose body and 30 comments are each 64000 characters of `~ ` renders in seconds and still fits in 60000 bytes, with "30 more comments upstream".
+6. CI `Check` is green, with the new tests in Launcher tests.
 
 ## Must keep working (existing flows, answer key is the base commit)
 

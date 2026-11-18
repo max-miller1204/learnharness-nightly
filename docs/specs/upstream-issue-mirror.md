@@ -71,7 +71,7 @@ jobs:
 
 1. Ensure the two labels exist.
 2. List upstream issues (state all, PRs filtered out) and fork issues (state all), each in one paginated call.
-3. Build the map upstream number → fork mirror (number, labels) from the markers.
+3. Build the map upstream number → fork mirror (number, labels) from the markers on issues the fork bot opened.
 4. **New mirrors:** pick unmirrored upstream issues that are open or above the cutoff (or only the dispatched `issue`), oldest first, up to 100. For each: fetch its comments, render the body with `jq`, create the fork issue with `upstream`, upstream's labels that exist here, and `upstream-closed` if it's already closed.
 5. **Close tracking:** for every existing mirror, add `upstream-closed` when upstream is closed and the label is missing; remove it when upstream is open and the label is present. Fork open or closed state is never changed.
 6. Print a summary: created, labeled, unlabeled, remaining backlog.

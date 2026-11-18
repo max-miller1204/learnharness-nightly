@@ -21,21 +21,21 @@
 # do without writing (with a number, it also prints the body).
 set -euo pipefail
 
+# The fork bot App's login: only issues it opened count as mirrors.
+FORK_BOT_LOGIN="${FORK_BOT_LOGIN:-learnharness-nightly-bot[bot]}"
+DRY_RUN="${DRY_RUN:-}"
+if [ -z "$DRY_RUN" ] && [ "${GITHUB_ACTIONS:-}" != true ]; then
+	echo "Only the Mirror upstream issues workflow writes mirrors (as ${FORK_BOT_LOGIN}); run locally with DRY_RUN=1." >&2
+	exit 1
+fi
 UPSTREAM_REPO="${UPSTREAM_REPO:-amosblomqvist/learnharness}"
 FORK_REPO="${FORK_REPO:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
 # Upstream issues numbered above this are mirrored even if already closed; at
 # or below it (the backfill), only open ones.
 NEW_AFTER="${NEW_AFTER:-792}"
 MAX_NEW="${MAX_NEW:-100}"
-# The fork bot App's login: only issues it opened count as mirrors.
-FORK_BOT_LOGIN="${FORK_BOT_LOGIN:-learnharness-nightly-bot[bot]}"
-DRY_RUN="${DRY_RUN:-}"
 ONLY="${1:-}"
 [ -z "$ONLY" ] || [[ "$ONLY" =~ ^[0-9]+$ ]] || { echo "Issue number must be numeric" >&2; exit 1; }
-if [ -z "$DRY_RUN" ] && [ "${GITHUB_ACTIONS:-}" != true ]; then
-	echo "Only the Mirror upstream issues workflow writes mirrors (as ${FORK_BOT_LOGIN}); run locally with DRY_RUN=1." >&2
-	exit 1
-fi
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 tmp=$(mktemp -d)
@@ -89,7 +89,7 @@ jq --slurpfile mirrors "$tmp/mirrors.json" --argjson after "$NEW_AFTER" --arg on
 		| select(if $only != "" then .number == ($only | tonumber) else .state == "open" or .number > $after end)]
 	| sort_by(.number)' "$tmp/upstream.json" >"$tmp/todo.json"
 
-if [ -n "$ONLY" ] && jq -e --argjson n "$ONLY" 'any(.[]; .upstream == $n)' "$tmp/mirrors.json" >/dev/null; then
+if [ -n "$ONLY" ] && [ "$(jq --argjson n "$ONLY" 'any(.[]; .upstream == $n)' "$tmp/mirrors.json")" = true ]; then
 	echo "Upstream issue ${ONLY} is already mirrored."
 fi
 
@@ -109,23 +109,26 @@ def render($cs; $more; $cut):
 	"<!-- upstream-issue: \($up)#\(.number) -->\n"
 	+ "Mirrored from `\($up)#\(.number)` (`\(.html_url)`), opened by `\(.user)` on \(.created_at | day). "
 	+ "Copied once on \($today); later upstream edits and comments aren't synced.\n\n"
-	+ "<details open><summary>Original issue</summary>\n\n" + (.body | fence("(empty)"))
+	+ "<details open><summary>Original issue</summary>\n\n" + .fenced
 	+ (if $cut then "\nTruncated; read the rest upstream.\n" else "" end)
 	+ "\n</details>\n"
 	+ (if ($cs | length) + $more > 0 then
 		"\n<details><summary>Comments at copy time (\(($cs | length) + $more))</summary>\n\n"
-		+ ($cs | map("**`\(.user)`** on \(.created_at | day):\n\n" + (.body | fence("(empty)"))) | join("\n"))
+		+ ($cs | map("**`\(.user)`** on \(.created_at | day):\n\n" + .fenced) | join("\n"))
 		+ (if $more > 0 then "\n\($more) more comment\(if $more == 1 then " upstream; read it" else "s upstream; read them" end) there.\n" else "" end)
 		+ "\n</details>\n"
 	else "" end);
 # GitHub caps a body at 65536 characters: drop comments from the end, then
-# cut the issue body, until the mirror fits in 60000 bytes.
+# cut the issue body, until the mirror fits in 60000 bytes. Each text is fenced
+# once up front (and the body again after each cut), not on every retry.
 def fit($cs; $keep; $cut):
 	render($cs[:$keep]; ($cs | length) - $keep; $cut) as $b
 	| if ($b | utf8bytelength) <= 60000 then $b
 	elif $keep > 0 then fit($cs; $keep - 1; $cut)
-	else (.body |= .[:((length * 9 / 10) | floor)]) | fit($cs; 0; true) end;
-fit($comments[0]; $comments[0] | length; false)
+	else (.body |= .[:((length * 9 / 10) | floor)]) | .fenced = (.body | fence("(empty)")) | fit($cs; 0; true) end;
+($comments[0] | map(.fenced = (.body | fence("(empty)")))) as $cs
+| .fenced = (.body | fence("(empty)"))
+| fit($cs; $cs | length; false)
 JQ
 	title=$(jq -r '"[upstream issue \(.number)] \(.title[:230])"' "$tmp/issue.json") # GitHub caps titles at 256
 	jq -r --slurpfile have "$tmp/fork-labels.json" '

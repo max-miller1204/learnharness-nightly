@@ -149,7 +149,7 @@ describe("mirror-upstream-issues.sh", () => {
 
 	it("refuses to write outside the workflow, and writes nothing on a dry run", () => {
 		fixture(`repos/${UP}/issues?state=all&per_page=100`, [issue(10, "open", "ten")]);
-		const local = run("mirror-upstream-issues.sh", [], { GITHUB_ACTIONS: "" });
+		const local = run("mirror-upstream-issues.sh", [], { GITHUB_ACTIONS: "", FORK_REPO: "" });
 		assert.equal(local.status, 1);
 		assert.match(local.stderr, /run locally with DRY_RUN=1/);
 		assert.deepEqual(local.calls, []);
@@ -161,16 +161,31 @@ describe("mirror-upstream-issues.sh", () => {
 		assert.match(dry.stdout, /<!-- upstream-issue: up-owner\/up-repo#10 -->/);
 	});
 
-	for (const [loop, marker] of [["new-mirror list", ".[:$max]"], ["label list", "upstream-closed"], ["label pass", "\\tadd"]] as const) {
+	for (const [loop, marker] of [["new-mirror list", ".[:$max]"], ["label list", "$have[0]"], ["label pass", "\\tadd"]] as const) {
 		it(`fails the run when jq fails while building the ${loop}`, () => {
 			fixture(`repos/${UP}/issues?state=all&per_page=100`, [issue(10, "open", "ten", ["bug"]), issue(11, "closed", "eleven")]);
 			fixture(`repos/${FORK}/issues?state=all&per_page=100`, [forkIssue(7, BOT, 11)]);
-			const { status, stderr, stdout } = run("mirror-upstream-issues.sh", [], { JQ_FAIL_ON: marker });
+			const { status, stderr, stdout, calls } = run("mirror-upstream-issues.sh", [], { JQ_FAIL_ON: marker });
 			assert.notEqual(status, 0, stdout);
 			assert.match(stderr, /jq: injected failure/);
 			assert.doesNotMatch(stdout, /Mirrored/);
+			if (loop !== "label pass") assert.ok(!calls.some((c) => c.args[0] === "issue"), JSON.stringify(calls));
 		});
 	}
+
+	it("renders many long tilde-heavy comments quickly and still fits the size cap", () => {
+		const heavy = "~ ".repeat(32000);
+		fixture(`repos/${UP}/issues?state=all&per_page=100`, [issue(10, "open", heavy)]);
+		fixture(`repos/${UP}/issues/10/comments?per_page=100`, Array.from({ length: 30 }, () => ({ user: { login: "c" }, created_at: "2026-11-02T00:00:00Z", body: heavy })));
+		const started = Date.now();
+		const { status, stderr, calls } = run("mirror-upstream-issues.sh", []);
+		const seconds = (Date.now() - started) / 1000;
+		assert.equal(status, 0, stderr);
+		assert.ok(seconds < 30, `took ${seconds}s`);
+		const body = calls.find((c) => c.args[0] === "issue" && c.args[1] === "create")?.body ?? "";
+		assert.ok(Buffer.byteLength(body) <= 60000);
+		assert.match(body, /\n30 more comments upstream; read them there\.\n/);
+	});
 });
 
 describe("import-upstream-pr.sh", () => {

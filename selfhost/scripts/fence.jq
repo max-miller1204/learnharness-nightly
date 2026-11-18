@@ -10,6 +10,8 @@
 # and the text is copied unchanged. Empty or null text becomes $empty.
 def fence($empty):
 	(. // "") as $text
-	| ([4, ([$text | scan("~+") | length] | max // 0) + 1] | max) as $width
+	# The longest tilde run, in one pass (scan("~+") is quadratic on long text).
+	| ($text | explode | reduce .[] as $c ([0, 0]; if $c == 126 then [.[0] + 1, ([.[1], .[0] + 1] | max)] else [0, .[1]] end) | .[1]) as $longest
+	| ([4, $longest + 1] | max) as $width
 	| ([range($width)] | map("~") | join("")) as $f
 	| $f + "markdown\n" + (if $text == "" then $empty else $text end) + "\n" + $f + "\n";

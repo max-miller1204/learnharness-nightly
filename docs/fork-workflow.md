@@ -37,7 +37,7 @@ It pushes the PR's exact commits to `upstream-pr/<N>` (same commit IDs as upstre
 
 **Merge imported PRs with "Create a merge commit", never squash.** When upstream later merges the same commits, git sees them as already merged and the Sync PR stays clean. (Upstream's maintainer often reworks PRs before landing them; those reworked versions still conflict, and you resolve them once in the Sync PR.)
 
-The bots never ping anyone upstream: upstream PR references are written as code, and an imported PR's original description is copied into a collapsed code block. The block's fence is one tilde longer than any run of tildes in the copied text (`selfhost/scripts/fence.jq`, shared with the issue mirror), so nothing in it can close the block early. So no `@mentions` fire, and nothing adds "mentioned this" entries to upstream's timelines.
+The bots never ping anyone upstream: upstream PR references are written as code, and an imported PR's original description is copied into a collapsed code block. The block's fence is one tilde longer than any run of tildes in the copied text, and at least 4 (`selfhost/scripts/fence.jq`, shared with the issue mirror), so nothing in it can close the block early. So no `@mentions` fire, and nothing adds "mentioned this" entries to upstream's timelines.
 
 ## Mirroring upstream issues
 
