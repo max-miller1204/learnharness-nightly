@@ -99,6 +99,8 @@ async function serverLaunch(platform: string) {
 		} : id === "node:child_process" ? {
 			spawn(binary: string, args: string[], options: typeof launch.options) {
 				launch = JSON.parse(JSON.stringify({ binary, args, options }));
+				// A real ChildProcess emits "spawn" asynchronously; startServer resolves on it.
+				setImmediate(() => child.emit("spawn"));
 				return child;
 			},
 		} : mainRequire(id),
