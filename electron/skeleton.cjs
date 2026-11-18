@@ -41,30 +41,21 @@ async function paintFirst(win, options) {
 }
 
 // Windows puts a newly shown window on screen before Chromium has drawn
-// into it. The window shows transparent until its page has produced a
-// frame while visible, or until this fallback.
+// into it, and a page's own frame signal can come before that frame is on
+// screen. So a Windows ghost window, shown at opacity 0, turns opaque only
+// once the ghost overlay itself has painted, or at this fallback.
 const firstFrame = { fallbackMs: 500 };
 
-/** Show a ghost window. Only Windows (`fade`) adds the opacity step;
- *  macOS and Linux show it directly. */
-async function showGhost(win, { fade }) {
-	if (!fade) {
-		trace("show() call", "ghostWindow");
-		win.show();
-		tracePaint(win.webContents, "own page after show");
-		return;
-	}
-	trace("setOpacity(0)");
-	win.setOpacity(0);
-	trace("show() call", "ghostWindow");
-	win.show();
+/** Windows only: after show() at opacity 0 and the overlay attached. */
+async function opaqueWhenPainted(win, skeleton) {
 	let timer;
-	const framed = await Promise.race([
-		win.webContents.executeJavaScript(PAINTED).then(() => true, () => false),
+	const ownFrame = win.webContents.executeJavaScript(PAINTED).then(() => true, () => false);
+	const painted = await Promise.race([
+		Promise.all([ownFrame, skeleton.painted]).then(([own, overlay]) => own && overlay),
 		new Promise((resolve) => { timer = setTimeout(() => resolve(null), firstFrame.fallbackMs); }),
 	]);
 	clearTimeout(timer);
-	trace(framed === null ? `opacity fallback fired (${firstFrame.fallbackMs} ms)` : framed ? "frame produced while transparent" : "frame wait failed");
+	trace(painted === null ? `opacity fallback fired (${firstFrame.fallbackMs} ms)` : painted ? "overlay painted while transparent" : "paint wait failed");
 	if (win.isDestroyed()) return;
 	win.setOpacity(1);
 	trace("setOpacity(1)");
@@ -150,4 +141,4 @@ function coverWindow(win, { WebContentsView, session, mode, status, frame }) {
 	return { reveal: remove, focus, painted };
 }
 
-module.exports = { PAGE, BACKGROUND, firstFrame, hostLabel, isSkeletonPage, paintFirst, showGhost, coverWindow };
+module.exports = { PAGE, BACKGROUND, firstFrame, hostLabel, isSkeletonPage, paintFirst, tracePaint, opaqueWhenPainted, coverWindow };

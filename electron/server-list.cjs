@@ -7,7 +7,7 @@ const { openServerList } = require("./server-list-store.cjs");
 const { ServerProblem, parseOrigin, withScheme, normalizeCode, parsePairLink, checkDescriptor, checkSession, pairServer } = require("./remote-server.cjs");
 const { remoteChatGPTSignIn } = require("./remote-chatgpt.cjs");
 const { createRemoteWindow } = require("./remote-window.cjs");
-const { BACKGROUND, hostLabel, paintFirst, showGhost, coverWindow } = require("./skeleton.cjs");
+const { BACKGROUND, hostLabel, paintFirst, tracePaint, opaqueWhenPainted, coverWindow } = require("./skeleton.cjs");
 const { trace, traceWindow } = require("./first-frame.cjs");
 
 const SHELL = path.join(__dirname, "server-list.html");
@@ -149,15 +149,22 @@ async function createServerList({
 			traceWindow(win, server === "local" ? "local" : "remote");
 			await paintFirst(win, { mode: themeMode(), status, frame });
 			operation.signal.throwIfAborted();
-			// macOS and Linux show synchronously, exactly as before.
+			// Windows shows the window transparent until the ghost overlay has
+			// painted. macOS and Linux keep the same order without that step.
 			const fade = platform === "win32";
-			const shown = showGhost(win, { fade });
 			if (fade) {
-				await shown;
-				operation.signal.throwIfAborted();
+				trace("setOpacity(0)");
+				win.setOpacity(0);
 			}
+			trace("show() call", "ghostWindow");
+			win.show();
+			if (!fade) tracePaint(win.webContents, "own page after show");
 			const skeleton = coverWindow(win, { WebContentsView, session, mode: themeMode(), status, frame });
 			skeleton.focus();
+			if (fade) {
+				await opaqueWhenPainted(win, skeleton);
+				operation.signal.throwIfAborted();
+			}
 			return skeleton;
 		}
 		// Stops waiting when the connect is cancelled, and fails when the

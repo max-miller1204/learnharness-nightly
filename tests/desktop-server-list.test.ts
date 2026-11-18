@@ -857,11 +857,12 @@ test("the app preload gives the ghost dashboard page no bridge", async () => {
 	assert.deepEqual(exposed("http:"), ["lh"]);
 });
 
-test("Windows shows a ghost window transparent until it has drawn a frame, with a bounded fallback", async (t) => {
+test("Windows shows a ghost window transparent until the ghost overlay has painted, with a bounded fallback", async (t) => {
 	const directory = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-ghost-opacity-"));
 	const fallback = firstFrame.fallbackMs;
 	t.after(() => {
 		TestWindow.frameGate = null;
+		TestView.gate = null;
 		firstFrame.fallbackMs = fallback;
 		return fs.rm(directory, { recursive: true, force: true });
 	});
@@ -883,24 +884,45 @@ test("Windows shows a ghost window transparent until it has drawn a frame, with 
 		win.destroy();
 		return win;
 	};
-	let attachedAt: string[] = [];
+	// What the overlays had done when the window turned opaque.
+	let atOpaque: boolean[] | null = null;
 	const original = TestWindow.prototype.setOpacity;
 	TestWindow.prototype.setOpacity = function (this: TestWindow, value: number) {
 		original.call(this, value);
-		if (value === 1) attachedAt = [...this.steps, `overlays ${this.contentView.children.length}`];
+		if (value === 1) atOpaque = this.contentView.children.map((view) => view.painted);
 	};
 	t.after(() => { TestWindow.prototype.setOpacity = original; });
 
 	const windows = await launch("win32");
 	assert.deepEqual(windows.steps, ["opacity 0", "show", "frame", "opacity 1"], "transparent, shown, drawn, then opaque");
-	assert.equal(attachedAt.at(-1), "overlays 0", "the overlay goes on after the window is opaque");
+	assert.deepEqual(atOpaque, [true], "opaque only once the ghost overlay itself has painted");
 	assert.equal(windows.url, "http://localhost:3000");
 
-	firstFrame.fallbackMs = 20;
+	// The own page's frame alone is not enough: opacity waits for the overlay.
+	firstFrame.fallbackMs = 30;
+	let paint!: () => void;
+	TestView.gate = new Promise<void>((resolve) => { paint = resolve; });
+	atOpaque = null;
+	const controller = await boot("win32");
+	const before = TestWindow.all.length;
+	const pending = controller.launch();
+	await new Promise<void>((resolve) => setTimeout(resolve, 10));
+	const { first: slow } = TestWindow.since(before);
+	assert.deepEqual(slow.steps, ["opacity 0", "show", "frame"], "still transparent while the overlay hasn't painted");
+	await new Promise<void>((resolve) => setTimeout(resolve, 40));
+	assert.deepEqual(slow.steps.at(-1), "opacity 1", "the fallback makes it opaque anyway");
+	assert.deepEqual(atOpaque, [false]);
+	TestView.gate = null;
+	paint();
+	await pending;
+	controller.close();
+	slow.destroy();
+	assert.equal(slow.url, "http://localhost:3000", "the connect carries on");
+
 	TestWindow.frameGate = new Promise<void>(() => {});
 	const stalled = await launch("win32");
-	assert.deepEqual(stalled.steps, ["opacity 0", "show", "opacity 1"], "no frame: opaque anyway after the fallback");
-	assert.equal(stalled.url, "http://localhost:3000", "the connect carries on");
+	assert.deepEqual(stalled.steps, ["opacity 0", "show", "opacity 1"], "no frame at all: opaque anyway after the fallback");
+	assert.equal(stalled.url, "http://localhost:3000");
 	TestWindow.frameGate = null;
 
 	for (const platform of ["darwin", "linux"]) {
