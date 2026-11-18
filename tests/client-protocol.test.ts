@@ -174,6 +174,7 @@ describe("version check in proxy.ts", () => {
 		for (const request of [
 			new NextRequest(`${origin}/api/chats`, { headers: { [PROTOCOL_HEADER]: "2" } }),
 			new NextRequest(`${origin}/api/events?protocol=0`),
+			new NextRequest(`${origin}/api/chats/c1/stream?protocol=2`),
 			new NextRequest(`${origin}/oauth/token`, { method: "POST", headers: { [PROTOCOL_HEADER]: "abc" } }),
 		]) {
 			const response = proxy(request);
@@ -185,6 +186,15 @@ describe("version check in proxy.ts", () => {
 				protocolVersion: 1,
 			});
 		}
+	});
+
+	it("reads the query version only on the protocol streams, with the header taking precedence", () => {
+		assert(passes(proxy(new NextRequest(`${origin}/api/health?protocol=2`))));
+		assert.equal(proxy(new NextRequest(`${origin}/api/chats?protocol=2`)).status, 401);
+		const page = proxy(new NextRequest(`${origin}/chat/new?protocol=2`));
+		assert.equal(page.headers.get("x-middleware-rewrite"), `${origin}/pair`);
+		assert.equal(proxy(new NextRequest(`${origin}/api/events?protocol=2`, { headers: { [PROTOCOL_HEADER]: "1" } })).status, 401);
+		assert.equal(proxy(new NextRequest(`${origin}/api/events?protocol=1`, { headers: { [PROTOCOL_HEADER]: "2" } })).status, 426);
 	});
 
 	it("a matching version, or none (the server's own UI), goes on to the login gate", () => {

@@ -30,7 +30,9 @@ export function serverInfo(env: Record<string, string | undefined> = process.env
 export function requestedProtocol(request: { headers: Headers; url: string }): string | undefined {
 	const header = request.headers.get(PROTOCOL_HEADER);
 	if (header !== null) return header.trim();
-	return new URL(request.url).searchParams.get(PROTOCOL_QUERY_PARAM) ?? undefined;
+	const url = new URL(request.url);
+	if (url.pathname !== PROTOCOL_ROUTES.events && !/^\/api\/chats\/[^/]+\/stream$/.test(url.pathname)) return undefined;
+	return url.searchParams.get(PROTOCOL_QUERY_PARAM) ?? undefined;
 }
 
 /** T3's 426 for a client that names another protocol version. Requests that
