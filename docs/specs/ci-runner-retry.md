@@ -29,7 +29,9 @@ The script reads the run, the jobs of its latest attempt, and the annotations of
 3. No job failed or timed out (a real failure), no job carries the concurrency-cancel annotation, and no other job was cancelled (for example by a person).
 4. The run's attempt is at most 3, so a run gets at most 3 automatic re-runs (attempt 4 is the last). Manual re-runs count toward the cap.
 5. The run is still on the attempt the event reported (no one re-ran it meanwhile).
-6. For a `pull_request` run, it is still the newest CI run for its branch. Re-running a superseded run would join the PR's concurrency group and cancel the newer run.
+6. For a `pull_request` run, it is still the newest CI run for its branch from the same head repository (two forks can share a branch name). Re-running a superseded run would join the PR's concurrency group and cancel the newer run.
+
+It reads everything again right before the re-run request and leaves the run if any of this changed, so a push or a manual re-run that lands while it decides is neither cancelled nor raced. The workflow also checks that the completed run is `.github/workflows/ci.yml`, since `workflows: [CI]` matches any workflow by name.
 
 Re-running failed jobs re-runs every job that did not succeed (the cancelled job) and the jobs that need it (`Check`). Jobs that passed keep their results.
 
@@ -46,7 +48,12 @@ Re-running failed jobs re-runs every job that did not succeed (the cancelled job
 | Mixed runs | A run with a no-runner cancel and a real failure is not re-run: `Check` would fail anyway and the author has a fix to push. |
 | Events | Pushes to `main` are re-run too (they gate the nightly); the newest-run check applies only to PR runs, since `main` runs are never cancelled by concurrency. |
 | Delay | Re-run immediately; GitHub queues the job again. |
-| Fork guard | `github.repository == 'max-miller1204/learnharness-nightly'`, like the Dependabot workflow. |
+| Fork guard | `github.repository == 'max-miller1204/learnharness-nightly'`, like the Dependabot workflow, and `workflow_run.path == '.github/workflows/ci.yml'`. |
+
+## Known gaps
+
+- If only `Check` itself gets no runner (an Ubuntu capacity cancel), nothing is re-run: the aggregator is ignored when classifying. Rare; re-run by hand.
+- A push in the milliseconds between the second read and the re-run request can still be cancelled by the re-run; push again or re-run by hand.
 
 ## Tests
 

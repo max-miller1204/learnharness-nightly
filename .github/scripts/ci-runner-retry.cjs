@@ -105,6 +105,26 @@ async function main(argv) {
 	const repo = process.env.GITHUB_REPOSITORY;
 	if (!runId || !token || !repo) throw new Error("Usage: GH_TOKEN=... GITHUB_REPOSITORY=owner/name ci-runner-retry.cjs --run <id> [--attempt <n>] [--dry-run]");
 
+	let decision = await decide(repo, runId, seenAttempt, token);
+	console.log(decision.summary);
+	if (!decision.retry) return decision;
+	if (dryRun) {
+		console.log("Dry run: not re-running.");
+		return decision;
+	}
+	// Read everything again right before re-running, so a push or a manual
+	// re-run that landed while we looked is not cancelled or raced.
+	decision = await decide(repo, runId, seenAttempt, token);
+	if (!decision.retry) {
+		console.log(`Changed while deciding: ${decision.summary}`);
+		return decision;
+	}
+	await api(`/repos/${repo}/actions/runs/${runId}/rerun-failed-jobs`, { method: "POST", token });
+	console.log(`Re-ran the failed jobs of run ${runId} (now attempt ${decision.attempt + 1}).`);
+	return decision;
+}
+
+async function decide(repo, runId, seenAttempt, token) {
 	const run = await api(`/repos/${repo}/actions/runs/${runId}`, { token });
 	const jobs = await allJobs(repo, run, token);
 	const annotations = {};
@@ -115,21 +135,16 @@ async function main(argv) {
 	}
 	let newestRunId = null;
 	if (run.event === "pull_request") {
-		const query = new URLSearchParams({ branch: run.head_branch, event: run.event, per_page: "1" });
-		const newest = await api(`/repos/${repo}/actions/workflows/${run.workflow_id}/runs?${query}`, { token });
-		newestRunId = newest.workflow_runs[0]?.id ?? null;
+		// Same branch name from the same repository: two forks' PRs can share a
+		// branch name such as patch-1.
+		const query = new URLSearchParams({ branch: run.head_branch, event: run.event, per_page: "30" });
+		const { workflow_runs: runs } = await api(`/repos/${repo}/actions/workflows/${run.workflow_id}/runs?${query}`, { token });
+		const sameHead = runs.filter((r) => r.head_repository?.full_name === run.head_repository?.full_name);
+		newestRunId = sameHead[0]?.id ?? null;
 	}
-
 	const decision = classify({ run, jobs, annotations, newestRunId, seenAttempt });
-	console.log(`Run ${run.id} attempt ${run.run_attempt} (${run.event}, ${run.conclusion}): ${decision.retry ? "re-run" : "leave"}, ${decision.reason}.`);
-	if (!decision.retry) return decision;
-	if (dryRun) {
-		console.log("Dry run: not re-running.");
-		return decision;
-	}
-	await api(`/repos/${repo}/actions/runs/${run.id}/rerun-failed-jobs`, { method: "POST", token });
-	console.log(`Re-ran the failed jobs of run ${run.id} (now attempt ${run.run_attempt + 1}).`);
-	return decision;
+	const summary = `Run ${run.id} attempt ${run.run_attempt} (${run.event}, ${run.conclusion}): ${decision.retry ? "re-run" : "leave"}, ${decision.reason}.`;
+	return { ...decision, summary, attempt: run.run_attempt };
 }
 
 module.exports = { classify, MAX_RETRIES };

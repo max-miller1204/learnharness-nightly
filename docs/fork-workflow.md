@@ -20,8 +20,9 @@ Upstream often lands a reworked version of a PR you already merged here, so conf
 
 `main` requires `Check`: a PR merges only when its `Check` is green, and **direct pushes to `main` must now pass `Check` too.** Push to a branch and open a PR instead. A new push to a PR cancels its older CI run.
 
-When GitHub cancels a job because no hosted runner picked it up (the macOS arm64 queue under capacity constraints), `.github/workflows/ci-runner-retry.yml` re-runs the run's failed jobs and `Check` on its own, up to 3 times per run. Real failures and cancels by a newer push or a person are left alone (design: [specs/ci-runner-retry.md](specs/ci-runner-retry.md)).
 Repository admins can bypass the required `Check` (GitHub's default; the rule doesn't enforce it for admins).
+
+When GitHub cancels a job because no hosted runner picked it up (the macOS arm64 queue under capacity constraints), `.github/workflows/ci-runner-retry.yml` re-runs the run's failed jobs and `Check` on its own, at most 3 times per run (whether it chains past the first re-run is unproven until a real case; see the spec). Real failures and cancels by a newer push or a person are left alone (design: [specs/ci-runner-retry.md](specs/ci-runner-retry.md)).
 
 The nightly starts only after CI passes on a push to `main`, and builds that exact commit.
 
