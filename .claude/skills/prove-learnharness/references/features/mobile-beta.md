@@ -5,7 +5,7 @@ Use the [approved mobile beta spec](../../../../../docs/specs/mobile-beta.md) fo
 ## Setup
 
 1. Record the source SHA, APK or signed EAS build ID and number, OS and device IDs, and server SHAs. Schedule the ThinkPad slot before building the server or Android APK. Use a disposable HTTPS endpoint authorized for the test, with no real records or keys. Prepare a second origin and a server pinned to `bfb1e5d` for core protocol proof.
-2. Follow [the fake-model setup](../agent.md). For observable teaching streaming, copy `scenarios/teach-read.json` to the proof run folder and set `reply.pauseBeforeDoneMs` to 4000 on `probe-acknowledges-answer`. For practice, start a fresh disposable instance with `scenarios/mobile-practice.json`. Seed graph material from the synthetic `tests/fixtures/golden-data/graph` fixture before the graph picker run. Do this only in the disposable server's data directory.
+2. Follow [the fake-model setup](../agent.md). For observable teaching streaming, copy `scenarios/teach-read.json` to the proof run folder and set `reply.pauseBeforeDoneMs` to 4000 on `probe-acknowledges-answer`. For practice, start a fresh disposable instance with `scenarios/mobile-practice.json`. Copy `tests/fixtures/mobile-graph/nodes.jsonl` from the repository root into the disposable server’s `DATA_DIR/graph/` before the graph picker run. This seed contains only two synthetic propositions.
 3. Use T3 `device_list`, `device_open`, the returned `agent-device` command and `device_screenshot`. If a device is unavailable or the emulator cannot scan a virtual QR, record the missing observation. Use the typed or pasted link for the remaining drive. The physical iPhone run still checks both QR generators.
 
 ## Drive and compare
