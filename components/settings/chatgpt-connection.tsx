@@ -9,7 +9,19 @@ import { useChatGPTBridge } from "./subscription-client";
 import type { CloseOutcome } from "@/components/interaction-layers";
 
 export const CHATGPT_NOTICE = "LearnHarness stores your ChatGPT account details and credentials in an unencrypted local file on this device. When this connection is used, relevant conversation context, learning material, and tool results are sent directly to OpenAI. ChatGPT plan limits apply; any additional credits are authorized and managed in ChatGPT, not LearnHarness.";
-export function chatGPTNotice(web = false): string { return web ? `${CHATGPT_NOTICE.replace("on this device", "on the machine running LearnHarness")} Complete ChatGPT sign-in in a browser on that same machine.` : CHATGPT_NOTICE; }
+export function chatGPTNotice(web = false): string { return web ? CHATGPT_NOTICE.replace("on this device", "on the machine running LearnHarness") : CHATGPT_NOTICE; }
+export const CHATGPT_PASTE_COPY = {
+	remote: "Signing in from another device? When ChatGPT finishes, the sign-in tab ends on a page that won't load (its address starts with http://127.0.0.1). Copy that page's full address and paste it here.",
+	reveal: "Sign-in tab didn't come back?",
+	label: "Sign-in tab address",
+	placeholder: "http://127.0.0.1:…/auth/callback?…",
+	submit: "Finish sign-in",
+};
+/** The browser is on the machine running LearnHarness, so OpenAI's 127.0.0.1 redirect reaches it. */
+export function loopbackHost(hostname: string): boolean {
+	const host = hostname.toLowerCase();
+	return host === "localhost" || host.endsWith(".localhost") || host === "[::1]" || /^127(\.\d{1,3}){3}$/.test(host);
+}
 export const CHATGPT_BACKGROUND_HINT = "Background work counts toward your ChatGPT plan usage.";
 const BACKGROUND_LABEL = "Allow background use for all ChatGPT accounts";
 const REVOCATION_WARNING = "Account disconnected locally. Remote revocation could not be confirmed.";
@@ -54,6 +66,10 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 	const [background, setBackground] = useState(true);
 	const [backgroundDirty, setBackgroundDirty] = useState(false);
 	const [registration, setRegistration] = useState("");
+	const [pasteOpen, setPasteOpen] = useState(false);
+	const [pasted, setPasted] = useState("");
+	const [pasteError, setPasteError] = useState<string | null>(null);
+	const [pasting, setPasting] = useState(false);
 	const operation = useRef<"login" | "cancel" | "change" | "disconnect" | null>(null);
 	const generation = useRef(0);
 	const statusSequence = useRef(0);
@@ -146,9 +162,17 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 		setBackground(statusRef.current.allowBackgroundUse);
 		setBackgroundDirty(false);
 		setRegistration(accountId);
+		setPasteOpen(false); setPasted(""); setPasteError(null); setPasting(false);
 		setError(null);
 		setDismissedError(status.error);
-		showDialog({ kind: "connect" });
+		const owner: Dialog = { kind: "connect" };
+		showDialog(owner);
+		// A sign-in already pending on the server (this page reloaded, or another
+		// tab started it) is adopted: the waiting state, paste-back and Cancel.
+		if (statusRef.current.pending) {
+			loginAttempt.current = { generation: ++generation.current, dialog: owner, registration: "", background: statusRef.current.allowBackgroundUse, backgroundDirty: false, pending: true, phase: "pending" };
+			operation.current = "login"; setBusy(true);
+		}
 	}
 	function close(): CloseOutcome {
 		if (operation.current === "disconnect" || operation.current === "change" || operation.current === "cancel") return "blocked";
@@ -226,6 +250,7 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 		loginAttempt.current = attempt; operation.current = "login";
 		const request = ++statusSequence.current;
 		setBusy(true); setError(null); setDismissedError(null);
+		setPasteOpen(false); setPasted(""); setPasteError(null); setPasting(false);
 		try {
 			let value: unknown = await bridge.login(registration || undefined);
 			if (!owns(attempt) || attempt.phase === "consent") return;
@@ -246,6 +271,23 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 		// No finally: pending OAuth outlives this IPC promise. Only its status
 		// completion, failure, or explicit cancellation releases the attempt.
 	}
+	/** Paste-back keeps the attempt pending on a wrong address; a verified one
+	 * finishes through the same status reconciliation as the loopback redirect. */
+	async function submitPaste() {
+		const attempt = loginAttempt.current;
+		if (!bridge || pasting || !pasted.trim() || !attempt) return;
+		const request = ++statusSequence.current;
+		setPasting(true); setPasteError(null);
+		try {
+			const value: unknown = await bridge.complete(pasted);
+			if (!owns(attempt)) return; // A late reply never touches a newer attempt.
+			if (!isStatus(value)) { setPasteError(replyError(value)); return; }
+			setPasted("");
+			if (request === statusSequence.current) receive.current(value);
+		} catch { if (owns(attempt)) setPasteError(CONTROL_ERROR); }
+		finally { if (owns(attempt)) setPasting(false); }
+	}
+	const sameMachine = !web || (typeof window !== "undefined" && loopbackHost(window.location?.hostname ?? ""));
 	const context = {
 		status, busy, error: warning ? null : visibleError, inlineError: dialog || warning ? null : visibleError, warning: dialog?.kind === "warning" ? null : warning,
 		connect: openConnect,
@@ -296,6 +338,16 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 				</div>
 				{!status.available && <p className="mt-3 text-xs text-muted-foreground">ChatGPT sign-in is available only in the desktop app. API-key connections remain available here.</p>}
 				{status.pending && <p role="status" className="mt-3 text-xs text-muted-foreground">Waiting for browser sign-in…</p>}
+				{status.pending && dialog.kind === "connect" && loginAttempt.current && (sameMachine && !pasteOpen
+					? <button type="button" data-testid="chatgpt-paste-reveal" className="mt-2 cursor-pointer text-xs text-muted-foreground underline underline-offset-2" onClick={() => setPasteOpen(true)}>{CHATGPT_PASTE_COPY.reveal}</button>
+					: <form data-testid="chatgpt-paste" className="mt-3 flex flex-col gap-2 text-xs text-muted-foreground" onSubmit={(event) => { event.preventDefault(); void submitPaste(); }}>
+						<p className="leading-relaxed">{CHATGPT_PASTE_COPY.remote}</p>
+						<div className="flex flex-wrap items-center gap-2">
+							<input type="text" autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} aria-label={CHATGPT_PASTE_COPY.label} placeholder={CHATGPT_PASTE_COPY.placeholder} value={pasted} maxLength={8192} disabled={pasting} onChange={(event) => { setPasted(event.target.value); setPasteError(null); }} className="min-w-0 flex-1 rounded-sm border border-border bg-background px-2 py-1.5 text-foreground placeholder:text-muted-foreground" />
+							<Button type="submit" variant="outline" size="sm" data-testid="chatgpt-paste-submit" disabled={pasting || !pasted.trim()} className="cursor-pointer disabled:cursor-not-allowed">{CHATGPT_PASTE_COPY.submit}</Button>
+						</div>
+						{pasteError && <p role="alert" className="text-xs text-error">{pasteError}</p>}
+					</form>)}
 				{context.error && <p role="alert" className="mt-3 text-xs text-error">{context.error}</p>}
 				{dialog.kind === "manage" && managed && <div className="mt-4 flex flex-wrap items-center justify-between gap-3" data-testid="chatgpt-account-strip">
 					<div data-testid="chatgpt-managed-identity" className="flex min-w-0 items-center gap-2 text-xs text-foreground">
@@ -336,7 +388,7 @@ export function ChatGPTConnection({ labelClassName }: { setup?: boolean; labelCl
 	const active = ui.status.accounts.find((a) => a.id === ui.status.activeId && a.connected);
 	const accounts = ui.status.accounts.filter((a) => a.connected);
 	return <div className="flex flex-col gap-2" data-testid="chatgpt-connection">
-		<ConnectionRow label="ChatGPT" labelClassName={labelClassName} actionTestid={active ? undefined : "chatgpt-login"} action={active ? "Manage…" : "Connect"} disabled={!ui.status.available || ui.busy || ui.status.pending} onAction={() => active ? ui.manage(active.id) : ui.connect()}>
+		<ConnectionRow label="ChatGPT" labelClassName={labelClassName} actionTestid={active ? undefined : "chatgpt-login"} action={active ? "Manage…" : "Connect"} disabled={!ui.status.available || ui.busy} onAction={() => active && !ui.status.pending ? ui.manage(active.id) : ui.connect()}>
 			{active && <select aria-label="ChatGPT account" value={active.id} disabled={ui.busy || ui.status.pending} onChange={(event) => ui.select(event.target.value)} className="min-w-0 rounded-sm border border-border bg-background px-2 py-1 text-xs text-foreground">
 				{accounts.map((a) => <option key={a.id} value={a.id}>{a.email || "ChatGPT account"}</option>)}
 			</select>}

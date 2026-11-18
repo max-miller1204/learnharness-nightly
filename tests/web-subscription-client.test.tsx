@@ -66,12 +66,12 @@ test("Electron dev uses its narrow external-browser bridge, without attempting a
 	await createWebChatGPTBridge(null).login(); assert.deepEqual(opened, [action]);
 });
 
-test("web notices identify the server machine and same-machine ChatGPT sign-in; desktop copy stays unchanged", async () => {
+test("web notices identify the server machine; ChatGPT no longer requires a same-machine browser; desktop copy stays unchanged", async () => {
 	const { CHATGPT_NOTICE, chatGPTNotice } = await import("../components/settings/chatgpt-connection.tsx");
 	const { subscriptionNotice, subscriptionDisconnectCopy } = await import("../components/settings/subscription-connections.tsx");
 	assert.equal(chatGPTNotice(), CHATGPT_NOTICE); assert(CHATGPT_NOTICE.includes("on this device"));
 	assert(chatGPTNotice(true).includes("on the machine running LearnHarness"));
-	assert(chatGPTNotice(true).endsWith("Complete ChatGPT sign-in in a browser on that same machine."));
+	assert(!chatGPTNotice(true).includes("same machine"), "paste-back lets sign-in finish from another device");
 	for (const label of ["GitHub Copilot", "Grok"]) {
 		assert(subscriptionNotice(label).includes("stored locally")); assert(subscriptionDisconnectCopy(label).includes("from this device"));
 		assert(subscriptionNotice(label, true).includes("on the machine running LearnHarness"));

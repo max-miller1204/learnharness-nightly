@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
 import { createRequire } from "node:module";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
-import { ChatGPTBackgroundAccess, ChatGPTConnection, ChatGPTUIProvider, CHATGPT_NOTICE, CHATGPT_DISCONNECT_COPY } from "../components/settings/chatgpt-connection.tsx";
+import { ChatGPTBackgroundAccess, ChatGPTConnection, ChatGPTUIProvider, CHATGPT_NOTICE, CHATGPT_DISCONNECT_COPY, CHATGPT_PASTE_COPY, chatGPTNotice, loopbackHost } from "../components/settings/chatgpt-connection.tsx";
 import { SettingsDialogBody } from "../components/settings/settings-dialog.tsx";
 import { KeysSection } from "../components/settings/keys-section.tsx";
 import { ModelControl } from "../components/model-picker.tsx";
@@ -30,13 +30,14 @@ const errorReply = () => ({ error: storageError } as ChatGPTStatus);
 function deferred<T>() { let resolve!: (v: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; }
 function fixture(initial = disconnected(), overrides: Partial<ChatGPTControlBridge> = {}) {
  let status = initial;
- const calls = { login: [] as (string | undefined)[], cancel: 0, consent: [] as boolean[], disconnect: [] as string[], select: [] as string[], logout: 0 };
+ const calls = { login: [] as (string | undefined)[], complete: [] as string[], cancel: 0, consent: [] as boolean[], disconnect: [] as string[], select: [] as string[], logout: 0 };
  const listeners = new Set<() => void>();
  function push(next: ChatGPTStatus) { status = next; for (const cb of listeners) cb(); }
  const bridge: ChatGPTControlBridge = {
   status: async () => status,
   login: async (id) => { calls.login.push(id); push({ ...status, pending: true, error: null }); return status; },
   cancel: async () => { calls.cancel++; push({ ...status, pending: false, error: null }); return status; },
+  complete: async (url) => { calls.complete.push(url); push({ ...connected(status.allowBackgroundUse), pending: false }); return status; },
   select: async (id) => { calls.select.push(id); push({ ...status, activeId: id }); return status; },
   disconnect: async (id) => { calls.disconnect.push(id); push({ ...status, activeId: status.activeId === id ? null : status.activeId, accounts: status.accounts.filter((a) => a.id !== id) }); return status; },
   logout: async () => { calls.logout++; return status; },
@@ -53,7 +54,7 @@ function recoveryController({ writeFails = false, tokens = "valid" }: { writeFai
  let saved = { version: 1, hostId: "urn:uuid:offline-recovery", activeId: "fixture", allowBackgroundUse: true, registrations: [registration] };
  let browserAttempts = 0, tokenRequests = 0; const listeners = new Set<() => void>();
  const service = createChatGPT({ store: { read: async () => structuredClone(saved), write: async (next: typeof saved) => { if (writeFails) throw Object.assign(new Error("fake-storage-failure"), { code: "storage" }); saved = structuredClone(next); } }, openExternal: () => { browserAttempts++; throw new Error("No real browser"); }, fetch: async (url: string) => { tokenRequests++; assert.equal(tokens, "expired"); assert.equal(url, "https://auth.openai.com/api/accounts/oauth/token"); return Response.json({ error: "invalid_grant" }, { status: 401 }); }, onChange: () => { for (const cb of listeners) cb(); } });
- window.lh = { expandWindow() {}, chatgpt: { status: () => chatGPTControl({ op: "status" }, service), consent: (enabled) => chatGPTControl({ op: "consent", enabled }, service), login: (id) => chatGPTControl({ op: "login", id }, service), cancel: () => chatGPTControl({ op: "cancel" }, service), select: (id) => chatGPTControl({ op: "select", id }, service), disconnect: (id) => chatGPTControl({ op: "disconnect", id }, service), logout: (id) => chatGPTControl({ op: "logout", id }, service), onChange: (cb) => { listeners.add(cb); return () => listeners.delete(cb); } } };
+ window.lh = { expandWindow() {}, chatgpt: { status: () => chatGPTControl({ op: "status" }, service), consent: (enabled) => chatGPTControl({ op: "consent", enabled }, service), login: (id) => chatGPTControl({ op: "login", id }, service), cancel: () => chatGPTControl({ op: "cancel" }, service), complete: (url) => chatGPTControl({ op: "complete", url }, service), select: (id) => chatGPTControl({ op: "select", id }, service), disconnect: (id) => chatGPTControl({ op: "disconnect", id }, service), logout: (id) => chatGPTControl({ op: "logout", id }, service), onChange: (cb) => { listeners.add(cb); return () => listeners.delete(cb); } } };
  return { service, get saved() { return saved; }, get browserAttempts() { return browserAttempts; }, get tokenRequests() { return tokenRequests; } };
 }
 async function mount(children: React.ReactNode = <ChatGPTConnection />) {
@@ -522,7 +523,7 @@ for (const holdSave of [false, true]) test(`real main/control bridge: immediate 
   const jwt = await new SignJWT({ nonce: authorize.searchParams.get("nonce"), email: "fixture@example.invalid" }).setProtectedHeader({ alg: "RS256", kid: "ui-fixture" }).setIssuer("https://auth.openai.com").setSubject("fixture-subject").setAudience(form.get("client_id")!).setIssuedAt().setExpirationTime("1h").sign(privateKey);
   return Response.json({ access_token: "fixture-access", refresh_token: "fixture-refresh", id_token: jwt, token_type: "Bearer", expires_in: 3600, scope: SCOPES.join(" ") });
  } });
- window.lh = { expandWindow() {}, chatgpt: { status: () => chatGPTControl({ op: "status" }, service), login: (id) => chatGPTControl({ op: "login", id }, service), cancel: () => chatGPTControl({ op: "cancel" }, service), select: (id) => chatGPTControl({ op: "select", id }, service), disconnect: (id) => chatGPTControl({ op: "disconnect", id }, service), logout: (id) => chatGPTControl({ op: "logout", id }, service), consent: (enabled) => {
+ window.lh = { expandWindow() {}, chatgpt: { status: () => chatGPTControl({ op: "status" }, service), login: (id) => chatGPTControl({ op: "login", id }, service), cancel: () => chatGPTControl({ op: "cancel" }, service), complete: (url) => chatGPTControl({ op: "complete", url }, service), select: (id) => chatGPTControl({ op: "select", id }, service), disconnect: (id) => chatGPTControl({ op: "disconnect", id }, service), logout: (id) => chatGPTControl({ op: "logout", id }, service), consent: (enabled) => {
   const reply = chatGPTControl({ op: "consent", enabled }, service);
   void reply.then(consentCompleted.resolve, consentCompleted.reject);
   return reply;
@@ -567,4 +568,133 @@ test("browser-only sign-in is disabled; foreground toolbar has no plan badge or 
  };
  fixture(connected(false)); await mount(<ModelControl />); assert.match(byTest("stats-model").textContent!, /gpt/i);
  assert(!document.body.textContent?.includes("Using ChatGPT plan")); assert(!document.body.textContent?.includes("Enable background use"));
+});
+
+// Paste-back (docs/specs/chatgpt-remote-signin.md).
+// React loads before this DOM exists, so its legacy input fallback reads the focused field on keyup.
+async function typeInto(input: HTMLInputElement, value: string) {
+ const view = window as unknown as { getSelection?: () => unknown }, original = view.getSelection;
+ view.getSelection = () => ({ anchorNode: null, anchorOffset: 0, focusNode: null, focusOffset: 0 });
+ try { await act(async () => { input.focus(); Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(input, value); input.dispatchEvent(new window.Event("keyup", { bubbles: true })); }); }
+ finally { view.getSelection = original; }
+}
+async function submitPaste() { await act(async () => { byTest("chatgpt-paste").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })); }); }
+const pasteField = () => document.querySelector<HTMLInputElement>(`input[aria-label="${CHATGPT_PASTE_COPY.label}"]`)!;
+const wrongAddress = "This address does not belong to the current ChatGPT sign-in. Copy the full address from the sign-in tab and try again.";
+
+test("loopback host rule decides only where paste-back starts open", () => {
+ for (const host of ["localhost", "app.localhost", "127.0.0.1", "127.8.9.10", "[::1]", "LOCALHOST"]) assert.equal(loopbackHost(host), true, host);
+ for (const host of ["100.64.0.5", "192.168.1.10", "desktop.tail1234.ts.net", "localhost.example.com", "127.0.0.1.nip.io", "", "[::2]"]) assert.equal(loopbackHost(host), false, host);
+ assert.equal(chatGPTNotice(true), CHATGPT_NOTICE.replace("on this device", "on the machine running LearnHarness"));
+ assert(!chatGPTNotice(true).includes("same machine"));
+});
+
+test("desktop sign-in folds paste-back; a wrong address keeps the attempt pending and a right one completes", async () => {
+ let reject = true;
+ const f = fixture(disconnected(), { complete: async (url) => { f.calls.complete.push(url); if (reject) return { error: wrongAddress } as unknown as ChatGPTStatus; f.complete(); return f.status; } });
+ await mount();
+ assert(!document.querySelector('[data-testid="chatgpt-paste-reveal"]'), "no paste control before sign-in starts");
+ await begin();
+ assert(document.body.textContent?.includes("Waiting for browser sign-in"));
+ assert.equal(byTest("chatgpt-paste-reveal").textContent, CHATGPT_PASTE_COPY.reveal);
+ assert(!document.querySelector('[data-testid="chatgpt-paste"]'));
+ await click(byTest("chatgpt-paste-reveal"));
+ assert(byTest("chatgpt-paste").textContent?.includes(CHATGPT_PASTE_COPY.remote));
+ const field = pasteField();
+ assert.equal(field.getAttribute("type"), "text", "plain text: no password-manager save prompt"); assert.equal(field.getAttribute("autocomplete"), "off");
+ assert.equal((byTest("chatgpt-paste-submit") as HTMLButtonElement).disabled, true);
+ await typeInto(field, "http://127.0.0.1:1/auth/callback?state=wrong&code=x");
+ assert.equal((byTest("chatgpt-paste-submit") as HTMLButtonElement).disabled, false);
+ await submitPaste();
+ assert.deepEqual(f.calls.complete, ["http://127.0.0.1:1/auth/callback?state=wrong&code=x"]);
+ assert.equal(byTest("chatgpt-paste").querySelector('[role="alert"]')?.textContent, wrongAddress);
+ assert(document.body.textContent?.includes("Waiting for browser sign-in"), "a refused paste leaves sign-in pending");
+ assert.equal(pasteField().value, "http://127.0.0.1:1/auth/callback?state=wrong&code=x", "the field keeps its text to fix");
+ reject = false;
+ await submitPaste();
+ assert.equal(f.calls.complete.length, 2);
+ assert(!document.querySelector('[data-testid="chatgpt-account-dialog"]'), "verified paste completes like the redirect");
+ assert(button("Manage…"));
+});
+
+test("web sign-in from another device shows paste-back open and finishes over the existing subscriptions route", async () => {
+ const original = Object.getOwnPropertyDescriptor(window, "location");
+ Object.defineProperty(window, "location", { configurable: true, value: { hostname: "100.64.0.5" } });
+ const originalOpen = window.open;
+ const tab = { opener: {}, closed: false, location: { href: "" }, close() { this.closed = true; } };
+ (window as unknown as { open: () => unknown }).open = () => tab;
+ let status: ChatGPTStatus = disconnected();
+ const posts: Record<string, unknown>[] = [];
+ globalThis.fetch = async (input, init) => {
+  assert.equal(input, "/api/subscriptions");
+  if (!init?.method) return Response.json({ chatgpt: status, native: [] });
+  const body = JSON.parse(String(init.body)); posts.push(body);
+  assert.equal(new Headers(init.headers).get("x-learnharness-subscriptions"), "1");
+  if (body.op === "login") { status = { ...status, pending: true }; return Response.json({ value: status, browserAction: "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000000" }); }
+  if (body.op === "complete") { status = connected(); return Response.json({ value: status }); }
+  throw new Error(`unexpected op ${body.op}`);
+ };
+ try {
+  await mount(); await begin();
+  assert.equal(tab.location.href, "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000000");
+  assert(!document.querySelector('[data-testid="chatgpt-paste-reveal"]'));
+  assert(byTest("chatgpt-paste").textContent?.includes(CHATGPT_PASTE_COPY.remote));
+  await typeInto(pasteField(), " http://127.0.0.1:5555/auth/callback?state=s&code=c ");
+  await submitPaste();
+  assert.deepEqual(posts.at(-1), { providerId: "chatgpt", op: "complete", url: " http://127.0.0.1:5555/auth/callback?state=s&code=c " });
+  assert(!document.querySelector('[data-testid="chatgpt-account-dialog"]'));
+  assert(button("Manage…"));
+ } finally {
+  if (original) Object.defineProperty(window, "location", original); else delete (window as unknown as { location?: unknown }).location;
+  window.open = originalOpen;
+ }
+});
+
+test("a paste-completed sign-in applies the background-use draft like the redirect does", async () => {
+ const f = fixture(disconnected(true)); await mount(); await click(byTest("chatgpt-login")); await click(toggle()); await click(byTest("chatgpt-proceed"));
+ await click(byTest("chatgpt-paste-reveal")); await typeInto(pasteField(), "http://127.0.0.1:1/auth/callback?state=s&code=c"); await submitPaste();
+ assert.deepEqual(f.calls.consent, [false]); assert.equal(f.status.allowBackgroundUse, false);
+ assert(!document.querySelector('[data-testid="chatgpt-account-dialog"]'));
+});
+
+test("after a reload, Connect reopens a pending sign-in with paste-back and a working Cancel", async () => {
+ const pending = { ...disconnected(), pending: true };
+ const f = fixture(pending); await mount();
+ assert.equal((byTest("chatgpt-login") as HTMLButtonElement).disabled, false, "a page that did not start the sign-in can still reach it");
+ await click(byTest("chatgpt-login"));
+ assert(document.body.textContent?.includes("Waiting for browser sign-in"));
+ assert.equal((byTest("chatgpt-proceed") as HTMLButtonElement).disabled, true, "no second sign-in while one is pending");
+ await click(byTest("chatgpt-paste-reveal")); assert(byTest("chatgpt-paste"));
+ await click(button("Cancel", byTest("chatgpt-account-dialog")));
+ assert.equal(f.calls.cancel, 1); assert.equal(f.calls.login.length, 0);
+ assert(!document.querySelector('[data-testid="chatgpt-account-dialog"]'));
+ await act(async () => root!.unmount()); host?.remove(); root = undefined;
+ const g = fixture(pending); await mount();
+ await click(byTest("chatgpt-login")); await click(byTest("chatgpt-paste-reveal"));
+ await typeInto(pasteField(), "http://127.0.0.1:1/auth/callback?state=s&code=c"); await submitPaste();
+ assert.equal(g.calls.complete.length, 1);
+ assert(!document.querySelector('[data-testid="chatgpt-account-dialog"]'), "an adopted sign-in completes and closes");
+ assert(button("Manage…"));
+});
+
+test("web page on a loopback host folds paste-back", async () => {
+ const original = Object.getOwnPropertyDescriptor(window, "location");
+ Object.defineProperty(window, "location", { configurable: true, value: { hostname: "127.0.0.1" } });
+ const originalOpen = window.open;
+ (window as unknown as { open: () => unknown }).open = () => ({ opener: {}, closed: false, location: { href: "" }, close() {} });
+ let status: ChatGPTStatus = disconnected();
+ globalThis.fetch = async (_input, init) => {
+  if (!init?.method) return Response.json({ chatgpt: status, native: [] });
+  status = { ...status, pending: true };
+  return Response.json({ value: status, browserAction: "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000000" });
+ };
+ try {
+  await mount(); await begin();
+  assert(document.body.textContent?.includes("Waiting for browser sign-in"));
+  assert.equal(byTest("chatgpt-paste-reveal").textContent, CHATGPT_PASTE_COPY.reveal);
+  assert(!document.querySelector('[data-testid="chatgpt-paste"]'));
+ } finally {
+  if (original) Object.defineProperty(window, "location", original); else delete (window as unknown as { location?: unknown }).location;
+  window.open = originalOpen;
+ }
 });

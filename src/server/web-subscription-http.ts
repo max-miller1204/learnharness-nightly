@@ -40,19 +40,31 @@ export async function subscriptionControlsResponse(request: Request): Promise<Re
 		const fields = command as Record<string, unknown>;
 		const providerId = fields.providerId;
 		if (providerId !== "chatgpt" && !NATIVE_SUBSCRIPTIONS.some((provider) => provider.providerId === providerId)) return error("Unsupported connection.", 400);
-		const allowed = providerId === "chatgpt" ? ["login", "cancel", "select", "disconnect", "logout", "consent"] : ["login", "cancel", "respond", "open", "retry", "disconnect", "consent"];
+		const allowed = providerId === "chatgpt" ? ["login", "cancel", "complete", "select", "disconnect", "logout", "consent"] : ["login", "cancel", "respond", "open", "retry", "disconnect", "consent"];
 		if (typeof fields.op !== "string" || !allowed.includes(fields.op)) return error("Unsupported control.", 400);
 		return Response.json(await webSubscriptionOwner().control(providerId as string, fields, subscriptionRequestOrigin(request)!), { headers: HEADERS });
 	} catch {
 		return error("The subscription connection could not be changed. Retry or reconnect in Providers.", 400);
 	}
 }
+/** Browsers send Fetch Metadata only to secure contexts, so a plain-http,
+ * non-loopback origin (a LAN or Tailscale address) never receives it. Only
+ * there is a missing Sec-Fetch-Site accepted; a present value must still be
+ * same-origin, and https and loopback origins still require it. The action id
+ * itself is a random one-use capability bound to this origin. */
+export function sameOriginNavigation(request: Request, origin: string): boolean {
+	const site = request.headers.get("sec-fetch-site");
+	if (site !== null) return site === "same-origin";
+	const { protocol, hostname } = new URL(origin);
+	const host = hostname.toLowerCase();
+	return protocol === "http:" && !(host === "localhost" || host.endsWith(".localhost") || host === "[::1]" || /^127(\.\d{1,3}){3}$/.test(host));
+}
 /** One-use same-origin navigation. Full provider authorization URLs go only to
  * a top-level browser redirect, never status JSON, the SSE bus or application JS. */
 export async function subscriptionBrowserResponse(request: Request): Promise<Response> {
 	if (!webSubscriptionsEnabled()) return error("Unavailable.", 404);
 	const origin = subscriptionRequestOrigin(request);
-	if (!origin || (request.method === "POST" ? !authorized(request) : request.headers.get("sec-fetch-site") !== "same-origin")) return error("Open sign-in from LearnHarness.", 403);
+	if (!origin || (request.method === "POST" ? !authorized(request) : !sameOriginNavigation(request, origin))) return error("Open sign-in from LearnHarness.", 403);
 	const id = new URL(request.url).searchParams.get("id");
 	if (!id || !/^[0-9a-f-]{36}$/.test(id)) return error("This sign-in action is no longer available.", 410);
 	const target = await webSubscriptionOwner().takeBrowserAction(id, origin);

@@ -29,6 +29,8 @@ const publicError = (err) => ({
 	network: "ChatGPT could not be reached. Check your connection and try again.",
 	pending: "A ChatGPT sign-in is already pending.",
 	unavailable: "ChatGPT sign-in is unavailable in browser-only mode.",
+	callback: "This address does not belong to the current ChatGPT sign-in. Copy the full address from the sign-in tab and try again.",
+	inactive: "ChatGPT sign-in is no longer waiting. Start sign-in again.",
 }[err?.code] || "ChatGPT sign-in failed. Try again; no API-key fallback was used.");
 
 const nonempty = (v) => typeof v === "string" && v.length > 0 && !/[\x00-\x20\x7f]/.test(v);
@@ -88,6 +90,24 @@ function fileStore(file) {
 	};
 }
 
+const CALLBACK_PARAMS = ["state", "code", "client_id", "error"];
+/** A sign-in tab's final address, pasted from another device. Same origin, path
+ * and state rules as the loopback listener, plus exactly one of code or error.
+ * Browsers may hide the scheme, so a scheme-less paste gets http://. */
+function pastedCallback(value, redirectUri, expectedState) {
+	const text = typeof value === "string" ? value.trim() : "";
+	if (!text || text.length > 8192) throw fail("callback");
+	let url;
+	try { url = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(text) ? text : `http://${text}`); } catch { throw fail("callback"); }
+	const expected = new URL(redirectUri);
+	const params = url.searchParams;
+	const empty = (key) => params.has(key) && !params.get(key);
+	if (url.protocol !== "http:" || url.origin !== expected.origin || url.pathname !== expected.pathname || url.username || url.password || url.hash ||
+		CALLBACK_PARAMS.some((key) => params.getAll(key).length > 1) || params.get("state") !== expectedState ||
+		params.has("code") === params.has("error") || ["code", "error", "client_id"].some(empty)) throw fail("callback");
+	return params;
+}
+
 function allowedAuthEndpoint(value) {
 	try {
 		const url = new URL(value);
@@ -95,7 +115,7 @@ function allowedAuthEndpoint(value) {
 	} catch { return false; }
 }
 
-function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch, onChange = () => {}, timeoutMs = 180000 }) {
+function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch, onChange = () => {}, timeoutMs = 300000 }) {
 	let state;
 	let init;
 	let queue = Promise.resolve();
@@ -264,6 +284,7 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 		const listener = http.createServer();
 		let timer;
 		let consumed = false;
+		let redirectUri;
 		const cleanup = () => { clearTimeout(timer); listener.close(); listener.closeAllConnections(); };
 		const cancel = (code = "cancelled") => {
 			abort.abort();
@@ -273,7 +294,54 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 			finish();
 			notify();
 		};
-		pending = { abort, cancel };
+		// Shared by the loopback listener and paste-back, after either consumed the attempt.
+		const accept = async (params) => {
+			try {
+				if (params.has("error")) throw fail(params.get("error") === "access_denied" ? "cancelled" : "identity");
+				const clientId = params.get("client_id") || selected?.clientId;
+				if (!clientId || clientId === "dynamic_agent_client" || clientId.length > 512 || /[\s\x00-\x1f]/.test(clientId) || (selected && clientId !== selected.clientId) || !params.get("code")) throw fail("identity");
+				let body;
+				try { body = await grant({ grant_type: "authorization_code", client_id: clientId, code: params.get("code"), code_verifier: verifier, redirect_uri: redirectUri }, AbortSignal.any([abort.signal, AbortSignal.timeout(15000)])); }
+				catch (err) {
+					if (err.oauthCode === "invalid_grant" && !selected?.subject) retryRegistration = { clientId };
+					throw err;
+				}
+				if (typeof body.id_token !== "string") throw fail("identity");
+				const verified = await identity(body.id_token, clientId, nonce, selected?.subject);
+				const tokens = tokenSet(body);
+				await serial(async () => {
+					if (closed || abort.signal.aborted || epoch !== attemptEpoch) throw fail("cancelled");
+					const existing = state.registrations.find((r) => r.clientId === clientId);
+					if (existing && existing.subject !== verified.subject) throw fail("identity");
+					const record = { id: existing?.id ?? crypto.randomUUID(), clientId, issuer: ISSUER, ...verified, tokens };
+					const next = structuredClone(state);
+					next.registrations = next.registrations.filter((r) => r.id !== record.id).concat(record);
+					next.activeId = record.id;
+					const previous = structuredClone(state);
+					await save(next); // Active identity changes only AFTER validation and durable persistence.
+					if (closed || abort.signal.aborted || epoch !== attemptEpoch) {
+						await save(previous);
+						throw fail("cancelled");
+					}
+					stop();
+					storageDenied = false;
+					suspended = false;
+					retryRegistration = undefined;
+				});
+				lastError = planScopes(tokens) ? null : publicError(fail("scope"));
+			} catch (err) { if (!abort.signal.aborted) lastError = publicError(err); }
+			finally { if (pending?.abort === abort) pending = null; finish(); notify(); }
+		};
+		// Paste-back from a browser on another device. Wrong addresses never consume the attempt.
+		const complete = async (value) => {
+			if (consumed || !redirectUri || abort.signal.aborted) throw fail("inactive");
+			const params = pastedCallback(value, redirectUri, expectedState);
+			consumed = true;
+			cleanup();
+			await accept(params);
+			return snapshot();
+		};
+		pending = { abort, cancel, complete };
 		lastError = null;
 		notify();
 		try {
@@ -281,7 +349,7 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 				listener.once("error", reject);
 				listener.listen(0, "127.0.0.1", resolve);
 			});
-			const redirectUri = `http://127.0.0.1:${listener.address().port}/auth/callback`;
+			redirectUri = `http://127.0.0.1:${listener.address().port}/auth/callback`;
 			listener.on("request", async (req, res) => {
 				let callback;
 				try { callback = new URL(req.url || "/", redirectUri); }
@@ -292,45 +360,11 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 				if (req.method !== "GET" || callback.origin !== new URL(redirectUri).origin || callback.pathname !== "/auth/callback" || req.headers.host !== new URL(redirectUri).host || consumed) { res.writeHead(404).end(); return; }
 				const params = callback.searchParams;
 				// Reject duplicate parameters and unsolicited callbacks without consuming a valid pending attempt.
-				if (["state", "code", "client_id", "error"].some((key) => params.getAll(key).length > 1) || params.get("state") !== expectedState) { res.writeHead(400).end("Sign-in could not be verified."); return; }
+				if (CALLBACK_PARAMS.some((key) => params.getAll(key).length > 1) || params.get("state") !== expectedState) { res.writeHead(400).end("Sign-in could not be verified."); return; }
 				consumed = true;
 				res.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end("Return to LearnHarness to view the sign-in result. You may close this tab.");
 				cleanup();
-				try {
-					if (params.has("error")) throw fail(params.get("error") === "access_denied" ? "cancelled" : "identity");
-					const clientId = params.get("client_id") || selected?.clientId;
-					if (!clientId || clientId === "dynamic_agent_client" || clientId.length > 512 || /[\s\x00-\x1f]/.test(clientId) || (selected && clientId !== selected.clientId) || !params.get("code")) throw fail("identity");
-					let body;
-					try { body = await grant({ grant_type: "authorization_code", client_id: clientId, code: params.get("code"), code_verifier: verifier, redirect_uri: redirectUri }, AbortSignal.any([abort.signal, AbortSignal.timeout(15000)])); }
-					catch (err) {
-						if (err.oauthCode === "invalid_grant" && !selected?.subject) retryRegistration = { clientId };
-						throw err;
-					}
-					if (typeof body.id_token !== "string") throw fail("identity");
-					const verified = await identity(body.id_token, clientId, nonce, selected?.subject);
-					const tokens = tokenSet(body);
-					await serial(async () => {
-						if (closed || abort.signal.aborted || epoch !== attemptEpoch) throw fail("cancelled");
-						const existing = state.registrations.find((r) => r.clientId === clientId);
-						if (existing && existing.subject !== verified.subject) throw fail("identity");
-						const record = { id: existing?.id ?? crypto.randomUUID(), clientId, issuer: ISSUER, ...verified, tokens };
-						const next = structuredClone(state);
-						next.registrations = next.registrations.filter((r) => r.id !== record.id).concat(record);
-						next.activeId = record.id;
-						const previous = structuredClone(state);
-						await save(next); // Active identity changes only AFTER validation and durable persistence.
-						if (closed || abort.signal.aborted || epoch !== attemptEpoch) {
-							await save(previous);
-							throw fail("cancelled");
-						}
-						stop();
-						storageDenied = false;
-						suspended = false;
-						retryRegistration = undefined;
-					});
-					lastError = planScopes(tokens) ? null : publicError(fail("scope"));
-				} catch (err) { if (!abort.signal.aborted) lastError = publicError(err); }
-				finally { if (pending?.abort === abort) pending = null; finish(); notify(); }
+				await accept(params);
 			});
 			timer = setTimeout(() => cancel("timeout"), timeoutMs);
 			const url = new URL(AUTHORIZE);
@@ -350,6 +384,10 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 		return snapshot();
 	}
 	function cancelLogin() { pending?.cancel(); return snapshot(); }
+	async function completeLogin(callbackUrl) {
+		if (!pending) throw fail("inactive");
+		return pending.complete(callbackUrl);
+	}
 
 	function authorized(background, expected, capturedEpoch) {
 		const account = active();
@@ -542,7 +580,7 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 	function close() { closed = true; pending?.cancel(); stop(); }
 	function pause() { paused = true; pending?.cancel(); stop(); notify(); }
 	function resume() { paused = false; if (!storageDenied) suspended = false; notify(); }
-	return { status, login, cancelLogin, lease, models, select, consent, disconnect, logout, close, pause, resume, stamp };
+	return { status, login, cancelLogin, completeLogin, lease, models, select, consent, disconnect, logout, close, pause, resume, stamp };
 }
 
-module.exports = { createChatGPT, fileStore, publicError, allowedAuthEndpoint, SCOPES, validateState };
+module.exports = { createChatGPT, fileStore, publicError, allowedAuthEndpoint, pastedCallback, SCOPES, validateState };
