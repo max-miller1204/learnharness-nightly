@@ -31,8 +31,22 @@ describe("research sources", () => {
 	});
 
 	it("cited markdown links still win over fetched URLs", () => {
-		const sources = parseSources("See [the paper](https://example.com/paper).", ["smb://attacker.example/share"]);
+		const sources = parseSources("See [the paper](https://example.com/paper).", ["https://example.com/uncited", "smb://attacker.example/share"]);
 		assert.deepEqual(sources, [{ title: "the paper", url: "https://example.com/paper" }]);
+	});
+
+	it("subscription sources keep brief citations and uncited fetched URLs within the source limit", () => {
+		const native = { title: "Native source", url: "https://example.com/native" };
+		const paper = { title: "the paper", url: "https://example.com/paper" };
+		const fetched = Array.from({ length: 10 }, (_, index) => ({
+			title: "example.org", url: `https://example.org/fetched/${index}`,
+		}));
+		const sources = parseSources(
+			"See [the paper](https://example.com/paper) and [the native link](https://example.com/native).",
+			[native.url, paper.url, "file:///tmp/local", fetched[0]!.url, ...fetched.map(({ url }) => url)],
+			[native],
+		);
+		assert.deepEqual(sources, [native, paper, ...fetched.slice(0, 8)]);
 	});
 
 	it("a saved non-http(s) source renders as plain text, never a link", () => {

@@ -572,10 +572,12 @@ function hostOf(url: string | undefined): string {
 	}
 }
 
-/** Preserve native subscription links ahead of citations in the brief.
- * Fetched URLs supply the list when there are no citations. */
+/** Preserve native subscription links ahead of citations in the brief, then
+ * fill remaining slots with fetched URLs. For other engines, fetched URLs
+ * supply the list when there are no citations. */
 export function parseSources(brief: string, fetchedUrls: string[], subscriptionSources: ResearchResult["sources"] = []): ResearchResult["sources"] {
 	const sources = subscriptionSources.filter(({ url }) => isWebSourceUrl(url));
+	const hasSubscriptionSources = sources.length > 0;
 	const seen = new Set(sources.map(({ url }) => url));
 	for (const match of brief.matchAll(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g)) {
 		const title = (match[1] ?? "").trim();
@@ -584,8 +586,9 @@ export function parseSources(brief: string, fetchedUrls: string[], subscriptionS
 		seen.add(url);
 		sources.push({ title, url });
 	}
-	if (sources.length === 0) {
+	if (hasSubscriptionSources || sources.length === 0) {
 		for (const url of fetchedUrls) {
+			if (sources.length >= 10) break;
 			if (seen.has(url) || !isWebSourceUrl(url)) continue;
 			seen.add(url);
 			sources.push({ title: hostOf(url), url });

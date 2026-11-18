@@ -25,11 +25,14 @@ function citedSearchHits(output: ResponsesOutput[], count: number): SearchHit[] 
 		if (item.type !== "message") continue;
 		for (const part of item.content ?? []) {
 			if (part.type !== "output_text") continue;
+			const text = typeof part.text === "string" ? part.text : "";
 			for (const citation of part.annotations ?? []) {
 				const { url, title, start_index: start, end_index: end } = citation;
 				if (citation.type !== "url_citation" || typeof url !== "string" || !isWebSourceUrl(url) || hits.has(url)) continue;
 				const snippet = typeof start === "number" && typeof end === "number"
-					? part.text?.slice(start, end).trim().slice(0, 500) ?? ""
+					&& Number.isSafeInteger(start) && Number.isSafeInteger(end)
+					&& start >= 0 && end > start && end <= text.length
+					? text.slice(start, end).trim().slice(0, 500)
 					: "";
 				hits.set(url, { url, title: (typeof title === "string" && title.trim()) || url, snippet });
 			}

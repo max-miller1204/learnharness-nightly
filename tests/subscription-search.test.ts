@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
-import { configureWebSubscriptionRuntime } from "../src/agent/subscription-runtime.ts";
+import { configureWebSubscriptionRuntime, publishWebSubscriptionPacket } from "../src/agent/subscription-runtime.ts";
 import type { ChatGPTStatus } from "../src/core/contracts/chatgpt.ts";
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), "lh-subscription-search-"));
@@ -36,6 +36,7 @@ test("shared search uses the bound OAuth account, preserves native sources, and 
 	let catalog = ["gpt-5", "gpt-6.2-astra", "gpt-5.6-luna", "gpt-6-luna"];
 	let expectedModel = "gpt-6-luna";
 	let beforeLease: (() => void) | undefined;
+	let beforeResponse: (() => void) | undefined;
 	configureWebSubscriptionRuntime(async <T>(channel: string, op: string, fields: Record<string, unknown>) => {
 		assert.equal(channel, "lh:chatgpt");
 		const stamp = { epoch: revision, authorityRevision: revision, revision };
@@ -84,6 +85,7 @@ test("shared search uses the bound OAuth account, preserves native sources, and 
 		assert.deepEqual(body.tools, [{ type: "web_search", search_context_size: "low" }]);
 		assert.equal(body.tool_choice, "required");
 		assert.match(JSON.stringify(body.input), /search query only/);
+		beforeResponse?.();
 		return new Response(`data: ${JSON.stringify(event)}\n\n`, { headers: { "Content-Type": "text/event-stream" } });
 	};
 
@@ -157,4 +159,34 @@ test("shared search uses the bound OAuth account, preserves native sources, and 
 	writeSettings({ version: 1, agent: { search: { engine: "xai-subscription" } } });
 	await assert.rejects(search, /Grok OAuth connection/);
 	assert.equal(urls.length, 6, "no failure may send a fallback request");
+
+	first.connected = true;
+	status.activeId = first.id;
+	status.accountSelection = "selection-a-new";
+	select("selection-a-new");
+	catalog = ["gpt-5", "gpt-5.6-luna"];
+	revision++;
+	const invalidRanges = [[2, 1], [-4, 8], [0, 99], [0.5, 8]];
+	const invalidSnippets = invalidRanges.map(([start_index, end_index], index) => ({
+		type: "url_citation", url: `https://example.org/offset/${index}`, title: `Source ${index}`, start_index, end_index,
+	}));
+	event = complete([native, { type: "message", content: [{ type: "output_text", text: "Evidence", annotations: invalidSnippets }] }]);
+	assert.deepEqual(await search(), invalidSnippets.map(({ title, url }) => ({ title, url, snippet: "" })));
+
+	const switchAccount = (id: string, selection: string) => {
+		revision++;
+		status.activeId = id;
+		status.accountSelection = selection;
+		publishWebSubscriptionPacket("lh:chatgpt", {
+			channel: "lh:chatgpt", kind: "state", invalidate: "all",
+			stamp: { epoch: revision, authorityRevision: revision, revision }, status: structuredClone(status),
+		});
+	};
+	event = complete([native, cited]);
+	beforeResponse = () => {
+		switchAccount(second.id, "selection-b-new");
+		switchAccount(first.id, "selection-a-returned");
+	};
+	await assert.rejects(search, /Reselect/, "an in-flight result is discarded even if the active account ID returns to its original value");
+	assert.equal(urls.length, 8, "the in-flight request was made exactly once");
 });
