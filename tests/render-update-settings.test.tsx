@@ -390,6 +390,43 @@ describe("install confirm and What's new", () => {
 	});
 });
 
+describe("What's new waits for the reload", () => {
+	it("is held back while the server runs a newer version than the page, without marking it seen, and shows once on the page that runs it", async () => {
+		const posts: unknown[] = [];
+		let seen = false;
+		globalThis.fetch = async (input, init) => {
+			if (String(input) === "/api/whats-new/seen") { seen = true; posts.push(JSON.parse(String(init?.body))); return new Response(null, { status: 204 }); }
+			assert.equal(String(input), "/api/whats-new");
+			return Response.json(seen ? null : { version: "0.6.1-nightly.20261118.65", releaseNotes: [], omittedReleaseCount: 0 });
+		};
+		const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		// The old tab: page code .64, server .65. Nothing shows, nothing is recorded.
+		await mount(<WhatsNewDialog pageVersion="0.6.1-nightly.20261118.64" />);
+		await settle();
+		assert.equal(q(document, "whats-new-dialog"), null, "held back: the reload button stays visible");
+		assert.deepEqual(posts, [], "not marked seen while held back");
+		for (const { root, host } of roots.splice(0)) { await act(async () => { root.unmount(); }); host.remove(); }
+		// After the reload (or the next time the app opens): page code .65. Shows once.
+		await mount(<WhatsNewDialog pageVersion="0.6.1-nightly.20261118.65" />);
+		await settle();
+		assert.equal(q(document, "whats-new-title")!.textContent, "What's new in 0.6.1-nightly.20261118.65");
+		await click(q(document, "whats-new-done"));
+		assert.deepEqual(posts, [{ version: "0.6.1-nightly.20261118.65" }]);
+		for (const { root, host } of roots.splice(0)) { await act(async () => { root.unmount(); }); host.remove(); }
+		// Another load later: already seen on the server, so never again.
+		await mount(<WhatsNewDialog pageVersion="0.6.1-nightly.20261118.65" />);
+		await settle();
+		assert.equal(q(document, "whats-new-dialog"), null, "exactly once");
+	});
+
+	it("a page as new as the server, or a build without an exact version, shows it as before", async () => {
+		globalThis.fetch = async () => Response.json({ version: "0.6.1-nightly.20261118.65", releaseNotes: [], omittedReleaseCount: 0 });
+		await mount(<WhatsNewDialog pageVersion="" />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		assert.ok(q(document, "whats-new-dialog"), "no exact page version: never held back");
+	});
+});
+
 describe("Settings integration", () => {
 	it("the toggle sends the complete General section and follows stored server truth", async () => {
 		bridge();

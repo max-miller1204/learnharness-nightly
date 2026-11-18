@@ -30,4 +30,6 @@ Spin: a click latches the spin and remounts the icon so it starts from zero; it 
 
 Reload: GET /api/updates carries `runningVersion`; the page compares it with its own build version. It never reloads on its own.
 
+What's new waits for the reload (owner decision): while the server runs a newer version than the page's code, the "What's new" popup is held back (not shown, not marked seen), so the reload button stays visible. It shows once on the first page that runs the new version, after the reload or the next time the app opens. GET /api/whats-new already answers the running version, so the page compares that with its own build version.
+
 Seam: "Update everything" (roadmap item 23 PR 2) adds its state in `resolveUpdateControl`. Not built here.

@@ -27,3 +27,8 @@ export function compareVersions(a: string, b: string): number {
 	if (date !== 0) return date;
 	return Number(pa[6]) - Number(pb[6]);
 }
+
+/** True when both are exact versions and `a` is newer. Never throws. */
+export function isNewerVersion(a: string | null | undefined, b: string | null | undefined): boolean {
+	return !!a && !!b && isExactVersion(a) && isExactVersion(b) && compareVersions(a, b) > 0;
+}

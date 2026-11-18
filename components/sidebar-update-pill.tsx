@@ -38,15 +38,13 @@ import { ReleaseNoteSections } from "@/components/release-notes-view";
 import { APP_VERSION, HOMEPAGE, useUpdateState, type UpdateState } from "@/components/settings/update-settings";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { compareVersions, isExactVersion } from "@/selfhost/src/version-order.ts";
+import { isNewerVersion } from "@/selfhost/src/version-order.ts";
 
 export type UpdateControlKind = "check" | "checking" | "unavailable" | "download" | "downloading" | "install" | "dismiss-notice" | "reload";
 
 /** True when the server runs a newer exact version than the code of this page. */
 export function pageIsStale(state: UpdateState | null, pageVersion: string = APP_VERSION): boolean {
-	const running = state?.runningVersion;
-	if (!running || !isExactVersion(running) || !isExactVersion(pageVersion)) return false;
-	return compareVersions(running, pageVersion) > 0;
+	return isNewerVersion(state?.runningVersion, pageVersion);
 }
 
 /** The one place that picks the button's state (T3's resolveSidebarUpdatePresentation order). */
