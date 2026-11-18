@@ -247,13 +247,22 @@ jobs:
         run: |
           existing=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
             jq -ce --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)]')
-          if [ "$(jq length <<< "$existing")" = 0 ]; then
+          count=$(jq length <<< "$existing")
+          if [ "$count" -gt 1 ]; then
+            ids=$(jq -r 'map(.id | tostring) | join(", ")' <<< "$existing")
+            echo "::error::Found $count releases for $TAG (IDs: $ids). Resolve the duplicates before rerunning the nightly."
+            exit 1
+          fi
+          if [ "$count" = 0 ]; then
             gh release create "$TAG" --target "$SHA" --draft --prerelease --latest=false \
               --title "LearnHarness Nightly $VERSION (${SHA::12})" --notes-file notes.md
             draft_id=$(gh release view "$TAG" --json databaseId --jq '.databaseId')
           else
-            draft_id=$(jq -er --arg sha "$SHA" \
-              'select(length == 1) | .[0] | select(.draft and .prerelease and .target_commitish == $sha) | .id' <<< "$existing")
+            if ! draft_id=$(jq -er --arg sha "$SHA" \
+              '.[0] | select(.draft and .prerelease and .target_commitish == $sha) | .id' <<< "$existing"); then
+              echo "::error::$TAG already exists and is not a draft prerelease for $SHA."
+              exit 1
+            fi
             gh release edit "$TAG" --notes-file notes.md
           fi
           if git show-ref --verify --quiet "refs/tags/$TAG" && [ "$(git rev-parse "$TAG^{commit}")" != "$SHA" ]; then

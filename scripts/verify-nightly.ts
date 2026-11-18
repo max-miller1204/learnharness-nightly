@@ -9,6 +9,7 @@ const [version, sha, repository, desktopDir, serverDir, draftPath] = process.arg
 if (!version || !sha || !repository || !desktopDir || !serverDir || !draftPath) {
 	throw new Error("Usage: verify-nightly.ts VERSION SHA REPO DESKTOP_DIR SERVER_DIR DRAFT_JSON");
 }
+if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("SHA must be a full 40-character commit hash");
 const tag = `v${version}`;
 const read = (dir: string, name: string) => readFileSync(resolve(dir, name), "utf8");
 const feed = parseFeed(JSON.parse(read(serverDir, "latest.json")));

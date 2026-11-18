@@ -473,3 +473,12 @@ describe("release gate — CLI (offline, repo config)", () => {
 		}
 	});
 });
+
+it("rejects a non-SHA nightly target before reading release files", () => {
+	const result = spawnSync(process.execPath, [
+		path.join(repoRoot, "scripts", "verify-nightly.ts"),
+		"0.6.1-nightly.20261118.1", "main", "owner/repo", "desktop", "server", "draft.json",
+	], { cwd: repoRoot, encoding: "utf8", timeout: 60_000 });
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /SHA must be a full 40-character commit hash/);
+});
