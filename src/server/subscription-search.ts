@@ -113,7 +113,9 @@ const grokSelection = (connectionId: string) => createHash("sha256").update(conn
 
 function grokOption(): SubscriptionSearchOption {
 	const id = "xai-subscription";
-	const connectionId = nativeSubscriptionStatus("xai")?.connectionId;
+	const status = nativeSubscriptionStatus("xai");
+	if (!status?.available) return { id, available: false, reason: "Grok sign-in is unavailable on this LearnHarness connection." };
+	const connectionId = status.connectionId;
 	if (!connectionId || !nativeSubscriptionConnected("xai")) return { id, available: false, reason: "Connect Grok in Providers to use it for search." };
 	const reason = "Search can use your Grok subscription allowance or credits, or be billed by xAI.";
 	return {

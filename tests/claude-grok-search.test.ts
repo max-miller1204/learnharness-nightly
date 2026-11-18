@@ -229,7 +229,6 @@ test("Grok search is offered when a Grok account is connected, with no switch, a
 	writeSettings({ version: 1, agent: { search: { engine: "xai-subscription", accountSelection: "unused" } } });
 	assert.equal(process.env.LH_GROK_SEARCH_PROBE, undefined);
 	assert.match((await searchPickerStatus()).subscriptions[2]!.reason, /Connect Grok in Providers/);
-	await assert.rejects(searchProvider()!.search("query", 5), /Connect Grok in Providers/);
 
 	const fullCatalog = piModels().getProvider("xai")!.getModels().filter(({ id }) => ["grok-4.5", "grok-4.3", "grok-4.7"].includes(id));
 	assert.equal(fullCatalog.length, 3);
@@ -256,6 +255,17 @@ test("Grok search is offered when a Grok account is connected, with no switch, a
 		if (status !== 200) return new Response(JSON.stringify({ error: { message: "Search is not included in this plan" } }), { status, headers: { "Content-Type": "application/json" } });
 		return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "Content-Type": "text/event-stream" } });
 	};
+
+	xai.available = false;
+	assert.equal((await searchPickerStatus()).subscriptions[2]!.reason, "Grok sign-in is unavailable on this LearnHarness connection.", "this server has no subscription sign-in");
+	await assert.rejects(searchProvider()!.search("query", 5), /Grok sign-in is unavailable/);
+	xai.available = true;
+	xai.connected = false;
+	xai.revision++;
+	assert.equal((await searchPickerStatus()).subscriptions[2]!.reason, "Connect Grok in Providers to use it for search.", "sign-in is available but no account is connected");
+	await assert.rejects(searchProvider()!.search("query", 5), /Connect Grok in Providers/);
+	xai.connected = true;
+	xai.revision++;
 
 	const option = (await searchPickerStatus()).subscriptions[2]!;
 	assert.equal(option.available, true);
@@ -291,4 +301,4 @@ test("Grok search is offered when a Grok account is connected, with no switch, a
 	xai.revision++;
 	await assert.rejects(searchProvider()!.search("query", 5), /Reselect Grok/);
 	assert.equal(bodies.length, 2);
-	});
+});
