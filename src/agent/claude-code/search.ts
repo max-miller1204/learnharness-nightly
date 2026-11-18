@@ -119,6 +119,10 @@ type Line = {
 
 type Link = { title?: unknown; url?: unknown };
 
+const resultText = (content: unknown): string => typeof content === "string"
+	? content.trim()
+	: Array.isArray(content) ? content.map((part: { text?: unknown }) => text(part?.text, Infinity)).join("\n") : "";
+
 /** Native WebSearch links: the structured tool result, else the CLI's
  * `Links: [...]` line that the model itself received. */
 function resultLinks(line: Line): Link[] {
@@ -129,11 +133,9 @@ function resultLinks(line: Line): Link[] {
 			: []);
 	}
 	const links: Link[] = [];
-	for (const block of line.message?.content ?? []) {
-		if (block.type !== "tool_result" || block.is_error) continue;
-		const body = typeof block.content === "string"
-			? block.content
-			: Array.isArray(block.content) ? block.content.map((part: { text?: unknown }) => text(part?.text, Infinity)).join("\n") : "";
+	for (const block of Array.isArray(line.message?.content) ? line.message.content : []) {
+		if (block?.type !== "tool_result" || block.is_error) continue;
+		const body = resultText(block.content);
 		const match = /^Links: (\[.*\])$/m.exec(body);
 		if (!match) continue;
 		try {
@@ -148,6 +150,8 @@ function resultLinks(line: Line): Link[] {
 export class ClaudeSearchCollector {
 	private readonly hits = new Map<string, SearchHit>();
 	private searched = false;
+	private initialized = false;
+	private toolError: string | undefined;
 	private failure: string | undefined;
 
 	constructor(private readonly count: number) {}
@@ -162,6 +166,7 @@ export class ClaudeSearchCollector {
 		}
 		if (!line || typeof line !== "object") return;
 		if (line.type === "system" && line.subtype === "init") {
+			this.initialized = true;
 			const tools = Array.isArray(line.tools) ? line.tools : [];
 			const extra = tools.filter((tool) => typeof tool !== "string" || !PERMITTED_TOOLS.has(tool));
 			if (extra.length || !tools.includes("WebSearch")) {
@@ -170,9 +175,14 @@ export class ClaudeSearchCollector {
 		}
 		if (line.type === "assistant") {
 			if (line.error === "authentication_failed") return this.failure = NOT_SIGNED_IN;
-			if (line.message?.content?.some((block) => block.type === "tool_use" && block.name === "WebSearch")) this.searched = true;
+			const content = Array.isArray(line.message?.content) ? line.message.content : [];
+			if (content.some((block) => block?.type === "tool_use" && block.name === "WebSearch")) this.searched = true;
 		}
 		if (line.type === "user") {
+			const content = Array.isArray(line.message?.content) ? line.message.content : [];
+			for (const block of content) {
+				if (block?.type === "tool_result" && block.is_error) this.toolError ??= resultText(block.content).slice(0, 500);
+			}
 			for (const { title, url } of resultLinks(line)) {
 				if (typeof url !== "string" || !isWebSourceUrl(url) || this.hits.has(url)) continue;
 				this.hits.set(url, { url, title: text(title, 300) || url, snippet: "" });
@@ -186,7 +196,9 @@ export class ClaudeSearchCollector {
 
 	finish(): SearchHit[] {
 		if (this.failure) throw new Error(this.failure);
+		if (!this.initialized) throw new Error("Claude Code did not report its tool list, so LearnHarness discarded this search. Check the Claude Code installation.");
 		if (!this.searched) throw new Error("Claude Code did not run a native web search. Check the account's WebSearch access or try again.");
+		if (!this.hits.size && this.toolError) throw new Error(`Claude Code web search failed: ${this.toolError}`);
 		if (!this.hits.size) throw new Error("Claude Code completed web search without source links. Try a more specific search query.");
 		return [...this.hits.values()].slice(0, this.count);
 	}
@@ -207,24 +219,33 @@ export async function searchClaudeCode(
 		const child = await runClaude(claudeSearchArgs(), { cwd, env, signal: limit });
 		if (!child) throw new Error("Claude Code CLI was not found on the LearnHarness server.");
 		const collector = new ClaudeSearchCollector(count);
-		const kill = () => { child.kill("SIGKILL"); };
+		// Resolve on exit, not stdio close: a grandchild holding the pipe
+		// must not outlive the kill, the timeout or the temp directory.
+		const exited = new Promise<void>((resolve, reject) => {
+			child.once("error", reject);
+			child.once("exit", () => resolve());
+		});
+		exited.catch(() => { /* awaited below */ });
+		const lines = createInterface({ input: child.stdout });
+		const kill = () => {
+			if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+			lines.close();
+			child.stdout.destroy();
+		};
 		limit.addEventListener("abort", kill, { once: true });
 		if (limit.aborted) kill();
-		const closed = new Promise<void>((resolve, reject) => {
-			child.once("error", reject);
-			child.once("close", () => resolve());
-		});
-		closed.catch(() => { /* awaited below */ });
 		child.stderr.resume();
-		child.stdin.on("error", () => { /* reported by close */ });
+		child.stdin.on("error", () => { /* reported by exit */ });
 		child.stdin.end(query);
 		try {
-			for await (const raw of createInterface({ input: child.stdout })) {
+			for await (const raw of lines) {
 				if (collector.add(raw)) { kill(); break; }
 			}
-			await closed;
+			// A hung exit is ended by the timeout or abort kill.
+			await exited;
 		} finally {
 			limit.removeEventListener("abort", kill);
+			kill();
 		}
 		if (limit.aborted) {
 			signal?.throwIfAborted();

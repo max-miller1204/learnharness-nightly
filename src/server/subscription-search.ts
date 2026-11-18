@@ -178,7 +178,7 @@ export function subscriptionSearchProvider(settings: SearchSettings & { engine: 
 						return await searchClaudeCode(query, count, signal, claudeSearchSeams.run);
 					} finally {
 						// The CLI account may change while the child runs.
-						await refreshClaude();
+						if (!signal?.aborted) await refreshClaude();
 						requireSelection(signal);
 					}
 				}

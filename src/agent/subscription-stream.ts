@@ -84,7 +84,7 @@ export function nativeSubscriptionStream(provider: Provider, background: () => b
 				if (terminal) return;
 				if (!committed) { markUnadmittedUsage(partial.usage); lifecycle?.noDispatch(await subscriptionDenial(scope, controller, options?.signal?.aborted === true, purpose)); }
 				const message = error instanceof Error ? error.message : "";
-				const detail = providerDetail && message ? ` Provider response: ${message.slice(0, 500)}` : "";
+				const detail = providerDetail && committed && message ? ` Provider response: ${message.slice(0, 500)}` : "";
 				partial = { ...partial, stopReason: signal.aborted ? "aborted" : "error", errorMessage: nativeSubscriptionError(logicalModel.provider, message) + detail };
 				output.push({ type: "error", reason: partial.stopReason as "error" | "aborted", error: partial });
 			} finally { release(); output.end(); }

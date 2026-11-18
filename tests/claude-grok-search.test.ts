@@ -13,7 +13,7 @@ process.env.LH_IGNORE_ENV_KEYS = "1";
 delete process.env.LH_DESKTOP_SERVER;
 delete process.env.LH_DESKTOP_API_SECRET;
 delete process.env.LH_GROK_SEARCH_PROBE;
-const { ClaudeSearchCollector, claudeSearchArgs, parseClaudeAccount } = await import("../src/agent/claude-code/search.ts");
+const { ClaudeSearchCollector, claudeSearchArgs, parseClaudeAccount, searchClaudeCode } = await import("../src/agent/claude-code/search.ts");
 const { searchPickerStatus, searchProvider } = await import("../src/server/search.ts");
 const { claudeSearchSeams } = await import("../src/server/subscription-search.ts");
 const { writeSettings } = await import("../src/store/settings.ts");
@@ -54,6 +54,7 @@ test("headless search enables only WebSearch and parses native links", () => {
 	assert.equal(new ClaudeSearchCollector(5).add(JSON.stringify({ type: "system", subtype: "init", tools: ["WebSearch", "EndConversation"] })), undefined);
 
 	const collector = new ClaudeSearchCollector(2);
+	collector.add(JSON.stringify({ type: "system", subtype: "init", tools: ["WebSearch"] }));
 	collector.add(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "WebSearch" }] } }));
 	collector.add(JSON.stringify({ type: "user", tool_use_result: { results: [
 		{ tool_use_id: "srvtoolu_1", content: [{ title: "First", url: "https://example.org/a" }, { title: "Unsafe", url: "javascript:alert(1)" }, { title: "Dup", url: "https://example.org/a" }] },
@@ -65,15 +66,42 @@ test("headless search enables only WebSearch and parses native links", () => {
 		{ title: "https://example.org/b", url: "https://example.org/b", snippet: "" },
 	]);
 
-	assert.throws(() => new ClaudeSearchCollector(5).finish(), /did not run a native web search/);
-	const empty = new ClaudeSearchCollector(5);
+	assert.throws(() => new ClaudeSearchCollector(5).finish(), /did not report its tool list/, "a missing tool list fails closed");
+	const started = () => {
+		const collector = new ClaudeSearchCollector(5);
+		collector.add(JSON.stringify({ type: "system", subtype: "init", tools: ["WebSearch"] }));
+		return collector;
+	};
+	assert.throws(() => started().finish(), /did not run a native web search/);
+	const empty = started();
 	empty.add(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "WebSearch" }] } }));
 	assert.throws(() => empty.finish(), /without source links/);
+	const toolFailed = started();
+	toolFailed.add(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "WebSearch" }] } }));
+	toolFailed.add(JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", is_error: true, content: "Web search is not enabled for this organization" }] } }));
+	assert.throws(() => toolFailed.finish(), /web search failed: Web search is not enabled/);
+	assert.equal(started().add(JSON.stringify({ type: "assistant", message: { content: { not: "an array" } } })), undefined, "malformed content does not throw");
 	const limited = new ClaudeSearchCollector(5);
 	limited.add(JSON.stringify({ type: "result", is_error: true, result: "Claude usage limit reached. Your limit resets at 5pm." }));
 	assert.throws(() => limited.finish(), /usage limit reached/);
 	const signedOut = new ClaudeSearchCollector(5);
 	assert.match(signedOut.add(JSON.stringify({ type: "assistant", error: "authentication_failed", message: { content: [] } }))!, /claude auth login/);
+});
+
+test("an abort ends a hung CLI even when a grandchild holds its output open", async () => {
+	let cwd = "";
+	let child: ReturnType<typeof spawn> | undefined;
+	const controller = new AbortController();
+	setTimeout(() => controller.abort(), 200);
+	const started = Date.now();
+	await assert.rejects(searchClaudeCode("query", 5, controller.signal, (_args, options) => {
+		cwd = options.cwd;
+		child = spawn("sh", ["-c", "sleep 30 & echo '{}'; sleep 30"], { cwd: options.cwd, stdio: "pipe" });
+		return child as never;
+	}), /abort/i);
+	assert.ok(Date.now() - started < 5_000);
+	assert.equal(child!.signalCode, "SIGKILL");
+	assert.equal(fs.existsSync(cwd), false, "the temp directory is removed");
 });
 
 test("Claude Code search uses the selected CLI account, saves its links, and never falls back", async () => {
