@@ -294,6 +294,37 @@ describe("lh preview", { skip: process.platform !== "linux" }, () => {
 		assert.equal(fs.existsSync(pidFile), false);
 	});
 
+	it("waits for the port of a preview server that is already dying", async () => {
+		// The pid file names a process whose environment no longer names the
+		// preview, as while it exits, but which holds the port until just after
+		// the launcher starts (its lock file appears).
+		const port = await freePort();
+		const feedUrl = buildFeed(work);
+		const holder = track(spawn(process.execPath, ["-e", `
+const fs = require("node:fs");
+const [port, lock] = process.argv.slice(1);
+const server = require("node:net").createServer().listen(Number(port), "127.0.0.1", () => {
+	console.log("holding");
+	const timer = setInterval(() => { if (fs.existsSync(lock)) { clearInterval(timer); setTimeout(() => server.close(), 500); } }, 10);
+});
+`, String(port), previewLockPath(home, 7)], { stdio: ["ignore", "pipe", "inherit"] }));
+		await new Promise((resolve) => holder.stdout?.once("data", resolve));
+		fs.mkdirSync(path.dirname(previewPidPath(home, 7)), { recursive: true });
+		fs.writeFileSync(previewPidPath(home, 7), `${holder.pid}\n`);
+
+		let output = "";
+		const child = track(spawn(process.execPath, [LH, "preview", "7", "--port", String(port), "--feed-url", feedUrl], {
+			env: { ...process.env, LH_HOME: home, STUB_ENV_OUT: path.join(work, "env.json") },
+			stdio: ["ignore", "pipe", "pipe"],
+		}));
+		child.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+		child.stderr?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+		await waitFor(child, /Ctrl\+C stops the preview/, () => output);
+		assert.doesNotMatch(output, /Stopping/, "not ours, so not signalled");
+		child.kill("SIGINT");
+		assert.equal(await new Promise((resolve) => child.once("exit", resolve)), 0);
+	});
+
 	it("does not start a server if the launcher dies before recording its PID", async () => {
 		const port = await freePort();
 		const feedUrl = buildFeed(work);

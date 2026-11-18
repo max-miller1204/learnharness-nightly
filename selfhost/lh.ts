@@ -642,7 +642,9 @@ async function previewCommand(flags: Flags): Promise<void> {
 		const ours = () => {
 			try { return fs.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(`LH_HOME=${pHome}`); } catch { return false; }
 		};
-		if (Number.isInteger(pid) && pid > 1 && ours()) {
+		const valid = Number.isInteger(pid) && pid > 1;
+		const stopped = valid && ours();
+		if (stopped) {
 			say(`Stopping the PR #${pr} preview server a crashed \`lh preview\` left running (pid ${pid}).`);
 			try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
 			const deadline = Date.now() + 15_000;
@@ -651,8 +653,12 @@ async function previewCommand(flags: Flags): Promise<void> {
 			const killDeadline = Date.now() + 3_000;
 			while (ours() && Date.now() < killDeadline) await sleep(100);
 			if (ours()) fail(`Could not stop the orphaned PR #${pr} preview server (pid ${pid}).`);
-			// A dying process loses its environment before the kernel closes its
-			// files, so its listening socket can outlive ours() for a moment.
+		}
+		// A dying process loses its environment before the kernel closes its
+		// files, so its listening socket can outlive ours() for a moment,
+		// whether we stopped it or found it already dying.
+		const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+		if (stopped || (valid && alive())) {
 			const portDeadline = Date.now() + 5_000;
 			while (!(await portFree(config.port)) && Date.now() < portDeadline) await sleep(100);
 		}
