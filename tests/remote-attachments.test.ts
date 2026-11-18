@@ -30,6 +30,7 @@ const { claimAttachments, claimedAttachmentPath, scheduleAttachmentRemoval, swee
 const { deleteChatSession } = await import("../src/server/chats.ts");
 const { deleteSources } = await import("../src/server/source-deletion.ts");
 const { stores } = await import("../src/server/stores.ts");
+const { persistTurn } = await import("../src/server/turn-service.ts");
 const { chatStore } = await import("../src/store/chats.ts");
 const { reserveAttachmentRequest, uploadAttachmentRequest, discardAttachmentRequest, startAttachmentRequest } = await import("../src/server/attachment-routes.ts");
 
@@ -168,12 +169,11 @@ async function uploadForChat(chatId: string, name: string, mimeType: string, byt
 	return { id, source: `attachment:${id}` };
 }
 
-function scriptedRunner(steps: FauxResponseStep[]) {
+function scriptedRunner(steps: FauxResponseStep[], deliver: Parameters<typeof createJobRunner>[0]["deliver"] = async () => {}) {
 	const model = createFauxCore({});
 	model.setResponses(steps);
 	return createJobRunner({
-		chatStore, jobStore, attachmentsForChat,
-		deliver: async () => {},
+		chatStore, jobStore, attachmentsForChat, deliver,
 		engineFor: () => ({ model: model.getModel(), streamFn: model.streamSimple }),
 	});
 }
@@ -191,15 +191,31 @@ test("PDF dispatch and recovery use the current chat's opaque reference for a ci
 	await toolsFor(chat.id).pdf!.execute("own-pdf", input);
 	const job = jobStore.findJobByToolCallId(chat.id, "own-pdf")!;
 	assert.deepEqual(job.input, input);
+	const backingPath = fs.realpathSync.native(claimedAttachmentPath(id)!);
+	let metadata = "";
 	await scriptedRunner([
 		fauxAssistantMessage([fauxToolCall("pdf_info", {})], { stopReason: "toolUse" }),
 		fauxAssistantMessage([fauxToolCall("pdf_extract", { pages: "1" })], { stopReason: "toolUse" }),
-		fauxAssistantMessage([fauxText("The integral rule appears on page 1 (p. 1).")]),
-	]).runJob(job.id);
+		({ messages }) => {
+			const info = messages.find(message => message.role === "toolResult" && message.toolName === "pdf_info");
+			metadata = info?.role === "toolResult"
+				? info.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n")
+				: "";
+			const reportedSource = /^File: (.*)$/m.exec(metadata)?.[1];
+			return fauxAssistantMessage(`The integral rule appears in ${reportedSource} (p. 1).`);
+		},
+	], async steer => { persistTurn(chatStore, chat.id, 0, [steer], false); }).runJob(job.id);
 	const result = jobStore.getJob(job.id)!.result as PdfResult;
+	const transcript = fs.readFileSync(path.join(PATHS.chats, chat.id + ".json"), "utf8");
+	const citation = `${source} (p. 1)`;
+	assert.ok(metadata.includes(`File: ${source}\n`), "worker metadata must show the opaque reference");
+	assert.ok(!metadata.includes(backingPath));
 	assert.equal(result.path, source);
 	assert.deepEqual(result.pagesRead, [1]);
-	assert.match(result.brief, /\(p\. 1\)/);
+	assert.ok(result.brief.includes(citation));
+	assert.ok(!result.brief.includes(backingPath));
+	assert.ok(transcript.includes(citation));
+	assert.ok(!transcript.includes(JSON.stringify(backingPath).slice(1, -1)));
 	const otherJob = jobStore.createJob({ kind: "pdf", chatId: other.id, toolCallId: "other-pdf", input });
 	await scriptedRunner([]).runJob(otherJob.id);
 	assert.match((jobStore.getJob(otherJob.id)!.result as PdfResult).brief, /current chat/);
@@ -232,6 +248,8 @@ test("show_image and visual save uploaded image snapshots with opaque provenance
 	chatStore.saveMessages(chat.id, saved.messages);
 	const shown = await show(chat.id).execute("show-photo", { path: source, caption: "Synthetic photo" });
 	const details = shown.details as { path: string; snapshotId: string };
+	const privatePath = JSON.stringify(fs.realpathSync.native(claimedAttachmentPath(id)!)).slice(1, -1);
+	assert.ok(!JSON.stringify(shown).includes(privatePath));
 	assert.equal(details.path, source);
 	assert.ok(chatStore.getChat(chat.id)?.imageSnapshots?.[details.snapshotId]);
 	const tools = jobTools({ chatId: chat.id, jobStore, spawn: () => {}, resolveAttachment: attachmentsForChat(chat.id) });
@@ -245,6 +263,7 @@ test("show_image and visual save uploaded image snapshots with opaque provenance
 	const result = jobStore.getJob(job.id)!.result as VisualResult;
 	assert.match(result.svg, /<circle/);
 	assert.deepEqual(result.image, { path: source, snapshotId: details.snapshotId });
+	assert.ok(!JSON.stringify(result).includes(privatePath));
 	assert.ok(chatStore.getChat(chat.id)?.imageSnapshots?.[details.snapshotId]?.data);
 	fs.unlinkSync(claimedAttachmentPath(id)!);
 	await assert.rejects(show(chat.id).execute("missing-photo", { path: source }), /File unavailable\. Attach it again to use it\./);

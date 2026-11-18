@@ -126,10 +126,10 @@ export function createPdfTools(_pdfPath: string): Record<string, Tool> {
 }
 
 /** pdf_info's body (the loop's dispatch target): the triage readout. */
-async function pdfInfoText(pdfPath: string): Promise<string> {
-	const info = await pdfInfo(pdfPath);
+async function pdfInfoText(file: ReturnType<typeof resolveLearnerFile>): Promise<string> {
+	const info = await pdfInfo(file.filename);
 	const lines = [
-		`File: ${info.path}`,
+		`File: ${file.source}`,
 		`Pages: ${info.page_count} (mean text length/page: ${info.mean_text_length})`,
 		...info.pages.map(
 			(p) =>
@@ -188,7 +188,7 @@ export async function runPdfReaderAgent(
 	// (pdfjs paints into @napi-rs/canvas in-process) — the whole pdf-reader
 	// runs browser-free; text tools always worked without one.
 
-	const tools = createPdfTools(pdfPath);
+	const tools = createPdfTools(source);
 	const toolDeclarations = Object.values(tools);
 	const engine = opts.engine ?? piEngineFor("pdfReader");
 	// BYOK (owner, 2026-09-22): the level rides the injected engine — no
@@ -266,7 +266,7 @@ export async function runPdfReaderAgent(
 				try {
 					if (call.name === "pdf_info") {
 						opts.onActivity?.("pdf_info: triaging");
-						const r = await pdfInfoText(pdfPath);
+						const r = await pdfInfoText(file);
 						toolResults.push(toolText(call.id, call.name, String(r)));
 					} else if (call.name === "pdf_extract") {
 						const spec = String(args.pages ?? "all");
