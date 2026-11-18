@@ -2,6 +2,8 @@
 
 Status: approved by the owner on 2026-11-17.
 
+Later change: both App values moved from repository secrets into the `main`-only `fork-bot` environment ([simplify-upstream-intake.md](simplify-upstream-intake.md)).
+
 Goal: roadmap item 9. Replace the `FORK_BOT_TOKEN` personal access token in CI with a private GitHub App installed only on this fork. Every workflow mints a short-lived installation token through one shared step, so nothing expires and nothing is tied to the owner's account.
 
 ## Decided by the owner

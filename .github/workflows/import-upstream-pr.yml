@@ -5,15 +5,16 @@ name: Import upstream PR
 # original and credits its author. Running it again updates the branch.
 # Merge these with "Create a merge commit", never squash, so a later
 # upstream version of the same work has the best chance to merge cleanly.
-# The fork PR body starts with `Upstream: <repo>#<N>`, so when it merges,
-# notify-upstream.yml tells the upstream PR once (docs/specs/upstream-handpicked.md).
+# The fork PR body links the upstream PR by URL, so upstream's PR shows a
+# "mentioned this" entry (docs/specs/simplify-upstream-intake.md).
 #
 # An upstream PR that changes .github/ is refused unless allow_github_changes
 # is ticked: the pushed branch's own workflows would run here with this
 # repository's secrets. Read its diff before ticking it.
 #
 # Local equivalent: selfhost/scripts/import-upstream-pr.sh <N>
-# Authenticates as the fork bot GitHub App (see docs/fork-workflow.md).
+# Authenticates as the fork bot GitHub App (see docs/fork-workflow.md). Its key
+# is in the main-only `fork-bot` environment, so run this from main.
 
 on:
   workflow_dispatch:
@@ -39,6 +40,10 @@ jobs:
     if: github.repository == 'max-miller1204/learnharness-nightly'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # The App key is a secret of this main-only environment (docs/fork-workflow.md).
+    environment:
+      name: fork-bot
+      deployment: false
     env:
       PR: ${{ inputs.pr }}
       ALLOW_GITHUB_CHANGES: ${{ inputs.allow_github_changes }}

@@ -13,7 +13,7 @@ Baseline the entries build on (the self-hosting plan):
 - The separate `lh` launcher in `selfhost/` swaps versions, health-checks, rolls back and keeps snapshots.
 - Versioned installs under `~/.learnharness/runtime/versions/`, and the `learnharness.service` systemd user unit.
 - The server binds 127.0.0.1:3774, with optional Tailscale Serve on 8443.
-- Upstream is mirrored hourly to `upstream-main` with a standing Sync PR. Upstream PRs and issues are hand-picked: the "Import upstream PR" and "Mirror upstream issues" workflows bring in one each (as the fork bot GitHub App), and when a fork PR for a picked item merges, one comment from the owner's account tells upstream (`docs/specs/upstream-handpicked.md`).
+- Upstream is mirrored hourly to `upstream-main` with a standing Sync PR. Upstream PRs and issues are hand-picked: the "Import upstream PR" and "Mirror upstream issues" workflows bring in one each (as the fork bot GitHub App), and each import or mirror links its upstream item by URL, so upstream's timeline shows a "mentioned this" entry (`docs/specs/upstream-handpicked.md`, `docs/specs/simplify-upstream-intake.md`). The fork bot's key is a secret of the `main`-only `fork-bot` environment, and the sync pauses when upstream changes `.github/`.
 
 One structural rule carries over to every entry: **the launcher stays a separate process from the server.** It's what recovers from a broken version, so recovery logic must never depend on the server working.
 
@@ -28,7 +28,7 @@ Rows are in build order. **Order** is the planned sequence, after the self-hosti
 | 3 | 6 | Login and pairing | Access + security | none | Yes |
 | 4 | 1 | Electron desktop nightlies | Desktop + distribution | none | Small (`electron/main.cjs`) |
 | Later | 2 | Removing Electron | Desktop + distribution | none | Yes (deletions) |
-| Later | 3 | macOS self-hosting | Desktop + distribution | none | No |
+| Done | 3 | macOS self-hosting | Desktop + distribution | none | No |
 | Later | 4 | Docker image | Desktop + distribution | none | No |
 | Later | 5 | LAN mode | Access + security | 6 | Small |
 | Done | 7 | Updates like T3 Code, plus What's new | Ops + polish | none | Medium (`self-update.ts`, desktop updater, sidebar) |
@@ -149,6 +149,8 @@ Codex CLI: **parked, not built** (2026-11-17). A spike ([record](specs/codex-cli
 **Touches core.** Yes (deletions plus removing desktop branches).
 
 ### 3. macOS self-hosting
+
+**Status.** **Built** (2026-11-17): a launchd agent running the `lh` shim, a `darwin-arm64` nightly build on `macos-26`, Apple silicon only, no signing for the server archive. See [docs/specs/macos-selfhost.md](specs/macos-selfhost.md), which settles the open questions below. The rest of this entry is the original proposal.
 
 **Why.** Run the self-hosted server on a Mac (for example a Mac mini at home).
 
@@ -430,7 +432,7 @@ Where things stand, so the entries below start from facts:
 
 **Why.** Picked upstream issues get fixed here first (`docs/specs/upstream-handpicked.md`). Those fixes could go back upstream as PRs.
 
-**Decided.** Upstream already hears about each merged fix through one factual comment pointing to the fork PR (`docs/specs/upstream-handpicked.md`). This item is only about sending the fix itself upstream as a PR. Carried over from item 13 (upstream issue intake).
+**Decided.** Upstream can already find the fork's copy of each picked item through the link the import or mirror writes, which shows as a "mentioned this" entry on upstream's timeline (`docs/specs/simplify-upstream-intake.md`). This item is only about sending the fix itself upstream as a PR. Carried over from item 13 (upstream issue intake).
 
 **Open questions.** Offer fork fixes back upstream at all? As PRs from which branch, and who opens them?
 

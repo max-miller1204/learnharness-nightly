@@ -16,7 +16,7 @@ await fs.writeFile(process.env.LH_AUTH_FILE, "{}", { mode: 0o600 });
 const require = createRequire(import.meta.url);
 const { SCOPES } = require("../electron/chatgpt.cjs");
 const { createWebSubscriptionOwner, webSubscriptionOwner, webSubscriptionsEnabled } = await import("../src/server/web-subscriptions.ts");
-const { subscriptionControlsResponse, subscriptionBrowserResponse } = await import("../src/server/web-subscription-http.ts");
+const { subscriptionControlsResponse, subscriptionBrowserResponse, sameOriginNavigation } = await import("../src/server/web-subscription-http.ts");
 const chat = await import("../src/agent/chatgpt-bridge.ts");
 const native = await import("../src/agent/subscription-bridge.ts");
 const { piModels } = await import("../src/agent/models.ts");
@@ -74,6 +74,12 @@ test("HTTP controls reject cross-origin, simple-form and private credential oper
 	const noOrigin = request({ providerId: "chatgpt", op: "cancel" }); noOrigin.headers.delete("origin");
 	assert.equal((await subscriptionControlsResponse(noOrigin)).status, 403);
 	for (const op of ["lease", "models", "snapshot", "token", "openExternal"]) assert.equal((await subscriptionControlsResponse(request({ providerId: "chatgpt", op }))).status, 400);
+	const forgedPaste = request({ providerId: "chatgpt", op: "complete", url: "http://127.0.0.1:1/auth/callback?state=s&code=c" }); forgedPaste.headers.set("origin", "https://unrelated.invalid");
+	assert.equal((await subscriptionControlsResponse(forgedPaste)).status, 403);
+	const crossSitePaste = request({ providerId: "chatgpt", op: "complete", url: "http://127.0.0.1:1/auth/callback?state=s&code=c" }); crossSitePaste.headers.set("sec-fetch-site", "cross-site");
+	assert.equal((await subscriptionControlsResponse(crossSitePaste)).status, 403);
+	const bareFormPaste = request({ providerId: "chatgpt", op: "complete", url: "http://127.0.0.1:1/auth/callback?state=s&code=c" }); bareFormPaste.headers.delete("x-learnharness-subscriptions");
+	assert.equal((await subscriptionControlsResponse(bareFormPaste)).status, 403);
 	const huge = request({ providerId: "chatgpt", op: "cancel", padding: "x".repeat(16384) });
 	assert.equal((await subscriptionControlsResponse(huge)).status, 413);
 	const browser = new Request("http://localhost:3000/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001");
@@ -86,6 +92,30 @@ test("HTTP controls reject cross-origin, simple-form and private credential oper
 		await assert.rejects(chat.chatGPTRequest("status"), /desktop app/);
 	}
 	delete process.env.LH_DESKTOP_SERVER; delete process.env.LH_DESKTOP_API_SECRET;
+});
+
+test("sign-in tab navigation: a missing Sec-Fetch-Site is accepted only on plain-http non-loopback origins", async () => {
+	const tab = (origin: string, site?: string) => new Request(`${origin}/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001`, { headers: { host: new URL(origin).host, ...(site ? { "sec-fetch-site": site } : {}) } });
+	for (const origin of ["http://192.168.1.10:3000", "http://100.73.184.115:3000", "http://desktop.tail1234.ts.net:3000"]) {
+		assert.equal(sameOriginNavigation(tab(origin), origin), true, `${origin} without Fetch Metadata`);
+		assert.equal(sameOriginNavigation(tab(origin, "same-origin"), origin), true);
+		for (const site of ["cross-site", "same-site", "none"]) assert.equal(sameOriginNavigation(tab(origin, site), origin), false, `${origin} ${site}`);
+	}
+	for (const origin of ["http://localhost:3000", "http://app.localhost:3000", "http://127.0.0.1:3000", "http://[::1]:3000", "https://desktop.tail1234.ts.net"]) {
+		assert.equal(sameOriginNavigation(tab(origin), origin), false, `${origin} must send Fetch Metadata`);
+		assert.equal(sameOriginNavigation(tab(origin, "same-origin"), origin), true);
+	}
+	// End to end over the real route: a LAN tab without Fetch Metadata reaches OpenAI once; a cross-site one is refused.
+	const lan = "http://192.168.1.10:3000";
+	const started = await subscriptionControlsResponse(request({ providerId: "chatgpt", op: "login" }, lan));
+	const { browserAction } = await started.json() as { browserAction: string };
+	const navigate = (site?: string) => subscriptionBrowserResponse(new Request(`${lan}${browserAction}`, { headers: { host: new URL(lan).host, ...(site ? { "sec-fetch-site": site } : {}) } }));
+	assert.equal((await navigate("cross-site")).status, 403, "a present cross-site value is still refused and does not spend the action");
+	const opened = await navigate();
+	assert.equal(opened.status, 303);
+	assert.equal(new URL(opened.headers.get("location")!).origin, "https://auth.openai.com");
+	assert.equal((await navigate()).status, 410, "still one use");
+	await subscriptionControlsResponse(request({ providerId: "chatgpt", op: "cancel" }, lan));
 });
 
 function fakeSDK(login: (id: string, interaction: ProviderAuthInteraction) => Promise<OAuthCredential>) {

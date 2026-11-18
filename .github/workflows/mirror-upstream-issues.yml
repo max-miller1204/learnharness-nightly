@@ -4,13 +4,15 @@ name: Mirror upstream issues
 # issue into the fork once, as an issue labeled `upstream` (title, body and the
 # comments that exist then). Nothing is mirrored on its own. The daily run
 # only keeps each existing mirror's `upstream-closed` label matching upstream's
-# state. Mirrors stay open here. Copied text sits in code blocks and upstream
-# references are written as code, so mirroring pings no one upstream.
-# Design: docs/specs/upstream-handpicked.md.
+# state. Mirrors stay open here. The mirror links its upstream issue by URL
+# (upstream shows "mentioned this"); copied text sits in code blocks and authors
+# are written as code, so it @mentions no one. Design:
+# docs/specs/upstream-handpicked.md and docs/specs/simplify-upstream-intake.md.
 #
 # Local dry run: DRY_RUN=1 selfhost/scripts/mirror-upstream-issues.sh [issue]
 # (only this workflow writes mirrors; the script refuses to elsewhere).
-# Authenticates as the fork bot GitHub App (see docs/fork-workflow.md).
+# Authenticates as the fork bot GitHub App (see docs/fork-workflow.md). Its key
+# is in the main-only `fork-bot` environment, so run this from main.
 
 on:
   schedule:
@@ -39,6 +41,10 @@ jobs:
     if: github.repository == 'max-miller1204/learnharness-nightly'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # The App key is a secret of this main-only environment (docs/fork-workflow.md).
+    environment:
+      name: fork-bot
+      deployment: false
     env:
       ISSUE: ${{ inputs.issue }}
     steps:

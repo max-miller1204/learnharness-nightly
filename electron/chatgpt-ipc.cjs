@@ -33,6 +33,7 @@ async function chatGPTControl(command, connection) {
 		if (command?.op === "status") return await connection.status();
 		if (command?.op === "login" && (command.id === undefined || typeof command.id === "string")) return await connection.login(command.id);
 		if (command?.op === "cancel") return connection.cancelLogin();
+		if (command?.op === "complete" && typeof command.url === "string") return await connection.completeLogin(command.url);
 		if (command?.op === "select" && typeof command.id === "string") return await connection.select(command.id);
 		if (command?.op === "disconnect" && typeof command.id === "string") return await connection.disconnect(command.id);
 		if (command?.op === "logout" && typeof command.id === "string") return await connection.logout(command.id);

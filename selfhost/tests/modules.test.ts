@@ -1,7 +1,8 @@
 /**
  * Unit tests for the launcher's building blocks: versions and the feed,
  * staging, durable state, backups (copies, not links), log bounding,
- * locks, the child environment, the systemd unit and the frozen protocol.
+ * locks, the child environment, the systemd unit, the launchd agent, the
+ * installer and the frozen protocol.
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -12,13 +13,14 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { listBackups, pruneBackups, restore, snapshot, spaceForSnapshot } from "../src/backup.ts";
-import { buildChildEnv, DEFAULT_CONFIG, MANAGED_ENV_NAMES, readConfig, writeConfig } from "../src/config.ts";
+import { buildChildEnv, DEFAULT_CONFIG, detectChrome, MANAGED_ENV_NAMES, readConfig, writeConfig } from "../src/config.ts";
 import { lockIsHeld, tryAcquireLock } from "../src/locks.ts";
 import { boundLog } from "../src/logs.ts";
 import { layout, versionPaths } from "../src/paths.ts";
 import { ENV, parseChildMessage, parseParentMessage } from "../src/protocol.ts";
-import { compareVersions, FEED_NOTES_KEEP, installedVersions, isInstalled, mergeFeedNotes, parseFeed, readState, stageVersion, writeState, type LatestFeed } from "../src/release.ts";
-import { renderUnit, repointUnitText, unitVersion } from "../src/service.ts";
+import { compareVersions, currentArch, FEED_NOTES_KEEP, installedVersions, isInstalled, mergeFeedNotes, parseFeed, readState, stageVersion, writeState, type LatestFeed } from "../src/release.ts";
+import { launchdLabel, launchdPath, parseLaunchdState, renderPlist, renderUnit, repointService, repointUnitText, serviceManager, shimPath, unitVersion } from "../src/service.ts";
+import { MAC_APP_CLI, tailscaleBin } from "../src/tailscale.ts";
 import { pruneVersions } from "../src/versions.ts";
 
 let home: string;
@@ -38,6 +40,9 @@ describe("versions and feed", () => {
 		const good = { version: V("20261116", 1), tag: "v1", sha: "abc", publishedAt: "now", launcherProtocol: 1, minLauncherProtocol: 1, assets: { "linux-x64": { url: "u", sha256: "a".repeat(64) } } };
 		assert.equal(parseFeed(good).assets["linux-x64"]?.url, "u");
 		assert.throws(() => parseFeed({ ...good, assets: { "linux-x64": { url: "u", sha256: "nope" } } }));
+		const mac = parseFeed({ ...good, assets: { ...good.assets, "darwin-arm64": { url: "m", sha256: "c".repeat(64) }, "plan9-mips": { url: "x", sha256: "d".repeat(64) } } });
+		assert.equal(mac.assets["darwin-arm64"]?.url, "m");
+		assert.deepEqual(Object.keys(mac.assets).sort(), ["darwin-arm64", "linux-x64"], "unknown arches are dropped, as old launchers drop darwin-arm64");
 		assert.throws(() => parseFeed({ ...good, version: "latest" }));
 		assert.throws(() => parseFeed({ ...good, launcherProtocol: undefined }));
 	});
@@ -245,6 +250,117 @@ describe("systemd unit", () => {
 		assert.equal(unitVersion(next), V("20261117", 2));
 		assert.match(next, /Restart=always/);
 		assert.match(next, /KillMode=mixed/);
+	});
+});
+
+describe("platforms", () => {
+	it("maps platform and CPU to a build", () => {
+		assert.equal(currentArch("linux", "x64"), "linux-x64");
+		assert.equal(currentArch("linux", "arm64"), "linux-arm64");
+		assert.equal(currentArch("darwin", "arm64"), "darwin-arm64");
+		assert.equal(currentArch("darwin", "x64"), undefined, "no Intel Mac builds");
+		assert.equal(currentArch("win32", "x64"), undefined);
+	});
+
+	it("picks launchd on macOS and systemd elsewhere", () => {
+		assert.equal(serviceManager("darwin", "learnharness").kind, "launchd");
+		assert.equal(serviceManager("darwin", "learnharness").displayName, "com.learnharness.server");
+		assert.match(serviceManager("darwin", "learnharness").file, /Library\/LaunchAgents\/com\.learnharness\.server\.plist$/);
+		assert.equal(serviceManager("linux", "learnharness").displayName, "learnharness.service");
+		assert.equal(launchdLabel("lh-test"), "com.learnharness.lh-test");
+	});
+
+	it("finds Chrome in a Mac's Applications folders", () => {
+		const app = path.join(home, "Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome");
+		fs.mkdirSync(path.dirname(app), { recursive: true });
+		fs.writeFileSync(app, "#!/bin/sh\n", { mode: 0o755 });
+		const appDirs = ["/nonexistent", path.join(home, "Applications")];
+		assert.equal(detectChrome("/nonexistent", { platform: "darwin", systemDirs: [], appDirs }), app);
+		assert.equal(detectChrome("/nonexistent", { platform: "linux", systemDirs: [], appDirs }), undefined, "Linux never looks in Applications");
+		const onPath = path.join(home, "bin", "chromium");
+		fs.mkdirSync(path.dirname(onPath));
+		fs.writeFileSync(onPath, "#!/bin/sh\n", { mode: 0o755 });
+		assert.equal(detectChrome(path.dirname(onPath), { platform: "darwin", systemDirs: [], appDirs }), onPath, "PATH comes first");
+	});
+
+	it("falls back to the Tailscale app's CLI on a Mac", () => {
+		assert.equal(tailscaleBin("darwin", () => false, (file) => file === MAC_APP_CLI), MAC_APP_CLI);
+		assert.equal(tailscaleBin("darwin", () => true, () => true), "tailscale");
+		assert.equal(tailscaleBin("darwin", () => false, () => false), "tailscale");
+		assert.equal(tailscaleBin("linux", () => false, () => true), "tailscale");
+	});
+});
+
+describe("launchd agent", () => {
+	it("runs the lh shim with T3's keys, and escapes XML", () => {
+		const odd = path.join(home, "a&b<c>");
+		const plist = renderPlist(odd, "learnharness", "/usr/bin:/bin");
+		assert.match(plist, /<key>Label<\/key>\n {2}<string>com\.learnharness\.server<\/string>/);
+		assert.ok(plist.includes(`<string>${shimPath().replaceAll("&", "&amp;")}</string>\n    <string>__service</string>`), "ProgramArguments is the shim, never a version folder");
+		assert.ok(!plist.includes("runtime/versions"));
+		assert.ok(plist.includes("a&amp;b&lt;c&gt;"));
+		assert.ok(!plist.includes("a&b<c>"));
+		for (const key of ["RunAtLoad", "KeepAlive"]) assert.match(plist, new RegExp(`<key>${key}</key>\\n {2}<true/>`));
+		assert.match(plist, /<key>ExitTimeOut<\/key>\n {2}<integer>30<\/integer>/);
+		assert.match(plist, /<key>ProcessType<\/key>\n {2}<string>Interactive<\/string>/);
+		assert.ok(plist.includes(`${layout(odd).serviceLog.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</string>`));
+		assert.match(plist, /<key>PATH<\/key>\n {4}<string>\/usr\/bin:\/bin<\/string>/);
+	});
+
+	it("builds PATH from the shell's, minus version folders, plus Homebrew", () => {
+		const versions = layout(home).versions;
+		const built = launchdPath(home, `/Users/me/.local/bin:${versions}/1.0.0/node/bin:/usr/bin:/custom\u0001bad:/opt/homebrew/bin`);
+		assert.deepEqual(built.split(":"), ["/Users/me/.local/bin", "/usr/bin", "/opt/homebrew/bin", "/usr/local/bin", "/bin", "/usr/sbin", "/sbin"]);
+	});
+
+	it("reads the job state from launchctl print", () => {
+		assert.equal(parseLaunchdState("gui/501/com.learnharness.server = {\n\tactive count = 1\n\tstate = running\n\n\tprogram = /x\n"), "running");
+		assert.equal(parseLaunchdState("\tstate = not running\n"), "not running");
+		assert.equal(parseLaunchdState(""), undefined);
+	});
+
+	it("repoints only the shim on macOS", () => {
+		const bin = fs.mkdtempSync(path.join(os.tmpdir(), "lh-bin-"));
+		const saved = process.env.LH_BIN_DIR;
+		process.env.LH_BIN_DIR = bin;
+		try {
+			assert.equal(repointService(home, V("20261117", 2), "lh-test-none", "darwin"), undefined);
+			assert.match(fs.readFileSync(path.join(bin, "lh"), "utf8"), new RegExp(`versions/${V("20261117", 2).replaceAll(".", "\\.")}/lh`));
+		} finally {
+			if (saved === undefined) delete process.env.LH_BIN_DIR;
+			else process.env.LH_BIN_DIR = saved;
+			fs.rmSync(bin, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("install.sh", () => {
+	// A stub archive whose `lh` records how the installer called it.
+	it("installs the feed's version, not a release-notes entry's", () => {
+		const version = V("20261118", 2);
+		const stage = path.join(home, "stage");
+		fs.mkdirSync(stage);
+		fs.writeFileSync(path.join(stage, "VERSION"), `${version}\n`);
+		fs.writeFileSync(path.join(stage, "lh"), `#!/bin/sh\necho "$*" >> "${path.join(home, "calls")}"\n`, { mode: 0o755 });
+		const arch = currentArch();
+		if (!arch) return;
+		const archive = path.join(home, "lh.tar.gz");
+		execFileSync("tar", ["-czf", archive, "-C", stage, "."]);
+		const sha256 = createHash("sha256").update(fs.readFileSync(archive)).digest("hex");
+		const feed = {
+			version, tag: `v${version}`, sha: "abc", publishedAt: "now", launcherProtocol: 1, minLauncherProtocol: 1,
+			assets: { [arch]: { url: pathToFileURL(archive).href, sha256 } },
+			notes: [{ version, publishedAt: "now", items: ["new"] }, { version: V("20261117", 1), publishedAt: "then", items: ["old"] }],
+		};
+		const feedFile = path.join(home, "latest.json");
+		fs.writeFileSync(feedFile, JSON.stringify(feed, null, 2));
+		const lhHomeDir = path.join(home, "lhhome");
+		execFileSync("sh", [path.join(import.meta.dirname, "..", "install.sh")], {
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, LH_HOME: lhHomeDir, LH_FEED_URL: pathToFileURL(feedFile).href, LH_YES: "1", NODE_ENV: "test" },
+			stdio: "pipe",
+		});
+		assert.ok(fs.existsSync(path.join(lhHomeDir, "runtime", "versions", version, "VERSION")));
+		assert.deepEqual(fs.readFileSync(path.join(home, "calls"), "utf8").trim().split("\n"), ["__install", `up --yes --feed-url=${pathToFileURL(feedFile).href}`]);
 	});
 });
 

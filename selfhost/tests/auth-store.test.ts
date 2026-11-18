@@ -1,15 +1,19 @@
 /** The login store shared by the server and `lh` (docs/specs/login-pairing.md). */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import {
 	authDir, claimPairingCode, createPairingLink, formatCode, generatePairingCode, issueSession, listSessions, normalizeCode,
-	PAIRING_CODE_ALPHABET, pairingUrl, revokeOthers, revokeSession, SESSION_TTL_MS, touchLastSeen, verifyToken,
+	NEVER_EXPIRES, PAIRING_CODE_ALPHABET, pairingUrl, revokeOthers, revokeSession, touchLastSeen, verifyToken,
 } from "../src/auth-store.ts";
 import { restore, snapshot } from "../src/backup.ts";
+import { writeConfig } from "../src/config.ts";
 import { layout } from "../src/paths.ts";
+import { QrCode } from "../src/qr.ts";
+import { writeState } from "../src/release.ts";
 
 let home: string;
 let data: string;
@@ -47,7 +51,7 @@ describe("pairing codes", () => {
 		const claimed = claimPairingCode(data, formatCode(link.code).toLowerCase(), client, { now: now + 1000 });
 		assert.ok(claimed.ok);
 		assert.equal(claimed.session.label, "Phone", "the link's label names the device");
-		assert.equal(Date.parse(claimed.session.expiresAt) - (now + 1000), SESSION_TTL_MS);
+		assert.equal(claimed.session.expiresAt, NEVER_EXPIRES, "a paired device stays signed in until revoked");
 		assert.deepEqual(claimPairingCode(data, link.code, client, { now: now + 2000 }), { ok: false, reason: "used" });
 		const late = createPairingLink(data, { now });
 		assert.deepEqual(claimPairingCode(data, late.code, client, { now: now + 5 * 60_000 }), { ok: false, reason: "expired" });
@@ -65,8 +69,54 @@ describe("pairing codes", () => {
 	});
 });
 
+describe("lh pair output", () => {
+	function assertQr(rows: string[], url: string) {
+		const qr = QrCode.encodeText(url, QrCode.Ecc.MEDIUM);
+		assert.equal(rows.length, Math.ceil((qr.size + 4) / 2));
+		for (const [rowIndex, row] of rows.entries()) {
+			assert.equal(row.length, qr.size + 4);
+			for (const [column, glyph] of [...row].entries()) {
+				const x = column - 2;
+				const y = 2 * rowIndex - 2;
+				assert.equal(glyph === "▀" || glyph === "█", qr.getModule(x, y));
+				assert.equal(glyph === "▄" || glyph === "█", qr.getModule(x, y + 1));
+			}
+		}
+	}
+
+	it("prints the local link first, then the remote QR and link right above the code", () => {
+		writeState(home, { protocol: 1, activeVersion: "0.6.1", badVersions: [] });
+		const hostname = "box.tail.ts.net";
+		writeConfig(home, { port: 3774, tailscale: { enabled: true, hostname, port: 8443 } });
+		const launcher = path.resolve(import.meta.dirname, "../lh.ts");
+		const pair = () => execFileSync(process.execPath, [launcher, "pair"], {
+			encoding: "utf8", env: { ...process.env, LH_HOME: home },
+		});
+		const output = pair();
+		const code = /#token=([A-Z2-9]{12})/.exec(output)?.[1];
+		assert.ok(code);
+		const local = pairingUrl("http://127.0.0.1:3774", code);
+		const remote = pairingUrl(`https://${hostname}:8443`, code);
+		const lines = output.trimEnd().split("\n");
+		assert.deepEqual(lines.slice(1, 3), ["On this machine only:", `  ${local}`]);
+		assert.deepEqual(lines.slice(-3, -1), ["From your other devices:", `  ${remote}`]);
+		assert.ok(lines.at(-1)?.startsWith(`Code: ${formatCode(code)} `));
+		assertQr(lines.slice(3, -3), remote);
+
+		writeConfig(home, { port: 3774, tailscale: { enabled: false, port: 8443 } });
+		const localOutput = pair();
+		const localCode = /#token=([A-Z2-9]{12})/.exec(localOutput)?.[1];
+		assert.ok(localCode);
+		const localOnly = pairingUrl("http://127.0.0.1:3774", localCode);
+		const localLines = localOutput.trimEnd().split("\n");
+		assert.deepEqual(localLines.slice(1, 3), ["On this machine only:", `  ${localOnly}`]);
+		assert.ok(localLines.at(-1)?.startsWith(`Code: ${formatCode(localCode)} `));
+		assertQr(localLines.slice(3, -1), localOnly);
+	});
+});
+
 describe("sessions", () => {
-	it("verify by signature, expiry and record", () => {
+	it("verify by signature and record", () => {
 		const now = Date.now();
 		const { token, session } = issueSession(data, { method: "pairing", client, now });
 		assert.equal(verifyToken(data, token)?.id, session.id);
@@ -75,12 +125,45 @@ describe("sessions", () => {
 		assert.deepEqual(Object.keys(claims).sort(), ["exp", "iat", "kind", "sid", "v"]);
 		const forged = Buffer.from(JSON.stringify({ ...claims, exp: claims.exp + 1 })).toString("base64url");
 		assert.equal(verifyToken(data, `${forged}.${signature}`), undefined, "changed claims break the signature");
-		assert.equal(verifyToken(data, token, { now: now + SESSION_TTL_MS + 1 }), undefined, "expired");
+		assert.equal(verifyToken(data, token, { now: now + 10 * 365 * 24 * 3600_000 })?.id, session.id, "never expires");
 		assert.equal(verifyToken(data, "garbage"), undefined);
 		const other = fs.mkdtempSync(path.join(os.tmpdir(), "lh-auth-other-"));
 		try { assert.equal(verifyToken(path.join(other, "data"), token), undefined, "another store's key"); } finally { fs.rmSync(other, { recursive: true, force: true }); }
 		assert.ok(revokeSession(data, session.id));
 		assert.equal(verifyToken(data, token), undefined, "revoked");
+	});
+
+	it("only lh's cli sessions expire", () => {
+		const now = Date.now();
+		const desktop = issueSession(data, { method: "desktop", client, now });
+		assert.equal(desktop.session.expiresAt, NEVER_EXPIRES);
+		const cli = issueSession(data, { method: "cli", hidden: true, ttlMs: 5 * 60_000, client: { deviceType: "unknown" }, now });
+		assert.ok(verifyToken(data, cli.token, { now: now + 4 * 60_000 }));
+		assert.equal(verifyToken(data, cli.token, { now: now + 5 * 60_000 + 1 }), undefined, "cli sessions keep their 5 minutes");
+		assert.ok(verifyToken(data, desktop.token, { now: now + 400 * 24 * 3600_000 }));
+	});
+
+	it("sessions paired when they lasted 30 days stop expiring, old tokens too", () => {
+		const issued = Date.parse("2026-11-17T12:00:00Z");
+		const thirtyDays = 30 * 24 * 3600_000;
+		const { token, session } = issueSession(data, { method: "pairing", client, ttlMs: thirtyDays, now: issued });
+		const cli = issueSession(data, { method: "cli", hidden: true, ttlMs: 5 * 60_000, client: { deviceType: "unknown" }, now: issued });
+		const claims = JSON.parse(Buffer.from(token.split(".")[0]!, "base64url").toString());
+		assert.equal(claims.exp, issued + thirtyDays, "the old token carries a 30 day exp");
+		// sessions.json as the 30 day build wrote it (this build already reads it as never expiring).
+		const file = path.join(authDir(data), "sessions.json");
+		const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+		stored.sessions[0].expiresAt = new Date(issued + thirtyDays).toISOString();
+		fs.writeFileSync(`${file}.tmp`, JSON.stringify(stored));
+		fs.renameSync(`${file}.tmp`, file);
+		const later = issued + thirtyDays + 24 * 3600_000;
+		assert.equal(verifyToken(data, token, { now: later })?.id, session.id, "still signed in after day 30");
+		assert.equal(listSessions(data, { now: later })[0]?.expiresAt, NEVER_EXPIRES);
+		assert.equal(verifyToken(data, cli.token, { now: later }), undefined, "the cli session still expired");
+		touchLastSeen(data, session.id, { now: later });
+		assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).sessions.find((s: { id: string }) => s.id === session.id).expiresAt, NEVER_EXPIRES, "the next write stores it");
+		assert.ok(revokeSession(data, session.id, { now: later }));
+		assert.equal(verifyToken(data, token, { now: later }), undefined, "revoke still signs it out");
 	});
 
 	it("revoke-others keeps the current and hidden sessions", () => {
@@ -104,12 +187,12 @@ describe("sessions", () => {
 	it("last seen is written at most once a minute", () => {
 		const now = Date.now();
 		const { session } = issueSession(data, { method: "pairing", client, now });
-		touchLastSeen(data, session.id, { now });
+		assert.equal(touchLastSeen(data, session.id, { now }), true, "it says when it wrote");
 		const seen = () => listSessions(data, { now })[0]?.lastSeenAt;
 		assert.equal(seen(), new Date(now).toISOString());
-		touchLastSeen(data, session.id, { now: now + 30_000 });
+		assert.equal(touchLastSeen(data, session.id, { now: now + 30_000 }), false);
 		assert.equal(seen(), new Date(now).toISOString());
-		touchLastSeen(data, session.id, { now: now + 61_000 });
+		assert.equal(touchLastSeen(data, session.id, { now: now + 61_000 }), true);
 		assert.equal(seen(), new Date(now + 61_000).toISOString());
 	});
 
@@ -128,7 +211,7 @@ describe("lock and damage handling", () => {
 		const { session } = issueSession(data, { method: "pairing", client });
 		fs.writeFileSync(path.join(authDir(data), ".lock"), "999999\n");
 		const started = Date.now();
-		touchLastSeen(data, session.id);
+		assert.equal(touchLastSeen(data, session.id), false);
 		assert.ok(Date.now() - started < 1000, "returned at once");
 		assert.equal(listSessions(data)[0]?.lastSeenAt, undefined, "skipped this time");
 		fs.rmSync(path.join(authDir(data), ".lock"));

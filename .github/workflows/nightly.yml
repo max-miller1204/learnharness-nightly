@@ -1,15 +1,17 @@
 name: Nightly (self-hosted server)
 
 # After CI passes on a push to main, this builds the self-hosted server for
-# linux-x64 and linux-arm64 from that exact commit and publishes one
-# prerelease (v<version>-nightly.<date>.<run>), all or nothing: CI's `Check`
-# (typecheck, tests, lint, launcher tests, standalone builds) already passed
-# for the commit, and both bundles and both archive smoke tests must pass
-# here. Installs read the fixed `nightly` release's latest.json. See
+# linux-x64, linux-arm64 and darwin-arm64 from that exact commit and
+# publishes one prerelease (v<version>-nightly.<date>.<run>), all or nothing:
+# CI's `Check` (typecheck, tests, lint, launcher tests, standalone builds)
+# already passed for the commit, and every bundle and archive smoke test
+# must pass here. Installs read the fixed `nightly` release's latest.json. See
 # docs/self-hosting.md, docs/fork-workflow.md and docs/specs/ci-foundation.md.
 #
 # A manual run builds the head of main and refuses unless CI's `Check`
-# passed for it. Pause with the repository variable PAUSE_NIGHTLY=true.
+# passed for it. A manual dry run (publishes nothing) builds any branch, so a
+# PR can make test archives (docs/specs/macos-selfhost.md). Pause with the
+# repository variable PAUSE_NIGHTLY=true.
 
 on:
   workflow_run:
@@ -27,13 +29,13 @@ permissions:
   contents: read
 
 # One nightly at a time, never cancelled mid-publish. GitHub keeps only the
-# newest pending run in a group. Only runs that will build join `nightly`, so a
-# CI completion that publishes nothing (a failed run, a manual CI run, a fork's
-# main) can't push out a pending real one. CI runs can finish out of order, so
+# newest pending run in a group. Only runs that will publish join `nightly`, so
+# a CI completion that publishes nothing (a failed run, a manual CI run, a
+# fork's main) or a dry run can't push out a pending real one. CI runs can finish out of order, so
 # `meta` also skips a commit that is not newer than the shipped one.
 concurrency:
   group: >-
-    ${{ (github.event_name == 'workflow_dispatch' ||
+    ${{ ((github.event_name == 'workflow_dispatch' && !inputs.dry_run) ||
     (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
     && 'nightly' || format('nightly-noop-{0}', github.run_id) }}
   cancel-in-progress: false
@@ -69,7 +71,7 @@ jobs:
           SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: echo "sha=$SHA" >> "$GITHUB_OUTPUT"
       - name: A manual run needs CI to have passed for this commit
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.sha.outputs.sha }}
@@ -129,6 +131,7 @@ jobs:
     with:
       sha: ${{ needs.meta.outputs.sha }}
       version: ${{ needs.meta.outputs.version }}
+      include_macos: true
 
   release:
     name: Publish

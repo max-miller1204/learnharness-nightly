@@ -1,9 +1,8 @@
 name: Self-hosted bundle
 
-# Builds and smoke-tests the self-hosted server archive for linux-x64 and
-# linux-arm64 from one commit, and uploads each as the `selfhost-<arch>`
-# artifact. Called by nightly.yml and pr-preview.yml, so a PR preview gets
-# exactly the nightly's build and gates (docs/specs/pr-previews.md).
+# Builds and smoke-tests self-hosted server archives from one commit, then
+# uploads each as the `selfhost-<arch>` artifact. Nightlies include macOS;
+# PR previews share the same build and gates for the two Linux arches.
 #
 # It runs PR code in pr-preview.yml: it references no secrets, keeps no git
 # credentials, and only reads with the token its caller grants (read-only).
@@ -19,6 +18,10 @@ on:
         description: "Exact version baked into the build (LH_VERSION)"
         type: string
         required: true
+      include_macos:
+        description: "Also build the nightly's Apple silicon archive"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,14 +36,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        arch: ${{ inputs.include_macos && fromJSON('["linux-x64","linux-arm64","darwin-arm64"]') || fromJSON('["linux-x64","linux-arm64"]') }}
         include:
-          - runner: ubuntu-24.04
-            arch: linux-x64
-            node_arch: x64
-          - runner: ubuntu-24.04-arm
-            arch: linux-arm64
-            node_arch: arm64
-    runs-on: ${{ matrix.runner }}
+          - arch: linux-x64
+            runner: ubuntu-24.04
+          - arch: linux-arm64
+            runner: ubuntu-24.04-arm
+    # macos-26 is also the runner used by the desktop release.
+    runs-on: ${{ matrix.arch == 'darwin-arm64' && 'macos-26' || matrix.runner }}
     timeout-minutes: 40
     env:
       VERSION: ${{ inputs.version }}
@@ -68,13 +71,13 @@ jobs:
       - name: Download the Node runtime that ships in the archive
         run: |
           nv=$(node -p process.version)
-          file="node-${nv}-linux-${{ matrix.node_arch }}.tar.xz"
+          file="node-${nv}-${{ matrix.arch }}.tar.xz"
           cd "$RUNNER_TEMP"
           curl -fsSLO --retry 3 "https://nodejs.org/dist/${nv}/${file}"
           curl -fsSLO --retry 3 "https://nodejs.org/dist/${nv}/SHASUMS256.txt"
-          grep " ${file}\$" SHASUMS256.txt | sha256sum -c -
+          grep " ${file}\$" SHASUMS256.txt | shasum -a 256 -c -
           tar -xJf "$file"
-          echo "NODE_DIR=$RUNNER_TEMP/node-${nv}-linux-${{ matrix.node_arch }}" >> "$GITHUB_ENV"
+          echo "NODE_DIR=$RUNNER_TEMP/node-${nv}-${{ matrix.arch }}" >> "$GITHUB_ENV"
       - name: Assemble the archive
         run: node selfhost/scripts/package-archive.ts --version "$VERSION" --arch "${{ matrix.arch }}" --node-dir "$NODE_DIR" --standalone .next/standalone --out dist-selfhost
       - name: Smoke the assembled archive with its bundled Node

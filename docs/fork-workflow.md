@@ -10,6 +10,8 @@
 2. If `main` already contains it, any open Sync PR is closed.
 3. Otherwise it keeps **one** PR, "Sync upstream (N new commits)", open from `upstream-main` into `main`. The body lists the new upstream commits, the upstream PRs they mention, and whether GitHub sees conflicts. CI runs on it.
 
+**It pauses when upstream changes `.github/`.** Pushing `upstream-main` runs that branch's own workflow files here, so when upstream's `.github/` differs from what `upstream-main` holds now, the run pushes nothing, leaves the Sync PR as it is and fails (GitHub emails you), naming the files and linking the diff. Read it, then run **Actions → Upstream sync** with **allow_github_changes** ticked. Until then every hourly run stays paused and red.
+
 It never pushes to `main`. Read it, take what's worth taking, and merge with **Create a merge commit** (never squash or rebase) so the next sync knows those commits are in. To take only part of it, branch from `main`, merge or cherry-pick what you want, and leave the Sync PR open; it updates itself.
 
 Upstream often lands a reworked version of a PR you already merged here, so conflicts are expected. Resolve them in the PR, or locally: `git fetch origin upstream-main`, then merge it into a branch from `main`.
@@ -33,7 +35,7 @@ The nightly starts only after CI passes on a push to `main`, and builds that exa
 Every PR can have a preview build to try on your server with `lh preview <N>` before merging (design: [specs/pr-previews.md](specs/pr-previews.md); running one: [self-hosting](self-hosting.md#trying-a-pr-previews)).
 
 - **Which PRs build one.** Yours (author is the repository owner) on open, push and reopen. Anyone else's, including upstream imports and Dependabot, only when you add the **`preview`** label. Adding it approves the head at that moment: only the build your label started can publish. The label is removed once the preview is published, so add it again after reading new pushes. PRs that change only `docs/` or Markdown build nothing.
-- **What you get.** A `preview-pr-<N>` prerelease (both arches, `.sha256` files, its own `latest.json`), replaced by each build and never part of the `nightly` feed, plus one bot comment on the PR naming the commit and the command.
+- **What you get.** A `preview-pr-<N>` prerelease (both Linux arches, `.sha256` files, its own `latest.json`), replaced by each build and never part of the `nightly` feed, plus one bot comment on the PR naming the commit and the command.
 - **How it stays safe.** `.github/workflows/pr-preview.yml` builds on `pull_request` with a read-only token and no secrets, through the nightly's own `selfhost-bundle.yml`. `.github/workflows/pr-preview-publish.yml` (on `workflow_run`, so always `main`'s copy) never runs PR code. It publishes only when the PR is open, its head is the built commit, the build was started by someone with write access, and the PR is yours or that person's adding of `preview` started the build (`selfhost/scripts/pr-preview-check.sh`). It uses only the built-in token. A fork PR can edit its own copy of the build workflow, which is why the publish side checks all of this itself.
 - **Cleanup.** Previews of PRs that are no longer open are deleted on every publish run, daily (07:23 UTC), and on a manual run of **PR preview publish**.
 
@@ -45,52 +47,24 @@ Run **Actions → Import upstream PR** with the PR number, or locally:
 selfhost/scripts/import-upstream-pr.sh 674
 ```
 
-Import only the upstream PRs you've picked as good contributions; nothing is imported on its own. It pushes the PR's exact commits to `upstream-pr/<N>` (same commit IDs as upstream) and opens or updates a fork PR "[upstream PR N] <title>" that names the original and credits its author. The body's first line is `` Upstream: `amosblomqvist/learnharness#N` ``, so upstream hears about it once it merges (see [Telling upstream](#telling-upstream)). Run it again to pick up new pushes to the upstream PR.
+Import only the upstream PRs you've picked as good contributions; nothing is imported on its own. It pushes the PR's exact commits to `upstream-pr/<N>` (same commit IDs as upstream) and opens or updates a fork PR "[upstream PR N] <title>" that links the original by URL and credits its author. The link adds a "mentioned this" entry to the upstream PR's timeline, so upstream users can find the fork's version. Run it again to pick up new pushes to the upstream PR.
 
-**An upstream PR that changes anything under `.github/` is refused.** Its branch's own workflows would run here, with this repository's secrets, as soon as it's pushed. Read its diff (the error links it), and if it's safe, run the import again with **allow_github_changes** ticked (`ALLOW_GITHUB_CHANGES=1` locally). The check runs on the exact commit it pushes.
+**An upstream PR that changes anything under `.github/` is refused.** Its branch's own workflows would run here, with this repository's token and repository secrets, as soon as it's pushed. The same goes for an upstream PR whose branch has a `.github/` that differs from `upstream-main` in any other way, for example upstream changes on its `main` that the paused sync is holding back. Read its diff (the error links it), and if it's safe, run the import again with **allow_github_changes** ticked (`ALLOW_GITHUB_CHANGES=1` locally). The check runs on the exact commit it pushes.
 
 **Merge imported PRs with "Create a merge commit", never squash.** When upstream later merges the same commits, git sees them as already merged and the Sync PR stays clean. (Upstream's maintainer often reworks PRs before landing them; those reworked versions still conflict, and you resolve them once in the Sync PR.)
 
-Importing never pings anyone upstream: upstream PR references are written as code, and an imported PR's original description is copied into a collapsed code block. The block's fence is one tilde longer than any run of tildes in the copied text, and at least 4 (`selfhost/scripts/fence.jq`, shared with the issue mirror). GitHub caps a fence at 255 tildes, so text with a run of 255 or more instead gets a 255-tilde fence, LF line endings and its tilde-led lines indented to 4 spaces. Either way nothing in it can close the block early. So no `@mentions` fire, and nothing adds "mentioned this" entries to upstream's timelines. The one exception is deliberate and comes only at merge: [Telling upstream](#telling-upstream).
+Apart from that link, importing pings no one upstream: the author is written as code, and an imported PR's original description is copied into a collapsed code block. The block's fence is one tilde longer than any run of tildes in the copied text, and at least 4 (`selfhost/scripts/fence.jq`, shared with the issue mirror). GitHub caps a fence at 255 tildes, so text with a run of 255 or more instead gets a 255-tilde fence, LF line endings and its tilde-led lines indented to 4 spaces. Either way nothing in it can close the block early. So no `@mentions` fire, and nothing in it adds "mentioned this" entries to upstream's timelines.
 
 ## Picking upstream issues
 
 Upstream issues aren't mirrored on their own any more: you pick the ones worth working on (design: [specs/upstream-handpicked.md](specs/upstream-handpicked.md), first version [specs/upstream-issue-mirror.md](specs/upstream-issue-mirror.md)). Run **Actions → Mirror upstream issues** with the upstream issue number, and it copies that issue into the fork **once**:
 
-- A mirror is a fork issue "[upstream issue N] <title>" labeled `upstream`, plus upstream's own labels that exist here. Its body credits the author and quotes the original issue and the comments it had at copy time. Later upstream edits and comments aren't copied.
+- A mirror is a fork issue "[upstream issue N] <title>" labeled `upstream`, plus upstream's own labels that exist here. Its body links the upstream issue by URL (a "mentioned this" entry upstream), credits the author and quotes the original issue and the comments it had at copy time. Later upstream edits and comments aren't copied.
 - A daily run (06:47 UTC) creates nothing. It keeps `upstream-closed` on each mirror while its upstream issue is closed, and removes it if upstream reopens it. The job never opens or closes fork issues.
-- The hidden first line of a mirror's body (`<!-- upstream-issue: amosblomqvist/learnharness#N -->`) is how the jobs find it, and only issues the fork bot opened (`learnharness-nightly-bot[bot]`) count. Keep that line, or the issue no longer counts as mirrored (or as picked, for [Telling upstream](#telling-upstream)). An issue anyone else opens with that line is ignored, so it can't block or relabel a mirror.
-- Mirroring pings no one upstream: references and authors are written as code and the copied text sits in code blocks that nothing in it can close.
+- The hidden first line of a mirror's body (`<!-- upstream-issue: amosblomqvist/learnharness#N -->`) is how the jobs find it, and only issues the fork bot opened (`learnharness-nightly-bot[bot]`) count. Keep that line, or the issue no longer counts as mirrored. An issue anyone else opens with that line is ignored, so it can't block or relabel a mirror.
+- Apart from that link, mirroring pings no one upstream: authors are written as code and the copied text sits in code blocks that nothing in it can close.
 
 Only the workflow writes mirrors, because mirrors opened under any other login aren't recognized. Locally, `DRY_RUN=1 selfhost/scripts/mirror-upstream-issues.sh [N]` prints what it would do (and, with a number, the body) without writing; without `DRY_RUN=1` it refuses to run.
-
-## Telling upstream
-
-When a fork PR that fixes a picked upstream issue, or imports a picked upstream PR, merges into `main`, `.github/workflows/notify-upstream.yml` lets upstream users find it:
-
-- One comment goes on the upstream item, from your account: "This is fixed in the LearnHarness nightly fork (max-miller1204/learnharness-nightly): <fork PR link>" (for a PR: "This PR is merged into ..."). It ends with a hidden marker, and an item that already has your marked comment gets no second one, even from another fork PR.
-- The fork PR body gets an `Upstream link: <URL>` line, which adds the "mentioned this" entry on upstream's timeline. Before merge, nothing links upstream.
-- The fork PR gets a receipt comment listing what was posted or skipped.
-- Skipped: an item you didn't pick (no fork bot mirror of the issue, or no fork bot PR from `upstream-pr/<N>`), an upstream PR upstream already merged, an upstream issue closed as completed. Nothing is ever posted at import time, and no comment has an @mention.
-
-A PR names its upstream items in `Upstream:` lines at the **top** of its body. The import writes one; for a fix, start the PR body with:
-
-```
-Upstream: `amosblomqvist/learnharness#123`
-```
-
-Keep the backticks: without them (or as a URL, which also works) GitHub links upstream as soon as the PR opens. Several lines are fine. Reading stops at the first line that isn't an `Upstream:` line.
-
-The comment needs a token of yours, because the fork bot App isn't installed upstream and GitHub lets only a **classic** personal access token write to a public repo you don't own (fine-grained tokens can't). That token can do almost anything you can on every public repo you can write to, so it's an environment secret only `main` can read. A branch, including an imported upstream PR's branch, can't. Setup (once):
-
-1. Open <https://github.com/settings/tokens/new>. Note "LearnHarness nightly upstream notice", expiry 1 year, tick only **public_repo**, **Generate token**.
-2. Add it to the `upstream-notify` environment (deployments from `main` only; it already exists). The command prompts for the token:
-
-   ```sh
-   gh secret set UPSTREAM_COMMENT_TOKEN --env upstream-notify -R max-miller1204/learnharness-nightly
-   ```
-
-Merges without an `Upstream:` line never touch the token. If it's missing or expired when one has, the run fails (GitHub emails you); fix the token, then run **Actions → Notify upstream** with the fork PR number. Locally, `DRY_RUN=1 selfhost/scripts/notify-upstream.sh <fork PR>` prints the exact comment, body edit and receipt, and whether each item would be posted or skipped (`BODY_FILE=<file>` stands in for the PR body); without `DRY_RUN=1` it refuses to run.
 
 ## Fork bot (GitHub App)
 
@@ -107,12 +81,14 @@ To create it (once, as the repository owner):
 5. **Where can this GitHub App be installed?** Only on this account. **Create GitHub App**.
 6. Copy the **Client ID** from the App's page. Under **Private keys**, **Generate a private key**; a `.pem` downloads.
 7. **Install App** (left menu) → your account → **Only select repositories** → `learnharness-nightly` → **Install**.
-8. Store both as repository secrets, then delete the `.pem` (or keep it in a password manager):
+8. Store both as secrets of the `fork-bot` environment, then delete the `.pem` (or keep it in a password manager):
 
    ```sh
-   gh secret set FORK_BOT_CLIENT_ID -R max-miller1204/learnharness-nightly   # paste the Client ID
-   gh secret set FORK_BOT_PRIVATE_KEY -R max-miller1204/learnharness-nightly < path/to/key.pem
+   gh secret set FORK_BOT_CLIENT_ID --env fork-bot -R max-miller1204/learnharness-nightly   # paste the Client ID
+   gh secret set FORK_BOT_PRIVATE_KEY --env fork-bot -R max-miller1204/learnharness-nightly < path/to/key.pem
    ```
+
+**The key is main-only.** `fork-bot` is an environment whose deployment branch rule allows `main` only (Settings → Environments; design: [specs/simplify-upstream-intake.md](specs/simplify-upstream-intake.md)). The four jobs that mint the token (upstream sync, import, issue mirror, Dependabot auto-merge) use it with `deployment: false`, so they leave no deployment records. Any other branch's workflows can't read the key, including upstream branches the bot pushes. So these workflows can't be test-run from a branch: dispatched from one, the job is refused the environment. Never store the App values as repository secrets again; every branch can read those.
 
 The workflows fail with a clear message when either secret is missing. To replace a lost or leaked key, generate a new one on the App's page, store it the same way and delete the old key there. A future workflow that needs more access gets it by adding the permission on the App's page and approving the change on the installation.
 
@@ -158,7 +134,16 @@ gh api repos/max-miller1204/learnharness-nightly/automated-security-fixes   # {"
 - **Disable inherited workflows** that don't apply to the fork: `gh workflow disable "Desktop release"` and `gh workflow disable notify-website`. (Tags created by the nightly use the built-in token, which can't start other workflows anyway; disabling makes it explicit.)
 - **Allow merge commits** (Settings → General → Pull Requests), since upstream-derived PRs must use them.
 - **Branch protection on `main`:** require the `Check` status check, nothing else.
-- **`OPENROUTER_API_KEY`** secret for PR-Agent. Optional: an `OPENROUTER_MODEL` variable to change its model.
+- **`OPENROUTER_API_KEY`** secret for PR-Agent. It's a repository secret, which any branch's workflow can read (an accepted risk: PR-Agent runs on `pull_request`, which can't use a `main`-only environment), so keep a spending cap on the key at OpenRouter. Optional: an `OPENROUTER_MODEL` variable to change its model.
+- **Allow `pull_request_target` for Dependabot auto-merge.** GitHub blocks that trigger on public repositories with no Actions event policy from 2026-12-02. One repository policy (Settings → Actions → Policies) allows it for `.github/workflows/dependabot-auto-merge.yml` only:
+
+  ```sh
+  gh api -X POST repos/max-miller1204/learnharness-nightly/actions/policies --input - <<'EOF'
+  {"name": "Allow pull_request_target for Dependabot auto-merge", "enforcement": "active",
+   "conditions": {"workflow_path": {"include": [".github/workflows/dependabot-auto-merge.yml"], "exclude": []}},
+   "rules": [{"type": "restrict_action_events", "parameters": {"allowed_events": ["pull_request_target"]}}]}
+  EOF
+  ```
 - Optional: `PAUSE_NIGHTLY=true` as a repository variable stops publishing nightlies.
 
 ## What lives where
@@ -175,7 +160,6 @@ gh api repos/max-miller1204/learnharness-nightly/automated-security-fixes   # {"
 | `.github/workflows/selfhost-bundle.yml` | The server archive build and gates, shared by the nightly and PR previews |
 | `.github/workflows/pr-preview.yml`, `pr-preview-publish.yml` | PR preview builds, their publishing and cleanup (`lh preview` in `selfhost/src/preview.ts`) |
 | `.github/workflows/upstream-sync.yml`, `import-upstream-pr.yml`, `mirror-upstream-issues.yml` | Upstream feed, picked PR imports and picked issue mirrors (scripts in `selfhost/scripts/`) |
-| `.github/workflows/notify-upstream.yml` | One upstream comment when a fork PR for a picked item merges (`selfhost/scripts/notify-upstream.sh`, `upstream-refs.jq`) |
 | `.github/dependabot.yml`, `.github/workflows/dependabot-auto-merge.yml` | Dependency update PRs and their auto-merge |
 | `.github/actions/fork-bot-token/` | Mints the fork bot App token for workflows that push, open PRs or mirror issues |
 | [`fork-roadmap.md`](fork-roadmap.md) | Work considered and deliberately deferred |

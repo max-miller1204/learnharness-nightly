@@ -12,7 +12,7 @@ import { NextRequest } from "next/server";
 import { unstable_doesMiddlewareMatch as unstable_doesProxyMatch } from "next/experimental/testing/server";
 import { config, proxy } from "../proxy.ts";
 import { cookieName, mintToken } from "./helpers/auth-data-dir.ts";
-import { cookieOriginAllowed } from "../src/server/auth.ts";
+import { COOKIE_LIFETIME_MS, cookieOriginAllowed } from "../src/server/auth.ts";
 
 const origin = "http://localhost:3000";
 const passes = (response: Response) => response.headers.get("x-middleware-next") === "1";
@@ -38,6 +38,17 @@ describe("signed out", () => {
 
 	it("pages are rewritten to the pairing screen", () => {
 		for (const p of ["/", "/chat/abc", "/plugins/x/y"]) assert(rewrittenToPair(proxy(new NextRequest(origin + p))), p);
+	});
+
+	it("targets the local HTTP listener behind an HTTPS reverse proxy", () => {
+		const response = proxy(new NextRequest("https://localhost:3774/chat/abc?view=one", {
+			headers: { "x-forwarded-proto": "https", "x-forwarded-host": "box.tail.ts.net:8443" },
+		}));
+		assert.equal(response.headers.get("x-middleware-rewrite"), "http://localhost:3774/pair");
+		const defaultPort = proxy(new NextRequest("https://localhost:443/", {
+			headers: { "x-forwarded-proto": "https", "x-forwarded-host": "box.tail.ts.net:8443" },
+		}));
+		assert.equal(defaultPort.headers.get("x-middleware-rewrite"), "http://localhost:443/pair");
 	});
 
 	it("the pairing screen, the exchanges and health stay public", () => {
@@ -69,6 +80,26 @@ describe("signed in", () => {
 		assert(passes(proxy(new NextRequest(`${origin}/chat/abc`, { headers: { cookie } }))), "a navigation has no Origin");
 		const csrf = proxy(new NextRequest(`${origin}/api/chats`, { method: "POST", headers: { cookie, host: "localhost:3000", origin: "https://evil.example", "sec-fetch-site": "cross-site" } }));
 		assert.equal(csrf.status, 403);
+	});
+
+	it("renews browser cookies during use without reissuing them for bearer requests", () => {
+		const token = mintToken();
+		const cookie = `${cookieName()}=${token}`;
+		const started = Date.now();
+		const request = new NextRequest(`${origin}/api/settings`, { headers: { cookie, "x-forwarded-proto": "https" } });
+		const response = proxy(request);
+		assert.ok(passes(response));
+		assert.equal(response.headers.get("cache-control"), "no-store");
+		const renewed = response.headers.get("set-cookie") ?? "";
+		assert.equal(renewed.split(";")[0], cookie);
+		assert.match(renewed, /; Path=\/; Expires=[^;]+; HttpOnly; SameSite=Lax; Secure$/);
+		const expires = Date.parse(/Expires=([^;]+)/.exec(renewed)?.[1] ?? "");
+		assert.ok(expires >= started + COOKIE_LIFETIME_MS - 1000);
+		assert.ok(expires <= Date.now() + COOKIE_LIFETIME_MS);
+		assert.equal(proxy(request).headers.get("set-cookie"), null, "last-seen throttle");
+		const bearer = proxy(new NextRequest(`${origin}/api/settings`, { headers: { authorization: `Bearer ${mintToken()}` } }));
+		assert.ok(passes(bearer));
+		assert.equal(bearer.headers.get("set-cookie"), null);
 	});
 
 	it("the Host allowlist is gone: any host name works with a credential", () => {

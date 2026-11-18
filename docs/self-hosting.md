@@ -1,6 +1,6 @@
 # Self-hosting (nightly server)
 
-This fork publishes LearnHarness as a self-hosted server on every push to `main` that passes CI. It runs on a Linux machine as a systemd user service, and you open it in a browser from any device. The design follows T3 Code's: versioned installs, a small launcher that supervises the server, in-app updates, and health-checked switches with rollback.
+This fork publishes LearnHarness as a self-hosted server on every push to `main` that passes CI. It runs on a Linux machine as a systemd user service, or on a Mac as a launchd agent, and you open it in a browser from any device. The design follows T3 Code's: versioned installs, a small launcher that supervises the server, in-app updates, and health-checked switches with rollback.
 
 Because the server runs as you, on your machine, everything the desktop app can use works here too: the **Claude Code** provider finds your installed `claude` CLI and its login, demos are verified in your installed Chrome or Chromium, and subscription sign-ins work.
 
@@ -8,8 +8,8 @@ Because the server runs as you, on your machine, everything the desktop app can 
 
 ## Requirements
 
-- Linux on x86_64 or aarch64 (Raspberry Pi and ARM servers work).
-- systemd (user services), `curl`, `tar` and `sha256sum`.
+- Linux on x86_64 or aarch64 (Raspberry Pi and ARM servers work) with systemd (user services), `curl`, `tar` and `sha256sum`.
+- Or macOS on Apple silicon (M1 or newer). Intel Macs aren't supported. Everything needed ships with macOS.
 - Optional: Chrome or Chromium for demo verification, Tailscale for access from other devices, the Claude Code CLI for that provider.
 
 Nothing else: each version ships its own Node 26.
@@ -23,7 +23,7 @@ curl -fsSL https://github.com/max-miller1204/learnharness-nightly/releases/downl
 The installer picks your CPU's build, checks its SHA-256 against the release, unpacks it and runs `lh up`, which asks a few questions:
 
 - whether to expose the server on your tailnet with Tailscale Serve,
-- whether to keep it running when you log out (`loginctl enable-linger`).
+- on Linux, whether to keep it running when you log out (`loginctl enable-linger`).
 
 Then open `http://127.0.0.1:3774` on that machine, or the Tailscale address on other devices. Running the installer again installs the newest version and never touches your data.
 
@@ -44,7 +44,19 @@ Then open `http://127.0.0.1:3774` on that machine, or the Tailscale address on o
 | `lh down` | Stop the service and don't start it at login |
 | `lh uninstall [--keep-data]` | Remove it (with or without your learning data) |
 
-`lh up` flags: `--port N` (default 3774), `--tailscale` / `--no-tailscale`, `--tailscale-port N` (default 8443), `--chrome-path P`, `--no-linger`, `--yes`.
+`lh up` flags: `--port N` (default 3774), `--tailscale` / `--no-tailscale`, `--tailscale-port N` (default 8443), `--chrome-path P`, `--no-linger` (Linux only), `--no-open`, `--yes`.
+
+## On a Mac
+
+The same installer and commands work on a Mac. The differences:
+
+- **It runs while you're logged in.** The service is a launch agent (`~/Library/LaunchAgents/com.learnharness.server.plist`), like T3 Code's: it starts when you log in and stops when you log out, and it runs as you, so the `claude` CLI's Keychain login and your Chrome work. For a Mac that serves unattended (a Mac mini at home, say), turn on automatic login (System Settings → Users & Groups) and keep it awake (System Settings → Energy or Battery → Options: prevent automatic sleeping when the display is off; also "Start up automatically after a power failure"). There's no lingering on macOS.
+- **Over SSH**, if nobody is logged in at the Mac's screen, `lh up` can't start the agent; it stays installed and starts at the next login. The pairing link doesn't open a browser over SSH.
+- **Tailscale**: any Tailscale for macOS works. If `tailscale` isn't on your `PATH`, `lh` uses the app's own CLI (`/Applications/Tailscale.app/Contents/MacOS/Tailscale`).
+- **Chrome**: `lh up` finds Google Chrome or Chromium in `/Applications` or `~/Applications`.
+- **PATH**: launch agents don't read your shell profile, so `lh up` saves the `PATH` of the shell you run it in, plus Homebrew (`/opt/homebrew/bin`), into the plist. Run `lh up` again after installing tools somewhere new.
+- **Folder access**: macOS may refuse agent work in Desktop, Documents or Downloads, because a background service can't show the permission prompt. Keep projects in other folders. Your learning data in `~/.learnharness` isn't affected.
+- **Not signed or notarized**, and it doesn't need to be: Gatekeeper only checks files marked as downloaded by a browser, and neither the installer's `curl` nor in-app updates mark them. If you download an archive with a browser anyway, run `xattr -dr com.apple.quarantine` on it before unpacking.
 
 ## Updates
 
@@ -64,7 +76,7 @@ The launcher itself also updates by itself. An old launcher keeps working with n
 
 ## Trying a PR (previews)
 
-A PR with a preview build has a bot comment saying so (design: [specs/pr-previews.md](specs/pr-previews.md)). Your own PRs build one on every push; anyone else's PR (upstream imports, outside PRs) only when you add the `preview` label, and the label comes off once it's published. Adding it means you've read the diff: a preview runs that PR's code as you.
+PR previews are built for Linux x64 and arm64. A PR with a preview build has a bot comment saying so (design: [specs/pr-previews.md](specs/pr-previews.md)). Your own PRs build one on every push; anyone else's PR (upstream imports, outside PRs) only when you add the `preview` label, and the label comes off once it's published. Adding it means you've read the diff: a preview runs that PR's code as you.
 
 ```sh
 lh preview 123
@@ -80,9 +92,9 @@ Every request needs a session, even from the server machine itself. `lh up` prin
 lh pair [--label "My phone"]
 ```
 
-It prints the Tailscale HTTPS link when Tailscale is on, otherwise `http://127.0.0.1:<port>/pair#token=...`, with a QR code to scan and the 12-character code to type. A code works once and expires after 5 minutes. `lh pair` works even when the server is stopped.
+It prints the loopback link first for use on the server machine. When Tailscale is on, the QR code uses the Tailscale HTTPS link, which appears just above the 12-character code under **From your other devices**. A code works once and expires after 5 minutes. `lh pair` works even when the server is stopped.
 
-A paired browser stays signed in for 30 days. On a signed-in device, **Settings → Devices** lists every device (label, type, OS, browser, IP, issued, expires, last seen), revokes one or all others, and makes a new pairing link with its QR code. There is no logout button: sign a device out from another one. Lost every device? Run `lh pair` on the server machine.
+A paired session stays valid until revoked. Browser cookies renew as you use the app, subject to browser storage limits. On a signed-in device, **Settings → Devices** lists every device (label, type, OS, browser, IP, issued, expires, last seen), revokes one or all others, and makes a new pairing link with its QR code. There is no logout button: sign a device out from another one. Lost every device? Run `lh pair` on the server machine.
 
 The login store is `userdata/data/auth/`. Backups skip it and `lh restore` keeps it, so restoring old data never brings back a revoked device. Anyone who can write that folder can sign in, the way `lh pair` does.
 
@@ -120,7 +132,8 @@ This runs `tailscale serve --bg --https=8443 http://127.0.0.1:3774`. Open `https
     backups/<from>-<id>/      data snapshots taken before each switch; the newest 3 are kept
     logs/                     service.log, server.log, update.log (capped at 10 MB each)
 ~/.local/bin/lh               runs the active version's launcher
-~/.config/systemd/user/learnharness.service
+~/.config/systemd/user/learnharness.service               (Linux)
+~/Library/LaunchAgents/com.learnharness.server.plist      (macOS; runs ~/.local/bin/lh __service)
 ```
 
 ### service.env
@@ -135,12 +148,13 @@ Every LearnHarness server, including `npm start`, `npm run dev` and the desktop 
 
 - `lh status` first, then `lh logs update` for update decisions and `lh logs server` for the app itself.
 - "Not enough disk space to back up your data": free some space; the update retries on the next check.
-- "No Chrome or Chromium found": install one (for example `sudo apt install chromium`) and run `lh up` again, or pass `--chrome-path`.
+- "No Chrome or Chromium found": install one (for example `sudo apt install chromium`, or Google Chrome on a Mac) and run `lh up` again, or pass `--chrome-path`.
+- On a Mac, `launchctl print gui/$(id -u)/com.learnharness.server` shows what launchd thinks of the service.
 - The service won't start below 64 MB of free disk space; it retries every 30 seconds.
 - The Claude Code provider needs `claude` installed and signed in as the same user; `~/.local/bin` is always on the server's `PATH`.
 
 ## How releases are built
 
-`.github/workflows/nightly.yml` runs after CI passes on a push to `main` (CI covers typecheck, tests, lint and the launcher tests) and builds that exact commit: a native build on linux-x64 and linux-arm64 runners, the same build-server gates as the desktop release, and a boot test of each assembled archive with its own bundled Node. Only if everything passes does it publish a prerelease `v<version>-nightly.<date>.<run>` and point the fixed `nightly` release's `latest.json` at it. `feed-check.yml` re-verifies that pointer after every nightly and once a day. The newest 30 nightlies are kept.
+`.github/workflows/nightly.yml` runs after CI passes on a push to `main` (CI covers typecheck, tests, lint and the launcher tests) and builds that exact commit: a native build on linux-x64, linux-arm64 and macOS (Apple silicon) runners, the same build-server gates as the desktop release, and a boot test of each assembled archive with its own bundled Node. Only if everything passes does it publish a prerelease `v<version>-nightly.<date>.<run>` and point the fixed `nightly` release's `latest.json` at it. `feed-check.yml` re-verifies that pointer after every nightly and once a day. The newest 30 nightlies are kept.
 
-Set the repository variable `PAUSE_NIGHTLY=true` to stop publishing.
+A manual run with **dry run** checked builds and tests any branch and publishes nothing; its archives are the run's artifacts. Set the repository variable `PAUSE_NIGHTLY=true` to stop publishing.
