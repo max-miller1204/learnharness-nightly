@@ -42,6 +42,9 @@ async function createServerList({
 	let lastLogin = Promise.resolve();
 	const rechecking = new WeakSet();
 	let closing = false;
+	// Update everything (update-everything.cjs) covers the server's page with the
+	// ghost dashboard while the server restarts. Its errors then are expected.
+	let updating = null;
 
 	function snapshot() {
 		return {
@@ -112,7 +115,7 @@ async function createServerList({
 		publish();
 	}
 	async function recheck(win, selection, mainFrame, signal) {
-		if (rechecking.has(win) || busy || win !== window) return;
+		if (updating || rechecking.has(win) || busy || win !== window) return;
 		rechecking.add(win);
 		try {
 			await checkDescriptor(selection.server, { signal });
@@ -336,10 +339,36 @@ async function createServerList({
 	});
 	return {
 		show,
-		async launch() {
+		/** `server`: the one Update everything restarted from, reopened once instead of the default. */
+		async launch({ server } = {}) {
 			if (ghosting) return this.reopen();
-			if (store.defaultServer) return connect(store.defaultServer, undefined, { quiet: true });
+			const first = server && !store.damaged && store.origins.includes(server) ? server : store.defaultServer;
+			if (first) return connect(first, undefined, { quiet: true });
 			show();
+		},
+		/** The open window onto a paired server, for Update everything and its bridge. */
+		current() {
+			return window && !window.isDestroyed() && active?.token ? { win: window, origin: active.server, token: active.token } : null;
+		},
+		coverForUpdate(text) {
+			if (!window || window.isDestroyed() || !active?.token) return;
+			updating?.cover.reveal();
+			const cover = coverWindow(window, { WebContentsView, session, mode: themeMode(), status: text });
+			cover.focus();
+			updating = { win: window, cover };
+		},
+		/** The run ended without a restart: show its problem in the list (kind "retry" or "pair"),
+		 *  or reopen the server's new page after Later. */
+		endUpdate(origin, problem) {
+			const covered = updating;
+			updating = null;
+			if (problem) {
+				fail(origin, new ServerProblem(problem.kind, problem.message));
+				destroyContent();
+				publish();
+				return;
+			}
+			if (covered && covered.win === window) return connect(origin, undefined, { quiet: true });
 		},
 		reopen() {
 			if (ghosting) {

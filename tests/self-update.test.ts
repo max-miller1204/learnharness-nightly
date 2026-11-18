@@ -16,7 +16,7 @@ import { CHECK_AFTER_COMMIT_MS, CHECK_INTERVAL_MS, createSelfUpdater, healthIdle
 import type { ReleaseNoteGroup } from "../src/core/release-notes.ts";
 import { dataLockPath, tryAcquireDataLock } from "../src/server/data-lock.ts";
 import type { ChildMessage } from "../selfhost/src/protocol.ts";
-import type { LatestFeed, ServiceState } from "../selfhost/src/release.ts";
+import { fetchRelease, releaseFeedUrl, type LatestFeed, type ServiceState } from "../selfhost/src/release.ts";
 
 const CURRENT = "0.6.1-nightly.20261116.1";
 const NEXT = "0.6.1-nightly.20261117.2";
@@ -33,7 +33,7 @@ function fake(overrides: Partial<SelfUpdaterDeps> = {}) {
 	let notifications = 0;
 	const flags = {
 		auto: true, installed: false, staged: [] as string[], latest: NEXT, state: undefined as ServiceState | undefined, now: 10_000_000,
-		merged: [] as ReleaseNoteGroup[][], dismissed: undefined as string | undefined, fetchFails: false,
+		merged: [] as ReleaseNoteGroup[][], dismissed: undefined as string | undefined, fetchFails: false, pinned: [] as string[],
 	};
 	const deps: SelfUpdaterDeps = {
 		enabled: true,
@@ -44,6 +44,7 @@ function fake(overrides: Partial<SelfUpdaterDeps> = {}) {
 		onParentMessage: (cb) => { parent = cb; },
 		autoUpdateEnabled: () => flags.auto,
 		fetchLatest: async () => { if (flags.fetchFails) throw new Error("offline"); return feed(flags.latest); },
+		fetchRelease: async (version) => { if (flags.fetchFails) throw new Error("offline"); flags.pinned.push(version); return feed(version); },
 		stage: async (f) => { flags.staged.push(f.version); },
 		isInstalled: () => flags.installed,
 		readState: () => flags.state,
@@ -223,6 +224,71 @@ describe("self-hosted updater", () => {
 		assert.deepEqual(off.flags.staged, [], "the toggle still gates it");
 	});
 
+	it("installVersion stages exactly the pinned version from its own release, never the newest", async () => {
+		const f = fake();
+		f.flags.auto = false;
+		f.flags.latest = NEWER;
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		assert.equal(await u.installVersion(NEXT), null);
+		assert.deepEqual(f.flags.pinned, [NEXT], "read from v<NEXT>/latest.json, not the moving pointer");
+		assert.deepEqual(f.flags.staged, [NEXT]);
+		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }]);
+		assert.equal(await u.installVersion(NEXT), null, "a repeat of the same request is fine");
+		assert.match(await u.installVersion(NEWER) ?? "", /already starting/);
+		await u.check();
+		assert.deepEqual(f.flags.staged, [NEXT], "no background check after the request");
+	});
+
+	it("installVersion refuses older, same-as-bad, malformed and non-launcher requests, and reports staging failures", async () => {
+		const f = fake();
+		const u = createSelfUpdater(f.deps);
+		assert.equal(await u.installVersion(CURRENT), null, "already on it: nothing to do");
+		assert.match(await u.installVersion(OLDER) ?? "", /already runs .* newer than/);
+		assert.match(await u.installVersion("latest") ?? "", /not an exact version/);
+		f.flags.state = { protocol: 1, activeVersion: CURRENT, badVersions: [NEXT] };
+		assert.match(await u.installVersion(NEXT) ?? "", /failed to start on this server earlier/);
+		f.flags.state = undefined;
+		f.flags.fetchFails = true;
+		assert.equal(await u.installVersion(NEXT), "offline");
+		assert.equal(u.state().status, "error");
+		assert.deepEqual(f.sent, []);
+		const off = createSelfUpdater(fake({ enabled: false }).deps);
+		assert.match(await off.installVersion(NEXT) ?? "", /isn't run by the lh launcher/);
+	});
+
+	it("installVersion waits for a check in flight and holds the slot while staging", async () => {
+		const f = fake();
+		let release: () => void = () => {};
+		f.deps.stage = (fd) => new Promise<void>((resolve) => { release = () => { f.flags.staged.push(fd.version); resolve(); }; });
+		const u = createSelfUpdater(f.deps);
+		const checking = u.check();
+		const pinned = u.installVersion(NEXT);
+		await settle();
+		assert.equal(u.busy(), true);
+		release();
+		await checking;
+		await settle();
+		assert.equal(u.busy(), true, "the pinned install holds the slot after the check ends");
+		release();
+		assert.equal(await pinned, null);
+		await settle();
+		assert.equal(u.busy(), false);
+		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }]);
+	});
+
+	it("is committed unless it is a trial the launcher hasn't committed yet", async () => {
+		assert.equal(createSelfUpdater(fake().deps).state().committed, true);
+		const f = fake({ trialUpdateId: "u-1" });
+		f.flags.auto = false;
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		await settle();
+		assert.equal(u.state().committed, false, "a trial answers health before it is kept");
+		f.toParent({ type: "committed", updateId: "u-1" });
+		assert.equal(u.state().committed, true);
+	});
+
 	it("adopts a rollback recorded by the launcher at boot", () => {
 		const f = fake();
 		f.flags.auto = false;
@@ -242,6 +308,32 @@ describe("self-hosted updater", () => {
 		assert.equal(again.state().notice, null, "a dismissed notice is not adopted again at boot");
 		assert.equal(again.state().message, null, "nor its text (Settings shows it only while undismissed)");
 		assert.notEqual(again.state().instance, u.state().instance, "each server process has its own instance id");
+	});
+});
+
+describe("one exact release's feed (Update everything)", () => {
+	it("sits beside the nightly pointer, under the version's own tag", () => {
+		assert.equal(releaseFeedUrl(NEXT), `https://github.com/max-miller1204/learnharness-nightly/releases/download/v${NEXT}/latest.json`);
+		assert.equal(releaseFeedUrl(NEXT, "file:///tmp/x/nightly/latest.json"), `file:///tmp/x/v${NEXT}/latest.json`);
+		assert.throws(() => releaseFeedUrl(NEXT, "https://mirror.example/feed.json"), /next to the feed/);
+		assert.throws(() => releaseFeedUrl("../../evil"), /not an exact version/);
+	});
+
+	it("must name the version it was asked for", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "lh-release-"));
+		try {
+			const write = (version: string, body: LatestFeed) => {
+				fs.mkdirSync(path.join(root, `v${version}`), { recursive: true });
+				fs.writeFileSync(path.join(root, `v${version}`, "latest.json"), JSON.stringify(body));
+			};
+			write(NEXT, { ...feed(NEXT), sha: "abc" });
+			write(NEWER, feed(NEXT));
+			const pointer = `file://${root}/nightly/latest.json`;
+			assert.equal((await fetchRelease(NEXT, pointer)).sha, "abc");
+			await assert.rejects(fetchRelease(NEWER, pointer), /names/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
 

@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { BrailleSpinner } from "@/components/braille-spinner";
 import { useNotifyHub } from "@/components/server-events";
 import { InstallUpdateDialog } from "@/components/install-update-dialog";
 import type { ReleaseNoteGroup } from "@/src/core";
 import { SettingsRow, Toggle } from "./controls.tsx";
+import { isNewerVersion } from "@/selfhost/src/version-order.ts";
 
 /** A rolled-back self-hosted switch (GET /api/updates `notice`), shown until dismissed. */
 export type UpdateNotice = {
@@ -38,6 +39,27 @@ export type UpdateState = {
 /** Which updater this window talks to: the Electron shell, or the self-hosted server. */
 export type UpdateTransport = "desktop" | "web";
 
+/** The desktop app's own updater as the narrow remote bridge reports it
+ *  (window.lh.desktopUpdate, roadmap item 23): only in the desktop app's
+ *  window onto a self-hosted server. `updating` while Update everything runs. */
+export type DesktopAppStatus = {
+	version: string;
+	target: string | null;
+	phase: UpdateState["status"] | "updating";
+	error: string | null;
+};
+
+export type DesktopUpdateBridge = {
+	getStatus: () => Promise<DesktopAppStatus>;
+	check: () => Promise<void>;
+	download: () => Promise<void>;
+	/** Opens the app's own Update everything confirmation; never acts without it. */
+	install: () => Promise<void>;
+};
+
+/** The local desktop window's full bridge (electron/preload.cjs), not the remote one. */
+const localDesktopBridge = () => (typeof window.lh?.getUpdateState === "function" ? window.lh : undefined);
+
 export const APP_VERSION = process.env.LH_VERSION ?? "";
 export const HOMEPAGE = process.env.LH_HOMEPAGE ?? "";
 export const MANUAL_UPDATE_HINT = "Check for updates looks for a newer version. Download and Install happen when you click them.";
@@ -46,6 +68,7 @@ export const WEB_MANUAL_UPDATE_HINT = "Check for updates downloads a newer versi
 export const WEB_AUTO_UPDATE_HINT = "Check at startup and every 4 hours, and download new versions in the background. Nothing installs until you click Install.";
 export const AUTO_UPDATE_LABEL = "Check for updates automatically";
 const UPDATE_ERROR = "Couldn’t check for updates. Try again later.";
+const UNAVAILABLE_UPDATES_DETAIL = "Automatic updates are not available in this build.";
 
 const isUpdateState = (value: unknown): value is UpdateState =>
 	typeof value === "object" && value !== null && typeof (value as UpdateState).status === "string" && typeof (value as UpdateState).revision === "number";
@@ -89,7 +112,7 @@ export function useUpdateState() {
 	useEffect(() => {
 		let live = true;
 		const guarded = (next: UpdateState) => { if (live) accept(next); };
-		const lh = window.lh;
+		const lh = localDesktopBridge();
 		if (lh) {
 			setTransport("desktop");
 			const off = lh.onUpdateStatus?.(guarded);
@@ -109,19 +132,21 @@ export function useUpdateState() {
 	}, [accept, hub]);
 
 	const check = useCallback(async (): Promise<void> => {
-		if (window.lh) return window.lh.checkForUpdates?.();
+		const lh = localDesktopBridge();
+		if (lh) return lh.checkForUpdates?.();
 		accept(await fetchWebState("/api/updates/check", "POST"));
 	}, [accept]);
 
 	/** Apply now. Callers confirm first (InstallUpdateDialog). */
 	const install = useCallback((): void => {
-		if (window.lh) { window.lh.installUpdate?.(); return; }
+		const lh = localDesktopBridge();
+		if (lh) { lh.installUpdate?.(); return; }
 		void fetchWebState("/api/updates/install", "POST").then(accept).catch(() => setFailed(true));
 	}, [accept]);
 
 	/** Desktop only: download the "available" version. */
 	const download = useCallback((): void => {
-		const pending = window.lh?.downloadUpdate?.();
+		const pending = localDesktopBridge()?.downloadUpdate?.();
 		if (pending) void pending.catch(() => setFailed(true));
 	}, []);
 
@@ -131,6 +156,77 @@ export function useUpdateState() {
 	}, [accept]);
 
 	return { state, failed, transport, check, install, download, dismissNotice };
+}
+
+const isDesktopAppStatus = (value: unknown): value is DesktopAppStatus =>
+	typeof value === "object" && value !== null && typeof (value as DesktopAppStatus).version === "string" && typeof (value as DesktopAppStatus).phase === "string";
+
+/** How often the page asks the app for its update status (the bridge has no push channel). */
+export const DESKTOP_STATUS_POLL_MS = 5_000;
+
+/** The desktop app's own update, seen from its window onto a self-hosted
+ *  server. Null everywhere else (browsers, the local desktop window). */
+export function useDesktopAppUpdate() {
+	const [bridge] = useState<DesktopUpdateBridge | undefined>(() => (typeof window === "undefined" ? undefined : window.lh?.desktopUpdate));
+	const [status, setStatus] = useState<DesktopAppStatus | null>(null);
+	const refresh = useCallback(async () => {
+		if (!bridge) return;
+		try {
+			const next = await bridge.getStatus();
+			if (isDesktopAppStatus(next)) setStatus(next);
+		} catch { /* keep the last status */ }
+	}, [bridge]);
+	useEffect(() => {
+		if (!bridge) return;
+		void refresh();
+		const timer = setInterval(() => { if (document.visibilityState !== "hidden") void refresh(); }, DESKTOP_STATUS_POLL_MS);
+		const onVisible = () => { if (document.visibilityState !== "hidden") void refresh(); };
+		document.addEventListener("visibilitychange", onVisible);
+		return () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
+	}, [bridge, refresh]);
+	const call = useCallback((method: "check" | "download" | "install") => async (): Promise<void> => {
+		if (!bridge) return;
+		try { await bridge[method](); } finally { void refresh(); }
+	}, [bridge, refresh]);
+	return useMemo(() => bridge ? { status, check: call("check"), download: call("download"), install: call("install") } : null, [bridge, status, call]);
+}
+
+/** A newer app version the desktop offers, or null. */
+export function desktopOffer(status: DesktopAppStatus | null): string | null {
+	return status?.target && isNewerVersion(status.target, status.version) ? status.target : null;
+}
+
+export const DESKTOP_APP_DESCRIPTION = "Current version of the application.";
+
+/** T3's AboutVersionSection button for this app (SettingsPanels.tsx:308-328 at 8cf97b5). */
+export function desktopAppButton(status: DesktopAppStatus | null): { action: "download" | "install" | "check"; label: string; disabled: boolean; description: string } {
+	const offered = desktopOffer(status);
+	const action = offered && status?.phase === "downloaded" ? "install" : offered && status?.phase === "available" ? "download" : "check";
+	const labels: Record<string, string> = { checking: "Checking…", downloading: "Downloading…", "up-to-date": "Up to Date" };
+	const label = action === "install" ? "Install" : action === "download" ? "Download" : labels[status?.phase ?? ""] ?? "Check for Updates";
+	const disabled = !status || status.phase === "updating" || (action === "check" && (status.phase === "checking" || status.phase === "downloading" || status.phase === "disabled"));
+	const description = action !== "check" ? "Update available."
+		: status?.phase === "disabled" ? (status.error?.trim() || UNAVAILABLE_UPDATES_DETAIL)
+		: status?.phase === "error" && status.error ? status.error
+		: DESKTOP_APP_DESCRIPTION;
+	return { action, label, disabled, description };
+}
+
+/** The extra row in the desktop app's window onto a self-hosted server: this app's own version. */
+function DesktopAppRow({ desktop }: { desktop: NonNullable<ReturnType<typeof useDesktopAppUpdate>> }) {
+	const { status } = desktop;
+	const button = desktopAppButton(status);
+	const onClick = () => {
+		const run = button.action === "install" ? desktop.install : button.action === "download" ? desktop.download : desktop.check;
+		void run().catch(() => { /* the status reports the failure */ });
+	};
+	return (
+		<SettingsRow label={`This app ${status?.version ?? ""}`.trim()} testid="row-desktop-app" hint={<span className="block" role="status" data-testid="desktop-app-status">{button.description}</span>}>
+			<Button type="button" size="xs" variant="outline" className="cursor-pointer disabled:cursor-not-allowed" data-testid="desktop-app-update" data-action={button.action} disabled={button.disabled} onClick={onClick}>
+				{button.label}
+			</Button>
+		</SettingsRow>
+	);
 }
 
 export function updateStatusText(state: UpdateState | null, transport: UpdateTransport | null = "desktop"): string | null {
@@ -162,6 +258,7 @@ export function UpdateSettings({
 	homepage?: string;
 }) {
 	const { state, failed, transport, check: checkNow, install, download } = useUpdateState();
+	const desktop = useDesktopAppUpdate();
 	const [checkFailed, setCheckFailed] = useState(false);
 	const [confirming, setConfirming] = useState(false);
 	useEffect(() => setCheckFailed(false), [state]);
@@ -179,7 +276,8 @@ export function UpdateSettings({
 	return (
 		<>
 			<SettingsRow
-				label={`Version ${version || "unknown"}`}
+				// With this app's own row beside it, T3's labels: "Server" and "This app" (UpdateEverythingDialog.tsx:91-92 at 8cf97b5).
+				label={`${desktop ? "Server" : "Version"} ${version || "unknown"}`}
 				testid="row-version"
 				hint={
 					<>
@@ -200,6 +298,7 @@ export function UpdateSettings({
 					</Button>
 				))}
 			</SettingsRow>
+			{desktop && <DesktopAppRow desktop={desktop} />}
 			{active && (
 				<SettingsRow label={AUTO_UPDATE_LABEL} hint={web ? WEB_AUTO_UPDATE_HINT : AUTO_UPDATE_HINT} testid="row-auto-update">
 					<Toggle checked={autoUpdate} label="auto update" onChange={onAutoUpdateChange} />

@@ -141,6 +141,22 @@ export async function fetchLatest(feedUrl: string = DEFAULT_FEED_URL, signal?: A
 	return parseFeed(JSON.parse(body.toString("utf8")));
 }
 
+/** One exact nightly's own latest.json, uploaded beside its archives: the
+ *  feed URL with the `nightly` tag swapped for `v<version>` (as previewFeedUrl does). */
+export function releaseFeedUrl(version: string, nightlyFeedUrl: string = DEFAULT_FEED_URL): string {
+	if (!isExactVersion(version)) throw new Error("The requested target is not an exact version.");
+	const match = /^(.*\/)nightly\/latest\.json$/.exec(nightlyFeedUrl);
+	if (!match) throw new Error(`Can't find version ${version} next to the feed ${nightlyFeedUrl}.`);
+	return `${match[1]}v${version}/latest.json`;
+}
+
+/** Update everything pins one exact version: read that release's own feed entry, never the moving pointer. */
+export async function fetchRelease(version: string, nightlyFeedUrl: string = DEFAULT_FEED_URL, signal?: AbortSignal): Promise<LatestFeed> {
+	const feed = await fetchLatest(releaseFeedUrl(version, nightlyFeedUrl), signal);
+	if (feed.version !== version || feed.tag !== `v${version}`) throw new Error(`The release feed for ${version} names ${feed.version}.`);
+	return feed;
+}
+
 // ---------------------------------------------------------------------------
 // Durable writes (T3's replaceFileDurably): temp, fsync, rename, fsync dir.
 

@@ -33,6 +33,9 @@ const { attachSubscriptionChild, subscriptionControl } = require("./subscription
 const { desktopAPIHeaders, exchangeDesktopSession } = require("./desktop-api.cjs");
 const { setTraceSink } = require("./first-frame.cjs");
 const { createServerList } = require("./server-list.cjs");
+const { createUpdateEverything } = require("./update-everything.cjs");
+const { registerDesktopUpdateIPC } = require("./update-everything-ipc.cjs");
+const { requestServer } = require("./remote-server.cjs");
 const { openWebSubscriptionBrowser } = require("./web-subscription-browser.cjs");
 const { randomBytes } = require("node:crypto");
 const { spawn } = require("node:child_process");
@@ -610,6 +613,11 @@ async function installUpdateNow() {
 			return;
 		}
 	}
+	quitAndInstallNow();
+}
+
+/** Save the notes for What's new, stop the server, then quit and install the staged update. */
+function quitAndInstallNow() {
 	try {
 		releaseNotes.mergeNotesCache(DATA_DIR(), offeredGroups);
 	} catch (err) {
@@ -637,6 +645,117 @@ async function installUpdateNow() {
 		app.relaunch();
 		app.exit(0);
 	}, INSTALL_QUIT_GRACE_MS);
+}
+
+/* ── Update everything (roadmap item 23 PR 2, electron/update-everything.cjs) ──
+ * One pinned version for the whole run: never a newer one picked at install. */
+
+/** Re-check the feed; the newest offered version newer than this app, or null. */
+async function pinUpdate() {
+	if (!autoUpdater) return null;
+	const result = await autoUpdater.checkForUpdates();
+	const info = result?.updateInfo;
+	if (typeof info?.version !== "string" || releaseNotes.compareVersions(info.version, app.getVersion()) <= 0) return null;
+	adoptOfferedNotes(info);
+	return info.version;
+}
+
+/** Make sure exactly `target` is downloaded (electron-updater checks its SHA-512). */
+async function downloadPinnedUpdate(target) {
+	if (!autoUpdater || installing) throw new Error("The updater is busy or unavailable.");
+	if (updateState.status === "downloaded" && updateState.version === target) return;
+	const downloaded = new Promise((resolve) => autoUpdater.once("update-downloaded", (info) => resolve(info?.version)));
+	await autoUpdater.downloadUpdate();
+	const version = await Promise.race([downloaded, new Promise((resolve) => setTimeout(() => resolve(updateState.version), 1000))]);
+	if (version !== target || updateState.status !== "downloaded" || updateState.version !== target) throw new Error(`Downloaded ${version}, not the pinned ${target}.`);
+}
+
+/** Quit and install exactly `target`, with no re-check. */
+function installPinnedUpdate(target) {
+	if (!autoUpdater || installing || updateState.status !== "downloaded" || updateState.version !== target) throw new Error(`Version ${target} isn't ready to install.`);
+	installing = true;
+	quitAndInstallNow();
+}
+
+const UPDATE_EVERYTHING_RESULT = () => path.join(app.getPath("userData"), "update-everything.json");
+
+/** Main's side of electron/update-everything.cjs. */
+function updateEverythingDeps(list) {
+	const ask = (options) => {
+		const parent = list.current()?.win;
+		const settings = { type: "question", noLink: true, defaultId: 0, cancelId: options.buttons.length - 1, ...options };
+		return (parent ? dialog.showMessageBox(parent, settings) : dialog.showMessageBox(settings)).then(({ response }) => response);
+	};
+	return {
+		appVersion: app.getVersion(),
+		updater: {
+			state: () => (autoUpdater ? updateState : { ...updateState, status: "disabled" }),
+			check: () => checkForUpdates({ manual: true }),
+			download: downloadUpdateNow,
+			pin: pinUpdate,
+			downloadPinned: downloadPinnedUpdate,
+			installPinned: installPinnedUpdate,
+		},
+		selection: () => list.current(),
+		// No protocol header: the server may come back speaking a newer one.
+		request: (origin, pathname, { token, method = "GET", body } = {}) => requestServer(origin, pathname, {
+			token, method, protocol: false,
+			...(body && { body: JSON.stringify(body), headers: { "content-type": "application/json" } }),
+		}),
+		confirm: ask,
+		tell: ({ message, detail }) => ask({ type: "info", message, detail, buttons: ["OK"] }),
+		progress: (text) => list.coverForUpdate(text),
+		fail: (origin, problem) => list.endUpdate(origin, problem),
+		reconnect: (origin) => list.endUpdate(origin, null),
+		saveResult: (record) => fs.writeFileSync(UPDATE_EVERYTHING_RESULT(), JSON.stringify(record), { mode: 0o600 }),
+		takeResult: () => {
+			let raw;
+			try { raw = fs.readFileSync(UPDATE_EVERYTHING_RESULT(), "utf8"); } catch { return null; }
+			try { fs.unlinkSync(UPDATE_EVERYTHING_RESULT()); } catch { /* read once anyway */ }
+			return JSON.parse(raw);
+		},
+		now: () => Date.now(),
+		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+	};
+}
+
+/** The app menu's check while connected to a server, which has no local Settings
+ *  page: T3's native dialogs (DesktopApplicationMenu.ts:71-165 at 3ce2145). */
+async function checkForUpdatesNatively() {
+	const parent = BrowserWindow.getFocusedWindow() ?? undefined;
+	const show = (options) => (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options));
+	if (!autoUpdater) {
+		await show({ type: "info", title: "Updates unavailable", message: "Automatic updates are not available right now.", detail: "Automatic updates are not available in this build.", buttons: ["OK"] });
+		return;
+	}
+	try {
+		await autoUpdater.checkForUpdates();
+	} catch (err) {
+		log(`update check failed: ${err?.message ?? err}`);
+		reportUpdateStatus("error");
+	}
+	const { status, version } = updateState;
+	if (status === "up-to-date") {
+		await show({ type: "info", title: "You're up to date!", message: `LearnHarness ${app.getVersion()} is currently the newest version available.`, buttons: ["OK"] });
+	} else if (status === "available") {
+		const { response } = await show({
+			type: "info", title: "Update available",
+			message: version ? `LearnHarness ${version} is available.` : "A new version of LearnHarness is available.",
+			detail: `You're running LearnHarness ${app.getVersion()}.`, buttons: ["Download", "Later"], defaultId: 0, cancelId: 1,
+		});
+		if (response === 0) downloadUpdateNow();
+	} else if (status === "downloading") {
+		await show({ type: "info", title: "Update downloading", message: version ? `LearnHarness ${version} is already downloading.` : "A new version of LearnHarness is already downloading.", buttons: ["OK"] });
+	} else if (status === "downloaded") {
+		const { response } = await show({
+			type: "info", title: "Update ready",
+			message: version ? `LearnHarness ${version} is ready to install.` : "A new version of LearnHarness is ready to install.",
+			detail: "LearnHarness will restart to install it. Any running tasks will be interrupted.", buttons: ["Restart", "Later"], defaultId: 0, cancelId: 1,
+		});
+		if (response === 0) void installUpdateNow();
+	} else if (status === "error") {
+		await show({ type: "warning", title: "Update check failed", message: "Could not check for updates.", detail: "An unknown error occurred. Please try again later.", buttons: ["OK"] });
+	}
 }
 
 function setupAutoUpdater() {
@@ -739,7 +858,9 @@ function installMenu({ local = true } = {}) {
 			submenu: [
 				{ role: "about" },
 				// Manual checks report their result in Settings → General.
-				{ label: "Check for Updates…", enabled: local, click: () => checkForUpdatesFromMenu() },
+				// Connected to a server there is no local Settings page: native dialogs instead,
+				// also the way out when this app is too old to open the server (owner, 2026-11-18).
+				{ label: "Check for Updates…", click: () => (local ? checkForUpdatesFromMenu() : checkForUpdatesNatively()) },
 				...(serverList ? [{ label: "Switch server…", click: () => serverList.show() }] : []),
 				{ type: "separator" },
 				{ role: "hide" },
@@ -967,7 +1088,11 @@ async function main() {
 		});
 		installMenu({ local: false });
 		reopenWindow = () => serverList.reopen();
-		await serverList.launch();
+		const updateEverything = createUpdateEverything(updateEverythingDeps(serverList));
+		registerDesktopUpdateIPC(ipcMain, { current: () => serverList.current(), updateEverything });
+		const relaunch = updateEverything.takeLaunch();
+		await serverList.launch({ server: relaunch?.server });
+		if (relaunch?.notice) void dialog.showMessageBox({ type: "warning", buttons: ["OK"], ...relaunch.notice });
 	}
 	app.on("activate", () => {
 		if (BrowserWindow.getAllWindows().length === 0) reopenWindow();

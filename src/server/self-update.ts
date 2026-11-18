@@ -35,6 +35,7 @@ import {
 	currentArch,
 	DEFAULT_FEED_URL,
 	fetchLatest,
+	fetchRelease,
 	isExactVersion,
 	isInstalled,
 	readState,
@@ -62,6 +63,9 @@ export interface SelfUpdateState {
 	instance: string;
 	/** The version this server runs. A page built from an older one offers a reload (the sidebar update control). */
 	runningVersion: string;
+	/** False while this server is the launcher's trial, until the launcher commits it. A trial
+	 *  answers /api/health before that, so Update everything waits for this (roadmap item 23). */
+	committed: boolean;
 	/** Detail for the Settings row (errors, rejections, progress). */
 	message: string | null;
 	/** A rolled-back switch until dismissed. */
@@ -87,6 +91,8 @@ export interface SelfUpdaterDeps {
 	onParentMessage(cb: (message: unknown) => void): void;
 	autoUpdateEnabled(): boolean;
 	fetchLatest(feedUrl: string): Promise<LatestFeed>;
+	/** One exact version's own feed entry (selfhost/src/release.ts fetchRelease). */
+	fetchRelease(version: string, feedUrl: string): Promise<LatestFeed>;
 	stage(feed: LatestFeed, badVersions: readonly string[]): Promise<void>;
 	isInstalled(version: string): boolean;
 	readState(): ServiceState | undefined;
@@ -104,7 +110,7 @@ export interface SelfUpdaterDeps {
 
 export function createSelfUpdater(deps: SelfUpdaterDeps) {
 	let state: SelfUpdateState = {
-		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, instance: globalThis.crypto.randomUUID(), runningVersion: deps.currentVersion, message: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
+		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, instance: globalThis.crypto.randomUUID(), runningVersion: deps.currentVersion, committed: !deps.trialUpdateId, message: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
 	};
 	let checkTimer: unknown;
 	let commitCheckTimer: unknown;
@@ -172,7 +178,10 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 	};
 
 	const check = (): Promise<void> => {
-		checking ??= runCheck().finally(() => { checking = undefined; });
+		if (!checking) {
+			const pending: Promise<void> = runCheck().finally(() => { if (checking === pending) checking = undefined; });
+			checking = pending;
+		}
 		return checking;
 	};
 
@@ -195,7 +204,7 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			requested = false;
 			set({ status: "error", message: message.reason });
 		} else if (message.type === "committed") {
-			set({ status: "up-to-date", version: null, message: `Updated to version ${deps.currentVersion}.`, releaseNotes: [], omittedReleaseCount: 0 });
+			set({ committed: true, status: "up-to-date", version: null, message: `Updated to version ${deps.currentVersion}.`, releaseNotes: [], omittedReleaseCount: 0 });
 			// A trial skips the startup check; once it is the active server it checks like any other
 			// start, after a pause: the launcher prunes leftover *.tmp version folders right after the
 			// commit, which would delete a download being unpacked (T3 also waits 15 s after launch).
@@ -229,6 +238,42 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			if (!deps.enabled || requested) return;
 			await check();
 			if (state.status === "downloaded" && state.version) requestUpdate(state.version);
+		},
+		/** POST /api/updates/install-version (Update everything, roadmap item 23): stage exactly
+		 *  `target` from its own release, then ask the launcher to switch to it. Never takes a
+		 *  newer version. Resolves with a refusal reason, or null once the launcher was asked. */
+		installVersion(target: string): Promise<string | null> {
+			const run = async (): Promise<string | null> => {
+				if (!deps.enabled) return "This server isn't run by the lh launcher, so it can't update itself.";
+				if (!isExactVersion(target)) return "The requested target is not an exact version.";
+				if (requested) return state.version === target ? null : "Another update is already starting.";
+				if (!isExactVersion(deps.currentVersion)) return "This server's version is unknown.";
+				const order = compareVersions(target, deps.currentVersion);
+				if (order === 0) return null;
+				if (order < 0) return `This server already runs ${deps.currentVersion}, newer than ${target}.`;
+				const bad = deps.readState()?.badVersions ?? [];
+				if (bad.includes(target)) return `Version ${target} failed to start on this server earlier.`;
+				try {
+					if (!deps.isInstalled(target)) {
+						const feed = await deps.fetchRelease(target, deps.feedUrl);
+						if (requested) return "Another update is already starting.";
+						set({ status: "downloading", version: target, message: null, ...notesFor(feed) });
+						await deps.stage(feed, bad);
+					}
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					set({ status: "error", version: null, message });
+					return message;
+				}
+				if (requested) return "Another update is already starting.";
+				requestUpdate(target);
+				return requested ? null : state.message;
+			};
+			// Queue behind a check in flight and hold the slot, so a background check can't stage beside it.
+			const queued = (checking ?? Promise.resolve()).then(run);
+			const slot: Promise<void> = queued.then(() => {}, () => {}).finally(() => { if (checking === slot) checking = undefined; });
+			checking = slot;
+			return queued;
 		},
 		/** POST /api/updates/notice/dismiss: hide the rollback notice on every browser of this server. */
 		dismissNotice(): void {
@@ -329,6 +374,7 @@ export function selfUpdater(): SelfUpdater {
 		onParentMessage: (cb) => { process.on("message", cb); },
 		autoUpdateEnabled: () => readSettings()?.general?.autoUpdate !== false,
 		fetchLatest: (url) => fetchLatest(url),
+		fetchRelease: (version, url) => fetchRelease(version, url),
 		stage: async (feed, badVersions) => {
 			if (!arch) throw new Error("This platform has no self-hosted builds.");
 			await stageVersion(home, feed, arch, { badVersions });

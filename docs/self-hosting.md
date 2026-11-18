@@ -69,6 +69,17 @@ Updates download on their own and install when you say so (the T3 Code model; se
 5. **Open tabs.** After an update the same sidebar button reads "Updated to X. Click to reload." A tab never reloads on its own; if a message box has unsent text, it asks first.
 6. **What's new.** The first time the app opens after an update, a "What's new in X" popup lists the changes since the version you last saw. Closing it on any device clears it on all of them.
 
+### Update everything from the desktop app
+
+When the LearnHarness Nightly desktop app is connected to your server and a newer nightly is out, the round sidebar button becomes a circle with an up arrow: **Update this app and 1 server**. Settings → General shows both versions, **Server X** and **This app Y**. Clicking the button (or the app row's Install) opens the app's own confirmation. Nothing happens before you confirm.
+
+1. The app picks one exact version and downloads its own update first. If that fails, nothing changes.
+2. It asks your server to install exactly that version (`POST /api/updates/install-version`, paired devices only). The server downloads that release's own build, checks its SHA-256, and switches through the launcher's usual snapshot, trial and rollback. The app window shows "Updating <server> to X… This can take a few minutes."
+3. The app waits until the launcher has **kept** the new version, not just until it answers. A rollback, a refusal, or no answer after 32 minutes stops the run with the reason, and the app stays as it was (Retry, or Switch server…).
+4. Then the app restarts after 5 seconds. **Later** keeps you working, and the button then only restarts the app. After the restart it reopens the same server. If the app update didn't apply, it tells you once.
+
+It works with the Mac, Windows and Linux (AppImage) desktop apps, and a Linux or Mac server. The server needs a version that has this request; an older one asks you to update it from its own Settings first. Provider updates aren't part of it.
+
 The launcher itself also updates by itself. An old launcher keeps working with newer servers, and when a version needs a newer launcher, the switch happens on its own the next time no agent is working (a restart of a few seconds onto the same, already-proven version).
 
 ### Rolling back by hand

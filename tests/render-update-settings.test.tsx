@@ -191,7 +191,7 @@ describe("General update rows", () => {
 		const host = await mount(<UpdateSettings {...props} />);
 		await click(q(host, "update-install"));
 		await click(q(document, "install-update-cancel"));
-		assert.equal(q(document, "install-update-dialog"), null);
+		assert.equal(q(document, "install-update-title"), null);
 		assert.equal(b.calls.install, 0);
 	});
 
@@ -435,6 +435,103 @@ describe("General update rows", () => {
 		await act(async () => { snapshot.reject(new Error("sensitive error")); });
 		assert.equal(q(host, "update-status")!.textContent, "Couldn’t check for updates. Try again later.");
 		assert.ok(!host.textContent!.includes("sensitive"));
+	});
+});
+
+describe("Update everything in the desktop app's window onto a server (roadmap item 23)", () => {
+	const V71 = "0.6.1-nightly.20261118.71";
+	const V72 = "0.6.1-nightly.20261118.72";
+	type Status = { version: string; target: string | null; phase: string; error: string | null };
+	function remote(status: Status, server: UpdateState) {
+		let current = status;
+		const calls = { getStatus: 0, check: 0, download: 0, install: 0, fetches: [] as string[] };
+		window.lh = { desktopUpdate: {
+			getStatus: async () => { calls.getStatus++; return current as never; },
+			check: async () => { calls.check++; },
+			download: async () => { calls.download++; },
+			install: async () => { calls.install++; },
+		} };
+		globalThis.fetch = async (input) => { calls.fetches.push(String(input)); return Response.json(server); };
+		return { calls, set: (next: Status) => { current = next; } };
+	}
+	const settle = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+	const pillIn = async (status: Status, server: UpdateState) => {
+		const r = remote(status, server);
+		const host = await mount(<SidebarUpdatePill pageVersion={server.runningVersion} />);
+		await settle();
+		return { ...r, pill: () => q(host, "update-pill")! };
+	};
+
+	it("a newer app with the server behind it shows T3's everything state, and clicking only asks the app", async () => {
+		const { calls, pill } = await pillIn({ version: V71, target: V72, phase: "available", error: null }, state({ status: "up-to-date", runningVersion: V71 }));
+		assert.equal(pill().getAttribute("data-action"), "everything");
+		assert.equal(pill().getAttribute("aria-label"), "Update this app and 1 server");
+		assert.ok(pill().querySelector(".lucide-circle-arrow-up"), "T3's CircleArrowUp icon");
+		await click(pill());
+		await settle();
+		assert.equal(calls.install, 1, "the app opens its own confirmation");
+		assert.equal(calls.download, 0);
+		assert.ok(!calls.fetches.some((url) => url.includes("/install")), "the page never installs anything on the server itself");
+	});
+
+	it("with the server already on the app's version it is a plain app download or install (T3 shows everything only while a server is behind)", async () => {
+		const down = await pillIn({ version: V71, target: V72, phase: "available", error: null }, state({ status: "up-to-date", runningVersion: V72 }));
+		assert.equal(down.pill().getAttribute("data-action"), "app-download");
+		assert.equal(down.pill().getAttribute("aria-label"), `Update ${V72} ready to download`);
+		await click(down.pill()); await settle();
+		assert.equal(down.calls.download, 1);
+		for (const { root, host } of roots.splice(0)) { await act(async () => { root.unmount(); }); host.remove(); }
+		const ready = await pillIn({ version: V71, target: V72, phase: "downloaded", error: null }, state({ status: "up-to-date", runningVersion: V72 }));
+		assert.equal(ready.pill().getAttribute("data-action"), "app-install");
+		assert.equal(ready.pill().getAttribute("aria-label"), `Update ${V72} downloaded. Click to restart and install.`);
+		await click(ready.pill()); await settle();
+		assert.equal(ready.calls.install, 1, "through the app's confirmation, never the in-page dialog");
+		assert.equal(q(document, "install-update-title"), null);
+	});
+
+	it("while it runs the button stays everything and disabled; the check button checks the server and the app", async () => {
+		const r = await pillIn({ version: V71, target: V72, phase: "updating", error: null }, state({ status: "up-to-date", runningVersion: V71 }));
+		assert.equal(r.pill().getAttribute("data-action"), "everything");
+		assert.equal(r.pill().getAttribute("aria-disabled"), "true");
+		await click(r.pill()); await settle();
+		assert.equal(r.calls.install, 0);
+		r.set({ version: V71, target: null, phase: "up-to-date", error: null });
+		await act(async () => { document.dispatchEvent(new dom.window.Event("visibilitychange")); });
+		await settle();
+		assert.equal(r.pill().getAttribute("data-action"), "check");
+		await click(r.pill()); await settle();
+		assert.equal(r.calls.check, 1, "the app checks too");
+		assert.ok(r.calls.fetches.includes("/api/updates/check"), "and the server");
+	});
+
+	it("Settings shows Server and This app rows; the app row is T3's About button", async () => {
+		const r = remote({ version: V71, target: V72, phase: "downloaded", error: null }, state({ status: "up-to-date", runningVersion: V71 }));
+		const host = await mount(<UpdateSettings {...props} version={V71} />);
+		await settle();
+		assert.equal(q(host, "row-version")!.textContent?.includes(`Server ${V71}`), true);
+		assert.equal(q(host, "row-desktop-app")!.textContent?.includes(`This app ${V71}`), true);
+		assert.equal(q(host, "desktop-app-status")!.textContent, "Update available.");
+		const button = q(host, "desktop-app-update")!;
+		assert.equal(button.textContent, "Install");
+		await click(button); await settle();
+		assert.equal(r.calls.install, 1, "Install opens the app's Update everything confirmation");
+		r.set({ version: V71, target: null, phase: "up-to-date", error: null });
+		await act(async () => { document.dispatchEvent(new dom.window.Event("visibilitychange")); });
+		await settle();
+		assert.equal(q(host, "desktop-app-update")!.textContent, "Up to Date");
+		assert.equal(q(host, "desktop-app-status")!.textContent, "Current version of the application.");
+		r.set({ version: V71, target: null, phase: "disabled", error: null });
+		await act(async () => { document.dispatchEvent(new dom.window.Event("visibilitychange")); });
+		await settle();
+		assert.equal(q(host, "desktop-app-status")!.textContent, "Automatic updates are not available in this build.");
+		assert.equal((q(host, "desktop-app-update") as HTMLButtonElement).disabled, true);
+	});
+
+	it("browsers and the local desktop window keep one Version row and no app row", async () => {
+		bridge(state({ status: "up-to-date", revision: 1 }));
+		const host = await mount(<UpdateSettings {...props} />);
+		assert.equal(q(host, "row-desktop-app"), null);
+		assert.match(q(host, "row-version")!.textContent ?? "", /^Version 0\.3\.7/);
 	});
 });
 

@@ -60,7 +60,7 @@ const STORAGE_KEY = SIDEBAR_STORAGE_KEY;
  * script applies the same rule); it mirrors electron/main.cjs: keep in sync.
  */
 import type { ChatGPTControlBridge, NativeSubscriptionControlBridge } from "@/src/core";
-import type { UpdateState } from "@/components/settings/update-settings.tsx";
+import type { DesktopUpdateBridge, UpdateState } from "@/components/settings/update-settings.tsx";
 import { FilePathDropZone } from "@/components/file-path-drop-zone";
 
 // Module scope, guarded for SSR (the server has no navigator).
@@ -68,7 +68,9 @@ const IS_ELECTRON = typeof navigator !== "undefined" && navigator.userAgent.incl
 
 declare global {
 	interface Window {
-		/** Preload bridge (electron/preload.cjs) — Electron only, absent in the browser. */
+		/** Preload bridge (electron/preload.cjs): Electron only, absent in the browser.
+		 *  The desktop app's window onto a self-hosted server gets only `desktopUpdate`
+		 *  (electron/remote-preload.cjs), so every other member may be missing. */
 		lh?: {
 			/** Read-only host OS; determines the native-control gutter. */
 			platform?: string;
@@ -81,7 +83,9 @@ declare global {
 			openSubscriptionBrowser?: (action: string) => Promise<void>;
 			chatgpt?: ChatGPTControlBridge;
 			subscriptions?: NativeSubscriptionControlBridge;
-			expandWindow: () => void;
+			expandWindow?: () => void;
+			/** Remote window only: this app's own update (roadmap item 23 Update everything). */
+			desktopUpdate?: DesktopUpdateBridge;
 			/** Native chrome follows the active theme (theme wave): main sets
 			 *  themeSource and repaints the window background / overlay. */
 			setAppearance?: (a: { mode: ThemeMode; background: string }) => void;
@@ -186,7 +190,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 		if (narrow && !open) {
 			localStorage.setItem(STORAGE_KEY, "0");
 			setOpen(true);
-			window.lh?.expandWindow();
+			window.lh?.expandWindow?.();
 			return;
 		}
 		setOpen((v) => {

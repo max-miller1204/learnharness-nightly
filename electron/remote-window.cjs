@@ -1,5 +1,6 @@
 "use strict";
 
+const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { atOrigin, isRemotePage, allowsRemoteRedirect, redirectLocation, rewritesToPairPage, remoteHeaders } = require("./remote-server.cjs");
 
@@ -12,7 +13,8 @@ function createRemoteWindow({ BrowserWindow, session, origin, token, signal, bac
 	const win = new BrowserWindow({
 		width: 1440, height: 900, minWidth: 640, minHeight: 600,
 		show: false, title: "LearnHarness", autoHideMenuBar: true, ...(backgroundColor && { backgroundColor }),
-		webPreferences: { session: isolated, sandbox: true, contextIsolation: true, nodeIntegration: false },
+		// remote-preload.cjs exposes only window.lh.desktopUpdate (roadmap item 23 PR 2).
+		webPreferences: { session: isolated, sandbox: true, contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, "remote-preload.cjs") },
 	});
 	const contents = win.webContents;
 	const id = contents.id;
