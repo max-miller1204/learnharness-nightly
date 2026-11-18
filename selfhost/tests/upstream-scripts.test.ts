@@ -48,11 +48,18 @@ beforeEach(() => {
 	fs.mkdirSync(path.join(dir, "api"));
 	fs.mkdirSync(path.join(dir, "calls"));
 	fs.mkdirSync(path.join(dir, "fail"));
+	fs.mkdirSync(path.join(dir, "gitcalls"));
 	const stub = (name: string, text: string) => fs.writeFileSync(path.join(dir, "bin", name), text, { mode: 0o755 });
 	stub("gh", GH_STUB);
 	stub("jq", JQ_WRAPPER);
-	// git answers `diff` from git-diff.txt (the files an imported PR changes).
-	stub("git", '#!/usr/bin/env bash\nif [ "$1" = diff ] && [ -f "$STUB_DIR/git-diff.txt" ]; then cat "$STUB_DIR/git-diff.txt"; fi\nexit 0\n');
+	// git logs argv to gitcalls/<n> and answers `diff` from git-diff.txt (the
+	// files an imported PR changes).
+	stub("git", `#!/usr/bin/env bash
+n=$(( $(find "$STUB_DIR/gitcalls" -type f | wc -l) + 1 ))
+printf '%s\\0' "$@" >"$STUB_DIR/gitcalls/$n"
+if [ "$1" = diff ] && [ -f "$STUB_DIR/git-diff.txt" ]; then cat "$STUB_DIR/git-diff.txt"; fi
+exit 0
+`);
 	stub("sleep", "#!/usr/bin/env bash\nexit 0\n");
 	fs.writeFileSync(path.join(dir, "labels.json"), JSON.stringify(["bug", "upstream", "upstream-closed"]));
 });
@@ -74,6 +81,7 @@ function run(script: string, args: string[], env: Record<string, string> = {}) {
 			UPSTREAM_REPO: UP,
 			FORK_REPO: FORK,
 			GITHUB_ACTIONS: "true",
+			GH_TOKEN: "test-token",
 			...env,
 		},
 	});
@@ -83,6 +91,11 @@ function run(script: string, args: string[], env: Record<string, string> = {}) {
 		body: readIfExists(path.join(dir, "calls", `${i + 1}.md`)),
 	}));
 	return { status: result.status, stdout: result.stdout, stderr: result.stderr, calls };
+}
+
+function gitCalls() {
+	const names = fs.readdirSync(path.join(dir, "gitcalls")).sort((a, b) => Number(a) - Number(b));
+	return names.map((name) => fs.readFileSync(path.join(dir, "gitcalls", name), "utf8").split("\0").slice(0, -1));
 }
 
 function readIfExists(file: string) {
@@ -210,6 +223,16 @@ describe("mirror-upstream-issues.sh", () => {
 		assert.match(stdout, /upstream-closed: 1 added, 1 removed\./);
 	});
 
+	it("relabels the other mirrors when one upstream issue can't be read, then fails", () => {
+		fixture(`repos/${FORK}/issues?state=all&per_page=100`, [forkIssue(7, BOT, 11), forkIssue(8, BOT, 12)]);
+		fs.writeFileSync(path.join(dir, "fail", `repos/${UP}/issues/11`.replace(/[^A-Za-z0-9]/g, "_")), "");
+		fixture(`repos/${UP}/issues/12`, issue(12, "closed", "twelve"));
+		const { status, stderr, calls } = run("mirror-upstream-issues.sh", []);
+		assert.equal(status, 1);
+		assert.match(stderr, /Couldn't read upstream issue 11 \(mirror #7\)/);
+		assert.deepEqual(calls.filter((c) => c.args[1] === "edit").map((c) => c.args.join(" ")), [`issue edit 8 -R ${FORK} --add-label upstream-closed`]);
+	});
+
 	it("refuses to write outside the workflow, and writes nothing on a dry run", () => {
 		fixture(`repos/${UP}/issues/10`, issue(10, "open", "ten"));
 		const local = run("mirror-upstream-issues.sh", [], { GITHUB_ACTIONS: "", FORK_REPO: "" });
@@ -273,9 +296,16 @@ describe("import-upstream-pr.sh", () => {
 		assert.match(refused.stderr, /Upstream PR 7 changes \.github\/:\n {2}\.github\/workflows\/evil\.yml\n/);
 		assert.match(refused.stderr, /re-run with allow_github_changes/);
 		assert.ok(!refused.calls.some((c) => c.args[0] === "pr"), JSON.stringify(refused.calls));
+		const git = gitCalls();
+		assert.deepEqual(git.map((args) => args[0]), ["fetch", "diff"]);
+		assert.deepEqual(git[0]?.slice(-2), ["+refs/pull/7/head:refs/remotes/upstream-pr/7", "+refs/heads/main:refs/remotes/upstream-base/7"]);
+		assert.deepEqual(git[1], ["diff", "--no-renames", "--name-only", "refs/remotes/upstream-base/7...refs/remotes/upstream-pr/7", "--", ".github"]);
 		for (const allow of ["1", "true"]) {
+			fs.rmSync(path.join(dir, "gitcalls"), { recursive: true });
+			fs.mkdirSync(path.join(dir, "gitcalls"));
 			const allowed = run("import-upstream-pr.sh", ["7"], { ALLOW_GITHUB_CHANGES: allow });
 			assert.equal(allowed.status, 0, allowed.stderr);
+			assert.deepEqual(gitCalls().map((args) => args.slice(0, 2)), [["fetch", "--no-tags"], ["diff", "--no-renames"], ["push", "--force"]]);
 		}
 	});
 
@@ -425,6 +455,32 @@ describe("notify-upstream.sh", () => {
 		assert.match(calls.find((c) => c.args[1] === "edit")?.body ?? "", /Upstream link: https:\/\/github\.com\/up-owner\/up-repo\/pull\/20\n$/);
 		assert.doesNotMatch(calls.find((c) => c.args[1] === "edit")?.body ?? "", /issues\/10/);
 		assert.match(calls.find((c) => c.args[1] === "comment")?.body ?? "", /#10`: failed to post/);
+	});
+
+	it("fails with an error naming the secret when the token is missing", () => {
+		setup(`Upstream: \`${UP}#10\``);
+		const { status, stdout, calls } = run("notify-upstream.sh", ["40"], { GH_TOKEN: "" });
+		assert.equal(status, 1);
+		assert.match(stdout, /::error::Add the UPSTREAM_COMMENT_TOKEN secret to the upstream-notify environment/);
+		assert.deepEqual(calls, []);
+	});
+
+	it("goes on past a failed read, links what was posted and fails the run", () => {
+		setup(`Upstream: \`${UP}#10\`\nUpstream: \`${UP}#20\``);
+		fs.writeFileSync(path.join(dir, "fail", `repos/${UP}/pulls/20`.replace(/[^A-Za-z0-9]/g, "_")), "");
+		const { status, calls } = run("notify-upstream.sh", ["40"]);
+		assert.equal(status, 1);
+		assert.deepEqual(posts(calls).map((c) => c.args.at(-1)), [`repos/${UP}/issues/10/comments`]);
+		assert.match(calls.find((c) => c.args[1] === "edit")?.body ?? "", /Upstream link: https:\/\/github\.com\/up-owner\/up-repo\/issues\/10\n$/);
+		assert.match(calls.find((c) => c.args[1] === "comment")?.body ?? "", /#20`: failed, couldn't read the upstream PR\./);
+	});
+
+	it("retries a merge commit GitHub hasn't linked to its PR yet", () => {
+		const sha = "c".repeat(40);
+		const { status, stdout, calls } = run("notify-upstream.sh", ["find", sha]);
+		assert.equal(status, 0);
+		assert.equal(stdout, "pr=\ncount=0\n");
+		assert.equal(calls.filter((c) => c.args.at(-1) === `repos/${FORK}/commits/${sha}/pulls`).length, 4);
 	});
 
 	it("does nothing for an unmerged PR or one without Upstream: lines", () => {

@@ -97,7 +97,9 @@ The rest goes to a follow-up hardening PR (listed in this PR's report): FORK_BOT
 2. Parse `Upstream:` lines (jq, from the body or `BODY_FILE`) into unique upstream numbers.
 3. Read the token's login (`gh api user`).
 4. Per number: read the upstream item; check it's picked; check it isn't already done upstream; check for an earlier notice. Then post the comment, add the `Upstream link:` line to the fork PR body if missing, and comment the receipt. Each write is `write ...` (prints instead under `DRY_RUN`).
-5. Summary: posted, already there, skipped. Exit non-zero if any post failed.
+5. Summary: posted, already there, skipped. Exit non-zero if any read or post failed. A failed read or post skips only that item (it's in the receipt); the others still get their comment, link and receipt, and a re-run is safe because of the marker.
+
+Added after the review round: `find` with a SHA retries an empty commit-to-PR answer (4 tries, 10 seconds apart), since GitHub links a pushed commit to its PR asynchronously. The missing-token check lives in the script, so it's tested. The workflow's `concurrency` group is on the `notify` job only, so ordinary merges never take its one waiting slot. The mirror's close tracking skips an unreadable upstream issue (deleted upstream, say), relabels the rest, then fails the run.
 
 ### `.github/workflows/notify-upstream.yml` (new)
 

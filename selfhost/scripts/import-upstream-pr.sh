@@ -39,7 +39,9 @@ description=$(jq -r -L "$here" 'include "fence"; .body | fence("(none)")' <<<"$i
 git fetch --no-tags "https://github.com/${UPSTREAM_REPO}.git" \
 	"+refs/pull/${N}/head:refs/remotes/upstream-pr/${N}" \
 	"+refs/heads/${base_ref}:refs/remotes/upstream-base/${N}"
-# What the PR changes, checked on the exact commit pushed below.
+# What the PR changes, checked on the exact commit pushed below. This covers
+# the PR's own changes only: the rest of the branch's .github/ is upstream's at
+# the PR's base, which today runs nothing with secrets on a branch push or PR.
 github_changes=$(git diff --no-renames --name-only "refs/remotes/upstream-base/${N}...refs/remotes/upstream-pr/${N}" -- .github)
 if [ -n "$github_changes" ] && [ "${ALLOW_GITHUB_CHANGES:-}" != 1 ] && [ "${ALLOW_GITHUB_CHANGES:-}" != true ]; then
 	{

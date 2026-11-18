@@ -27,10 +27,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: notify-upstream
-  cancel-in-progress: false
-
 env:
   UPSTREAM_REPO: amosblomqvist/learnharness
   FORK_REPO: ${{ github.repository }}
@@ -64,6 +60,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: upstream-notify
+    # Only here, so ordinary merges never take a slot: GitHub keeps one waiting
+    # run per group and cancels an older waiting one. One at a time, so two
+    # merges for the same upstream item can't both miss the other's marker.
+    # (Three upstream-declaring merges at once could still cancel one; re-run
+    # it from Actions with its PR number.)
+    concurrency:
+      group: notify-upstream
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
         with:
@@ -72,9 +76,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.UPSTREAM_COMMENT_TOKEN }}
           PR: ${{ needs.find.outputs.pr }}
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::error::Add the UPSTREAM_COMMENT_TOKEN secret to the upstream-notify environment (docs/fork-workflow.md), then run this workflow with PR ${PR}."
-            exit 1
-          fi
-          bash selfhost/scripts/notify-upstream.sh "$PR"
+        # Fails with an ::error:: naming the secret when it's missing.
+        run: bash selfhost/scripts/notify-upstream.sh "$PR"

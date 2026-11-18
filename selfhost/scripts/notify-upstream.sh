@@ -46,6 +46,10 @@ if [ "$mode" = notify ]; then
 		echo "Only the Notify upstream workflow posts upstream; run locally with DRY_RUN=1." >&2
 		exit 1
 	fi
+	if [ -z "$DRY_RUN" ] && [ -z "${GH_TOKEN:-}" ]; then
+		echo "::error::Add the UPSTREAM_COMMENT_TOKEN secret to the upstream-notify environment (docs/fork-workflow.md), then run Notify upstream with PR ${TARGET}."
+		exit 1
+	fi
 	if [ -n "$BODY_FILE" ] && [ -z "$DRY_RUN" ]; then
 		echo "BODY_FILE is for dry runs only." >&2
 		exit 1
@@ -74,8 +78,14 @@ write() {
 if [[ "$TARGET" =~ ^[0-9]+$ ]]; then
 	gh api "repos/${FORK_REPO}/pulls/${TARGET}" | jq 'if .merged_at != null and .base.ref == "main" then . else null end' >"$tmp/pr.json"
 else
-	gh api "repos/${FORK_REPO}/commits/${TARGET}/pulls" |
-		jq --arg sha "$TARGET" '[.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha)][0] // null' >"$tmp/pr.json"
+	# GitHub links a pushed commit to its PR asynchronously, so an empty answer
+	# right after the push is retried a few times.
+	for try in 1 2 3 4; do
+		gh api "repos/${FORK_REPO}/commits/${TARGET}/pulls" |
+			jq --arg sha "$TARGET" '[.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha)][0] // null' >"$tmp/pr.json"
+		[ "$(jq -r 'type' "$tmp/pr.json")" = object ] || [ "$try" = 4 ] && break
+		sleep "${FIND_RETRY_SECONDS:-10}"
+	done
 fi
 
 if [ "$(jq -r 'type' "$tmp/pr.json")" != object ]; then
@@ -123,14 +133,19 @@ list "repos/${FORK_REPO}/issues?state=all&creator=${creator}&per_page=100" |
 
 failed=0
 posted=0
+# A failed read skips just that item (logged in the receipt) and fails the run
+# at the end; a re-run is safe, since the marker check stops a second post.
+read_failed() {
+	echo "Couldn't read $1 for ${ref}." >&2
+	echo "- \`${ref}\`: failed, couldn't read $1." >>"$tmp/receipt.txt"
+	failed=1
+}
 : >"$tmp/links.txt"
 : >"$tmp/receipt.txt"
 while IFS= read -r n <&3; do
 	ref="${UPSTREAM_REPO}#${n}"
 	if ! gh api "repos/${UPSTREAM_REPO}/issues/${n}" >"$tmp/item.json"; then
-		echo "Couldn't read ${ref}." >&2
-		echo "- \`${ref}\`: failed, couldn't read it upstream." >>"$tmp/receipt.txt"
-		failed=1
+		read_failed "it upstream"
 		continue
 	fi
 	is_pr=$(jq -r '.pull_request != null' "$tmp/item.json")
@@ -148,9 +163,12 @@ while IFS= read -r n <&3; do
 
 	# Picked by the owner?
 	if [ "$is_pr" = true ]; then
-		list "repos/${FORK_REPO}/pulls?state=all&head=${fork_owner}:upstream-pr/${n}&per_page=100" |
+		if ! list "repos/${FORK_REPO}/pulls?state=all&head=${fork_owner}:upstream-pr/${n}&per_page=100" |
 			jq --arg bot "$FORK_BOT_LOGIN" --arg head "upstream-pr/${n}" --arg fork "$FORK_REPO" \
-				'any(.[]; .user.login == $bot and .head.ref == $head and .head.repo.full_name == $fork)' >"$tmp/picked"
+				'any(.[]; .user.login == $bot and .head.ref == $head and .head.repo.full_name == $fork)' >"$tmp/picked"; then
+			read_failed "the fork's upstream-pr/${n} PRs"
+			continue
+		fi
 		why_not="not picked: no fork bot PR from upstream-pr/${n}"
 	else
 		jq --argjson n "$n" 'index($n) != null' "$tmp/mirrored.json" >"$tmp/picked"
@@ -165,7 +183,10 @@ while IFS= read -r n <&3; do
 	# Already done upstream?
 	done_upstream=""
 	if [ "$is_pr" = true ]; then
-		gh api "repos/${UPSTREAM_REPO}/pulls/${n}" >"$tmp/upstream-pr.json"
+		if ! gh api "repos/${UPSTREAM_REPO}/pulls/${n}" >"$tmp/upstream-pr.json"; then
+			read_failed "the upstream PR"
+			continue
+		fi
 		[ "$(jq -r .merged "$tmp/upstream-pr.json")" = true ] && done_upstream="upstream already merged it"
 	elif [ "$(jq -r '.state + "/" + (.state_reason // "")' "$tmp/item.json")" = closed/completed ]; then
 		done_upstream="upstream already closed it as completed"
@@ -177,8 +198,11 @@ while IFS= read -r n <&3; do
 	fi
 
 	# Told before? Once per upstream item, whichever fork PR it was for.
-	list "repos/${UPSTREAM_REPO}/issues/${n}/comments?per_page=100" |
-		jq -r --arg me "$me" --arg marker "$MARKER" '[.[] | select(.user.login == $me and ((.body // "") | contains($marker)))][0].html_url // ""' >"$tmp/earlier"
+	if ! list "repos/${UPSTREAM_REPO}/issues/${n}/comments?per_page=100" |
+		jq -r --arg me "$me" --arg marker "$MARKER" '[.[] | select(.user.login == $me and ((.body // "") | contains($marker)))][0].html_url // ""' >"$tmp/earlier"; then
+		read_failed "its upstream comments"
+		continue
+	fi
 	earlier=$(cat "$tmp/earlier")
 	if [ -n "$earlier" ]; then
 		echo "Already told ${ref}: ${earlier}"

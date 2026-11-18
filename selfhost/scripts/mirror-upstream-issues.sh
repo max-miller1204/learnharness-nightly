@@ -136,9 +136,16 @@ done 3<"$tmp/todo.txt"
 # Keep `upstream-closed` matching upstream's state, one upstream read per
 # mirror. Fork open/closed is never touched.
 : >"$tmp/relabel.txt"
+unreadable=0
 jq -r '.[] | "\(.fork)\t\(.upstream)\t\(.labels | index("upstream-closed") != null)"' "$tmp/mirrors.json" >"$tmp/mirror-list.txt"
 while IFS=$'\t' read -r fork up has <&3; do
-	gh api "repos/${UPSTREAM_REPO}/issues/${up}" >"$tmp/state.json"
+	# One unreadable issue (say, deleted upstream) doesn't stop the others;
+	# the run fails at the end.
+	if ! gh api "repos/${UPSTREAM_REPO}/issues/${up}" >"$tmp/state.json"; then
+		echo "Couldn't read upstream issue ${up} (mirror #${fork}); skipping it." >&2
+		unreadable=$((unreadable + 1))
+		continue
+	fi
 	state=$(jq -r .state "$tmp/state.json")
 	if [ "$state" = closed ] && [ "$has" = false ]; then printf '%s\tadd\n' "$fork" >>"$tmp/relabel.txt"
 	elif [ "$state" = open ] && [ "$has" = true ]; then printf '%s\tremove\n' "$fork" >>"$tmp/relabel.txt"
@@ -157,3 +164,7 @@ while IFS=$'\t' read -r fork action <&3; do
 done 3<"$tmp/relabel.txt"
 
 echo "Mirrored ${created} upstream issue(s). upstream-closed: ${added} added, ${removed} removed.${DRY_RUN:+ (dry run, nothing written)}"
+if [ "$unreadable" -gt 0 ]; then
+	echo "${unreadable} mirror(s) skipped: their upstream issue couldn't be read." >&2
+	exit 1
+fi
