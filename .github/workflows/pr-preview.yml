@@ -27,7 +27,8 @@ permissions:
 # a build in progress.
 concurrency:
   group: >-
-    ${{ ((github.event.action == 'labeled' && github.event.label.name == 'preview') ||
+    ${{ ((github.event.action == 'labeled' && github.event.label.name == 'preview' &&
+    github.event.sender.login == github.repository_owner) ||
     (github.event.action != 'labeled' && github.event.pull_request.user.login == github.repository_owner))
     && format('pr-preview-{0}', github.event.pull_request.number) || format('pr-preview-noop-{0}', github.run_id) }}
   cancel-in-progress: true
@@ -36,7 +37,8 @@ jobs:
   meta:
     name: Version
     if: >-
-      (github.event.action == 'labeled' && github.event.label.name == 'preview') ||
+      (github.event.action == 'labeled' && github.event.label.name == 'preview' &&
+      github.event.sender.login == github.repository_owner) ||
       (github.event.action != 'labeled' && github.event.pull_request.user.login == github.repository_owner)
     runs-on: ubuntu-24.04
     timeout-minutes: 5

@@ -44,7 +44,7 @@ import { enableLinger, lingerEnabled, repointService, serviceManager, shimPath, 
 import { Supervisor, type UpdateRequestMarker } from "./src/supervisor.ts";
 import { serveOff, serveOn, tailscaleAvailable, tailscaleSelf } from "./src/tailscale.ts";
 import { pruneVersions } from "./src/versions.ts";
-import { parsePrNumber, previewConfig, previewFeedUrl, previewHome, previewLockPath, previewPidPath, previewServeMarker } from "./src/preview.ts";
+import { PREVIEW_START, parsePrNumber, previewConfig, previewFeedUrl, previewHome, previewLockPath, previewPidPath, previewServeMarker } from "./src/preview.ts";
 import { QrCode } from "./src/qr.ts";
 
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -648,7 +648,9 @@ async function previewCommand(flags: Flags): Promise<void> {
 			const deadline = Date.now() + 15_000;
 			while (ours() && Date.now() < deadline) await sleep(200);
 			if (ours()) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
-			while (ours()) await sleep(100);
+			const killDeadline = Date.now() + 3_000;
+			while (ours() && Date.now() < killDeadline) await sleep(100);
+			if (ours()) fail(`Could not stop the orphaned PR #${pr} preview server (pid ${pid}).`);
 		}
 		fs.rmSync(pidFile, { force: true });
 	};
@@ -689,15 +691,15 @@ async function previewCommand(flags: Flags): Promise<void> {
 		child.kill("SIGTERM");
 		setTimeout(() => child?.kill("SIGKILL"), 15_000).unref();
 	};
-	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, stop);
-	// Leftovers of a preview whose launcher died (the lock proves none is still in charge).
+	// Until the orphan exits, let interrupts leave its marker for the next run.
 	await stopOrphan();
 	clearPreview();
+	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, stop);
 	if (!(await portFree(config.port))) abort(`Port ${config.port} is in use. Pick another with --port.`);
 
-	const feedUrl = typeof flags["feed-url"] === "string" ? flags["feed-url"] : previewFeedUrl(pr, real.feedUrl ?? DEFAULT_FEED_URL);
 	let feed: Awaited<ReturnType<typeof fetchLatest>>;
 	try {
+		const feedUrl = typeof flags["feed-url"] === "string" ? flags["feed-url"] : previewFeedUrl(pr, real.feedUrl ?? DEFAULT_FEED_URL);
 		feed = await fetchLatest(feedUrl);
 	} catch (error) {
 		return abort(`No preview build for PR #${pr} (${error instanceof Error ? error.message : String(error)}). Your PRs build one on every push; anyone else's when you add the \`preview\` label.`);
@@ -709,30 +711,47 @@ async function previewCommand(flags: Flags): Promise<void> {
 		abort(`Could not download the preview: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	if (stopping) return;
-	if (config.tailscale.enabled) {
-		// Written first, so a crash between the two still lets the next run turn it off.
-		writeFileDurably(serveMarker, `${config.tailscale.port}\n`);
-		const ts = tailscaleAvailable() ? serveOn(config.tailscale.port, config.port) : { ok: false, output: "tailscale is not running" };
-		if (!ts.ok) {
-			fs.rmSync(serveMarker, { force: true });
-			say(`Tailscale Serve on port ${config.tailscale.port} failed (${ts.output}); the preview is local only.`);
-			config.tailscale = { enabled: false, port: config.tailscale.port };
+	try {
+		if (config.tailscale.enabled) {
+			// Persist the port before enabling Serve so crash recovery can remove it.
+			fs.writeFileSync(serveMarker, `${config.tailscale.port}\n`, { mode: 0o600, flush: true });
+			const ts = tailscaleAvailable() ? serveOn(config.tailscale.port, config.port) : { ok: false, output: "tailscale is not running" };
+			if (!ts.ok) {
+				fs.rmSync(serveMarker, { force: true });
+				say(`Tailscale Serve on port ${config.tailscale.port} failed (${ts.output}); the preview is local only.`);
+				config.tailscale = { enabled: false, port: config.tailscale.port };
+			}
 		}
+		writeConfig(pHome, config);
+		const p = versionPaths(pHome, feed.version);
+		fs.mkdirSync(dirs.logs, { recursive: true });
+		const log = fs.openSync(dirs.serverLog, "a");
+		try {
+			child = spawn(p.node, ["--import", PREVIEW_START, p.serverEntry], {
+				cwd: p.serverDir, env: buildChildEnv({ home: pHome, config, serviceEnv: {} }), stdio: ["pipe", log, log],
+			});
+		} finally {
+			fs.closeSync(log);
+		}
+	} catch (error) {
+		return abort(`Could not start the preview server: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	writeConfig(pHome, config);
-
-	const p = versionPaths(pHome, feed.version);
-	fs.mkdirSync(dirs.logs, { recursive: true });
-	const log = fs.openSync(dirs.serverLog, "a");
-	child = spawn(p.node, [p.serverEntry], { cwd: p.serverDir, env: buildChildEnv({ home: pHome, config, serviceEnv: {} }), stdio: ["ignore", log, log] });
-	fs.closeSync(log);
-	if (child.pid) writeFileDurably(pidFile, `${child.pid}\n`);
 	child.once("error", (error) => { if (!stopping) abort(`Could not start the preview server: ${error.message}`); });
 	child.once("exit", (code, signal) => {
 		if (stopping) return;
 		try { process.stderr.write(`${logTail()}\n`); } catch { /* terminal gone */ }
 		abort(`The preview server exited (${signal ?? `code ${code}`}).`);
 	});
+
+	child.stdin?.on("error", () => { /* the child exit handler reports startup errors */ });
+	if (child.pid) {
+		try {
+			fs.writeFileSync(pidFile, `${child.pid}\n`, { mode: 0o600, flush: true });
+			child.stdin?.end("start");
+		} catch (error) {
+			return abort(`Could not record the preview server's PID: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
 
 	const deadline = Date.now() + 120_000;
 	while (!stopping && !(await fetchHealth(config.port, 3_000).catch(() => undefined))?.ok) {

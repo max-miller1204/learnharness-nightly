@@ -61,3 +61,8 @@ export function previewConfig(real: LhConfig, port?: number): LhConfig {
 		...(real.chromePath ? { chromePath: real.chromePath } : {}),
 	};
 }
+
+/** Wait for the launcher to persist our PID before the server can start. */
+export const PREVIEW_START = `data:text/javascript,${encodeURIComponent(
+	'import { readFileSync } from "node:fs"; if (readFileSync(0, "utf8") !== "start") process.exit(1);',
+)}`;

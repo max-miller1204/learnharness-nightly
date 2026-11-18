@@ -8,16 +8,9 @@ name: PR preview publish
 # Trusted half: workflow_run always runs main's copy of this file. It never
 # checks out or runs PR code; the build's files are data (exact names, a
 # version shape, checksums computed here). selfhost/scripts/pr-preview-check.sh
-# decides: the PR is open, its head is the built commit, the build was
-# started by someone with write access, and the PR is the owner's or that
-# person's adding of the `preview` label started the build. A fork PR can
-# edit its copy of pr-preview.yml, so none of that is taken from the build.
-# Built-in token only; never the fork bot App key.
-#
-# No concurrency group: GitHub keeps only the newest pending run of a group,
-# which would drop publishes of other PRs. Publishes of one PR can't race:
-# pr-preview.yml cancels a PR's older build, and a stale build fails the
-# head check.
+# checks that the PR is open and at the built commit, and that the build
+# was started by someone with write access. Outside PRs also need a trusted
+# record of the owner's label on that exact commit. Built-in token only.
 
 on:
   workflow_run:
@@ -31,14 +24,40 @@ permissions:
   contents: read
 
 jobs:
-  publish:
-    name: Publish
+  identify:
+    name: Identify the PR
     if: >-
       github.repository == 'max-miller1204/learnharness-nightly' &&
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.path == '.github/workflows/pr-preview.yml'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      pr: ${{ steps.identify.outputs.pr }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: selfhost
+      - name: Read the PR number
+        id: identify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: FILES="$RUNNER_TEMP/preview-files" selfhost/scripts/pr-preview-check.sh --identify
+
+  publish:
+    name: Publish
+    needs: identify
+    if: needs.identify.outputs.pr != ''
+    concurrency:
+      group: pr-preview-publish-${{ needs.identify.outputs.pr }}
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -49,6 +68,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      PR: ${{ needs.identify.outputs.pr }}
       HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
       ACTOR: ${{ github.event.workflow_run.triggering_actor.login }}
       RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
@@ -67,10 +87,9 @@ jobs:
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_CREATED_AT: ${{ github.event.workflow_run.created_at }}
         run: FILES="$RUNNER_TEMP/preview-files" OUT="$RUNNER_TEMP/preview-out" selfhost/scripts/pr-preview-check.sh
-      - name: Publish the preview release
+      - name: Prepare the preview release
         if: steps.check.outputs.publish == 'true'
         env:
-          PR: ${{ steps.check.outputs.pr }}
           VERSION: ${{ steps.check.outputs.version }}
         run: |
           set -euo pipefail
@@ -87,22 +106,27 @@ jobs:
 
           Replaced by each new build of the PR, and deleted when the PR closes. See [PR previews](https://github.com/$GH_REPO/blob/main/docs/specs/pr-previews.md).
           NOTES
-          # One release per PR: replace the old build. The tag only holds
-          # files, so it points at main, never at the PR's commit.
+      - name: Confirm the head and consume the label
+        id: confirm
+        if: steps.check.outputs.publish == 'true'
+        env:
+          APPROVAL_LABEL: ${{ steps.check.outputs.approval_label }}
+        run: selfhost/scripts/pr-preview-check.sh --confirm
+      - name: Publish the preview release
+        if: steps.confirm.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="preview-pr-$PR" OUT="$RUNNER_TEMP/preview-out"
+          # One release per PR. The tag only holds files, so it points at main.
           if gh release view "$tag" >/dev/null 2>&1; then gh release delete "$tag" --yes --cleanup-tag; fi
           gh release create "$tag" "$OUT"/*.tar.gz "$OUT"/*.sha256 "$OUT/latest.json" \
             --target "$GITHUB_SHA" --prerelease --latest=false \
             --title "PR #$PR preview (${HEAD_SHA::12})" --notes-file "$RUNNER_TEMP/notes.md"
-      # One-shot: a later push builds nothing until the owner adds it again.
-      - name: Remove the preview label
-        if: steps.check.outputs.publish == 'true' && steps.check.outputs.labeled == 'true'
-        env:
-          PR: ${{ steps.check.outputs.pr }}
-        run: gh api -X DELETE "repos/$GH_REPO/issues/$PR/labels/preview" >/dev/null || true
       - name: Comment on the PR
-        if: steps.check.outputs.publish == 'true'
+        if: steps.confirm.outputs.publish == 'true'
         env:
-          PR: ${{ steps.check.outputs.pr }}
           VERSION: ${{ steps.check.outputs.version }}
           BY_OWNER: ${{ steps.check.outputs.by_owner }}
         run: |

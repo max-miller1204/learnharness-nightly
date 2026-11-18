@@ -5,50 +5,96 @@
 # data: nothing from it is executed, and nothing it says is trusted without
 # checking it against the GitHub API.
 #
-# Env: GH_REPO, OWNER (repository owner), RUN_ID, RUN_NUMBER, RUN_CREATED_AT,
-# HEAD_SHA, ACTOR (the build run's triggering actor), FILES (download dir),
-# OUT (publish dir), GITHUB_OUTPUT. Writes publish=true|false and, when
-# true, pr, version, labeled and by_owner. Exit 1 only for a build that
-# left malformed files.
+# --identify finds the PR number for per-PR publish serialization.
+# --confirm checks the live head and consumes the same approval immediately
+# before publishing. The default mode checks authorization and gathers files.
 set -euo pipefail
 
 skip() { echo "::notice::No preview published: $*"; echo "publish=false" >> "$GITHUB_OUTPUT"; exit 0; }
 bad() { echo "::error::$*"; exit 1; }
 
-[[ "$ACTOR" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || skip "unexpected actor name."
-# A build that skipped its jobs leaves no artifacts; that's not an error.
-mkdir -p "$FILES/meta"
-gh run download "$RUN_ID" -n preview-meta -D "$FILES/meta" >/dev/null 2>&1 || skip "the build left no PR number (it built nothing)."
-pr=$(head -c 16 "$FILES/meta/pr" 2>/dev/null | tr -d '\n' || true)
-[[ "$pr" =~ ^[1-9][0-9]{0,8}$ ]] || bad "The build named no valid PR number."
+read_pr() {
+  local info
+  info=$(gh api "repos/$GH_REPO/pulls/$pr" --jq '[.state, .head.sha, .user.login, ([.labels[].name] | index("preview") != null)] | @tsv')
+  IFS=$'\t' read -r state head author labeled <<<"$info"
+  [ "$state" = open ] || skip "PR #$pr is $state."
+  [ "$head" = "$HEAD_SHA" ] || skip "PR #$pr moved on to $head; this build is of $HEAD_SHA."
+}
 
-info=$(gh api "repos/$GH_REPO/pulls/$pr" --jq '[.state, .head.sha, .user.login, ([.labels[].name] | index("preview") != null)] | @tsv')
-IFS=$'\t' read -r state head author labeled <<<"$info"
-[ "$state" = open ] || skip "PR #$pr is $state."
-[ "$head" = "$HEAD_SHA" ] || skip "PR #$pr moved on to $head; this build is of $HEAD_SHA."
+current_label() {
+  gh api --paginate "repos/$GH_REPO/issues/$pr/events" \
+    --jq '.[] | select((.event == "labeled" or .event == "unlabeled") and .label.name == "preview") | [.id, .event, .actor.login, .created_at] | @tsv' |
+    sort -k1,1n | tail -n 1
+}
+
+owner_label() {
+  local event labeler latest
+  [ "$labeled" = true ] || skip "PR #$pr has no \`preview\` label."
+  latest=$(current_label) || bad "Could not read the current approval for PR #$pr."
+  IFS=$'\t' read -r label_id event labeler label_at <<<"$latest"
+  [ "$event" = labeled ] && [ "$labeler" = "$OWNER" ] || skip "The current preview label was not added by $OWNER."
+}
+
+case "${1:-}" in
+  --identify)
+    mkdir -p "$FILES/meta"
+    gh run download "$RUN_ID" -n preview-meta -D "$FILES/meta" >/dev/null 2>&1 || skip "the build left no PR number (it built nothing)."
+    pr=$(head -c 16 "$FILES/meta/pr" 2>/dev/null | tr -d '\n' || true)
+    [[ "$pr" =~ ^[1-9][0-9]{0,8}$ ]] || bad "The build named no valid PR number."
+    echo "pr=$pr" >> "$GITHUB_OUTPUT"
+    exit 0
+    ;;
+  --confirm)
+    pr=$PR
+    read_pr
+    if [ -n "$APPROVAL_LABEL" ]; then
+      owner_label
+      [ "$label_id" = "$APPROVAL_LABEL" ] || skip "PR #$pr has a different preview label approval."
+      gh api -X DELETE "repos/$GH_REPO/issues/$pr/labels/preview" >/dev/null
+      read_pr
+    fi
+    echo "publish=true" >> "$GITHUB_OUTPUT"
+    exit 0
+    ;;
+esac
+
+pr=$PR
+[[ "$ACTOR" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || skip "unexpected actor name."
+read_pr
 perm=$(gh api "repos/$GH_REPO/collaborators/$ACTOR/permission" --jq .permission 2>/dev/null || echo none)
 case "$perm" in admin|write) ;; *) skip "the build was started by $ACTOR, who has no write access." ;; esac
 
 by_owner=false
+approval_label=""
 if [ "$author" = "$OWNER" ]; then
   by_owner=true
 else
-  [ "$labeled" = true ] || skip "PR #$pr is by $author and has no \`preview\` label."
-  # The label approves the commit that was the head when it was added. So
-  # the run must be the one adding it started: the same person added
-  # `preview` at most 60 seconds before the run was created. A run started
-  # later by any other action (an edit, another label, an assignment, which
-  # a fork's own copy of pr-preview.yml can listen to) is refused, even when
-  # the label is still on and the head has moved to an unread commit.
-  created=$(date -u -d "$RUN_CREATED_AT" +%s)
-  started_by_label=false
-  while read -r at; do
-    [ -n "$at" ] || continue
-    delta=$(( created - $(date -u -d "$at" +%s) ))
-    if [ "$delta" -ge -5 ] && [ "$delta" -le 60 ]; then started_by_label=true; fi
-  done < <(gh api --paginate "repos/$GH_REPO/issues/$pr/events" \
-    --jq ".[] | select(.event == \"labeled\" and .label.name == \"preview\" and .actor.login == \"$ACTOR\") | .created_at")
-  [ "$started_by_label" = true ] || skip "this build of PR #$pr wasn't started by $ACTOR adding the \`preview\` label. Add it again to build the current head."
+  [ "$ACTOR" = "$OWNER" ] || skip "Only $OWNER can request an outside PR preview."
+  owner_label
+  label_time=$(date -u -d "$label_at" +%s)
+  # Match the current label application. Timing only identifies the request;
+  # the commit must be recorded by the trusted, label-only workflow.
+  matches_label() {
+    local delta
+    delta=$(( $(date -u -d "$1" +%s) - label_time ))
+    [ "$delta" -ge -5 ] && [ "$delta" -le 60 ]
+  }
+  matches_label "$RUN_CREATED_AT" || skip "This build did not run for the current preview label."
+  approval_name="preview-approval-$pr-$HEAD_SHA"
+  runs=$(gh api --paginate -X GET "repos/$GH_REPO/actions/artifacts" -f name="$approval_name" \
+    --jq '.artifacts[] | select(.expired == false) | .workflow_run.id')
+  while read -r run; do
+    [[ "$run" =~ ^[1-9][0-9]*$ ]] || continue
+    info=$(gh api "repos/$GH_REPO/actions/runs/$run" \
+      --jq '[.event, (.path | split("@")[0]), .actor.login, .conclusion, .created_at] | @tsv')
+    IFS=$'\t' read -r event workflow approver conclusion created_at <<<"$info"
+    if [ "$event" = pull_request_target ] && [ "$workflow" = .github/workflows/pr-preview-approval.yml ] &&
+      [ "$approver" = "$OWNER" ] && [ "$conclusion" = success ] && matches_label "$created_at"; then
+      approval_label=$label_id
+      break
+    fi
+  done <<<"$runs"
+  [ -n "$approval_label" ] || skip "No trusted owner approval for PR #$pr at $HEAD_SHA."
 fi
 
 # Files are data: exact names, one version for both arches, the build's run
@@ -74,6 +120,6 @@ done
   echo "publish=true"
   echo "pr=$pr"
   echo "version=$version"
-  echo "labeled=$labeled"
+  echo "approval_label=$approval_label"
   echo "by_owner=$by_owner"
 } >> "$GITHUB_OUTPUT"

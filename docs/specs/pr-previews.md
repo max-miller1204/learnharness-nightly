@@ -26,7 +26,7 @@ Already decided by the owner (2026-11-17): previews run on fresh, empty data. Th
 ## When a preview builds
 
 - **Your PRs** (author is the repository owner): on open, on every push and on reopen.
-- **Everyone else's** (upstream imports, outside PRs, Dependabot): only when you add the **`preview`** label. Adding it approves the commit that is the head at that moment: only the build that your adding of the label started can publish. The label is removed once the preview is published, so a later push builds nothing until you add it again. This stops an outside author from swapping unreviewed code into a preview you already asked for.
+- **Everyone else's** (upstream imports, outside PRs, Dependabot): only when you add the **`preview`** label. Adding it approves one commit, the PR head at that moment. A later push needs a new label application. The publisher consumes the label immediately before publishing, after checking that the approved commit is still the current head.
 - PRs that change only `docs/` or Markdown files never build one.
 
 ## Security
@@ -36,9 +36,11 @@ Adding `preview` to someone else's PR means "I've read this diff and I'm willing
 The repository's secrets never reach PR code:
 
 - **Build** (`.github/workflows/pr-preview.yml`, on `pull_request`): read-only token, no secrets referenced, no stored git credentials, cache scoped to the PR. It runs the same bundle job as the nightly (moved into a reusable `.github/workflows/selfhost-bundle.yml` that both call), so a preview gets the same build and smoke tests.
-- **Publish** (`.github/workflows/pr-preview-publish.yml`, on `workflow_run`): always runs `main`'s copy and never checks out or runs PR code. It treats the build's files as data: exact file names, version shape, and checksums it computes itself. It publishes only when all hold: the PR is open, its head is the built commit, the build run was started by someone with write access (a fork PR's own workflow edits can't pass this), and the PR is the owner's, or it carries `preview` and that same person added `preview` at most 60 seconds before the run was created. The last check means a run started later by any other action (an edit, another label, which a fork's copy of the build workflow can listen to) can't publish a commit pushed after the label. The checks live in `selfhost/scripts/pr-preview-check.sh`, with tests. The archives are downloaded only after they pass. It uses the built-in token only (contents, PR comments, the label), never the fork bot App key.
+- **Record approval** (`.github/workflows/pr-preview-approval.yml`, on `pull_request_target` for label events only). The default branch's workflow records the PR number and event head SHA when the repository owner applies `preview` to another author's PR. It has no repository token permissions and checks out no code.
+- **Publish** (`.github/workflows/pr-preview-publish.yml`, on `workflow_run`). The default branch's workflow never checks out or runs PR code. The publisher verifies the open PR's head, the build actor's write access, and, for any other author's PR, the owner's current label and a matching record from the trusted approval workflow. It downloads archives only after those checks and validates names, versions and checksums itself. Publishes are serialized per PR. The publisher rechecks the head, consumes the approval label for an outside PR, and checks the head again before replacing the release. It uses the built-in token only.
 - **Residual.**
-  - "Started by" is the run's triggering actor, so re-running the run your label started rebuilds that same commit, and approving a first-time contributor's run within 60 seconds of labeling counts as asking for its preview.
+  - The run timestamps match the current label application. The exact commit comes from the trusted label event record.
+  - A failed publish after the label is consumed needs a new label.
   - A push in the seconds between your read and your click on the label is what gets built. The PR comment and `lh preview` name the commit.
   - Upstream imports are branches of this repository, whose runs could read secrets and raise their own token's permissions if their copy of a workflow asked. They can't, only because the import refuses `.github/` changes (fork-workflow.md).
 
@@ -51,7 +53,7 @@ The repository's secrets never reach PR code:
 
 | Topic | Choice |
 |---|---|
-| Arches | Both, as the nightly. |
+| Arches | Linux x64 and Linux arm64. The nightly also builds for Apple silicon. |
 | Release target | The tag points at `main`'s commit (it only holds files); the PR commit is named in the title, body and `latest.json`. Keeps outside commits out of the fork's tags. |
 | Port | Real port + 1 (3775) and Tailscale port + 1 (8444). `--port` shifts the Tailscale port by the same amount, so two previews never share one. |
 | Environment | Inherits the shell's environment like the service does, minus `service.env`. |

@@ -243,6 +243,80 @@ describe("lh preview", { skip: process.platform !== "linux" }, () => {
 		assert.equal(fs.existsSync(previewPidPath(home, 7)), false);
 	});
 
+	it("keeps the orphan PID when recovery is interrupted", async () => {
+		const port = await freePort();
+		const feedUrl = buildFeed(work);
+		const args = [LH, "preview", "7", "--port", String(port), "--feed-url", feedUrl];
+		const env = { ...process.env, LH_HOME: home, STUB_ENV_OUT: path.join(work, "env.json") };
+		function start() {
+			const child = spawn(process.execPath, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+			let output = "";
+			child.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+			child.stderr?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+			return { child, output: () => output };
+		}
+		const first = start();
+		await waitFor(first.child, /Ctrl\+C stops the preview/, first.output);
+		const pidFile = previewPidPath(home, 7);
+		const orphan = Number(fs.readFileSync(pidFile, "utf8"));
+		try {
+			process.kill(orphan, "SIGSTOP");
+			first.child.kill("SIGKILL");
+			await new Promise((resolve) => first.child.once("exit", resolve));
+
+			const recovery = start();
+			await waitFor(recovery.child, /Stopping the PR #7 preview server/, recovery.output);
+			recovery.child.kill("SIGINT");
+			assert.equal(await new Promise((resolve) => recovery.child.once("exit", (_code, signal) => resolve(signal))), "SIGINT");
+			assert.equal(Number(fs.readFileSync(pidFile, "utf8")), orphan);
+		} finally {
+			process.kill(orphan, "SIGCONT");
+		}
+
+		const retry = start();
+		await waitFor(retry.child, /Ctrl\+C stops the preview/, retry.output);
+		assert.notEqual(Number(fs.readFileSync(pidFile, "utf8")), orphan);
+		retry.child.kill("SIGINT");
+		assert.equal(await new Promise((resolve) => retry.child.once("exit", resolve)), 0);
+		assert.equal(fs.existsSync(pidFile), false);
+	});
+
+	it("does not start a server if the launcher dies before recording its PID", async () => {
+		const port = await freePort();
+		const feedUrl = buildFeed(work);
+		const pidFile = previewPidPath(home, 7);
+		const envOut = path.join(work, "env.json");
+		const preload = path.join(work, "crash.cjs");
+		fs.writeFileSync(preload, `
+const fs = require("node:fs");
+const write = fs.writeFileSync;
+fs.writeFileSync = (file, ...args) => {
+	if (file === ${JSON.stringify(pidFile)}) process.kill(process.pid, "SIGKILL");
+	return write(file, ...args);
+};
+require("node:module").syncBuiltinESMExports();
+`);
+		const args = [LH, "preview", "7", "--port", String(port), "--feed-url", feedUrl];
+		const env = { ...process.env, LH_HOME: home, STUB_ENV_OUT: envOut };
+		const crashed = spawnSync(process.execPath, ["--require", preload, ...args], { env, timeout: 10_000 });
+		assert.equal(crashed.signal, "SIGKILL");
+		assert.equal(fs.existsSync(pidFile), false);
+
+		const retry = spawn(process.execPath, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+		let output = "";
+		retry.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+		retry.stderr?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+		try {
+			await waitFor(retry, /Ctrl\+C stops the preview/, () => output, 10_000);
+			assert.equal((await fetch(`http://127.0.0.1:${port}/api/health`)).ok, true);
+		} finally {
+			if (retry.exitCode === null && retry.signalCode === null) {
+				retry.kill("SIGINT");
+				await new Promise((resolve) => retry.once("exit", resolve));
+			}
+		}
+	});
+
 	it("clears what a crashed preview left, including its Tailscale port", async () => {
 		const ts = stubTailscale();
 		fs.mkdirSync(path.join(previewHome(home, 7), "userdata", "data"), { recursive: true });
@@ -270,9 +344,7 @@ describe("lh preview", { skip: process.platform !== "linux" }, () => {
 });
 
 // pr-preview-check.sh, the publish gate, against a stub `gh` answering from
-// fixtures: pr.tsv (state, head, author, labeled), perm, labels (lines of
-// "<actor> <ISO time>" for `preview` label events), meta/ and selfhost-*/
-// (the build's artifacts).
+// fixtures for the PR, label timeline, trusted approval runs and build artifacts.
 const CHECK = path.join(import.meta.dirname, "..", "scripts", "pr-preview-check.sh");
 const GH_STUB = `#!/usr/bin/env bash
 set -euo pipefail
@@ -288,7 +360,10 @@ fi
 args="$*"
 case "$args" in
   *"/permission"*) [ -f "$fx/perm" ] && cat "$fx/perm" || exit 1 ;;
-  *"/events"*) actor=$(printf '%s' "$args" | sed -n 's/.*actor.login == "\\([^"]*\\)".*/\\1/p'); [ -f "$fx/labels" ] && awk -v a="$actor" '$1 == a { print $2 }' "$fx/labels" ;;
+  *"/events"*) cat "$fx/labels" ;;
+  *"/actions/artifacts "*) [ -f "$fx/approval" ] && [[ "$args" == *"name=$(cat "$fx/approval") "* ]] && echo 23; exit 0 ;;
+  *"/actions/runs/23 "*) cat "$fx/approval.tsv" ;;
+  *"DELETE "*"/labels/preview"*) touch "$fx/consumed"; if [ -f "$fx/after" ]; then cp "$fx/after" "$fx/pr.tsv"; fi ;;
   *"/pulls/"*) cat "$fx/pr.tsv" ;;
 esac
 `;
@@ -303,13 +378,22 @@ describe("publish gate (pr-preview-check.sh)", () => {
 	afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
 	const RUN_AT = "2026-11-17T12:00:00Z";
-	interface Case { pr?: string; tsv?: string[]; perm?: string; actor?: string; labels?: string[]; version?: string; extra?: boolean; noMeta?: boolean }
-	function gate(c: Case): { code: number; out: Record<string, string>; log: string; files: string[]; outDir: string } {
+	const APPROVAL = "preview-approval-12-abc";
+	const LABEL = ["10", "labeled", "max", "2026-11-17T11:59:55Z"];
+	interface Case {
+		pr?: string; tsv?: string[]; perm?: string; actor?: string; labels?: string[][];
+		approval?: string; approvalRun?: string[]; runAt?: string;
+		version?: string; extra?: boolean; noMeta?: boolean; confirm?: string; after?: string[];
+	}
+	function gate(c: Case): { code: number; out: Record<string, string>; log: string; files: string[]; outDir: string; consumed: boolean } {
 		const fx = fs.mkdtempSync(path.join(dir, "fx-"));
 		if (!c.noMeta) { fs.mkdirSync(path.join(fx, "preview-meta")); fs.writeFileSync(path.join(fx, "preview-meta", "pr"), `${c.pr ?? "12"}\n`); }
 		fs.writeFileSync(path.join(fx, "pr.tsv"), `${(c.tsv ?? ["open", "abc", "max", "false"]).join("\t")}\n`);
 		if (c.perm !== "") fs.writeFileSync(path.join(fx, "perm"), `${c.perm ?? "admin"}\n`);
-		if (c.labels) fs.writeFileSync(path.join(fx, "labels"), `${c.labels.join("\n")}\n`);
+		fs.writeFileSync(path.join(fx, "labels"), (c.labels ?? []).map((label) => `${label.join("\t")}\n`).join(""));
+		if (c.approval) fs.writeFileSync(path.join(fx, "approval"), c.approval);
+		fs.writeFileSync(path.join(fx, "approval.tsv"), `${(c.approvalRun ?? ["pull_request_target", ".github/workflows/pr-preview-approval.yml", "max", "success", RUN_AT]).join("\t")}\n`);
+		if (c.after) fs.writeFileSync(path.join(fx, "after"), `${c.after.join("\t")}\n`);
 		const version = c.version ?? "0.6.1-preview.20261117.5";
 		for (const arch of ["linux-x64", "linux-arm64"]) {
 			fs.mkdirSync(path.join(fx, `selfhost-${arch}`));
@@ -319,42 +403,72 @@ describe("publish gate (pr-preview-check.sh)", () => {
 		const work = fs.mkdtempSync(path.join(dir, "work-"));
 		const output = path.join(work, "github-output");
 		fs.writeFileSync(output, "");
-		const result = spawnSync("bash", [CHECK], {
+		const env = { ...process.env, PATH: `${path.join(dir, "bin")}:${process.env.PATH}`, FIXTURES: fx, GITHUB_OUTPUT: output, GH_REPO: "o/r", OWNER: "max", RUN_ID: "99", RUN_NUMBER: "5", RUN_CREATED_AT: c.runAt ?? RUN_AT, HEAD_SHA: "abc", ACTOR: c.actor ?? "max", FILES: path.join(work, "files"), OUT: path.join(work, "out") };
+		const identify = spawnSync("bash", [CHECK, "--identify"], { encoding: "utf8", env });
+		const identified = /^pr=(\d+)$/m.exec(fs.readFileSync(output, "utf8"));
+		const result = identified ? spawnSync("bash", c.confirm === undefined ? [CHECK] : [CHECK, "--confirm"], {
 			encoding: "utf8",
-			env: { ...process.env, PATH: `${path.join(dir, "bin")}:${process.env.PATH}`, FIXTURES: fx, GITHUB_OUTPUT: output, GH_REPO: "o/r", OWNER: "max", RUN_ID: "99", RUN_NUMBER: "5", RUN_CREATED_AT: RUN_AT, HEAD_SHA: "abc", ACTOR: c.actor ?? "max", FILES: path.join(work, "files"), OUT: path.join(work, "out") },
-		});
+			env: { ...env, PR: identified[1], APPROVAL_LABEL: c.confirm ?? "" },
+		}) : identify;
 		const out = Object.fromEntries(fs.readFileSync(output, "utf8").trim().split("\n").filter(Boolean).map((line) => line.split("=", 2) as [string, string]));
 		const outDir = path.join(work, "out");
-		return { code: result.status ?? -1, out, log: `${result.stdout}${result.stderr}`, files: fs.existsSync(outDir) ? fs.readdirSync(outDir).sort() : [], outDir };
+		return { code: result.status ?? -1, out, log: `${result.stdout}${result.stderr}`, files: fs.existsSync(outDir) ? fs.readdirSync(outDir).sort() : [], outDir, consumed: fs.existsSync(path.join(fx, "consumed")) };
 	}
 	const stranger = (labeled: boolean) => ["open", "abc", "stranger", String(labeled)];
 
 	it("publishes the owner's PR and checksums the archives itself", () => {
 		const r = gate({});
 		assert.equal(r.code, 0, r.log);
-		assert.deepEqual(r.out, { publish: "true", pr: "12", version: "0.6.1-preview.20261117.5", labeled: "false", by_owner: "true" });
+		assert.deepEqual(r.out, { publish: "true", pr: "12", version: "0.6.1-preview.20261117.5", approval_label: "", by_owner: "true" });
 		assert.equal(r.files.length, 4);
 		const name = "learnharness-0.6.1-preview.20261117.5-linux-x64.tar.gz";
 		assert.equal(fs.readFileSync(path.join(r.outDir, `${name}.sha256`), "utf8"), `${createHash("sha256").update("linux-x64").digest("hex")}  ${name}\n`);
 	});
 
-	it("publishes an outside PR only for the run the owner's label started", () => {
-		const labeled = gate({ tsv: stranger(true), labels: ["max 2026-11-17T11:59:50Z"] });
+	it("requires a trusted owner record for the exact outside PR and commit", () => {
+		const labeled = gate({ tsv: stranger(true), labels: [LABEL], approval: APPROVAL });
 		assert.equal(labeled.out.publish, "true", labeled.log);
 		assert.equal(labeled.out.by_owner, "false");
-		// The label is still on, but this run came from a later action (an edit, another label).
-		const later = gate({ tsv: stranger(true), labels: ["max 2026-11-17T10:00:00Z"] });
-		assert.equal(later.out.publish, "false");
-		assert.match(later.log, /wasn't started by max adding the `preview` label/);
-		// Someone else added the label; the run's actor (max) only did something else.
-		const other = gate({ tsv: stranger(true), labels: ["helper 2026-11-17T11:59:55Z"] });
-		assert.equal(other.out.publish, "false");
+		assert.equal(labeled.out.approval_label, "10");
+		const cases: Array<[Case, RegExp]> = [
+			[{ approval: "preview-approval-12-def" }, /No trusted owner approval/],
+			[{ approval: "preview-approval-13-abc" }, /No trusted owner approval/],
+			[{ approval: APPROVAL, approvalRun: ["pull_request", ".github/workflows/pr-preview-approval.yml", "max", "success", RUN_AT] }, /No trusted owner approval/],
+			[{ approval: APPROVAL, approvalRun: ["pull_request_target", ".github/workflows/pr-preview.yml", "max", "success", RUN_AT] }, /No trusted owner approval/],
+			[{ approval: APPROVAL, actor: "helper", perm: "write" }, /Only max can request/],
+			[{ approval: APPROVAL, labels: [["11", "labeled", "helper", RUN_AT], LABEL] }, /latest|current preview label/],
+			[{ approval: APPROVAL, runAt: "2026-11-17T12:02:00Z" }, /did not run for the current preview label/],
+			[{ approval: APPROVAL, labels: [["11", "labeled", "max", "2026-11-17T11:59:55Z"], LABEL], approvalRun: ["pull_request_target", ".github/workflows/pr-preview-approval.yml", "max", "success", "2026-11-17T11:58:00Z"] }, /No trusted owner approval/],
+		];
+		for (const [c, message] of cases) {
+			const r = gate({ tsv: stranger(true), labels: [LABEL], ...c });
+			assert.equal(r.code, 0, r.log);
+			assert.equal(r.out.publish, "false", r.log);
+			assert.match(r.log, message);
+			assert.deepEqual(r.files, []);
+		}
+	});
+
+	it("rechecks the head and consumes the same label before publishing", () => {
+		const c = { tsv: stranger(true), labels: [LABEL], confirm: "10" };
+		const current = gate(c);
+		assert.equal(current.out.publish, "true", current.log);
+		assert.equal(current.consumed, true);
+		const stale = gate({ ...c, confirm: "9" });
+		assert.equal(stale.out.publish, "false", stale.log);
+		assert.equal(stale.consumed, false);
+		const moved = gate({ ...c, tsv: ["open", "def", "stranger", "true"] });
+		assert.equal(moved.out.publish, "false", moved.log);
+		assert.equal(moved.consumed, false);
+		const movedDuringDelete = gate({ ...c, after: ["open", "def", "stranger", "false"] });
+		assert.equal(movedDuringDelete.out.publish, "false", movedDuringDelete.log);
+		assert.equal(movedDuringDelete.consumed, true);
 	});
 
 	it("skips what nobody with write access asked for", () => {
 		const cases: Array<[Case, RegExp]> = [
 			[{ tsv: stranger(false) }, /has no `preview` label/],
-			[{ tsv: stranger(true), perm: "read", actor: "stranger", labels: ["stranger 2026-11-17T11:59:59Z"] }, /no write access/],
+			[{ tsv: stranger(true), perm: "read", actor: "stranger" }, /no write access/],
 			[{ tsv: ["open", "abc", "learnharness-nightly-bot[bot]", "true"], perm: "", actor: "learnharness-nightly-bot[bot]" }, /no write access/],
 			[{ tsv: ["open", "def", "max", "false"] }, /moved on to def/],
 			[{ tsv: ["closed", "abc", "max", "false"] }, /is closed/],
