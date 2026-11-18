@@ -25,6 +25,8 @@ export interface FolderPlan {
 	oversized: string[];
 	/** Code files over 100 KB (usually generated). */
 	codeTooLarge: number;
+	/** Code files with a NUL byte in their first 8 KB (binary, or UTF-16): the server would refuse the group. */
+	codeNotText: number;
 	/** Extensions (or "no extension") of files no kind takes. */
 	unsupported: string[];
 	/** Names the import can't use (e.g. a ':' in the name). */
@@ -55,11 +57,12 @@ export async function planFolder(picked: readonly File[]): Promise<FolderPlan> {
 	const ignoreFiles = new Map<string, IgnoreFile>();
 	for (const file of picked) {
 		const path = relativePath(file);
-		if (file.name !== ".gitignore" || path.split("/").slice(1, -1).some((part) => part.startsWith("."))) continue;
-		ignoreFiles.set(path.split("/").slice(0, -1).join("/"), parseIgnoreFile(await file.text()));
+		if (file.name !== ".gitignore" || excluded(path.split("/").slice(0, -1).join("/") + "/x")) continue;
+		// git ignores a leading UTF-8 byte order mark.
+		ignoreFiles.set(path.split("/").slice(0, -1).join("/"), parseIgnoreFile((await file.text()).replace(/^\uFEFF/, "")));
 	}
 	const gitignored = createGitignoreFilter(ignoreFiles);
-	const plan: FolderPlan = { root, files: [], code: [], ignored: 0, oversized: [], codeTooLarge: 0, unsupported: [], unsafe: 0,
+	const plan: FolderPlan = { root, files: [], code: [], ignored: 0, oversized: [], codeTooLarge: 0, codeNotText: 0, unsupported: [], unsafe: 0,
 		measures: { sources: 0, notesChars: 0, codeChars: 0, images: 0, pdfBytes: 0, documentBytes: 0 } };
 	let codeBytes = 0;
 	for (const file of [...picked].sort((a, b) => relativePath(a).localeCompare(relativePath(b)))) {
@@ -70,7 +73,13 @@ export async function planFolder(picked: readonly File[]): Promise<FolderPlan> {
 		if (!kind) { plan.unsupported.push(extensionLabel(file.name)); continue; }
 		if (file.size > MAX_IMPORT_BYTES) { plan.oversized.push(path); continue; }
 		if (kind === "code" && file.size > MAX_CODE_FILE_BYTES) { plan.codeTooLarge++; continue; }
-		if (kind === "code") { plan.code.push(file); codeBytes += file.size; continue; }
+		if (kind === "code") {
+			// The server's binary check, run here so one unreadable file can't fail the whole group (owner, 2026-11-17).
+			if (new Uint8Array(await file.slice(0, 8192).arrayBuffer()).includes(0)) { plan.codeNotText++; continue; }
+			plan.code.push(file);
+			codeBytes += file.size;
+			continue;
+		}
 		plan.files.push(file);
 		if (kind === "notes") plan.measures.notesChars += (await file.text()).length;
 		else if (kind === "image") plan.measures.images++;
@@ -93,6 +102,7 @@ export function planSummaries(plan: FolderPlan): string[] {
 		...(plan.unsupported.length > 0 ? [unsupportedSummary(plan.unsupported)] : []),
 		...(plan.unsafe > 0 ? [unsafeSummary(plan.unsafe)] : []),
 		...(plan.codeTooLarge > 0 ? [`Skipped ${plan.codeTooLarge} code ${plan.codeTooLarge === 1 ? "file" : "files"} over 100 KB.`] : []),
+		...(plan.codeNotText > 0 ? [`Skipped ${plan.codeNotText} code ${plan.codeNotText === 1 ? "file that isn't" : "files that aren't"} plain text.`] : []),
 		...(plan.codeSkipped ? [`${plan.root}: ${plan.codeSkipped}`] : []),
 	];
 }

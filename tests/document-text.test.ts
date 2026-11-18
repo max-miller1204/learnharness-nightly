@@ -931,6 +931,13 @@ describe("convertDocument: worker, cache, limits", () => {
 		assert.equal(await reason(convertDocument(ole, "odt")), "invalid", "OpenDocument is never OLE-wrapped");
 	});
 
+	it("an OLE file over 16 MiB named as OOXML is encrypted, not too large (item 26)", async () => {
+		const ole = new Uint8Array(16 * 1024 * 1024 + 1);
+		ole.set([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+		assert.equal(await reason(convertDocument(ole, "pptx")), "encrypted");
+		assert.equal(await reason(convertDocument(ole, "odt")), "too-large");
+	});
+
 	it("refuses input over 16 MiB without starting a worker", async () => {
 		const before = documentStats.workerRuns;
 		assert.equal(await reason(convertDocument(new Uint8Array(16 * 1024 * 1024 + 1), "rtf")), "too-large");

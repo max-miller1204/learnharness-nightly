@@ -26,7 +26,7 @@ export const EMPTY_IMPORT_QUEUE: ImportQueueSnapshot = { importing: false, error
 export function createNotesImportQueue(post: (files: readonly File[], group?: string) => Promise<NotesImportResult[]>) {
 	const listeners = new Set<() => void>();
 	/** One file, or one folder's grouped code (item 26). */
-	const pending: ({ file: File; index: number } | { group: string; files: File[]; index: number })[] = [];
+	const pending: ({ file: File; index: number } | { group: string; label: string; files: File[]; index: number })[] = [];
 	const failures = new Map<number, string>();
 	const notices = new Map<number, string>();
 	let active = 0, sequence = 0;
@@ -50,7 +50,8 @@ export function createNotesImportQueue(post: (files: readonly File[], group?: st
 		while (active < 3 && pending.length > 0) {
 			const item = pending.shift()!;
 			const { index } = item;
-			const label = "group" in item ? item.group : notesPath(item.file);
+			// A group's lines read "my-app (48 code files): ..." like its dock row.
+			const label = "group" in item ? item.label : notesPath(item.file);
 			active++;
 			void (async () => {
 				try {
@@ -58,8 +59,8 @@ export function createNotesImportQueue(post: (files: readonly File[], group?: st
 					if (!r) throw new Error("Invalid import response. Check the graph before retrying.");
 					if (!r.ok) {
 						const details = [r.provider, r.missing?.join(", "), r.slots?.join(", ")].filter(Boolean);
-						failures.set(index, `${r.filePath}: ${r.error}${r.code ? `\n${[r.code, ...details].join(" — ")}` : ""}`);
-					} else if (r.notice) notices.set(index, `${r.filePath}: ${r.notice}`);
+						failures.set(index, `${"group" in item ? label : r.filePath}: ${r.error}${r.code ? `\n${[r.code, ...details].join(" — ")}` : ""}`);
+					} else if (r.notice) notices.set(index, `${"group" in item ? label : r.filePath}: ${r.notice}`);
 				} catch (error) {
 					// Never retry an ambiguous response: the merge may have committed.
 					failures.set(index, `${label}: ${error instanceof Error ? error.message : String(error)}`);
@@ -98,7 +99,7 @@ export function createNotesImportQueue(post: (files: readonly File[], group?: st
 		appendGroup(group: string, files: readonly File[]) {
 			if (files.length === 0) return;
 			if (!snapshot.importing) { failures.clear(); notices.clear(); sequence = 0; }
-			pending.push({ group, files: [...files], index: sequence++ });
+			pending.push({ group, label: `${group} (${files.length} code ${files.length === 1 ? "file" : "files"})`, files: [...files], index: sequence++ });
 			pump();
 			publish();
 		},

@@ -91,10 +91,10 @@ Built with the existing `composeExtractionInstructions(preamble, goal, selection
 ### Folder picks in the browser
 
 1. Read every `.gitignore` in the pick (before the hidden-file rule drops them), then drop hidden paths, ignored paths and default excludes.
-2. Sort the rest by kind. Unsupported types, files over 25 MB, too-large code files (over 100 KB) and unsafe names are counted.
+2. Sort the rest by kind. Unsupported types, files over 25 MB, too-large code files (over 100 KB) and unsafe names are counted. A code file with a NUL byte in its first 8 KB (binary, or saved as UTF-16) is skipped here and counted as `N not text`, so one unreadable file can't fail the folder's grouped code on the server (owner, 2026-11-17, after review). `.gitignore` files inside hidden or default-excluded folders are not read, and a leading byte order mark is dropped, as git does.
 3. Measure: notes and code by characters (`File.text()`), images by count, PDFs and documents by bytes.
 4. `POST /api/graph/import/estimate` with those measures; it returns tokens and dollars (below).
-5. Show the dialog, then on Extract queue the per-file sources and the code group into today's three-wide queue. Cancel discards the pick.
+5. Show the dialog, then on Extract queue the per-file sources and the code group into today's three-wide queue. Extract is disabled while the estimate is loading. Cancel discards the pick.
 
 Dialog (an existing app dialog component):
 

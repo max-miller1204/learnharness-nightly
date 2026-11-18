@@ -143,7 +143,11 @@ export function graphCostSummary(input: CostSummaryInput, price: CallPricer): Gr
 		const imgDollars = image ? stageDollars(image.model, image.steps, price) : null;
 		if (image) {
 			mergeTokens(extraction.tokens, image.steps);
-			if (imgDollars !== null && !isSubscriptionModel(image.model)) extraction.dollars += imgDollars;
+			if (isSubscriptionModel(image.model)) {
+				extraction.subscriptionRuns = (extraction.subscriptionRuns ?? 0) + 1;
+				extraction.subscriptionProviders = [...new Set([...(extraction.subscriptionProviders ?? []), ...subscriptionLabels([image.model])])];
+			} else if (imgDollars === null) extraction.unpricedRuns++;
+			else extraction.dollars += imgDollars;
 		}
 
 		audit.runs++;
@@ -161,10 +165,10 @@ export function graphCostSummary(input: CostSummaryInput, price: CallPricer): Gr
 		const runDollars = allStages.every((d) => d === null)
 			? null
 			: allStages.reduce<number>((a, d) => a + (d ?? 0), 0);
-		const subscriptionRuns = [stages.extractor, stages.auditor].filter((stage) => isSubscriptionModel(stage.model)).length;
+		const subscriptionRuns = [stages.extractor, stages.auditor, ...(image ? [image] : [])].filter((stage) => isSubscriptionModel(stage.model)).length;
 		const allSteps = [...stages.extractor.steps, ...stages.auditor.steps, ...(image?.steps ?? [])];
 		runs.push({
-			...(subscriptionRuns ? { subscriptionRuns, subscriptionProviders: subscriptionLabels([stages.extractor.model, stages.auditor.model]) } : {}),
+			...(subscriptionRuns ? { subscriptionRuns, subscriptionProviders: subscriptionLabels([stages.extractor.model, stages.auditor.model, ...(image ? [image.model] : [])]) } : {}),
 			startedAt: run.startedAt,
 			at: run.at,
 			durationMs: run.durationMs,

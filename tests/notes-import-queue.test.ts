@@ -220,3 +220,28 @@ it("synchronous transport failures settle one wave once without reentrant pump r
 	assert.equal(calls, 4); assert.equal(queue.getSnapshot().completion, 1); assert.equal(queue.getSnapshot().importing, false);
 	assert.equal(queue.getSnapshot().errors.length, 4);
 });
+
+it("a code group is one request with its label on result lines; report() adds lines in order", async () => {
+	const calls: { files: File[]; group?: string }[] = [];
+	const queue = createNotesImportQueue(async (files, group) => { calls.push({ files: [...files], group });
+		return [group ? { requestIndex: 0, filePath: group, ok: true, outcome: "completed", stats: { nodes: 1 }, notice: "group notice" } : success(files[0]!.name)]; });
+	queue.append([file("notes.md", "app/notes.md")]);
+	queue.appendGroup("app", [file("a.ts", "app/a.ts"), file("b.ts", "app/b.ts")]);
+	queue.report(["Skipped 1 code file over 100 KB."]);
+	await tick();
+	assert.deepEqual(calls.map((c) => [c.group, c.files.map((f) => f.webkitRelativePath)]), [[undefined, ["app/notes.md"]], ["app", ["app/a.ts", "app/b.ts"]]]);
+	assert.deepEqual(queue.getSnapshot().notices, ["app (2 code files): group notice"]);
+	assert.deepEqual(queue.getSnapshot().errors, ["Skipped 1 code file over 100 KB."]);
+	assert.equal(queue.getSnapshot().importing, false);
+});
+
+it("a HEIC photo that can't be converted fails with the conversion message and is never posted", async () => {
+	const posted: string[] = [];
+	const queue = createNotesImportQueue(async ([f]) => { posted.push(f!.name); return [success(f!.name)]; });
+	const broken = new File([new Uint8Array([0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70])], "IMG_1.HEIC");
+	Object.defineProperty(broken, "webkitRelativePath", { value: "Phone/IMG_1.HEIC" });
+	queue.append([broken]);
+	for (let i = 0; i < 10; i++) await tick();
+	assert.deepEqual(posted, []);
+	assert.deepEqual(queue.getSnapshot().errors, ["Phone/IMG_1.HEIC: Could not convert this HEIC photo."]);
+});

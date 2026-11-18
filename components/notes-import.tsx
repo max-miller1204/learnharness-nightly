@@ -112,7 +112,8 @@ async function reviewFolder(files: readonly File[], onStart?: () => void): Promi
 
 export function confirmFolderReview(): void {
 	const review = folderReview;
-	if (!review) return;
+	// Nothing runs before the estimate is shown (spec: estimate, then Extract / Cancel).
+	if (!review || review.estimate === "loading") return;
 	reviewSequence++;
 	setFolderReview(null);
 	const { plan } = review;
@@ -122,6 +123,8 @@ export function confirmFolderReview(): void {
 	if (plan.code.length > 0) pageImportQueue.appendGroup(plan.root, plan.code);
 	pageImportQueue.report(planSummaries(plan));
 }
+/** Test seam: the review the dialog is showing. */
+export const folderReviewSnapshot = (): FolderReview | null => folderReview;
 export function cancelFolderReview(): void {
 	reviewSequence++;
 	setFolderReview(null);
@@ -217,6 +220,7 @@ export function folderReviewLines(review: FolderReview): { title: string; conten
 	const skipped = [
 		...(plan.ignored > 0 ? [`${count(plan.ignored)} ignored or excluded`] : []),
 		...(tooLarge > 0 ? [`${count(tooLarge)} too large`] : []),
+		...(plan.codeNotText > 0 ? [`${count(plan.codeNotText)} not text`] : []),
 		...(plan.unsupported.length > 0 ? [`${count(plan.unsupported.length)} unsupported`] : []),
 		...(plan.unsafe > 0 ? [`${count(plan.unsafe)} with unusable names`] : []),
 	].join(", ");
@@ -254,8 +258,8 @@ export function FolderReviewBody({ review, onCancel, onConfirm, renderFrame }: {
 					className="rounded-sm px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground">
 					{lines.empty ? "Close" : "Cancel"}
 				</button>
-				{!lines.empty && <button type="button" data-testid="folder-review-confirm" onClick={onConfirm}
-					className="rounded-sm border px-3 py-1.5 text-xs transition-colors hover:bg-accent">Extract</button>}
+				{!lines.empty && <button type="button" data-testid="folder-review-confirm" onClick={onConfirm} disabled={review.estimate === "loading"}
+					className="rounded-sm border px-3 py-1.5 text-xs transition-colors hover:bg-accent disabled:opacity-40">Extract</button>}
 			</div>
 		</div>
 	);

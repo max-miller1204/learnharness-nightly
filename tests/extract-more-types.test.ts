@@ -336,3 +336,15 @@ it("HEIC detection by MIME or by extension, and the 64-megapixel check reads rea
 	}
 	assert.equal(await validateHeicImageDimensions(new Blob([huge])), "too-large");
 });
+
+it("planFolder skips binary-looking code (UTF-16) in the browser, ignores .gitignore under excluded folders, strips a BOM", async () => {
+	const utf16 = new Uint8Array(Buffer.from("select 1;", "utf16le"));
+	const plan = await planFolder([
+		picked("db/.gitignore", "\uFEFFsecret.ts\n"), picked("db/node_modules/pkg/.gitignore", "*.ts\n"),
+		picked("db/setup.sql", utf16), picked("db/query.sql", "select 1;"), picked("db/secret.ts"), picked("db/app.ts", "x"),
+	]);
+	assert.deepEqual(plan.code.map((f) => f.webkitRelativePath), ["db/app.ts", "db/query.sql"]);
+	assert.equal(plan.codeNotText, 1);
+	assert.ok(planSummaries(plan).includes("Skipped 1 code file that isn't plain text."));
+	assert.match(folderReviewLines({ plan, estimate: "loading" }).skipped!, /1 not text/);
+});
