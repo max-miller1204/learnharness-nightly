@@ -301,6 +301,7 @@ Send the findings back to the agent that made the change: the failing steps, the
 
 - `next build` stops once per project folder with a "SecurityFatalError" upgrade notice and says to retry; `build.sh` retries once and the notice stays in `build-*.log`. Put it under Not covered until the user decides on the upgrade.
 - `next build` rewrites the tracked `next-env.d.ts`; `build.sh` restores the builder's copy.
+- A `data/` folder in the worktree root (left by local test or dev runs; gitignored) is traced into `.next/standalone` and `scripts/build-server.mjs` then refuses the head build ("standalone contains a data/ directory"). That is the environment, not the change: move it into the run folder for the build and put it back afterwards (the tree hash ignores it, so the head build is still reused), and record it under Retries and fixes.
 - The standalone server forks `next-server`: killing only the parent pid orphans it. Everything starts under `setsid` and stops by group.
 - `/api/events` keeps a stream open, so `networkidle` never fires: wait for selectors.
 - Electron downloads its binary on first use; the downloaded `chrome-sandbox` isn't SUID root here, hence `--no-sandbox`.
