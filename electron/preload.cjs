@@ -38,79 +38,82 @@
  */
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
-let openSettingsListener = null;
-let pendingOpenSettings = null;
-ipcRenderer.on("lh:open-settings", (_event, section) => {
-	if (openSettingsListener) openSettingsListener(section);
-	else pendingOpenSettings = section;
-});
+// The bundled ghost dashboard (a local file page) gets no bridge at all.
+if (globalThis.location?.protocol !== "file:") {
+	let openSettingsListener = null;
+	let pendingOpenSettings = null;
+	ipcRenderer.on("lh:open-settings", (_event, section) => {
+		if (openSettingsListener) openSettingsListener(section);
+		else pendingOpenSettings = section;
+	});
 
-contextBridge.exposeInMainWorld("lh", {
-	platform: process.platform,
-	// Resolve only a renderer-supplied, OS-backed File. No filesystem API,
-	// uploads, copies, or DOM File IPC to main; sandbox/isolation stay on.
-	getPathForFile: (file) => webUtils.getPathForFile(file),
-	chooseAttachmentFolder: () => ipcRenderer.invoke("lh:attachment:pick", "folder"),
-	...(process.argv?.includes("--lh-web-subscriptions") ? {
-		subscriptionTransport: "web",
-		openSubscriptionBrowser: (action) => ipcRenderer.invoke("lh:subscriptions:web-browser", action),
-	} : {}),
-	chatgpt: {
-		status: () => ipcRenderer.invoke("lh:chatgpt:control", { op: "status" }),
-		login: (id) => ipcRenderer.invoke("lh:chatgpt:control", { op: "login", id }),
-		cancel: () => ipcRenderer.invoke("lh:chatgpt:control", { op: "cancel" }),
-		complete: (url) => ipcRenderer.invoke("lh:chatgpt:control", { op: "complete", url }),
-		select: (id) => ipcRenderer.invoke("lh:chatgpt:control", { op: "select", id }),
-		disconnect: (id) => ipcRenderer.invoke("lh:chatgpt:control", { op: "disconnect", id }),
-		logout: (id) => ipcRenderer.invoke("lh:chatgpt:control", { op: "logout", id }),
-		consent: (enabled) => ipcRenderer.invoke("lh:chatgpt:control", { op: "consent", enabled }),
-		onChange: (cb) => {
-			const listener = () => cb();
-			ipcRenderer.on("lh:chatgpt:changed", listener);
-			return () => ipcRenderer.removeListener("lh:chatgpt:changed", listener);
+	contextBridge.exposeInMainWorld("lh", {
+		platform: process.platform,
+		// Resolve only a renderer-supplied, OS-backed File. No filesystem API,
+		// uploads, copies, or DOM File IPC to main; sandbox/isolation stay on.
+		getPathForFile: (file) => webUtils.getPathForFile(file),
+		chooseAttachmentFolder: () => ipcRenderer.invoke("lh:attachment:pick", "folder"),
+		...(process.argv?.includes("--lh-web-subscriptions") ? {
+			subscriptionTransport: "web",
+			openSubscriptionBrowser: (action) => ipcRenderer.invoke("lh:subscriptions:web-browser", action),
+		} : {}),
+		chatgpt: {
+			status: () => ipcRenderer.invoke("lh:chatgpt:control", { op: "status" }),
+			login: (id) => ipcRenderer.invoke("lh:chatgpt:control", { op: "login", id }),
+			cancel: () => ipcRenderer.invoke("lh:chatgpt:control", { op: "cancel" }),
+			complete: (url) => ipcRenderer.invoke("lh:chatgpt:control", { op: "complete", url }),
+			select: (id) => ipcRenderer.invoke("lh:chatgpt:control", { op: "select", id }),
+			disconnect: (id) => ipcRenderer.invoke("lh:chatgpt:control", { op: "disconnect", id }),
+			logout: (id) => ipcRenderer.invoke("lh:chatgpt:control", { op: "logout", id }),
+			consent: (enabled) => ipcRenderer.invoke("lh:chatgpt:control", { op: "consent", enabled }),
+			onChange: (cb) => {
+				const listener = () => cb();
+				ipcRenderer.on("lh:chatgpt:changed", listener);
+				return () => ipcRenderer.removeListener("lh:chatgpt:changed", listener);
+			},
 		},
-	},
-	subscriptions: {
-		status: () => ipcRenderer.invoke("lh:subscriptions:control", { op: "status" }),
-		login: (providerId, enabled) => ipcRenderer.invoke("lh:subscriptions:control", { op: "login", providerId, enabled }),
-		cancel: (providerId) => ipcRenderer.invoke("lh:subscriptions:control", { op: "cancel", providerId }),
-		respond: (providerId, attemptId, promptId, value) => ipcRenderer.invoke("lh:subscriptions:control", { op: "respond", providerId, attemptId, promptId, value }),
-		open: (providerId, attemptId, actionId) => ipcRenderer.invoke("lh:subscriptions:control", { op: "open", providerId, attemptId, actionId }),
-		retry: (providerId) => ipcRenderer.invoke("lh:subscriptions:control", { op: "retry", providerId }),
-		disconnect: (providerId) => ipcRenderer.invoke("lh:subscriptions:control", { op: "disconnect", providerId }),
-		consent: (providerId, enabled) => ipcRenderer.invoke("lh:subscriptions:control", { op: "consent", providerId, enabled }),
-		onChange: (cb) => {
-			const listener = () => cb();
-			ipcRenderer.on("lh:subscriptions:changed", listener);
-			return () => ipcRenderer.removeListener("lh:subscriptions:changed", listener);
+		subscriptions: {
+			status: () => ipcRenderer.invoke("lh:subscriptions:control", { op: "status" }),
+			login: (providerId, enabled) => ipcRenderer.invoke("lh:subscriptions:control", { op: "login", providerId, enabled }),
+			cancel: (providerId) => ipcRenderer.invoke("lh:subscriptions:control", { op: "cancel", providerId }),
+			respond: (providerId, attemptId, promptId, value) => ipcRenderer.invoke("lh:subscriptions:control", { op: "respond", providerId, attemptId, promptId, value }),
+			open: (providerId, attemptId, actionId) => ipcRenderer.invoke("lh:subscriptions:control", { op: "open", providerId, attemptId, actionId }),
+			retry: (providerId) => ipcRenderer.invoke("lh:subscriptions:control", { op: "retry", providerId }),
+			disconnect: (providerId) => ipcRenderer.invoke("lh:subscriptions:control", { op: "disconnect", providerId }),
+			consent: (providerId, enabled) => ipcRenderer.invoke("lh:subscriptions:control", { op: "consent", providerId, enabled }),
+			onChange: (cb) => {
+				const listener = () => cb();
+				ipcRenderer.on("lh:subscriptions:changed", listener);
+				return () => ipcRenderer.removeListener("lh:subscriptions:changed", listener);
+			},
 		},
-	},
-	expandWindow: () => ipcRenderer.send("lh:expand-window"),
-	setAppearance: (a) => ipcRenderer.send("lh:appearance", a),
-	onZoom: (cb) => {
-		const listener = (_event, factor) => cb(factor);
-		ipcRenderer.on("lh:zoom", listener);
-		return () => ipcRenderer.removeListener("lh:zoom", listener);
-	},
-	getZoom: () => ipcRenderer.invoke("lh:zoom:get"),
-	onUpdateStatus: (cb) => {
-		const listener = (_event, status) => cb(status);
-		ipcRenderer.on("lh:update-status", listener);
-		return () => ipcRenderer.removeListener("lh:update-status", listener);
-	},
-	installUpdate: () => ipcRenderer.send("lh:update-install"),
-	downloadUpdate: () => ipcRenderer.invoke("lh:update:download"),
-	getUpdateState: () => ipcRenderer.invoke("lh:update:get"),
-	checkForUpdates: () => ipcRenderer.invoke("lh:update:check"),
-	onOpenSettings: (cb) => {
-		openSettingsListener = cb;
-		if (pendingOpenSettings !== null) {
-			const section = pendingOpenSettings;
-			pendingOpenSettings = null;
-			cb(section);
-		}
-		return () => {
-			if (openSettingsListener === cb) openSettingsListener = null;
-		};
-	},
-});
+		expandWindow: () => ipcRenderer.send("lh:expand-window"),
+		setAppearance: (a) => ipcRenderer.send("lh:appearance", a),
+		onZoom: (cb) => {
+			const listener = (_event, factor) => cb(factor);
+			ipcRenderer.on("lh:zoom", listener);
+			return () => ipcRenderer.removeListener("lh:zoom", listener);
+		},
+		getZoom: () => ipcRenderer.invoke("lh:zoom:get"),
+		onUpdateStatus: (cb) => {
+			const listener = (_event, status) => cb(status);
+			ipcRenderer.on("lh:update-status", listener);
+			return () => ipcRenderer.removeListener("lh:update-status", listener);
+		},
+		installUpdate: () => ipcRenderer.send("lh:update-install"),
+		downloadUpdate: () => ipcRenderer.invoke("lh:update:download"),
+		getUpdateState: () => ipcRenderer.invoke("lh:update:get"),
+		checkForUpdates: () => ipcRenderer.invoke("lh:update:check"),
+		onOpenSettings: (cb) => {
+			openSettingsListener = cb;
+			if (pendingOpenSettings !== null) {
+				const section = pendingOpenSettings;
+				pendingOpenSettings = null;
+				cb(section);
+			}
+			return () => {
+				if (openSettingsListener === cb) openSettingsListener = null;
+			};
+		},
+	});
+}

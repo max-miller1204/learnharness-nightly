@@ -7,7 +7,8 @@ const { openServerList } = require("./server-list-store.cjs");
 const { ServerProblem, parseOrigin, withScheme, normalizeCode, parsePairLink, checkDescriptor, checkSession, pairServer } = require("./remote-server.cjs");
 const { remoteChatGPTSignIn } = require("./remote-chatgpt.cjs");
 const { createRemoteWindow } = require("./remote-window.cjs");
-const { BACKGROUND, hostLabel, paintFirst, coverWindow } = require("./skeleton.cjs");
+const { BACKGROUND, hostLabel, paintFirst, tracePaint, coverWindow } = require("./skeleton.cjs");
+const { trace, traceWindow } = require("./first-frame.cjs");
 
 const SHELL = path.join(__dirname, "server-list.html");
 const CHANNEL = "lh:server-list";
@@ -78,7 +79,10 @@ async function createServerList({
 	function closeList() {
 		const panel = controls;
 		controls = null;
-		if (panel && !panel.isDestroyed()) panel.destroy();
+		if (panel && !panel.isDestroyed()) {
+			trace("list closed");
+			panel.destroy();
+		}
 	}
 	function destroyContent() {
 		login?.abort();
@@ -142,15 +146,21 @@ async function createServerList({
 		// The overlay then keeps covering it while the real page loads below.
 		async function ghostWindow(win, status, frame) {
 			hold(win);
+			traceWindow(win, server === "local" ? "local" : "remote");
 			await paintFirst(win, { mode: themeMode(), status, frame });
 			operation.signal.throwIfAborted();
+			trace("show() call", "ghostWindow");
 			win.show();
+			tracePaint(win.webContents, "own page after show");
 			const skeleton = coverWindow(win, { WebContentsView, session, mode: themeMode(), status, frame });
 			skeleton.focus();
 			return skeleton;
 		}
+		// Stops waiting when the connect is cancelled, and fails when the
+		// overlay went away before it painted.
 		async function beforeLoad(skeleton) {
-			const painted = await skeleton.painted;
+			const cancelled = new Promise((resolve) => operation.signal.addEventListener("abort", () => resolve(false), { once: true }));
+			const painted = await Promise.race([skeleton.painted, cancelled]);
 			operation.signal.throwIfAborted();
 			if (!painted) throw new Error("The ghost dashboard didn’t paint.");
 		}
@@ -160,19 +170,25 @@ async function createServerList({
 			setLocalMenu(false);
 			if (previous === "local" && server !== "local") await stopLocal();
 			if (server === "local") {
+				// The bundled server starts while the ghost dashboard paints.
+				const starting = startLocal(operation.signal);
+				starting.catch(() => {});
 				const local = createLocalWindow();
 				registerContent(local.win);
 				const skeleton = await ghostWindow(local.win, "Starting LearnHarness…", platform === "darwin" ? "inset" : "hidden");
+				// An open list closes only once the shown window has painted.
+				await beforeLoad(skeleton);
 				closeList();
-				const url = await startLocal(operation.signal);
+				const url = await starting;
 				operation.signal.throwIfAborted();
 				if (!store.damaged && !store.defaultServer) await store.saveDefault(server);
-				await beforeLoad(skeleton);
 				// As before, the bundled app's own load errors stay in its window.
+				trace("real page load start", "local");
 				await local.load(url).catch(() => {});
 				operation.signal.throwIfAborted();
 				active = { server };
 				setLocalMenu(true);
+				trace("reveal", "local");
 				skeleton.reveal();
 				local.win.focus();
 				local.win.webContents.focus();
@@ -209,6 +225,7 @@ async function createServerList({
 				win ??= open();
 				if (skeleton) await beforeLoad(skeleton);
 				try {
+					trace("real page load start", "remote");
 					await win.loadURL(server).catch((error) => {
 						if (error.code !== "ERR_HTTP_RESPONSE_CODE_FAILURE") throw error;
 					});
@@ -220,6 +237,7 @@ async function createServerList({
 					if (!store.defaultServer) await store.saveDefault(server);
 					operation.signal.throwIfAborted();
 					active = { server, token };
+					trace(skeleton ? "reveal" : "show() call", skeleton ? "remote" : "list connect");
 					if (skeleton) skeleton.reveal();
 					else win.show();
 					win.focus();

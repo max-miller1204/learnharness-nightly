@@ -3,6 +3,7 @@
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { pathToFileURL } = require("node:url");
+const { enabled: tracing, trace } = require("./first-frame.cjs");
 
 const PAGE = path.join(__dirname, "skeleton.html");
 // The Default theme's page and the app's original light default.
@@ -30,11 +31,19 @@ async function paintFirst(win, options) {
 	let timer;
 	const painted = new Promise((resolve) => {
 		win.once("ready-to-show", resolve);
-		timer = setTimeout(resolve, 1000);
+		timer = setTimeout(() => { trace("paintFirst fallback fired (1 s, no ready-to-show)"); resolve(); }, 1000);
 	});
-	await win.loadFile(PAGE, { query: pageQuery(options) }).catch(() => {});
+	trace("paintFirst own page load start");
+	await win.loadFile(PAGE, { query: pageQuery(options) }).catch((error) => trace("paintFirst own page load failed", error.code));
 	await painted;
 	clearTimeout(timer);
+	trace("paintFirst done");
+}
+
+/** Diagnostics only: when a page produces a frame. */
+function tracePaint(contents, name) {
+	if (!tracing) return;
+	contents.executeJavaScript(PAINTED).then(() => trace("frame produced", name), () => trace("frame wait failed", name));
 }
 
 /** The first label of a server name, or a whole IP literal. */
@@ -71,6 +80,7 @@ function coverWindow(win, { WebContentsView, session, mode, status, frame }) {
 	fit();
 	win.contentView.on("bounds-changed", fit);
 	win.contentView.addChildView(view);
+	trace("overlay attached");
 	// Until the reveal, the unseen page takes no keys, and window focus goes
 	// back to the skeleton. The skeleton covers it for every mouse event.
 	const block = (event) => event.preventDefault();
@@ -78,18 +88,26 @@ function coverWindow(win, { WebContentsView, session, mode, status, frame }) {
 	win.webContents.on("before-input-event", block);
 	win.on("focus", focus);
 	let removed = false;
+	// Settles "not painted" when the overlay goes away first, so a window
+	// closed or never shown before its first frame can't leave a wait open.
+	let gone;
+	const goneFirst = new Promise((resolve) => { gone = () => resolve(false); });
+	contents.once("destroyed", gone);
 	// The real page may load underneath only after this resolves true: from
 	// then on the view is opaque, even if its frame is later dropped.
-	const painted = contents.loadFile(PAGE, { query: pageQuery({ mode, status, frame }) })
-		.then(() => contents.executeJavaScript(PAINTED))
+	const painted = Promise.race([goneFirst, contents.loadFile(PAGE, { query: pageQuery({ mode, status, frame }) })
+		.then(() => { trace("overlay did-finish-load"); return contents.executeJavaScript(PAINTED); })
 		.then(() => {
 			if (removed || contents.isDestroyed()) return false;
 			view.setBackgroundColor(BACKGROUND[mode] ?? BACKGROUND.dark);
 			return true;
-		}, () => false);
+		}, () => false)]);
+	void painted.then((value) => trace(value ? "overlay painted" : "overlay not painted"));
 	function remove() {
 		if (removed) return;
 		removed = true;
+		gone();
+		trace("overlay removed");
 		win.off("focus", focus);
 		if (!win.isDestroyed()) {
 			win.contentView.off("bounds-changed", fit);
@@ -102,4 +120,4 @@ function coverWindow(win, { WebContentsView, session, mode, status, frame }) {
 	return { reveal: remove, focus, painted };
 }
 
-module.exports = { PAGE, BACKGROUND, hostLabel, isSkeletonPage, paintFirst, coverWindow };
+module.exports = { PAGE, BACKGROUND, hostLabel, isSkeletonPage, paintFirst, tracePaint, coverWindow };

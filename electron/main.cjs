@@ -31,6 +31,7 @@ const { attachChatGPTChild, trustedSender, chatGPTControl } = require("./chatgpt
 const { createSubscriptions, loadSubscriptionSDK } = require("./subscriptions.cjs");
 const { attachSubscriptionChild, subscriptionControl } = require("./subscription-ipc.cjs");
 const { desktopAPIHeaders, exchangeDesktopSession } = require("./desktop-api.cjs");
+const { setTraceSink } = require("./first-frame.cjs");
 const { createServerList } = require("./server-list.cjs");
 const { openWebSubscriptionBrowser } = require("./web-subscription-browser.cjs");
 const { randomBytes } = require("node:crypto");
@@ -190,6 +191,7 @@ function freePort() {
  *  effect on the next model call — no restart. Real environment variables
  *  still win over the file inside the child (its documented rule). */
 
+setTraceSink((line) => log(line));
 function log(line) {
 	const stamp = new Date().toISOString();
 	// The stdout write is guarded (EPIPE hardening, 2026-10-10): a packaged

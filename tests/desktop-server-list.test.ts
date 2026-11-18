@@ -92,6 +92,8 @@ class TestSession {
 
 class TestView {
 	static all: TestView[] = [];
+	/** While set, overlays wait for it before their first frame. */
+	static gate: Promise<void> | null = null;
 	options;
 	url = "";
 	closed = false;
@@ -102,9 +104,16 @@ class TestView {
 	webContents = Object.assign(new EventEmitter(), {
 		setWindowOpenHandler() {},
 		isDestroyed: () => this.closed,
-		close: () => { this.closed = true; },
+		close: () => {
+			this.closed = true;
+			this.webContents.emit("destroyed");
+		},
 		focus: () => { this.focused = true; },
-		executeJavaScript: async () => { this.painted = true; return true; },
+		executeJavaScript: async () => {
+			await TestView.gate;
+			this.painted = true;
+			return true;
+		},
 		loadFile: async (file: string, { query = {} }: { query?: Record<string, string> } = {}) => {
 			this.url = `${pathToFileURL(file).href}?${new URLSearchParams(query)}`;
 		},
@@ -699,7 +708,7 @@ test("a launch with a default skips the list and keeps the server page under the
 	for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
 });
 
-test("This computer opens the ghost dashboard before the bundled server starts, and closing it cancels quietly", async (t) => {
+test("This computer opens the ghost dashboard while the bundled server starts, and closing it cancels quietly", async (t) => {
 	const directory = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-ghost-local-"));
 	t.after(() => fs.rm(directory, { recursive: true, force: true }));
 	type FakeEvent = { sender: TestWindow["webContents"]; senderFrame: { url: string } };
@@ -733,10 +742,16 @@ test("This computer opens the ghost dashboard before the bundled server starts, 
 	const local = TestWindow.all.at(-1)!;
 	assert.equal(local.shown, false, "the window waits for its first paint");
 	assert.equal(list.destroyed, false, "the list stays until the window shows");
+	let paint!: () => void;
+	TestView.gate = new Promise<void>((resolve) => { paint = resolve; });
 	await settle();
 	assert.equal(local.shown, true, "the main window opens before the list closes");
 	assert.deepEqual(local.atShow?.painted, true);
 	assert.equal(new URL(local.atShow!.url).searchParams.get("status"), "Starting LearnHarness…");
+	assert.equal(list.destroyed, false, "the list waits until the shown window has painted the ghost");
+	TestView.gate = null;
+	paint();
+	await settle();
 	assert.equal(list.destroyed, true);
 	assert.equal(local.contentView.children.length, 1);
 	const ghost = new URL(TestView.all.at(-1)!.url);
@@ -770,6 +785,65 @@ test("This computer opens the ghost dashboard before the bundled server starts, 
 	assert.equal(broken.destroyed, true);
 	assert(isList(recovery));
 	assert.equal(recovery.snapshot?.problem?.kind, "retry");
+});
+
+test("a ghost window closed before its first frame ends the connect, and the next reopen starts again", async (t) => {
+	const directory = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-ghost-unpainted-"));
+	t.after(() => { TestView.gate = null; return fs.rm(directory, { recursive: true, force: true }); });
+	const saved = await openServerList(path.join(directory, "servers.json"), fakeSafeStorage);
+	await saved.saveDefault("local");
+	const controller = await createServerList({
+		app: { getPath: () => directory }, BrowserWindow: TestWindow, WebContentsView: TestView, safeStorage: fakeSafeStorage,
+		ipcMain: { handle() {} }, session: { fromPartition: () => new TestSession() },
+		startLocal: async () => "http://localhost:3000", stopLocal: async () => {},
+		createLocalWindow: () => { const win = new TestWindow(); return { win, load: (url: string) => win.loadURL(url) }; },
+		setLocalMenu() {},
+	});
+	t.after(() => {
+		controller.close();
+		for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
+	});
+	TestView.gate = new Promise<void>(() => {});
+	const before = TestWindow.all.length;
+	const stuck = controller.launch();
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	const { first: win } = TestWindow.since(before);
+	assert.equal(win.shown, true);
+	const overlay = TestView.all.at(-1)!;
+	win.destroy();
+	await stuck;
+	assert.equal(overlay.closed, true);
+	assert.equal(TestWindow.all.length, before + 1, "no list after the cancel");
+	TestView.gate = null;
+	await controller.reopen();
+	const { created, second: again } = TestWindow.since(before);
+	assert.equal(created.length, 2, "the connect is no longer stuck");
+	assert.equal(again.url, "http://localhost:3000");
+	assert.equal(again.contentView.children.length, 0);
+});
+
+test("first-frame diagnostics log only when LH_DEBUG_FIRST_FRAME=1", async () => {
+	const { execFileSync } = await import("node:child_process");
+	const script = `require(${JSON.stringify(path.join(import.meta.dirname, "../electron/first-frame.cjs"))}).trace("show() call", "ghostWindow")`;
+	const run = (value?: string) => execFileSync(process.execPath, ["-e", script], {
+		env: { NODE_ENV: "test", PATH: process.env.PATH ?? "", ...(value ? { LH_DEBUG_FIRST_FRAME: value } : {}) }, encoding: "utf8",
+	});
+	assert.match(run("1"), /^first-frame \d+ms show\(\) call ghostWindow\n$/);
+	assert.equal(run(), "");
+});
+
+test("the app preload gives the ghost dashboard page no bridge", async () => {
+	const source = await fs.readFile(path.join(import.meta.dirname, "../electron/preload.cjs"), "utf8");
+	const exposed = (protocol: string) => {
+		const names: string[] = [];
+		runInNewContext(source, {
+			location: { protocol }, process: { platform: "linux", argv: [] },
+			require: () => ({ contextBridge: { exposeInMainWorld: (name: string) => { names.push(name); } }, ipcRenderer: { on() {} }, webUtils: {} }),
+		});
+		return names;
+	};
+	assert.deepEqual(exposed("file:"), []);
+	assert.deepEqual(exposed("http:"), ["lh"]);
 });
 
 test("the setup screen offers two tiles, and a pasted pairing link fills the address and the code", async () => {
