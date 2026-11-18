@@ -172,12 +172,17 @@ function printPairingLink(home: string, config: LhConfig, label?: string): { loc
 	const tailnet = config.tailscale.enabled && config.tailscale.hostname
 		? pairingUrl(`https://${config.tailscale.hostname}:${config.tailscale.port}`, link.code)
 		: undefined;
-	const primary = tailnet ?? local;
 	const expires = new Date(link.expiresAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-	out(`Pair a device: open this link, or scan the code below.`);
-	out(`  ${primary}`);
-	out(terminalQr(primary));
-	if (tailnet) out(`On this machine: ${local}`);
+	// The links for other devices print last, right above the code, so a short
+	// terminal still shows them; 127.0.0.1 works only on the server machine.
+	out(`Pair a device: open a link below, or scan the QR code.`);
+	out(`On this machine only:`);
+	out(`  ${local}`);
+	out(terminalQr(tailnet ?? local));
+	if (tailnet) {
+		out(`From your other devices:`);
+		out(`  ${tailnet}`);
+	}
 	out(`Code: ${formatCode(link.code)} (one-time, expires at ${expires}). One code works in every link above.`);
 	return { local };
 }

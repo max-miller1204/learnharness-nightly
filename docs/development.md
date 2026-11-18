@@ -40,7 +40,7 @@ npm start              # serve the production build with Next
 [auth] Pair a browser: http://localhost:3000/pair#token=... (one-time, expires in 24 hours) ...
 ```
 
-Open it to sign that browser in for 30 days. `next dev` links last 24 hours, `next start` links 5 minutes. For another link, run `npm run pair` (it writes into `./data` or `LH_DATA_DIR`, for the port in `PORT`), or use Settings → Devices on a signed-in browser. The `desktop:dev` window pairs the same way; the packaged desktop app signs itself in.
+Open it to pair that browser. The session stays valid until revoked, and the cookie renews as you use the app. `next dev` links last 24 hours, `next start` links 5 minutes. For another link, run `npm run pair` (it writes into `./data` or `LH_DATA_DIR`, for the port in `PORT`), or use Settings → Devices on a signed-in browser. The `desktop:dev` window pairs the same way; the packaged desktop app signs itself in.
 
 To open the server from another device on a network you trust, pass a later host flag and pair that device:
 

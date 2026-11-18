@@ -8,7 +8,9 @@
  * The model is T3 Code's (github.com/pingdotgg/t3code, MIT, Copyright (c)
  * 2026 T3 Tools Inc.): PairingGrantStore.ts (12-character one-time codes,
  * rejection sampling, 5 minute life) and SessionStore.ts (HMAC-signed
- * session tokens checked against a stored record, 30 day life). T3 keeps
+ * session tokens checked against a stored record). T3's sessions last 30
+ * days; here paired and desktop sessions never expire, until revoked (owner,
+ * 2026-11-18). T3 keeps
  * these in SQLite; LearnHarness keeps files in <data folder>/auth/:
  *
  *   signing-key    32 random bytes (0600)
@@ -28,7 +30,10 @@ export const PAIRING_CODE_LENGTH = 12;
 export const PAIRING_TTL_MS = 5 * 60_000;
 /** T3's dev-mode startup link lasts a day. */
 export const DEV_STARTUP_TTL_MS = 24 * 60 * 60_000;
-export const SESSION_TTL_MS = 30 * 24 * 60 * 60_000;
+/** The expiresAt of a session that never expires: every session except the
+ * short-lived `lh` (cli) ones. A real far-future date, not a missing field,
+ * so an older build rolled back to still reads these sessions as valid. */
+export const NEVER_EXPIRES = "9999-12-31T23:59:59.999Z";
 export const CLI_SESSION_TTL_MS = 5 * 60_000;
 export const LAST_SEEN_INTERVAL_MS = 60_000;
 const PRUNE_AFTER_MS = 30 * 24 * 60 * 60_000;
@@ -53,6 +58,7 @@ export interface SessionRecord extends ClientInfo {
 	method: SessionMethod;
 	hidden?: boolean;
 	issuedAt: string;
+	/** NEVER_EXPIRES for every session but `lh`'s short-lived cli ones. */
 	expiresAt: string;
 	lastSeenAt?: string;
 	revokedAt?: string;
@@ -130,9 +136,13 @@ function writeAtomic(file: string, contents: string): void {
 	cache.delete(file);
 }
 
+/** Sessions made before they stopped expiring (30 days, T3's default) are
+ * read as never expiring too, so devices already paired stay signed in. The
+ * next write stores that. Only `lh`'s cli sessions keep their expiry. */
 const parseSessions = (raw: Buffer): SessionsFile => {
 	const value = JSON.parse(raw.toString("utf8")) as Partial<SessionsFile>;
-	return { version: 1, sessions: Array.isArray(value.sessions) ? value.sessions : [] };
+	const sessions = Array.isArray(value.sessions) ? value.sessions : [];
+	return { version: 1, sessions: sessions.map((s) => (s.method === "cli" || s.expiresAt === NEVER_EXPIRES ? s : { ...s, expiresAt: NEVER_EXPIRES })) };
 };
 const parsePairing = (raw: Buffer): PairingFile => {
 	const value = JSON.parse(raw.toString("utf8")) as Partial<PairingFile>;
@@ -311,14 +321,15 @@ function mintToken(dataDir: string, session: SessionRecord): string {
 	return `${payload}.${b64url(sign(signingKey(dataDir), payload))}`;
 }
 
-function newSession(method: SessionMethod, client: ClientInfo, now: number, ttlMs: number, hidden?: boolean): SessionRecord {
+/** Without a ttlMs the session never expires. */
+function newSession(method: SessionMethod, client: ClientInfo, now: number, ttlMs?: number, hidden?: boolean): SessionRecord {
 	return {
 		id: crypto.randomUUID(),
 		method,
 		...(hidden ? { hidden: true } : {}),
 		...client,
 		issuedAt: new Date(now).toISOString(),
-		expiresAt: new Date(now + ttlMs).toISOString(),
+		expiresAt: ttlMs === undefined ? NEVER_EXPIRES : new Date(now + ttlMs).toISOString(),
 	};
 }
 
@@ -342,7 +353,7 @@ export function claimPairingCode(dataDir: string, input: string, client: ClientI
 		if (Date.parse(link.expiresAt) <= now) return { ok: false, reason: "expired" } as const;
 		writePairing(dataDir, links.map((l) => (l === link ? { ...l, consumedAt: new Date(now).toISOString() } : l)), now);
 		const label = client.label ?? link.label;
-		const session = newSession("pairing", { ...client, ...(label ? { label } : {}) }, now, SESSION_TTL_MS);
+		const session = newSession("pairing", { ...client, ...(label ? { label } : {}) }, now);
 		writeSessions(dataDir, [...sessions, session], now);
 		return { ok: true, token: mintToken(dataDir, session), session } as const;
 	}, { wait: options.wait });
@@ -360,15 +371,17 @@ export function issueSession(
 		const stamp = new Date(now).toISOString();
 		const sessions = readSessionsFile(dataDir).sessions.map((s) =>
 			options.replaceMethod && s.method === options.method && !s.revokedAt ? { ...s, revokedAt: stamp } : s);
-		const session = newSession(options.method, options.client, now, options.ttlMs ?? SESSION_TTL_MS, options.hidden);
+		const session = newSession(options.method, options.client, now, options.ttlMs ?? (options.method === "cli" ? CLI_SESSION_TTL_MS : undefined), options.hidden);
 		writeSessions(dataDir, [...sessions, session], now);
 		return { token: mintToken(dataDir, session), session };
 	}, { wait: options.wait });
 }
 
-const active = (s: SessionRecord, now: number) => !s.revokedAt && Date.parse(s.expiresAt) > now;
+const active = (s: SessionRecord, now: number) => !s.revokedAt && (s.expiresAt === NEVER_EXPIRES || Date.parse(s.expiresAt) > now);
 
-/** The session a token names, when its signature, expiry and record all check out. */
+/** The session a token names, when its signature and record check out. The
+ * record's expiry is the one that counts: a token's `exp` claim is only
+ * structure, so tokens minted when sessions lasted 30 days keep working. */
 export function verifyToken(dataDir: string, token: string, options: { now?: number } = {}): SessionRecord | undefined {
 	const now = options.now ?? Date.now();
 	const parts = token.split(".");
@@ -384,7 +397,7 @@ export function verifyToken(dataDir: string, token: string, options: { now?: num
 	if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) return undefined;
 	let claims: { v?: unknown; kind?: unknown; sid?: unknown; exp?: unknown };
 	try { claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); } catch { return undefined; }
-	if (claims.v !== 1 || claims.kind !== "session" || typeof claims.sid !== "string" || typeof claims.exp !== "number" || claims.exp <= now) return undefined;
+	if (claims.v !== 1 || claims.kind !== "session" || typeof claims.sid !== "string" || typeof claims.exp !== "number") return undefined;
 	let sessions: SessionRecord[];
 	try { sessions = readSessionsFile(dataDir).sessions; } catch { return undefined; }
 	const session = sessions.find((s) => s.id === claims.sid);
@@ -427,17 +440,22 @@ export function revokeOthers(dataDir: string, currentId: string, options: WriteO
 }
 
 /** Record that a session was used, at most once a minute. On the request
- * path, so it never waits for the lock: a busy store just skips this time. */
-export function touchLastSeen(dataDir: string, id: string, options: { now?: number } = {}): void {
+ * path, so it never waits for the lock: a busy store just skips this time.
+ * True when it recorded it (proxy.ts then refreshes the browser cookie). */
+export function touchLastSeen(dataDir: string, id: string, options: { now?: number } = {}): boolean {
 	const now = options.now ?? Date.now();
 	const fresh = (s: SessionRecord | undefined) => !s || (s.lastSeenAt !== undefined && now - Date.parse(s.lastSeenAt) < LAST_SEEN_INTERVAL_MS);
-	if (fresh(readSessionsFile(dataDir).sessions.find((s) => s.id === id))) return;
-	try { withLock(dataDir, () => {
-		const sessions = readSessionsFile(dataDir).sessions;
-		const target = sessions.find((s) => s.id === id);
-		if (fresh(target) || !target || !active(target, now)) return;
-		writeSessions(dataDir, sessions.map((s) => (s === target ? { ...s, lastSeenAt: new Date(now).toISOString() } : s)), now);
-	}, { wait: false }); } catch (error) {
+	if (fresh(readSessionsFile(dataDir).sessions.find((s) => s.id === id))) return false;
+	try {
+		return withLock(dataDir, () => {
+			const sessions = readSessionsFile(dataDir).sessions;
+			const target = sessions.find((s) => s.id === id);
+			if (fresh(target) || !target || !active(target, now)) return false;
+			writeSessions(dataDir, sessions.map((s) => (s === target ? { ...s, lastSeenAt: new Date(now).toISOString() } : s)), now);
+			return true;
+		}, { wait: false });
+	} catch (error) {
 		if (!(error instanceof LockBusy)) throw error;
+		return false;
 	}
 }

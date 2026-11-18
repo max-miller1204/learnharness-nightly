@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 import { createPairingLink, formatCode } from "../selfhost/src/auth-store.ts";
 import { browserSession, createPairingToken, listClients, revokeClient, revokeOtherClients, sessionState, tailscaleOrigin, tokenExchange } from "../src/server/auth-routes.ts";
-import { clientInfo, inferBrowser, inferDeviceType, inferOs } from "../src/server/auth.ts";
+import { COOKIE_LIFETIME_MS, clientInfo, inferBrowser, inferDeviceType, inferOs } from "../src/server/auth.ts";
 import { printStartupPairingLink } from "../src/server/startup-pairing.ts";
 import { AUTH_TEST_DATA_DIR, cookieName } from "./helpers/auth-data-dir.ts";
 
@@ -46,8 +46,13 @@ describe("browser pairing", () => {
 	});
 
 	it("marks the cookie Secure over https (X-Forwarded-Proto counts)", async () => {
-		const { setCookie } = await pairBrowser(MAC_CHROME, { "x-forwarded-proto": "https" });
+		const started = Date.now();
+		const { response, setCookie } = await pairBrowser(MAC_CHROME, { "x-forwarded-proto": "https" });
 		assert.match(setCookie, /; Secure$/);
+		const expires = Date.parse(/Expires=([^;]+)/.exec(setCookie)?.[1] ?? "");
+		assert.ok(expires >= started + COOKIE_LIFETIME_MS - 1000);
+		assert.ok(expires <= Date.now() + COOKIE_LIFETIME_MS);
+		assert.deepEqual(await response.json(), { authenticated: true });
 	});
 
 	it("signed out, the session route says so", async () => {
@@ -82,13 +87,14 @@ describe("native token exchange", () => {
 	it("trades a code for a bearer token with the client's own metadata", async () => {
 		const { code } = createPairingLink(AUTH_TEST_DATA_DIR);
 		const response = await exchange({ ...base, subject_token: code, client_label: "Max's phone", client_device_type: "mobile", client_os: "Android" });
-		const body = await response.json() as { access_token: string; token_type: string; issued_token_type: string; expires_in: number };
+		const body = await response.json() as { access_token: string; token_type: string; issued_token_type: string; expires_in?: number };
 		assert.equal(response.status, 200);
 		assert.equal(body.token_type, "Bearer");
 		assert.equal(body.issued_token_type, "urn:ietf:params:oauth:token-type:access_token");
-		assert.ok(body.expires_in > 29 * 24 * 3600 && body.expires_in <= 30 * 24 * 3600);
-		const list = await listClients(new Request(`${origin}/api/auth/clients`, { headers: { authorization: `Bearer ${body.access_token}` } })).json() as { clients: { current: boolean; label?: string; deviceType: string; os?: string }[] };
+		assert.equal(body.expires_in, undefined);
+		const list = await listClients(new Request(`${origin}/api/auth/clients`, { headers: { authorization: `Bearer ${body.access_token}` } })).json() as { clients: { current: boolean; label?: string; deviceType: string; os?: string; expiresAt: string | null }[] };
 		const me = list.clients.find((c) => c.current);
+		assert.equal(me?.expiresAt, null);
 		assert.deepEqual({ label: me?.label, deviceType: me?.deviceType, os: me?.os }, { label: "Max's phone", deviceType: "mobile", os: "Android" });
 		assert.equal((await exchange({ ...base, subject_token: code })).status, 400, "single use");
 	});
