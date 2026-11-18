@@ -52,4 +52,6 @@ Preconditions: `scripts/build.sh "$RUN" both`; systemd user manager running; not
 - Tier B (`selfhost-b.sh`) always takes `lh update --now` on the head; the browser drive in step 3 is by hand (no script yet).
 - `/api/updates` changes reach an open browser over `/api/events`; after a server restart the stream reconnects with a backoff (about 20 s here), so poll the pill instead of reading it once.
 - Read open browsers before reloading them: a reload hides what a user who kept the tab open sees.
+- Under memory pressure (other agents building) the reconnect took 25 to 40 s (ran 2026-11-18): poll each open browser every few seconds for at least a minute after the server is back before calling a pill stale.
+- Settings' "Version X" row is baked into the client bundle (`APP_VERSION`). Versions repacked from B's archive keep B's chunk file names, so a browser that cached them keeps showing B's number after a switch. That comes from repacking, not from the app: read the running version from `/api/health`.
 - The user's real `learnharness.service` follows the real nightly feed and can update itself during a run; the tier B fingerprint then differs. Check `~/.learnharness/userdata/logs/update.log` (real versions, not `...20000101.N`) before blaming the run.
