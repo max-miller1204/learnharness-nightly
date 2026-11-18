@@ -48,11 +48,11 @@ describe("preview helpers", () => {
 		const savedPath = process.env.PATH;
 		try {
 			const log = path.join(dir, "calls");
-			fs.writeFileSync(path.join(dir, "ps"), `#!/bin/sh\necho "LC_ALL=$LC_ALL $*" >> "${log}"\n[ "$4" = 4242 ] || exit 1\necho "Wed Nov 18 09:41:07 2026"\n`, { mode: 0o755 });
+			fs.writeFileSync(path.join(dir, "ps"), `#!/bin/sh\necho "LC_ALL=$LC_ALL TZ=$TZ $*" >> "${log}"\n[ "$4" = 4242 ] || exit 1\necho "Wed Nov 18 09:41:07 2026"\n`, { mode: 0o755 });
 			process.env.PATH = `${dir}:${savedPath}`;
 			assert.equal(processStartTime(4242), "Wed Nov 18 09:41:07 2026");
 			assert.equal(processStartTime(4243), undefined, "no such process");
-			assert.equal(fs.readFileSync(log, "utf8"), "LC_ALL=C -o lstart= -p 4242\nLC_ALL=C -o lstart= -p 4243\n");
+			assert.equal(fs.readFileSync(log, "utf8"), "LC_ALL=C TZ=UTC0 -o lstart= -p 4242\nLC_ALL=C TZ=UTC0 -o lstart= -p 4243\n");
 		} finally {
 			process.env.PATH = savedPath;
 			fs.rmSync(dir, { recursive: true, force: true });
@@ -61,6 +61,19 @@ describe("preview helpers", () => {
 		const started = processStartTime(process.pid);
 		assert.ok(started, "this process has a start time");
 		assert.equal(processStartTime(process.pid), started, "and it does not change");
+	});
+
+	it("reads the same start time after a timezone change", () => {
+		const savedTz = process.env.TZ;
+		try {
+			process.env.TZ = "America/Chicago";
+			const recorded = processStartTime(process.pid);
+			process.env.TZ = "Asia/Tokyo";
+			assert.equal(processStartTime(process.pid), recorded);
+		} finally {
+			if (savedTz === undefined) delete process.env.TZ;
+			else process.env.TZ = savedTz;
+		}
 	});
 
 	it("knows a preview server off Linux by its recorded start time", () => {
@@ -97,7 +110,7 @@ http.createServer((req, res) => {
 }).listen(Number(process.env.PORT), process.env.HOSTNAME);
 `;
 
-function buildFeed(dir: string): string {
+function buildFeed(dir: string, arch = process.arch === "arm64" ? "linux-arm64" : "linux-x64"): string {
 	const stage = fs.mkdtempSync(path.join(os.tmpdir(), "lh-preview-stage-"));
 	fs.mkdirSync(path.join(stage, "node", "bin"), { recursive: true });
 	fs.writeFileSync(path.join(stage, "node", "bin", "node"), `#!/bin/sh\nexec "${process.execPath}" "$@"\n`, { mode: 0o755 });
@@ -110,7 +123,6 @@ function buildFeed(dir: string): string {
 	execFileSync("tar", ["-czf", file, "-C", stage, "."]);
 	fs.rmSync(stage, { recursive: true, force: true });
 	const sha256 = createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-	const arch = process.arch === "arm64" ? "linux-arm64" : "linux-x64";
 	const feed = { version: VERSION, tag: "preview-pr-7", sha: "abcdef0123456789", publishedAt: "2026-11-17T00:00:00Z", launcherProtocol: 1, minLauncherProtocol: 1, assets: { [arch]: { url: pathToFileURL(file).href, sha256 } } };
 	fs.writeFileSync(path.join(releaseDir, "latest.json"), JSON.stringify(feed));
 	return pathToFileURL(path.join(releaseDir, "latest.json")).href;
@@ -426,6 +438,64 @@ require("node:module").syncBuiltinESMExports();
 			assert.match(r.stderr, new RegExp(`Port ${port} is in use`));
 		} finally {
 			blocker.close();
+		}
+	});
+
+	// The launcher believes it runs on macOS (a preload), so it records and
+	// checks the server's start time; a stub ps reports one for any live pid.
+	describe("off Linux", () => {
+		const STARTED = "Wed Nov 18 09:41:07 2026";
+		let bin: string;
+		let darwin: string;
+		beforeEach(() => {
+			bin = path.join(work, "bin");
+			fs.mkdirSync(bin);
+			fs.writeFileSync(path.join(bin, "ps"), `#!/bin/sh\n[ "$1 $2 $3" = "-o lstart= -p" ] || exit 2\nkill -0 "$4" 2>/dev/null || exit 1\necho "${STARTED}"\n`, { mode: 0o755 });
+			darwin = path.join(work, "darwin.mjs");
+			fs.writeFileSync(darwin, 'Object.defineProperty(process, "platform", { value: "darwin" });\nObject.defineProperty(process, "arch", { value: "arm64" });\n');
+		});
+		const start = async (port: number, feedUrl: string) => {
+			let output = "";
+			const child = track(spawn(process.execPath, ["--import", pathToFileURL(darwin).href, LH, "preview", "7", "--port", String(port), "--feed-url", feedUrl], {
+				env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, LH_HOME: home, STUB_ENV_OUT: path.join(work, "env.json"), DISPLAY: "", WAYLAND_DISPLAY: "" },
+				stdio: ["ignore", "pipe", "pipe"],
+			}));
+			child.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+			child.stderr?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+			await waitFor(child, /Ctrl\+C stops the preview/, () => output);
+			return { child, output: () => output };
+		};
+		const stop = async (child: ChildProcess) => {
+			child.kill("SIGINT");
+			assert.equal(await new Promise((resolve) => child.once("exit", resolve)), 0);
+		};
+
+		it("records the server's start time and stops the orphan that still has it", async () => {
+			const feedUrl = buildFeed(work, "darwin-arm64");
+			const port = await freePort();
+			const first = await start(port, feedUrl);
+			const match = new RegExp(`^(\\d+)\n${STARTED}\n$`).exec(fs.readFileSync(previewPidPath(home, 7), "utf8"));
+			assert.ok(match, "the pid, then the start time");
+			const orphan = Number(match[1]);
+			first.child.kill("SIGKILL");
+			await new Promise((resolve) => first.child.once("exit", resolve));
+
+			const second = await start(port, feedUrl);
+			assert.match(second.output(), new RegExp(`crashed \`lh preview\` left running \\(pid ${orphan}\\)`));
+			assert.throws(() => process.kill(orphan, 0), "the orphan is gone");
+			await stop(second.child);
+		});
+
+		for (const [what, recorded] of [["a later start time (the pid was reused)", "Mon Jan  1 00:00:00 2024\n"], ["no start time (an old pid file)", ""]] as const) {
+			it(`leaves a process alone when the pid file has ${what}`, async () => {
+				const other = track(spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" }));
+				fs.mkdirSync(path.dirname(previewPidPath(home, 7)), { recursive: true });
+				fs.writeFileSync(previewPidPath(home, 7), `${other.pid}\n${recorded}`);
+				const preview = await start(await freePort(), buildFeed(work, "darwin-arm64"));
+				assert.doesNotMatch(preview.output(), /Stopping/);
+				assert.doesNotThrow(() => process.kill(other.pid ?? 0, 0), "still running");
+				await stop(preview.child);
+			});
 		}
 	});
 });

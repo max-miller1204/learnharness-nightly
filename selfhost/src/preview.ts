@@ -46,10 +46,11 @@ export function previewPidPath(home: string, pr: number): string {
 /**
  * When a process started, to the second, as `ps -o lstart=` prints it, or
  * undefined if there is no such process. A process that reuses a pid starts
- * later, so the pid and its start time name one process.
+ * later, so the pid and its start time name one process. The locale and the
+ * zone are fixed, so a later run reads the same text after a timezone change.
  */
 export function processStartTime(pid: number): string | undefined {
-	const ps = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
+	const ps = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC0" } });
 	return (ps.status === 0 && ps.stdout.trim()) || undefined;
 }
 
