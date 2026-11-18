@@ -9,6 +9,7 @@ import type { MobileApi } from "./protocol";
 import { helperCard, isSubagentSteer, teachSeam } from "./lesson";
 import { CompactionCut, CompactionNote, DispatchCard, GraphContextCard, ReasoningRow, SeamDivider, SteerCard, ThinkingRow } from "./LessonParts";
 import { Markdown } from "./Markdown";
+import { proseType } from "./render-markdown";
 import { PlanDiagram } from "./PlanDiagram";
 import { Label } from "./ui";
 import { space, useTheme } from "./theme";
@@ -117,7 +118,7 @@ function Part({ part, context }: { part: LhViewPart; context: PartContext }) {
             {/* The learner's own words stay plain; the chosen options render math like the question (answered-card.tsx). */}
             {!status && !!answer.text && <Text selectable style={s.prose}>{answer.text}</Text>}
             {!status && answer.answers?.map(({ label }, index) => <Markdown key={index} text={label} small />)}
-            {!status && !!answer.other && <Text selectable style={s.prose}>{answer.other}</Text>}
+            {!status && !!answer.other && <Text selectable style={[s.prose, proseType(true)]}>{answer.other}</Text>}
             {typeof answer.correct === "boolean" && !answer.dismissed && !answer.dontKnow &&
               <Text style={[s.label, { color: answer.correct ? c.success : c.error }]}>{answer.correct ? "Correct" : "Incorrect"}</Text>}
             {!!answer.explanation && <Markdown text={answer.explanation} />}

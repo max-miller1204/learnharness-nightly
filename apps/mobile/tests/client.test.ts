@@ -4,7 +4,7 @@ import { PROTOCOL_HEADER, PROTOCOL_ROUTES, type LhMessage, type TurnStreamEvent 
 import { ApiError, apiClient, bearerKey, browserDestination, readPairingLink } from "../src/protocol.ts";
 import { consumeSse } from "../src/sse.ts";
 import { inputWasSaved, turnReplay } from "../src/live-turn.ts";
-import { httpsLink, parseMarkdown, proseType, renderMarkdown } from "../src/render-markdown.ts";
+import { httpsLink, parseMarkdown, proseCss, proseType, renderMarkdown } from "../src/render-markdown.ts";
 
 const origin = "https://test.learnharness.example:8443";
 const other = "https://other.learnharness.example";
@@ -120,6 +120,12 @@ test("a quiz choice label from the TestFlight report renders its math", () => {
 test("quiz choices use the web's smaller text under the reading-size question", () => {
   assert.deepEqual(proseType(), { fontSize: 16, lineHeight: 24 });
   assert.deepEqual(proseType(true), { fontSize: 14, lineHeight: 20 });
+});
+
+test("the math view keeps a ratio line height so wrapped headings fit", () => {
+  assert.equal(proseCss(false, 1), "16px/1.5");
+  assert.equal(proseCss(false, 2), "32px/1.5");
+  assert.match(proseCss(true, 1), /^14px\/1\.428/);
 });
 
 test("only HTTPS links leave the transcript through the confirmation handler", () => {

@@ -15,6 +15,13 @@ export function proseType(small = false) {
   return small ? { fontSize: 14, lineHeight: 20 } : { fontSize: 16, lineHeight: 24 };
 }
 
+/** The math view's CSS font size and line height. The line height stays a ratio,
+ *  so headings and other larger text keep lines that fit them. */
+export function proseCss(small: boolean | undefined, fontScale: number) {
+  const { fontSize, lineHeight } = proseType(small);
+  return `${fontSize * fontScale}px/${lineHeight / fontSize}`;
+}
+
 export function httpsLink(href: unknown): string | undefined {
   if (typeof href !== "string" || !/^https:\/\//i.test(href)) return;
   try {

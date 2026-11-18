@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Alert, Linking, useWindowDimensions } from "react-native";
 import { WebView } from "react-native-webview";
-import { httpsLink, parseMarkdown, proseType, renderMarkdown } from "./render-markdown";
+import { httpsLink, parseMarkdown, proseCss, renderMarkdown } from "./render-markdown";
 import { NativeMarkdown } from "./NativeMarkdown";
 import { useTheme } from "./theme";
 
@@ -28,14 +28,14 @@ function MathMarkdown({ parsed, small }: { parsed: ReturnType<typeof parseMarkdo
   const { fontScale } = useWindowDimensions();
   const [height, setHeight] = useState(26);
   const [failed, setFailed] = useState(false);
-  const type = proseType(small);
+  const font = proseCss(small, fontScale);
   const source = useMemo(() => ({
     html: `<!doctype html><html><head>
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-lh-size'; base-uri 'none'; form-action 'none'">
       <style>
         html,body { margin:0; padding:0; background:transparent; color:${c.text};
-          font: ${type.fontSize * fontScale}px/${type.lineHeight * fontScale}px system-ui,sans-serif; overflow-wrap:anywhere; }
+          font: ${font} system-ui,sans-serif; overflow-wrap:anywhere; }
         #content { display:flow-root; }
         #content > :first-child { margin-top:0; }
         #content > :last-child { margin-bottom:0; }
@@ -65,7 +65,7 @@ function MathMarkdown({ parsed, small }: { parsed: ReturnType<typeof parseMarkdo
         window.addEventListener('load', resize);
         new ResizeObserver(resize).observe(content);
       </script></body></html>`,
-  }), [c, fontScale, parsed, type.fontSize, type.lineHeight]);
+  }), [c, font, parsed]);
   if (failed) return <NativeMarkdown tokens={parsed.tokens} openLink={confirmExternalLink} small={small} />;
 
   // The local document reports its size and link taps. It cannot navigate or load external content.

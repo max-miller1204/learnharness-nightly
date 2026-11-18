@@ -97,6 +97,12 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
     return () => { settler.cancel(); settling.current = null; };
   }, [loaded, opened]);
   const hidden = loaded && !opened;
+  // Content growth, or a shorter viewport when the question dock below grows,
+  // keeps the transcript at the bottom while opening or already there.
+  function pin() {
+    if (settling.current || nearBottom.current) scroller.current?.scrollToEnd({ animated: false });
+    settling.current?.changed();
+  }
 
   useEffect(() => {
     reloadRef.current = refresh;
@@ -199,13 +205,10 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
         </View>
       )}
       <ScrollView ref={scroller} style={{ flex: 1, opacity: hidden ? 0 : 1 }} contentContainerStyle={[s.section, { gap: space.lg }]}
-        keyboardShouldPersistTaps="handled" scrollEventThrottle={100}
+        pointerEvents={hidden ? "none" : "auto"} accessibilityElementsHidden={hidden} importantForAccessibility={hidden ? "no-hide-descendants" : "auto"}
+        keyboardShouldPersistTaps="handled" scrollEventThrottle={100} onLayout={pin} onContentSizeChange={pin}
         onScroll={({ nativeEvent: { contentOffset, layoutMeasurement, contentSize } }) => {
           if (!settling.current) nearBottom.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 100;
-        }}
-        onContentSizeChange={() => {
-          if (settling.current || nearBottom.current) scroller.current?.scrollToEnd({ animated: false });
-          settling.current?.changed();
         }}>
         {session.loading && <Text style={s.muted}>Loading session…</Text>}
         <Transcript settled={settledView} tail={session.tail} api={api} chatId={id} jobs={jobs} liveHelpers={lessonView} openPlan={() => setPlanOpen(true)} />
