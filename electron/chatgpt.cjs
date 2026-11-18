@@ -423,7 +423,13 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 			const body = await json(`${RESOURCE}/models`, { headers: { Authorization: `Bearer ${token.accessToken}` }, signal: AbortSignal.any([transportAbort.signal, AbortSignal.timeout(15000)]) });
 			authorized(false, undefined, token.epoch);
 			if (sequence !== catalogSequence || active()?.id !== token.accountId || !Array.isArray(body.models)) throw fail("catalog");
-			const visible = body.models.filter((m) => m && m.visibility === "list" && nonempty(m.slug) && typeof m.display_name === "string").map((m) => ({ id: m.slug, name: m.display_name }));
+			const visible = body.models.filter((m) => m && m.visibility === "list" && nonempty(m.slug) && typeof m.display_name === "string").map((m) => ({
+				id: m.slug, name: m.display_name,
+				// Raw account metadata for models Pi's catalog lacks; the server bridge validates it.
+				...(m.context_window !== undefined && { contextWindow: m.context_window }),
+				...(Array.isArray(m.input_modalities) && { input: m.input_modalities }),
+				...(Array.isArray(m.supported_reasoning_levels) && { reasoningLevels: m.supported_reasoning_levels.map((level) => level?.effort) }),
+			}));
 			const changed = JSON.stringify(visible) !== JSON.stringify(catalog);
 			catalog = visible;
 			if (changed) authorityRevision++;

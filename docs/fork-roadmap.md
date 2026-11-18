@@ -23,7 +23,7 @@ Rows are in build order. **Order** is the planned sequence, after the self-hosti
 
 | Order | # | Item | Group | Depends on | Touches core |
 |---|---|---|---|---|---|
-| 1 | 20 | Gemini CLI and Codex CLI providers | Providers | none | Moderate (new provider folders, Settings rows) |
+| 1 | 20 | Gemini CLI and Codex CLI providers (both parked) | Providers | none | Moderate (new provider folders, Settings rows) |
 | 2 | 12 | Preview builds of PRs | Review workflow | none | Small |
 | 3 | 6 | Login and pairing | Access + security | none | Yes |
 | 4 | 1 | Electron desktop nightlies | Desktop + distribution | none | Small (`electron/main.cjs`) |
@@ -65,6 +65,8 @@ Items 25 to 27 cover the owner's ingestion workflow (PDFs, code, spreadsheets an
 ### 20. Gemini CLI and Codex CLI providers
 
 **Status.** Gemini CLI: **parked** after the 2026-11-17 spike. The CLI no longer accepts personal Google sign-in (it points users to Antigravity), so it can't reach Gemini subscriptions. See [docs/specs/gemini-cli-provider.md](specs/gemini-cli-provider.md).
+
+Codex CLI: **parked, not built** (2026-11-17). A spike ([record](specs/codex-cli-provider.md)) showed the Codex CLI can run with its tools off, but only with about 25 flags plus a rewrite of Codex's internal model catalog, a debug command for model discovery, and no live typing. That is much more upkeep than the Claude Code provider. The models it would have added were already offered to the ChatGPT sign-in and silently dropped by `refreshChatGPTModels`. [ChatGPT account models](specs/chatgpt-account-models.md) fixes that instead.
 
 **Why.** Reach models that LearnHarness can't use today, the same way Claude Code is used now: as an external CLI that LearnHarness drives as a model.
 - **Gemini CLI:** Google/Gemini subscriptions aren't reachable any other way. Today Gemini is API-key only.
