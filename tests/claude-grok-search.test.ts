@@ -12,7 +12,6 @@ process.env.LH_AUTH_FILE = path.join(directory, "auth.json");
 process.env.LH_IGNORE_ENV_KEYS = "1";
 delete process.env.LH_DESKTOP_SERVER;
 delete process.env.LH_DESKTOP_API_SECRET;
-delete process.env.LH_GROK_SEARCH_PROBE;
 const { ClaudeSearchCollector, claudeSearchArgs, parseClaudeAccount, readClaudeAuthStatus, searchClaudeCode } = await import("../src/agent/claude-code/search.ts");
 const { searchPickerStatus, searchProvider } = await import("../src/server/search.ts");
 const { claudeSearchSeams } = await import("../src/server/subscription-search.ts");
@@ -226,10 +225,10 @@ test("Claude Code search uses the selected CLI account, saves its links, and nev
 	assert.equal(runs, 3);
 });
 
-test("Grok search is offered only behind the probe switch and uses the OAuth lease with hosted search", async () => {
+test("Grok search is offered when a Grok account is connected, with no switch, and uses the OAuth lease with hosted search", async () => {
 	writeSettings({ version: 1, agent: { search: { engine: "xai-subscription", accountSelection: "unused" } } });
-	assert.match((await searchPickerStatus()).subscriptions[2]!.reason, /unavailable on the LearnHarness Grok OAuth connection/);
-	await assert.rejects(searchProvider()!.search("query", 5), /unavailable on the LearnHarness Grok OAuth connection/);
+	assert.equal(process.env.LH_GROK_SEARCH_PROBE, undefined);
+	assert.match((await searchPickerStatus()).subscriptions[2]!.reason, /Connect Grok in Providers/);
 
 	const fullCatalog = piModels().getProvider("xai")!.getModels().filter(({ id }) => ["grok-4.5", "grok-4.3", "grok-4.7"].includes(id));
 	assert.equal(fullCatalog.length, 3);
@@ -257,11 +256,21 @@ test("Grok search is offered only behind the probe switch and uses the OAuth lea
 		return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "Content-Type": "text/event-stream" } });
 	};
 
-	process.env.LH_GROK_SEARCH_PROBE = "1";
+	xai.available = false;
+	assert.equal((await searchPickerStatus()).subscriptions[2]!.reason, "Grok sign-in is unavailable on this LearnHarness connection.", "this server has no subscription sign-in");
+	await assert.rejects(searchProvider()!.search("query", 5), /Grok sign-in is unavailable/);
+	xai.available = true;
+	xai.connected = false;
+	xai.revision++;
+	assert.equal((await searchPickerStatus()).subscriptions[2]!.reason, "Connect Grok in Providers to use it for search.", "sign-in is available but no account is connected");
+	await assert.rejects(searchProvider()!.search("query", 5), /Connect Grok in Providers/);
+	xai.connected = true;
+	xai.revision++;
+
 	const option = (await searchPickerStatus()).subscriptions[2]!;
 	assert.equal(option.available, true);
 	assert.equal(option.account?.label, "Grok account");
-	assert.match(option.reason, /Search probe/);
+	assert.match(option.reason, /^Search can use your Grok subscription allowance or credits/);
 	writeSettings({ version: 1, agent: { search: { engine: "xai-subscription", accountSelection: option.account!.selection } } });
 	events = [
 		{ type: "response.web_search_call.completed", item_id: "search", output_index: 0 },
@@ -292,5 +301,4 @@ test("Grok search is offered only behind the probe switch and uses the OAuth lea
 	xai.revision++;
 	await assert.rejects(searchProvider()!.search("query", 5), /Reselect Grok/);
 	assert.equal(bodies.length, 2);
-	delete process.env.LH_GROK_SEARCH_PROBE;
 });

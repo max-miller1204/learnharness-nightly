@@ -7,7 +7,7 @@ Settings → Agent → Tools → Search engine offers subscription accounts next
 - `picker`: each subscription row shows its account label (never blank), the plan usage disclosure, or the reason it is unavailable.
 - `chatgpt`: native Responses web search through the Sign in with ChatGPT lease.
 - `claude-code`: one headless `claude -p` run with only `WebSearch` (haiku, low effort). The account comes from `claude auth status --json`.
-- `grok-probe`: Grok is selectable only when the server starts with `LH_GROK_SEARCH_PROBE=1`, and then uses the Grok OAuth lease with the hosted `web_search` tool on grok-4.7 at low reasoning.
+- `grok`: Grok is selectable whenever a Grok account is connected, and uses the Grok OAuth lease with the hosted `web_search` tool on grok-4.7 at low reasoning.
 - `research-sources`: a research job keeps the native links as sources and drops a source whose fetch returned a non-2xx status.
 - `no-fallback`: a failed search reports its reason and never uses another account, engine or key.
 
@@ -26,15 +26,13 @@ Preconditions: the Feature README baseline, plus a saved Tavily key so a silent 
    - Choose it and run a research job. Sources are the WebSearch result titles and URLs.
    - Record the effective tool list: the CLI's `system/init` line must list only `WebSearch`, plus `EndConversation` if the CLI adds it.
    - Failure without fallback: run `claude auth logout` in that HOME, or pick the row and then sign in as another account. The next search reports the reason ("claude auth login" or "Reselect Claude Code") and sends no Tavily request.
-3. Grok probe, only after 1 and 2 pass: start the head instance with `LH_GROK_SEARCH_PROBE=1 scripts/start.sh "$RUN" head`. Sign in to Grok in Providers through xAI's own flow and enable background use. Choose Grok in the picker and run one research job. Record:
-   - whether native search completed (sources appear) or the error text, including the `Provider response:` part from xAI,
-   - whether citations came back,
-   - what xAI shows for subscription usage or any extra charge on the account.
-
-   Then stop the instance. Grok stays unavailable on every instance without the switch.
+3. Grok: sign in to Grok in Providers through xAI's own flow and enable background use. The picker row shows "Grok account" and the usage disclosure. Choose Grok and run a research job. Check that:
+   - native search completes and the sources are clickable xAI citations,
+   - the request used grok-4.7 at low reasoning,
+   - a failure shows xAI's own text after `Provider response:` and sends no Tavily request,
+   - disconnecting Grok, or reconnecting it as a new connection, makes the next search report the reason ("Connect Grok" or "Reselect Grok").
 
 ## Gotchas
 
-- `start.sh` uses `env -i`, so `LH_GROK_SEARCH_PROBE` reaches the app only through its passthrough line.
 - The Claude Code row reads the sign-in fresh when Settings loads and before every search. A sign-in change made while Settings is open shows up after reopening it.
 - Claude Code search links carry no snippet. The researcher fetches the pages it needs.

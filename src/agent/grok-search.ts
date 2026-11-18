@@ -4,7 +4,7 @@ import { responsesSearchCollector } from "./chatgpt-search.ts";
 import { APP_IDENTITY, piModels } from "./models.ts";
 import { nativeSubscriptionStream } from "./subscription-stream.ts";
 
-/** Probe only: one Responses web search through the Grok OAuth lease. The
+/** One Responses web search through the Grok OAuth lease. The
  * stream reports xAI's own error text, so a refusal reaches the user as is. */
 export async function searchGrok(
 	model: Model<Api>,

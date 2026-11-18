@@ -24,7 +24,7 @@ function empty(model: Model<Api>): AssistantMessage {
 	return { role: "assistant", api: model.api, provider: model.provider, model: model.id, content: [], stopReason: "error", timestamp: Date.now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 }
 /** Direct native provider dispatch bypasses Models' ambient credential resolution entirely.
- * providerDetail appends the provider's own error text (the Grok search probe). */
+ * providerDetail appends the provider's own error text (Grok search). */
 export function nativeSubscriptionStream(provider: Provider, background: () => boolean, lifecycle?: SubscriptionDispatchLifecycle, providerDetail = false): StreamFunction<Api, SimpleStreamOptions> {
 	return (logicalModel, context, options) => {
 		const output = new AssistantMessageEventStream();

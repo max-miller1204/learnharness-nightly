@@ -170,7 +170,7 @@ test("shared search uses the bound OAuth account, preserves native sources, and 
 	revision++;
 	await assert.rejects(search, /Connect ChatGPT/);
 	writeSettings({ version: 1, agent: { search: { engine: "xai-subscription" } } });
-	await assert.rejects(search, /Grok OAuth connection/);
+	await assert.rejects(search, /Grok sign-in is unavailable/);
 	assert.equal(urls.length, 6, "no failure may send a fallback request");
 
 	first.connected = true;
