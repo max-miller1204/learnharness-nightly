@@ -8,7 +8,7 @@
     "deps:check": "expo install --check",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts",
+    "test": "tsx --import ./tests/shared-modules.mjs --test tests/*.test.ts",
     "export:ios": "expo export --platform ios --output-dir dist/ios",
     "export:android": "expo export --platform android --output-dir dist/android"
   },

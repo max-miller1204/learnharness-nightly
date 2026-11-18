@@ -75,9 +75,31 @@ export function dispatchedKind(part: LhViewPart, jobs: readonly JobRecord[]): Jo
   return known || (typeof ack?.jobId === "string" && ack.dispatched === true) ? "plugin" : undefined;
 }
 
+/** The card a settled tool part shows. Without lesson-view-v1 there is no
+ * live helper status, so a dispatch shows nothing (delivered results still
+ * render from the record). */
+export function helperCard(part: LhViewPart, jobs: readonly JobRecord[], live: boolean): { kind: JobKind; job?: JobRecord } | null {
+  if (!live) return null;
+  const kind = dispatchedKind(part, jobs);
+  return kind ? { kind, job: jobs.find((job) => job.toolCallId === part.toolCallId) } : null;
+}
+
+/** A skip saved while a turn runs is parked (202 `{ok, parked}`) and stops that turn. */
+export const skipParked = (result: unknown) => (result as { parked?: unknown } | null | undefined)?.parked === true;
+
 export function elapsedSeconds(job: JobRecord, now: number): number | null {
   const started = Date.parse(job.createdAt);
   return Number.isNaN(started) ? null : Math.max(0, Math.round((now - started) / 1000));
+}
+
+/** Out-of-order reads: each call starts a read and returns whether that read
+ * is still the newest when its answer arrives. */
+export function newestOnly() {
+  let issued = 0;
+  return () => {
+    const mine = ++issued;
+    return () => mine === issued;
+  };
 }
 
 /** True when a job the phone saw running has stopped since the last list. */

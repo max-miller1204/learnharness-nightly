@@ -6,8 +6,8 @@ import { blockLayout, edgePathD } from "../../../src/core/plan-layout.ts";
 import { projectView, type LhViewPart } from "../../../src/core/view.ts";
 import { inputWasSaved } from "../src/live-turn.ts";
 import {
-  checkNeedsReveal, dispatchedKind, fitView, jobLabel, jobSettled, livePlan, pathEnd, PHASE_LABEL, sessionPhase,
-  skipAnswer, teachSeam, zoomView, ZOOM_MAX,
+  checkNeedsReveal, dispatchedKind, fitView, helperCard, jobLabel, jobSettled, livePlan, newestOnly, pathEnd, PHASE_LABEL, sessionPhase,
+  isSubagentSteer, skipAnswer, skipParked, teachSeam, zoomView, ZOOM_MAX,
 } from "../src/lesson.ts";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -92,6 +92,31 @@ test("helper cards: which tool parts dispatched a helper, and when one settles",
   assert.equal(jobSettled(new Map(), [job("done")]), false, "the first read adopts history");
   assert.equal(jobSettled(new Map([["j1", "running"]]), [job("running")]), false);
   assert.equal(jobSettled(new Map([["j1", "running"]]), [job("done")]), true);
+  // Only the newest jobs read applies: a slow older "running" answer is dropped.
+  const begin = newestOnly();
+  const older = begin(), newer = begin();
+  assert.equal(newer(), true);
+  assert.equal(older(), false);
+});
+
+test("an older server (no lesson-view-v1) shows no live helper status", () => {
+  const research = { type: "tool-research", toolCallId: "t1", state: "output-available" } as LhViewPart;
+  const running = { id: "j1", kind: "research", chatId: "c1", toolCallId: "t1", status: "running", activity: "web_search: sets",
+    createdAt: "2026-11-18T00:00:00.000Z", updatedAt: "2026-11-18T00:00:00.000Z" } as JobRecord;
+  assert.equal(helperCard(research, [], false), null, "no endless Dispatched spinner");
+  assert.equal(helperCard(research, [running], false), null);
+  assert.deepEqual(helperCard(research, [running], true), { kind: "research", job: running });
+  assert.deepEqual(helperCard(research, [], true), { kind: "research", job: undefined });
+  // Delivered results come from the record, not the jobs list, so they still render.
+  const lesson = [user("u1", "hi"), { id: "s1", role: "custom", customType: "subagent-steer", content: "Research complete", display: true,
+    details: { jobId: "j1", kind: "research", toolCallId: "t1", result: { brief: "A brief.", sources: [] } }, timestamp: 1 } as unknown as LhMessage];
+  assert.equal(isSubagentSteer(projectView(lesson)[1]!), true);
+});
+
+test("a skip stops the reply only when the server parked it for a running turn", () => {
+  assert.equal(skipParked({ ok: true, parked: true }), true);
+  assert.equal(skipParked({ ok: true }), false);
+  assert.equal(skipParked(undefined), false);
 });
 
 test("the live plan reads the latest tree and the current node from the checks", () => {

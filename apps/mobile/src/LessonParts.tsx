@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { useEffect, useState, type ReactNode } from "react";
+import { ActivityIndicator, AppState, Pressable, Text, View } from "react-native";
 import Svg, { Line } from "react-native-svg";
 import type { JobKind, JobRecord } from "../../../src/client-protocol/index.ts";
 import {
@@ -119,18 +119,37 @@ export function GraphContextCard({ data }: { data?: { propositions?: { id: strin
 
 // ─── Background helpers ─────────────────────────────────────────────────────
 
+/** The running card's elapsed seconds. Only this label re-renders each
+ * second, and it stops counting while the app is in the background. */
+function Elapsed({ job }: { job: JobRecord }) {
+  const { s } = useTheme();
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    let tick: ReturnType<typeof setInterval> | undefined;
+    const start = () => { tick ??= setInterval(() => setNow(Date.now()), 1000); };
+    if (AppState.currentState === "active") start();
+    const subscription = AppState.addEventListener("change", (state) => {
+      clearInterval(tick);
+      tick = undefined;
+      if (state === "active") { setNow(Date.now()); start(); }
+    });
+    return () => { clearInterval(tick); subscription.remove(); };
+  }, []);
+  const elapsed = elapsedSeconds(job, now);
+  return elapsed === null ? null : <Text style={s.meta}>· {elapsed}s</Text>;
+}
+
 /** dispatch-card.tsx: a running helper is a live card; a settled one is one quiet line. */
-export function DispatchCard({ kind, job, now }: { kind: JobKind; job?: JobRecord; now: number }) {
+export function DispatchCard({ kind, job }: { kind: JobKind; job?: JobRecord }) {
   const { c, s } = useTheme();
   const label = jobLabel(kind, job);
   if (!job || job.status === "running") {
-    const elapsed = job ? elapsedSeconds(job, now) : null;
     return (
       <View style={s.card}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
           <ActivityIndicator size="small" color={c.muted} accessibilityLabel={`${label} running`} />
           <Text style={s.label}>{label}</Text>
-          {elapsed !== null && <Text style={s.meta}>· {elapsed}s</Text>}
+          {job && <Elapsed job={job} />}
         </View>
         {!!job?.activity && <Text numberOfLines={1} style={s.muted}>{job.activity}</Text>}
         {!job && <Text style={s.muted}>Dispatched…</Text>}

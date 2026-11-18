@@ -6,7 +6,7 @@ import { blockLayout, GRAPH_PAD, TEXT_CAP_SCALE } from "../../../src/core/plan-l
 import { projectView, type LhViewMessage, type LhViewPart } from "../../../src/core/view.ts";
 import type { QuestionAnswerData } from "../../../src/core/question-core.ts";
 import type { MobileApi } from "./protocol";
-import { dispatchedKind, isSubagentSteer, teachSeam } from "./lesson";
+import { helperCard, isSubagentSteer, teachSeam } from "./lesson";
 import { CompactionCut, CompactionNote, DispatchCard, GraphContextCard, ReasoningRow, SeamDivider, SteerCard, ThinkingRow } from "./LessonParts";
 import { Markdown } from "./Markdown";
 import { PlanDiagram } from "./PlanDiagram";
@@ -57,7 +57,7 @@ function planWidth(data: PlanBlockData) {
   return Math.max(blockLayout(data.nodes, data.edges).width, 1) + 2 * GRAPH_PAD;
 }
 
-type PartContext = { api: MobileApi; chatId: string; jobs: readonly JobRecord[]; now: number; openPlan: () => void };
+type PartContext = { api: MobileApi; chatId: string; jobs: readonly JobRecord[]; liveHelpers: boolean; openPlan: () => void };
 
 function Part({ part, context }: { part: LhViewPart; context: PartContext }) {
   const { c, s } = useTheme();
@@ -125,19 +125,18 @@ function Part({ part, context }: { part: LhViewPart; context: PartContext }) {
       );
     }
   }
-  const kind = dispatchedKind(part, context.jobs);
-  if (kind) return <DispatchCard kind={kind} job={context.jobs.find((job) => job.toolCallId === part.toolCallId)} now={context.now} />;
-  return null;
+  const helper = helperCard(part, context.jobs, context.liveHelpers);
+  return helper ? <DispatchCard kind={helper.kind} job={helper.job} /> : null;
 }
 
-export function Transcript({ settled, tail, api, chatId, jobs, now, openPlan }: {
+export function Transcript({ settled, tail, api, chatId, jobs, liveHelpers, openPlan }: {
   settled: LhViewMessage[]; tail: LhMessage[]; api: MobileApi; chatId: string;
-  jobs: readonly JobRecord[]; now: number; openPlan: () => void;
+  jobs: readonly JobRecord[]; liveHelpers: boolean; openPlan: () => void;
 }) {
   const { s } = useTheme();
   const live = useMemo(() => projectView(tail), [tail]);
   const seam = useMemo(() => teachSeam(settled), [settled]);
-  const context = { api, chatId, jobs, now, openPlan };
+  const context = { api, chatId, jobs, liveHelpers, openPlan };
   return (
     <>
       {settled.map((message) => {

@@ -1,18 +1,18 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { LESSON_VIEW_ROUTES, type JobRecord, type JobsResponse } from "../../../src/client-protocol/index.ts";
 import type { MobileApi } from "./protocol";
-import { jobSettled } from "./lesson";
+import { jobSettled, newestOnly } from "./lesson";
 
 const NONE: JobRecord[] = [];
 
 /** lesson-view-v1: the session's background helpers, read on open, on every
  * `jobs-changed` for this chat (coalesced like the web's 250 ms debounce) and
  * on reconnect. A helper that stops running re-reads the record, because its
- * result is about to land in the transcript. */
+ * result is about to land in the transcript. Only the newest read applies, so
+ * a slow older answer can't put a finished helper back to running. */
 export function useJobs(api: MobileApi, chatId: string, enabled: boolean, reloadRef: RefObject<(() => void) | null>,
   settled: () => void, connectionFault: (error: unknown) => boolean) {
   const [jobs, setJobs] = useState<JobRecord[]>(NONE);
-  const [now, setNow] = useState(() => Date.now());
   const onSettle = useRef(settled);
   useEffect(() => { onSettle.current = settled; }, [settled]);
 
@@ -21,10 +21,12 @@ export function useJobs(api: MobileApi, chatId: string, enabled: boolean, reload
     const lifetime = new AbortController();
     const statuses = new Map<string, string>();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const begin = newestOnly();
     async function read() {
+      const isNewest = begin();
       try {
         const { jobs: list } = await api.get<JobsResponse>(LESSON_VIEW_ROUTES.jobs(chatId), lifetime.signal);
-        if (lifetime.signal.aborted || !Array.isArray(list)) return;
+        if (lifetime.signal.aborted || !isNewest() || !Array.isArray(list)) return;
         const stopped = jobSettled(statuses, list);
         statuses.clear();
         for (const job of list) statuses.set(job.id, job.status);
@@ -43,13 +45,5 @@ export function useJobs(api: MobileApi, chatId: string, enabled: boolean, reload
     return () => { lifetime.abort(); clearTimeout(timer); reloadRef.current = null; };
   }, [api, chatId, connectionFault, enabled, reloadRef]);
 
-  // The running card's elapsed seconds keep counting between announcements.
-  const running = jobs.some((job) => job.status === "running");
-  useEffect(() => {
-    if (!running) return;
-    const tick = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(tick);
-  }, [running]);
-
-  return { jobs: enabled ? jobs : NONE, now };
+  return enabled ? jobs : NONE;
 }

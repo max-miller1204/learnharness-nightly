@@ -10,7 +10,8 @@
 // mermaid 11 ships with (owner, plan-graph round 8: same engine as the
 // mermaid graphs, our SVG skin stays). The deep subpath is how mermaid
 // itself imports it.
-import { graphlib } from "dagre-d3-es";
+// Only the graph and layout subpaths: the package root also loads its d3 renderer.
+import * as graphlib from "dagre-d3-es/src/graphlib/index.js";
 import { layout as dagreLayout } from "dagre-d3-es/src/dagre/index.js";
 // Mermaid's default flowchart edge curve: dagre's waypoints drawn through
 // d3's curveBasis (the exact recipe dagre-d3's own renderer uses).

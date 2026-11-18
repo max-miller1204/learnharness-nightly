@@ -13,7 +13,7 @@ import { Transcript } from "./Transcript";
 import { Button, Label, Notice } from "./ui";
 import { fonts, radius, space, useTheme } from "./theme";
 import { revealOffset } from "./reveal";
-import { checkNeedsReveal, livePlan, PHASE_LABEL, sessionPhase, skipAnswer } from "./lesson";
+import { checkNeedsReveal, livePlan, PHASE_LABEL, sessionPhase, skipAnswer, skipParked } from "./lesson";
 import { PlanScreen } from "./PlanScreen";
 import { useJobs } from "./use-jobs";
 
@@ -79,7 +79,7 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const failure = session.streamError || record?.turnError || (lastAssistant?.stopReason === "error" ? lastAssistant.errorMessage : "");
   const { refresh, submit } = session;
   const jobsSettled = useCallback(() => refresh(), [refresh]);
-  const { jobs, now } = useJobs(api, id, active && lessonView, jobsRef, jobsSettled, connectionFault);
+  const jobs = useJobs(api, id, active && lessonView, jobsRef, jobsSettled, connectionFault);
 
   useEffect(() => {
     reloadRef.current = refresh;
@@ -142,12 +142,13 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   function skip(readingThinking: string) {
     const target = question;
     if (!target) return;
-    const running = busy;
-    Alert.alert("Skip this question?", "The teacher moves on without it." + (running ? " The teacher's current reply stops too." : ""), [
+    Alert.alert("Skip this question?", "The teacher moves on without it." + (busy ? " The teacher's current reply stops too." : ""), [
       { text: "Cancel", style: "cancel" },
-      // Like the web, a mid-turn skip also stops the turn that left it dangling.
+      // Like the web, a skip the server parked for a running turn (202) also
+      // stops that turn. The server's answer decides, not the dialog's moment,
+      // and a failed follow-up stop never turns a saved skip into an error.
       { text: "Skip", onPress: () => void submit({ type: "dismiss", toolCallId: target.toolCallId, answer: skipAnswer(target, readingThinking) },
-        () => { if (running) void session.stop(); }) },
+        (result) => { if (skipParked(result)) void session.stop(true); }) },
     ]);
   }
 
@@ -182,7 +183,7 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
         }}
         onContentSizeChange={() => { if (nearBottom.current) scroller.current?.scrollToEnd({ animated: false }); }}>
         {session.loading && <Text style={s.muted}>Loading session…</Text>}
-        <Transcript settled={settledView} tail={session.tail} api={api} chatId={id} jobs={jobs} now={now} openPlan={() => setPlanOpen(true)} />
+        <Transcript settled={settledView} tail={session.tail} api={api} chatId={id} jobs={jobs} liveHelpers={lessonView} openPlan={() => setPlanOpen(true)} />
         {busy && <Text accessibilityLiveRegion="polite" style={s.muted}>Reply in progress…</Text>}
         {record?.compacting && <Text style={s.muted}>Updating session context…</Text>}
         <Notice boxed>{session.refreshError}</Notice>

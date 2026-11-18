@@ -5,10 +5,12 @@ import { MaximizeIcon, MinusIcon, PlusIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fitGraphView, fitZoomFor, zoomedGraphView, type Viewport } from "@/components/pan-zoom";
 import type { PlanBlockData, PlanNodeStatus } from "@/src/core";
+import { derivedNodeStatus, derivePlanStatuses } from "@/src/core";
+// The layout math lives in src/core/plan-layout.ts (shared with the phone,
+// mobile follow-up 1). It is imported by path, not through the core barrel,
+// so the barrel's many importers don't load dagre and d3.
 import {
 	blockLayout,
-	derivedNodeStatus,
-	derivePlanStatuses,
 	latestTree,
 	wrapTitle,
 	ARROW_HEAD,
@@ -26,9 +28,8 @@ import {
 	edgePathD,
 	type PlanLayoutNode as LayoutNode,
 	type PopupMessage,
-} from "@/src/core";
-// The layout math moved to src/core/plan-layout.ts (shared with the phone,
-// mobile follow-up 1). Re-exported so every existing importer is unchanged.
+} from "@/src/core/plan-layout";
+// Re-exported so every existing importer is unchanged.
 export {
 	ARROW_HEAD,
 	GAP_X,
@@ -52,7 +53,7 @@ export {
 	wrapTitle,
 	type PlanLayoutNode as LayoutNode,
 	type PopupMessage,
-} from "@/src/core";
+} from "@/src/core/plan-layout";
 import { Hint } from "@/components/ui/hint";
 import { InteractionLayerOwner, useInteractionLayer } from "./interaction-layers";
 
