@@ -27,6 +27,9 @@ const { newUserMessage } = await import("../src/core/native-messages.ts");
 const { createReadTool } = await import("../src/agent/tools/read.ts");
 const { setFileAccessPolicy } = await import("../src/agent/tools/file-access.ts");
 const { claimAttachments, claimedAttachmentPath, scheduleAttachmentRemoval, sweepAttachments } = await import("../src/store/attachments.ts");
+const { deleteChatSession } = await import("../src/server/chats.ts");
+const { deleteSources } = await import("../src/server/source-deletion.ts");
+const { stores } = await import("../src/server/stores.ts");
 const { chatStore } = await import("../src/store/chats.ts");
 const { reserveAttachmentRequest, uploadAttachmentRequest, discardAttachmentRequest, startAttachmentRequest } = await import("../src/server/attachment-routes.ts");
 
@@ -43,6 +46,14 @@ function request(pathname: string, method: string, body?: string | Uint8Array<Ar
 		body,
 		headers: { Authorization: `Bearer ${token}`, "X-LearnHarness-Protocol": "1", ...extra },
 	});
+}
+
+function holdUpload(uploadUrl: string, token = first.token) {
+	let stream!: ReadableStreamDefaultController<Uint8Array>;
+	const body = new ReadableStream<Uint8Array>({ start: controller => { stream = controller; } });
+	const headers = request(uploadUrl, "PUT", undefined, token).headers;
+	const response = uploadAttachmentRequest(new Request(new URL(uploadUrl, base), { method: "PUT", headers, body, duplex: "half" } as RequestInit));
+	return { response, finish(text: string) { stream.enqueue(new TextEncoder().encode(text)); stream.close(); } };
 }
 
 async function reserve(draftId: string, size: number, name = "fixture.txt") {
@@ -77,17 +88,25 @@ test("concurrent reservations share the server cap before receiving bytes", asyn
 	}
 });
 
-test("grant expiry and revocation precede publication", async t => {
-	const now = Date.now();
-	const expired = await (await reserve(randomUUID(), 1)).json();
-	t.mock.method(Date, "now", () => now + 11 * 60_000);
-	assert.equal((await uploadAttachmentRequest(request(expired.uploadUrl, "PUT", "x"))).status, 403);
-	t.mock.restoreAll();
+test("the grant deadline applies at upload start only", async t => {
+	const { uploadUrl, expiresAt } = await (await reserve(randomUUID(), 1)).json();
+	const upload = holdUpload(uploadUrl);
+	t.mock.method(Date, "now", () => expiresAt + 1);
+	assert.equal((await uploadAttachmentRequest(request(uploadUrl, "PUT", "x"))).status, 403);
+	upload.finish("x");
+	assert.equal((await upload.response).status, 204);
+});
+
+test("revoking a pairing during an upload prevents publication", async () => {
 	const disposable = pairing("revoked attachment device");
 	const grant = await reserveAttachmentRequest(request("/api/attachments", "POST", JSON.stringify({ draftId: randomUUID(), name: "test.txt", size: 1, mimeType: "text/plain" }), disposable.token));
 	assert.equal(grant.status, 201);
-	const { uploadUrl } = await grant.json();
+	const { id, uploadUrl } = await grant.json();
+	const upload = holdUpload(uploadUrl, disposable.token);
 	await revokeSession(PATHS.data, disposable.session.id);
+	upload.finish("x");
+	assert.equal((await upload.response).status, 401);
+	assert.equal(fs.existsSync(path.join(PATHS.attachments, "pending", id + ".body")), false);
 	assert.equal((await uploadAttachmentRequest(request(uploadUrl, "PUT", "x", disposable.token))).status, 401);
 });
 
@@ -237,16 +256,12 @@ test("show_image and visual save uploaded image snapshots with opaque provenance
 test("overlapping PUTs cannot both hold the same upload ID", async () => {
 	const { uploadUrl } = await (await reserve(randomUUID(), 4)).json();
 	assert.equal((await uploadAttachmentRequest(request(uploadUrl, "PUT", "test"))).status, 204);
-	let stream!: ReadableStreamDefaultController<Uint8Array>;
-	const body = new ReadableStream<Uint8Array>({ start: controller => { stream = controller; } });
-	const headers = request(uploadUrl, "PUT").headers;
-	const firstPut = uploadAttachmentRequest(new Request(new URL(uploadUrl, base), { method: "PUT", headers, body, duplex: "half" } as RequestInit));
+	const firstPut = holdUpload(uploadUrl);
 	const secondPut = await uploadAttachmentRequest(request(uploadUrl, "PUT", "test"));
 	assert.equal(secondPut.status, 409);
 	assert.match((await secondPut.json()).error, /already uploading/);
-	stream.enqueue(new TextEncoder().encode("test"));
-	stream.close();
-	assert.equal((await firstPut).status, 204);
+	firstPut.finish("test");
+	assert.equal((await firstPut.response).status, 204);
 });
 
 test("discard cleans an interrupted claim without unlinking any live copy", async () => {
@@ -292,4 +307,27 @@ test("sweep cleans staging despite corrupt metadata and defers claimed deletion 
 	}
 	sweepAttachments();
 	assert.equal(fs.existsSync(copy), false);
+});
+
+test("a cleanup marker failure preserves chat traces for direct and source deletion", async () => {
+	const chat = chatStore.createChat("Attachment cleanup unavailable");
+	const { id } = await uploadForChat(chat.id, "fixture.txt", "text/plain", new TextEncoder().encode("fixture"));
+	const node = { id: "cleanup-marker-node", name: "Cleanup marker", aliases: [], statement: "Synthetic trace", createdAt: "2026-11-18", provenance: [{ chatId: chat.id, messageId: "fixture" }] };
+	stores.graphStore.appendNode(node);
+	const saved = chatStore.getChat(chat.id);
+	const marker = path.join(PATHS.attachments, "cleanup", id);
+	fs.mkdirSync(marker, { recursive: true }); // A directory at the marker path forces the write to fail.
+	try {
+		await assert.rejects(deleteChatSession(chat.id, "delete-nodes"));
+		assert.deepEqual(chatStore.getChat(chat.id), saved);
+		assert.deepEqual(stores.graphStore.readNodes().find(item => item.id === node.id), node);
+		assert.throws(() => deleteSources({ sourceIds: [chat.id], folderIds: [], deleteSessions: true }));
+		assert.deepEqual(chatStore.getChat(chat.id), saved);
+		assert.deepEqual(stores.graphStore.readNodes().find(item => item.id === node.id), node);
+	} finally {
+		fs.rmdirSync(marker);
+	}
+	assert.equal((await deleteChatSession(chat.id, "delete-nodes")).ok, true);
+	assert.equal(chatStore.getChat(chat.id), null);
+	assert.equal(stores.graphStore.readNodes().some(item => item.id === node.id), false);
 });

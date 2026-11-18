@@ -160,7 +160,6 @@ export async function receiveAttachment(
 			if (oldDigest !== newDigest) throw new AttachmentError(409, "Different bytes were already uploaded with this grant.");
 		}
 		currentOwner();
-		if (upload.expiresAt <= Date.now()) throw new AttachmentError(403, "The attachment upload grant expired.");
 		if (!retry) fs.renameSync(/* turbopackIgnore: true */ part, /* turbopackIgnore: true */ body);
 	} catch (error) {
 		if (error instanceof AttachmentSizeMismatch) throw new AttachmentError(400, error.message);

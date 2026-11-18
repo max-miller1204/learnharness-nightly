@@ -820,7 +820,7 @@ export function Chat({
 			if (beforePost && !beforePost(captured)) { attempt.cancel(); return false; }
 			const input: ChatInput = { type: "text", text: prepared.content.text, ...(prepared.content.images.length ? { images: prepared.content.images.map(image => ({ ...image })) } : {}) };
 			if (withAttachments && !input.text.trim()) throw new Error("Message text is required when attaching files.");
-			const upload = withAttachments ? await attachments.prepare(JSON.stringify(input)) : undefined;
+			const upload = withAttachments ? await attachments.prepare(JSON.stringify(input), () => attempt.cancel()) : undefined;
 			if (upload === null) return false;
 			attempt.check();
 			if (upload && busyRef.current) throw new Error("A turn is already running — try again in a moment.");

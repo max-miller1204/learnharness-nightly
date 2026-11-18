@@ -11,6 +11,8 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { parseHTML } from "linkedom";
 import { renderToStaticMarkup } from "react-dom/server";
+import { PluginSubmissionRunner } from "../components/plugin-submission-runner.ts";
+import type { PluginSubmissionTarget } from "../src/core/index.ts";
 import { useAttachmentDraft, type AttachmentDraft } from "../components/attachment-draft.tsx";
 import { Composer } from "../components/composer.tsx";
 import { attachmentPopupPlacement, pathsForFiles } from "../components/attach-files-button.tsx";
@@ -345,4 +347,58 @@ it("releases an expired grant before replacing it and deletes a replacement that
 	});
 	assert.deepEqual(draft.files, []);
 	assert.equal(calls.at(-1), "DELETE /api/attachments/new");
+});
+
+it("releases the existing-chat submission when a file fails or is removed while Send waits", async t => {
+	let grants = 0;
+	t.mock.method(globalThis, "fetch", async (_url: string, init?: RequestInit) => {
+		if (!init?.method) return Response.json({ capabilities: ["attachment-uploads-v1"] });
+		if (init.method === "POST") {
+			const id = String(++grants);
+			return Response.json({ id, uploadUrl: `/upload/${id}`, expiresAt: Date.now() + 60_000 });
+		}
+		return new Response(null, { status: 204 });
+	});
+	const uploads: ManualUpload[] = [];
+	class ManualUpload {
+		upload = {};
+		status = 204;
+		onload?: () => void;
+		onerror?: () => void;
+		open() {}
+		send() { uploads.push(this); }
+	}
+	const descriptor = Object.getOwnPropertyDescriptor(globalThis, "XMLHttpRequest");
+	Object.defineProperty(globalThis, "XMLHttpRequest", { value: ManualUpload, configurable: true });
+	t.after(() => {
+		if (descriptor) Object.defineProperty(globalThis, "XMLHttpRequest", descriptor);
+		else Reflect.deleteProperty(globalThis, "XMLHttpRequest");
+	});
+	let draft!: AttachmentDraft;
+	await fixture({ desktop: false, onDraft: value => { draft = value; } });
+	const runner = new PluginSubmissionRunner();
+	const target: PluginSubmissionTarget = { type: "text", sessionId: "chat", sessionKind: "teaching", channels: ["content"], surfaceTarget: {} as PluginSubmissionTarget["surfaceTarget"] };
+	for (const outcome of ["failed", "removed"] as const) {
+		await act(async () => { draft.select([new File(["test"], `${outcome}.txt`)]); });
+		const row = draft.files.at(-1)!;
+		const attempt = runner.begin(target, [], () => true)!;
+		const prepared = draft.prepare("same draft", () => attempt.cancel());
+		assert.equal(runner.preparing, true);
+		await act(async () => {
+			if (outcome === "failed") uploads.at(-1)!.onerror?.();
+			else {
+				draft.remove(row);
+				uploads.at(-1)!.onload?.();
+			}
+			assert.equal(await prepared, null);
+		});
+		assert.equal(runner.occupied, false);
+		if (outcome === "failed") {
+			await act(async () => { draft.retry(row); });
+			await act(async () => { uploads.at(-1)!.onload?.(); });
+			const retry = runner.begin(target, [], () => true)!;
+			assert.deepEqual((await draft.prepare("same draft", () => retry.cancel()))?.attachmentUploadIds, ["1"]);
+			retry.cancel();
+		}
+	}
 });

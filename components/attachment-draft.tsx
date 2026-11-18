@@ -137,10 +137,13 @@ export function useAttachmentDraft(chatId?: string) {
 		setValidation(undefined);
 		changed();
 	};
-	const prepare = async (identity: string): Promise<AttachmentSend | null> => {
+	const prepare = async (identity: string, onUnavailable?: () => void): Promise<AttachmentSend | null> => {
 		const selected = files.current;
 		await Promise.all(selected.map(row => row.work));
-		if (files.current !== selected || selected.some(row => !row.ready || !row.grant)) return null;
+		if (files.current !== selected || selected.some(row => !row.ready || !row.grant)) {
+			onUnavailable?.();
+			return null;
+		}
 		const attachmentUploadIds = selected.map(row => row.grant!.id);
 		const key = JSON.stringify([identity, attachmentUploadIds]);
 		if (lastSend.current?.identity !== key) lastSend.current = { identity: key, id: uuid() };
