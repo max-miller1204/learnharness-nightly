@@ -15,7 +15,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
-import type { ChatInput, LhMessage, QuestionAnswerData } from "@/src/core";
+import type { AttachmentSend, ChatInput, LhMessage, QuestionAnswerData } from "@/src/core";
 import { SessionModel, type SessionState } from "@/components/session-core";
 
 export interface UseChatSessionOptions {
@@ -102,7 +102,7 @@ export function useChatSession({ chatId, initialMessages, initialError, initiall
 		[model],
 	);
 
-	const send = useCallback((input: ChatInput, onAccepted?: () => void, questionKey?: string, onDeliverySettled?: () => void) => model.send(input, onAccepted, questionKey, onDeliverySettled), [model]);
+	const send = useCallback((input: ChatInput, onAccepted?: () => void, questionKey?: string, onDeliverySettled?: () => void, attachments?: AttachmentSend) => model.send(input, onAccepted, questionKey, onDeliverySettled, attachments), [model]);
 	const continueIfOwed = useCallback((record: readonly LhMessage[]) => void model.continueIfOwed(record), [model]);
 	const steer = useCallback((text: string, images?: import("@/src/core").PluginSubmissionContent["images"], onAccepted?: () => void, onDeliverySettled?: () => void) => model.steer(text, images, onAccepted, onDeliverySettled), [model]);
 	const submitAnswer = useCallback(

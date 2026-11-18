@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute, type ImageFileResult } from "../tool-execute.ts";
+import type { ResolveAttachment } from "./learner-file.ts";
 import { loadLearnerImage } from "./learner-image.ts";
 import type { ShowImageDetails } from "../../core/contracts.ts";
 import type { ChatStore } from "../../core/ports.ts";
@@ -21,7 +22,7 @@ const showImageInput = Type.Object({
 	caption: Type.Optional(Type.String({ description: "One short line shown under the image" })),
 });
 
-export function createShowImageTool(ctx: { chatId: string; chatStore: Pick<ChatStore, "saveImageSnapshot"> }): AgentTool<typeof showImageInput> {
+export function createShowImageTool(ctx: { chatId: string; chatStore: Pick<ChatStore, "saveImageSnapshot">; resolveAttachment?: ResolveAttachment }): AgentTool<typeof showImageInput> {
 	return {
 		name: "show_image",
 		label: "show_image",
@@ -32,7 +33,7 @@ export function createShowImageTool(ctx: { chatId: string; chatStore: Pick<ChatS
 			"Show a picture again only when resurfacing it meaningfully helps the current explanation. Local paths follow File access settings; use ls to discover allowed folders.",
 		parameters: showImageInput,
 		execute: serverExecute("show_image", showImageInput, async ({ path, caption }, { signal }): Promise<ImageFileResult> => {
-			const image = await loadLearnerImage(path, signal);
+			const image = await loadLearnerImage(path, signal, ctx.resolveAttachment);
 			ctx.chatStore.saveImageSnapshot(ctx.chatId, image.snapshotId, image);
 			const trimmed = caption?.trim();
 			const details: ShowImageDetails = {

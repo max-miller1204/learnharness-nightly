@@ -4,7 +4,7 @@ import { serverExecute } from "../tool-execute.ts";
 import type { JobRecord } from "../../core/contracts.ts";
 import type { JobStore } from "../../core/ports.ts";
 import { checkLearnerImage } from "./learner-image.ts";
-import { resolveSourcePath } from "./fs-shared.ts";
+import { resolveLearnerFile, type ResolveAttachment } from "./learner-file.ts";
 
 /**
  * Async sub-agent job tools (vision §2.5; W2/W6 kinds + the pi-model
@@ -19,6 +19,7 @@ import { resolveSourcePath } from "./fs-shared.ts";
 /** What the job tools need at execute time (injected by the composition root). */
 export interface JobToolContext {
 	chatId: string;
+	resolveAttachment?: ResolveAttachment;
 	/** Creates the job record (deduped by toolCallId). */
 	jobStore: JobStore;
 	/** Fire the background runner for a fresh job — fire-and-forget. The
@@ -165,7 +166,7 @@ export function jobTools(ctx: JobToolContext): Record<string, AgentTool<any>> {
 			// An unusable image path fails the CALL (no job is created), so the
 			// teacher corrects the path in the same turn.
 			execute: serverExecute("visual", visualInputSchema, async (input, { toolCallId, signal }) => {
-				if (!ctx.jobStore.findJobByToolCallId(ctx.chatId, toolCallId) && input.image !== undefined) await checkLearnerImage(input.image);
+				if (!ctx.jobStore.findJobByToolCallId(ctx.chatId, toolCallId) && input.image !== undefined) await checkLearnerImage(input.image, ctx.resolveAttachment);
 				signal?.throwIfAborted();
 				return dispatch(ctx, "visual", toolCallId, VISUAL_ACK, input);
 			}),
@@ -178,7 +179,7 @@ export function jobTools(ctx: JobToolContext): Record<string, AgentTool<any>> {
 			execute: serverExecute("pdf", pdfInputSchema, (input, { toolCallId }) => {
 				// Admission uses the current boundary; the queued reader checks
 				// again at job start. Preserve raw args/history and replay IDs.
-				if (!ctx.jobStore.findJobByToolCallId(ctx.chatId, toolCallId)) resolveSourcePath(input.path);
+				if (!ctx.jobStore.findJobByToolCallId(ctx.chatId, toolCallId)) resolveLearnerFile(input.path, ctx.resolveAttachment);
 				return dispatch(ctx, "pdf", toolCallId, PDF_ACK, input);
 			}),
 		},

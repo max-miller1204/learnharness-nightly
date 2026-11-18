@@ -1,3 +1,4 @@
+import { attachmentReferences, scheduleAttachmentRemoval, sweepAttachments } from "../store/attachments.ts";
 import { abortExtraction, extractionStatuses } from "../agent/subagents/extraction.ts";
 import { isJobLive } from "../agent/subagents/aborts.ts";
 import { coverageOf } from "../core/coverage.ts";
@@ -142,15 +143,25 @@ export function deleteIdleChatRecord(chatId: string): Extract<ChatDeleteOutcome,
 
 function finishChatDeletion(chatId: string, mode: ChatDeleteMode): Extract<ChatDeleteOutcome, { ok: true }> {
 	// THE SYNC BLOCK — no awaits below (see the doc comment). Order:
-	// ledgers → jobs → the chat record.
+	// attachment cleanup markers, then ledgers, jobs and the chat record.
+	scheduleChatAttachmentRemoval(chatId);
 	const stats = deleteChatTraces(stores.graphStore, chatId, mode);
 	const jobsRemoved = finishChatRecordDeletion(chatId);
 	return { ok: true, mode, stats, jobsRemoved, graphRevision: graphRevision() };
 }
 
+export function scheduleChatAttachmentRemoval(chatId: string): void {
+	scheduleAttachmentRemoval(attachmentReferences(stores.chatStore.getChat(chatId)?.messages ?? []));
+}
+
 function finishChatRecordDeletion(chatId: string): number {
+	const attachments = attachmentReferences(stores.chatStore.getChat(chatId)?.messages ?? []);
 	const jobsRemoved = stores.jobStore.deleteJobsForChat(chatId);
 	if (stores.chatStore.deleteChat(chatId)) {
+		if (attachments.length) queueMicrotask(() => {
+			try { sweepAttachments(); }
+			catch (error) { console.warn("[attachments] Deferred cleanup will retry:", error); }
+		});
 		discardChatDeliveries(chatId);
 		clearTurnFailure(chatId);
 		sideChats.stopAll(chatId); // a running side answer has nowhere left to land

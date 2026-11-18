@@ -17,6 +17,7 @@ import { SidebarToggle } from "@/components/sidebar";
 import { StatsBar } from "@/components/stats-bar";
 import { OPENING_PROMPT_FAILURE } from "@/components/opening-prompt";
 import { PathInput } from "@/components/path-input";
+import { DraftAttachmentChips, useAttachmentDraft } from "./attachment-draft";
 import { AttachFilesButton } from "@/components/attach-files-button";
 import { SessionStarter } from "@/components/start-session";
 import type { TurnUsage } from "@/src/core";
@@ -70,7 +71,8 @@ export function Home({
 	const [busy, setBusy] = useState(false);
 	const startingRef = useRef(false);
 	const starterRef = useRef(new SessionStarter());
-	const [startError, setStartError] = useState(false);
+	const [startError, setStartError] = useState("");
+	const attachments = useAttachmentDraft();
 	/* Run end focuses the topic input (owner, 2026-10-01): the hands are on
 	 * the keyboard from the stop. Falling edge only; this surface's only
 	 * dictation target IS this textarea, so no case-split is needed. */
@@ -145,23 +147,28 @@ export function Home({
 		}
 		startingRef.current = true;
 		setBusy(true);
-		setStartError(false);
+		setStartError("");
 		try {
 			// The map context (owner, 2026-10-04): picks in EITHER mode ride
 			// the CREATION as graphContext — the server writes a
 			// graph-context marker as message[0] (a separate custom message
 			// before the learner's first user message, propositions + the
 			// chains among them); the prompt stays the learner's own words.
-			const target = await starterRef.current.start({
+			const body = {
 				title: t,
-				...(mode === "practice" ? { kind: "practice" } : {}),
+				...(mode === "practice" ? { kind: "practice" as const } : {}),
 				...(practiceProps.length > 0 ? { graphContext: { propositions: practiceProps } } : {}),
-			}, fetch, JSON.stringify(catalog?.slots.strong));
+			};
+			const settings = JSON.stringify(catalog?.slots.strong);
+			const upload = attachments.files.length ? await attachments.prepare(JSON.stringify([body, settings])) : undefined;
+			if (upload === null) { startingRef.current = false; setBusy(false); return; }
+			const target = await starterRef.current.start(body, fetch, settings, upload ? { ...upload, draftId: attachments.getDraftId() } : undefined);
+			if (upload) attachments.accept(upload);
 			router.push(target);
-		} catch {
+		} catch (error) {
 			startingRef.current = false;
 			setBusy(false);
-			setStartError(true);
+			setStartError(error instanceof Error ? error.message : OPENING_PROMPT_FAILURE);
 		}
 	};
 
@@ -241,15 +248,17 @@ export function Home({
 							)
 						)}
 					/>
-					{startError && <p role="alert" className="mb-2 text-sm text-destructive">{OPENING_PROMPT_FAILURE}</p>}
+					{startError && <p role="alert" className="mb-2 text-sm text-destructive">{startError}</p>}
 					<form
 						data-attachment-composer=""
-						className="flex items-end gap-1.5 rounded-2xl border bg-card p-1.5 shadow-lg"
+						className="rounded-2xl border bg-card shadow-lg"
 					onSubmit={(e) => {
 						e.preventDefault();
 						void start();
 					}}
 				>
+					<DraftAttachmentChips draft={attachments} />
+					<div className="flex items-end gap-1.5 p-1.5">
 					<PathInput
 						ref={topicInputRef}
 						value={topic}
@@ -279,7 +288,7 @@ export function Home({
 						autoFocus
 						className="field-sizing-content lh-input max-h-48 min-h-10 flex-1 resize-none bg-transparent px-2.5 py-2 outline-none placeholder:text-muted-foreground"
 					/>
-					<AttachFilesButton editorRef={topicInputRef} />
+					<AttachFilesButton editorRef={topicInputRef} upload={attachments.enabled ? attachments.select : undefined} uploadDisabled={busy} />
 					{/* No tooltip on the start square — the ↵ glyph is the
 					    affordance (owner, subtlety round 2026-09-25). */}
 					<button
@@ -290,7 +299,8 @@ export function Home({
 					>
 						<CornerDownLeftIcon className="size-5" />
 					</button>
-					</form>
+						</div>
+				</form>
 					{/* Same as the chat view's under-composer stats bar (owner) — no
 					    session yet, so the LEFT side renders nothing (wave 7 sweep)
 					    while the RIGHT keeps the strong-slot control (fix wave: the

@@ -1,3 +1,5 @@
+import { PROTOCOL_ROUTES, type StartWithAttachmentsRequest } from "@/src/core";
+import { attachmentResponseError } from "./attachment-draft";
 import { clearOpeningPrompt, OPENING_PROMPT_FAILURE, stashOpeningPrompt } from "./opening-prompt";
 
 interface SessionCreation {
@@ -13,7 +15,18 @@ interface SessionCreation {
 export class SessionStarter {
 	private created?: { identity: string; id: string };
 
-	async start(body: SessionCreation, fetchLike: typeof fetch, settingsIdentity?: string): Promise<string> {
+	async start(body: SessionCreation, fetchLike: typeof fetch, settingsIdentity?: string, attachments?: Pick<StartWithAttachmentsRequest, "draftId" | "sendId" | "attachmentUploadIds">): Promise<string> {
+		if (attachments) {
+			const response = await fetchLike(PROTOCOL_ROUTES.startWithAttachments, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ ...body, ...attachments }),
+			});
+			if (!response.ok) throw new Error(await attachmentResponseError(response));
+			const result = await response.json() as { id?: unknown };
+			if (typeof result.id !== "string" || !/^[A-Za-z0-9_-]+$/.test(result.id)) throw new Error(OPENING_PROMPT_FAILURE);
+			return `/chat/${result.id}`;
+		}
 		const identity = JSON.stringify([body, settingsIdentity]);
 		if (this.created?.identity !== identity) {
 			if (this.created) clearOpeningPrompt(this.created.id);

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { usePathname, useRouter } from "next/navigation";
 import { SurfaceRegion, usePageSurfaceBoundary, useSurfaceChromeStyle } from "./plugin-surfaces";
 import { Conversation, ConversationContent, ConversationEmptyState } from "@/components/ai-elements/conversation";
+import { useAttachmentDraft, type AttachmentDraft } from "./attachment-draft";
 import { Composer } from "@/components/composer";
 import { DictationBar, joinDictation, useDictation } from "@/components/dictation";
 import { useFieldCycle } from "@/components/field-cycle";
@@ -17,6 +18,7 @@ import { ChainTableOverlay } from "@/components/chain-table.tsx";
 import { ComposerActions, NodePickerControl } from "@/components/composer-actions";
 import { OPENING_PROMPT_FAILURE } from "@/components/opening-prompt";
 import { SessionStarter } from "@/components/start-session";
+import type { StartWithAttachmentsRequest } from "@/src/core";
 import type { ChatSettings, GraphSnapshot } from "@/src/core";
 
 /** The draft's pick set (owner round 10): the SAME shape the home pick
@@ -50,6 +52,7 @@ export async function startDraftSession(
 	picks?: readonly DraftPick[],
 	starter = new SessionStarter(),
 	settingsIdentity?: string,
+	attachments?: Pick<StartWithAttachmentsRequest, "draftId" | "sendId" | "attachmentUploadIds">,
 ): Promise<string | null> {
 	const t = text.trim();
 	if (!t) return null;
@@ -63,6 +66,7 @@ export async function startDraftSession(
 			: { title: t },
 		fetchLike,
 		settingsIdentity,
+		attachments,
 	);
 }
 
@@ -83,12 +87,14 @@ export function DraftShell({
 	onOpenPicker,
 	onClearPicks,
 	overlay,
+	attachments,
 }: {
 	busy: boolean;
 	text: string;
 	onChange: (v: string) => void;
 	onSend: () => void;
-	startError?: boolean;
+	startError?: boolean | string;
+	attachments?: AttachmentDraft;
 	/** The practice draft (owner, 2026-10-04): ?mode=practice — the
 	 *  created session carries kind:"practice" and the copy changes
 	 *  (the practice agent opens; no probing). */
@@ -196,10 +202,11 @@ export function DraftShell({
 									)}
 									setup={setupCta}
 								/>
-								{startError && <p role="alert" className="pointer-events-auto mb-2 text-sm text-destructive">{OPENING_PROMPT_FAILURE}</p>}
+								{startError && <p role="alert" className="pointer-events-auto mb-2 text-sm text-destructive">{typeof startError === "string" ? startError : OPENING_PROMPT_FAILURE}</p>}
 								<div data-attachment-composer="" className="pointer-events-auto overflow-hidden rounded-2xl border bg-card shadow-lg">
 									<Composer
 										busy={busy}
+										attachments={attachments}
 										value={text}
 										onChange={onChange}
 										onSend={handleSend}
@@ -254,7 +261,8 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 	const [busy, setBusy] = useState(false);
 	const startingRef = useRef(false);
 	const starterRef = useRef(new SessionStarter());
-	const [startError, setStartError] = useState(false);
+	const [startError, setStartError] = useState("");
+	const attachments = useAttachmentDraft();
 	// THE PICK BAR (owner round 10): the draft's lifted pick set + the
 	// snapshot the standalone chain-table picker reads. Lazy — the graph
 	// is fetched on FIRST open only, then reused.
@@ -290,7 +298,7 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 	const { catalog, configured, zeroKeys } = useModelSetup(initialConfigured);
 	const [setupOpen, setSetupOpen] = useState(false);
 
-	const send = useCallback(() => {
+	const send = async () => {
 		const draft = textRef.current.trim();
 		if (!draft || startingRef.current) return;
 		if (!configured) {
@@ -314,19 +322,24 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 		}
 		startingRef.current = true;
 		setBusy(true);
-		setStartError(false);
-		void startDraftSession(draft, fetch, mode === "practice" ? "practice" : undefined, mode === "practice" ? picksRef.current : undefined,
-			starterRef.current, JSON.stringify(catalog?.slots.strong))
-			.then((target) => {
-				if (target) router.push(target);
-				else { startingRef.current = false; setBusy(false); }
-			})
-			.catch(() => {
-				startingRef.current = false;
-				setBusy(false);
-				setStartError(true);
-			});
-	}, [router, configured, zeroKeys, catalog, mode]);
+		setStartError("");
+		try {
+			const kind = mode === "practice" ? "practice" : undefined;
+			const picks = kind ? picksRef.current : undefined;
+			const settings = JSON.stringify(catalog?.slots.strong);
+			const upload = attachments.files.length ? await attachments.prepare(JSON.stringify([draft, kind, picks, settings])) : undefined;
+			if (upload === null) { startingRef.current = false; setBusy(false); return; }
+			const target = await startDraftSession(draft, fetch, kind, picks, starterRef.current, settings,
+				upload ? { ...upload, draftId: attachments.getDraftId() } : undefined);
+			if (upload) attachments.accept(upload);
+			if (target) router.push(target);
+			else { startingRef.current = false; setBusy(false); }
+		} catch (error) {
+			startingRef.current = false;
+			setBusy(false);
+			setStartError(error instanceof Error ? error.message : OPENING_PROMPT_FAILURE);
+		}
+	};
 
 	return (
 		<>
@@ -336,6 +349,7 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 				text={text}
 				onChange={applyText}
 				onSend={send}
+				attachments={attachments}
 				mode={mode}
 				picks={picks}
 				onOpenPicker={openPicker}

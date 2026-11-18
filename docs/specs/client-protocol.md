@@ -19,7 +19,7 @@ Goal: roadmap item 21. A client released separately from the server (the Expo ph
 | Server-info body | `{ name, version, protocolVersion, auth, capabilities }` (shape below). T3's descriptor also has an environment ID, platform and machine kind; they're left out because one backend per person needs none of them. |
 | Name | The machine's host name (`os.hostname()`), like T3's label fallback. |
 | Version check | Exact: a client connects only when `protocolVersion` equals its own `CLIENT_PROTOCOL_VERSION`. Only breaking changes bump it. |
-| Additive changes | A new route or field a client can live without is a new **capability** string, with no bump (T3's optional capability flags; the roadmap's OpenBot-style names). Clients hide a feature whose capability is missing. Protocol 1 has none: `capabilities: []`. Item 24 adds the first (`attachment-uploads-v1`). |
+| Additive changes | A new route or field a client can live without is a new **capability** string, with no bump (T3's optional capability flags; the roadmap's OpenBot-style names). Clients hide a feature whose capability is missing. Item 24 adds the first capability, [`attachment-uploads-v1`](remote-safe-attachments.md). |
 | Client sends its version | Header `X-LearnHarness-Protocol: 1` on every protocol request. Streams may use the query `?protocol=1` instead (T3 does this for its socket), since `EventSource` can't always set headers. |
 | Server refuses a mismatch | When a request carries a protocol version that isn't the server's, `proxy.ts` answers `426 { error, code: "protocol_incompatible", protocolVersion }` before the login check, so an old client sees the real reason, not "signed out". Requests without the header (the server's own web UI) are never checked. Server info is never refused. |
 | Mismatch messages (client side) | Server newer: "This app is too old for {name}. Update the app to connect." Server older: "{name} runs an older LearnHarness. Update LearnHarness on {name} to connect." (T3's two messages.) The contract exports a helper that returns one of these or nothing. |
@@ -40,7 +40,7 @@ Goal: roadmap item 21. A client released separately from the server (the Expo ph
     sessionCookieName: string; // "lh_session_<port>"
     tokenEndpoint: "/oauth/token";
   };
-  capabilities: string[];      // [] in protocol 1
+  capabilities: string[];      // [] on servers without additive features
 }
 ```
 
@@ -64,7 +64,7 @@ The core flow a native client needs: sign in, list and open sessions, send, watc
 | `GET /api/events` | The notification stream (SSE, notify then fetch). |
 | `GET /api/chats/:id/images/:snapshotId` | Image bytes a record refers to. |
 
-These routes keep today's shapes. The only server change is that their handlers are typed against the contract (`satisfies`), so changing a response shape fails `npm run typecheck`.
+These routes remain available to protocol 1 clients. The optional attachment fields and routes are documented in the [attachment spec](remote-safe-attachments.md).
 
 ## Keeping it honest
 

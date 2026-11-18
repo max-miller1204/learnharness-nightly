@@ -11,6 +11,13 @@ export async function register() {
 		if (process.env.NEXT_PHASE !== "phase-production-build") {
 			const { holdDataLock } = await import("./src/server/data-lock.ts");
 			await holdDataLock();
+			const { sweepAttachments } = await import("./src/store/attachments.ts");
+			const sweep = () => {
+				try { sweepAttachments(); }
+				catch (error) { console.warn("[attachments] Sweep will retry:", error); }
+			};
+			sweep();
+			setInterval(sweep, 15 * 60_000).unref();
 		}
 		const { initializePlugins } = await import("./src/server/plugins.ts");
 		try { await initializePlugins(); }

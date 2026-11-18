@@ -32,6 +32,7 @@ import { runDemoBuilder } from "./demo-builder.ts";
 import { runPdfReaderAgent } from "./pdf-reader.ts";
 import { runResearcherAgent } from "./researcher.ts";
 import { runVisualMaker } from "./visual-maker.ts";
+import type { ResolveAttachment } from "../tools/learner-file.ts";
 import { loadLearnerImage, type LearnerImage } from "../tools/learner-image.ts";
 
 /**
@@ -69,6 +70,7 @@ type JobToolInput = ResearchToolInput | DemoToolInput | VisualToolInput | PdfToo
 
 export interface JobRunnerDeps {
 	chatStore: ChatStore;
+	attachmentsForChat?: (chatId: string) => ResolveAttachment;
 	jobStore: JobStore;
 	/**
 	 * Hand a finished job's steer to the session delivery registry. The
@@ -472,7 +474,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			let image: LearnerImage | undefined;
 			if (imagePath !== undefined) {
 				jobStore.updateJob(jobId, { activity: "loading image" });
-				image = await loadLearnerImage(imagePath, loop.abortSignal);
+				image = await loadLearnerImage(imagePath, loop.abortSignal, deps.attachmentsForChat?.(job.chatId));
 			}
 			jobStore.updateJob(jobId, { activity: image ? "annotating image" : "drawing figure" });
 			const result = await runVisualMaker(
@@ -521,6 +523,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 				engine: model,
 				abortSignal: loop.abortSignal,
 				chatId: loop.chatId,
+				resolveAttachment: deps.attachmentsForChat?.(job.chatId),
 				onUsage: (usage) => loop.onUsage(piUsageToStep(usage)),
 				onActivity: (line) => jobStore.updateJob(jobId, { activity: line }),
 			},

@@ -98,17 +98,19 @@ A record message: a native pi message (or our marker) plus the record id.
 ```ts
 export type LhMessage = (UserMessage | AssistantMessage | ToolResultMessage | LhMarkerMessage) & {
     id: string;
+    attachments?: AttachmentReference[];
     cliContextWindow?: number;
     lhQuestions?: PluginQuestionOccurrenceMap;
     lhQuestionOccurrence?: PluginQuestionOccurrence;
 };
 ```
 
-**Related types:** [LhMarkerMessage](native-messages.md#lhmarkermessage), [PluginQuestionOccurrence](plugin-questions.md#pluginquestionoccurrence), [PluginQuestionOccurrenceMap](plugin-questions.md#pluginquestionoccurrencemap).
+**Related types:** [AttachmentReference](attachments.md#attachmentreference), [LhMarkerMessage](native-messages.md#lhmarkermessage), [PluginQuestionOccurrence](plugin-questions.md#pluginquestionoccurrence), [PluginQuestionOccurrenceMap](plugin-questions.md#pluginquestionoccurrencemap).
 
 **Member index** (including nested object members; inherited members are defined in the linked base types):
 
 - [id](#lhmessage-id)
+- [attachments](#lhmessage-attachments)
 - [cliContextWindow](#lhmessage-clicontextwindow)
 - [lhQuestions](#lhmessage-lhquestions)
 - [lhQuestionOccurrence](#lhmessage-lhquestionoccurrence)
@@ -117,6 +119,12 @@ export type LhMessage = (UserMessage | AssistantMessage | ToolResultMessage | Lh
 
 ```ts
 id: string;
+```
+
+### LhMessage attachments
+
+```ts
+attachments?: AttachmentReference[];
 ```
 
 ### LhMessage cliContextWindow
