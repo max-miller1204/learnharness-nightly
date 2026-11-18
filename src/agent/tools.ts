@@ -23,6 +23,7 @@ import { readTool } from "./tools/read.ts";
 import { lsTool } from "./tools/ls.ts";
 import { findTool } from "./tools/find.ts";
 import { grepTool } from "./tools/grep.ts";
+import type { ResolveAttachment } from "./tools/learner-file.ts";
 import { createShowImageTool } from "./tools/show-image.ts";
 import { healToolRecord } from "./tools/heal.ts";
 import type { GraphStore } from "../core/ports.ts";
@@ -265,6 +266,7 @@ export const probeExplainTool: AgentTool<typeof explainInputBase> = {
  *  ProbeDoneContext) PLUS the job-dispatch wiring, since the owner ruling
  *  (2026-09-20) puts research + pdf in the probe phase's registry too. */
 export interface ProberToolContext extends ProbeDoneContext {
+	resolveAttachment?: ResolveAttachment;
 	/** Creates the job record (deduped by toolCallId). */
 	jobStore: JobStore;
 	/** Fire the background runner for a freshly created job. */
@@ -294,12 +296,7 @@ export function createProberTools(
 	const done = probeDoneTool(ctx);
 	// The job tools build over the SAME context/gates as the teacher's
 	// (one builder, one gating semantic); the prober carries a SUBSET:
-	const jobs = jobTools({
-		chatId: ctx.chatId,
-		jobStore: ctx.jobStore,
-		spawn: ctx.spawn,
-		searchAvailable: ctx.searchAvailable,
-	});
+	const jobs = jobTools(ctx);
 	// Quizzing mechanics (owner 2026-09-27): free-recall swaps the probe
 	// quiz for the probe explain — one quizzing tool at a time, whichever
 	// the settings arm. ask stays always-on. The registry keys are the
@@ -392,6 +389,7 @@ export function teachQuizToolFor(ctx: Pick<PlanToolContext, "chatId" | "chatStor
 }
 
 export interface TeacherToolContext extends PlanToolContext {
+	resolveAttachment?: ResolveAttachment;
 	/** Job-tool wiring (sub-agent dispatch): the job store + the runner's
 	 *  spawn seam. The composition root injects both. */
 	jobStore: JobStore;
@@ -462,7 +460,7 @@ export function createTeacherTools(
 			// only, always on — it shows the learner their own file.
 			show_image: createShowImageTool(ctx),
 			...planTools(ctx),
-			...jobTools({ chatId: ctx.chatId, jobStore: ctx.jobStore, spawn: ctx.spawn, searchAvailable: ctx.searchAvailable }),
+			...jobTools(ctx),
 		},
 		withoutMechanics(enabled),
 		),

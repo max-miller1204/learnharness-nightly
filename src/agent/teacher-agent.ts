@@ -19,6 +19,7 @@ import { pluginProblemTools, isPluginProblemPoseAcknowledgment, type NativePlugi
 import { healToolRecord, withArgumentHeal } from "./tools/heal.ts";
 import { sendToUserApplies, sendToUserTool } from "./tools/send-to-user.ts";
 import { makeNarrationGuard, narrationGuardApplies, SEND_TO_USER_DELIVERY_RULE } from "./narration-guard.ts";
+import type { ResolveAttachment } from "./tools/learner-file.ts";
 import { createReadTool, readTool } from "./tools/read.ts";
 import { quizInputObject, quizInputProblems } from "../core/question-core.ts";
 import { QUESTION_TOOLS, TOGGLEABLE_TOOLS, type EnabledTools } from "../core/pending.ts";
@@ -155,6 +156,7 @@ export interface AgentBuildOptions {
 	 *  <chatId>.jsonl via providerEventObserver — the GLM-truncation /
 	 *  DeepSeek-id incident layer. Absent or env-off → no observer. */
 	chatId?: string;
+	resolveAttachment?: ResolveAttachment;
 }
 
 /**
@@ -219,7 +221,7 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 	// before resolving additive plugins. Explicit registries remain caller-owned.
 	const builtinTools = [
 		...tools.map((tool) => tool.name === "read" && tool.execute === readTool.execute
-			? { ...tool, execute: createReadTool(engine.model).execute as AgentTool<any>["execute"] }
+			? { ...tool, execute: createReadTool(engine.model, opts.resolveAttachment).execute as AgentTool<any>["execute"] }
 			: tool),
 		...(sendToUserApplies(kind, engine.model, opts.tools !== undefined)
 			? [withArgumentHeal(sendToUserTool)]
@@ -336,7 +338,7 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
  * handler keys teacher construction on.
  */
 export function createProberAgent(ctx: ProberToolContext, opts: AgentBuildOptions = {}) {
-	return baseAgentOptions("prober", opts, Object.values(createProberTools(ctx, opts.toolToggles)));
+	return baseAgentOptions("prober", opts, Object.values(createProberTools({ ...ctx, resolveAttachment: opts.resolveAttachment ?? ctx.resolveAttachment }, opts.toolToggles)));
 }
 
 /**
@@ -352,7 +354,7 @@ export function createTeacherAgent(
 	ctx?: TeacherToolContext,
 	opts: AgentBuildOptions = {},
 ) {
-	const tools = opts.tools ?? (ctx ? createTeacherTools(ctx, opts.toolToggles) : bareQuestionTools());
+	const tools = opts.tools ?? (ctx ? createTeacherTools({ ...ctx, resolveAttachment: opts.resolveAttachment ?? ctx.resolveAttachment }, opts.toolToggles) : bareQuestionTools());
 	return baseAgentOptions("teacher", opts, Object.values(tools), ctx
 		? nodeId => ctx.chatStore.getChat(ctx.chatId)?.tree?.nodes.some(node => node.id === nodeId) ?? false
 		: undefined);
@@ -402,7 +404,7 @@ export function createPracticeAgent(ctx: PracticeToolContext, opts: AgentBuildOp
 	// Explicit test registries bypass all builtin construction and contributions.
 	if (opts.tools !== undefined) return baseAgentOptions("practice", opts, Object.values(opts.tools));
 	const gate = createPracticeGate(ctx);
-	return baseAgentOptions("practice", opts, Object.values(practiceTools(ctx, gate)), undefined, { gate, graphNodes: ctx.graphNodes });
+	return baseAgentOptions("practice", opts, Object.values(practiceTools({ ...ctx, jobs: ctx.jobs && { ...ctx.jobs, resolveAttachment: opts.resolveAttachment ?? ctx.jobs.resolveAttachment } }, gate)), undefined, { gate, graphNodes: ctx.graphNodes });
 }
 
 export type ProberAgent = ReturnType<typeof createProberAgent>;

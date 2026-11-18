@@ -76,7 +76,7 @@ export interface PdfFetchSummary {
 	flagged_pages: number[];
 }
 
-export function createPdfReadTools(dir: string): Record<string, AgentTool<any>> {
+export function createPdfReadTools(dir: string, onFetchResponse?: (url: string, ok: boolean) => void): Record<string, AgentTool<any>> {
 	const pdfFetchInput = Type.Object({
 		url: Type.String({ description: "The PDF URL to download" }),
 	});
@@ -119,6 +119,7 @@ export function createPdfReadTools(dir: string): Record<string, AgentTool<any>> 
 						},
 						signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 					});
+					onFetchResponse?.(url, resp.ok);
 					if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
 					const contentType = resp.headers.get("content-type") ?? "";
 					if (!/application\/pdf/i.test(contentType) && !/\.pdf(\?|$)/i.test(parsedPathname(url))) {

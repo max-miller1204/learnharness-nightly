@@ -168,3 +168,38 @@ test("web ChatGPT login supplies only an opaque browser action; cancel/replaceme
 		assert(target.searchParams.has("state")); assert(target.searchParams.has("code_challenge"));
 	} finally { owner.close(); await fs.rm(scratch, { recursive: true, force: true }); }
 });
+
+test("the optional desktop login port requires a bearer and keeps completion on the existing route", async () => {
+	const { issueSession } = await import("../selfhost/src/auth-store.ts");
+	const { token } = issueSession(process.env.LH_DATA_DIR!, { method: "pairing", client: { deviceType: "desktop" } });
+	const origin = "https://desktop.example.test";
+	const desktopRequest = (command: Record<string, unknown>, bearer?: string) => {
+		const base = request({ providerId: "chatgpt", ...command }, origin);
+		if (bearer) base.headers.set("authorization", `Bearer ${bearer}`);
+		return base;
+	};
+	const login = { op: "login", desktopRedirectPort: 42424 };
+	assert.equal((await subscriptionControlsResponse(desktopRequest(login))).status, 403);
+	assert.equal((await subscriptionControlsResponse(desktopRequest(login, "revoked"))).status, 403);
+	for (const invalid of [0, 65536, 2.5, "42424"]) {
+		assert.equal((await subscriptionControlsResponse(desktopRequest({ ...login, desktopRedirectPort: invalid }, token))).status, 400);
+	}
+	assert.equal((await subscriptionControlsResponse(desktopRequest({ ...login, op: "complete" }, token))).status, 400);
+	const response = await subscriptionControlsResponse(desktopRequest(login, token));
+	assert.equal(response.status, 200);
+	const { browserAction } = await response.json();
+	const action = () => new Request(`${origin}${browserAction}`, {
+		method: "POST", headers: { origin, authorization: `Bearer ${token}`, "x-learnharness-subscriptions": "1" },
+	});
+	const opened = await subscriptionBrowserResponse(action());
+	assert.equal(opened.status, 303);
+	const authorization = new URL(opened.headers.get("location")!);
+	const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+	assert.equal(callback.href, "http://127.0.0.1:42424/auth/callback");
+	assert.equal((await subscriptionBrowserResponse(action())).status, 410);
+	callback.searchParams.set("state", authorization.searchParams.get("state")!);
+	callback.searchParams.set("error", "access_denied");
+	const completed = await subscriptionControlsResponse(desktopRequest({ op: "complete", url: callback.href }, token));
+	assert.equal(completed.status, 200);
+	assert.match((await completed.json()).value.error, /cancelled/);
+});

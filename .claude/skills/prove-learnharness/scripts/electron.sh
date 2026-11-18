@@ -63,6 +63,26 @@ setsid nohup env -i PATH="$PATH" HOME="$ED/home" LANG=C.UTF-8 XDG_CONFIG_HOME="$
 	xvfb-run -a --server-args="-screen 0 1280x900x24" "$BIN" "${ARGS[@]}" </dev/null >>"$ED/electron.log" 2>&1 &
 echo $! >"$ED/electron.pid"
 
+if [ "$MODE" = packaged ]; then
+	# An isolated profile reaches the app-owned first-run window before
+	# starting the bundled server. Drive the same button as a local user.
+	wait_for "$BOOT_TIMEOUT_S" curl -sf "http://127.0.0.1:$CDP/json/version" >/dev/null || die "no Electron CDP on $CDP"
+	(cd "$REPO" && node - "$CDP" "$BOOT_TIMEOUT_S" <<'JS'
+const puppeteer = require("puppeteer-core");
+(async () => {
+	const browser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${process.argv[2]}`, defaultViewport: null });
+	const timeout = Number(process.argv[3]) * 1000;
+	try {
+		const target = await browser.waitForTarget((item) => item.type() === "page" && item.url().endsWith("/server-list.html"), { timeout });
+		const page = await target.page();
+		const choice = await page.waitForSelector("#run-local", { visible: true, timeout });
+		await choice.click();
+	} finally { await browser.disconnect(); }
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+JS
+	) || die "could not select local first-run setup"
+fi
+
 page_url() { curl -sf "http://127.0.0.1:$CDP/json/list" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s).find(x=>x.type==="page"&&/^http:\/\/127\.0\.0\.1:\d+\//.test(x.url));if(!p)process.exit(1);console.log(new URL(p.url).origin)})'; }
 wait_for "$BOOT_TIMEOUT_S" page_url || { tail -30 "$ED/electron.log" >&2; die "no Electron window on CDP $CDP within ${BOOT_TIMEOUT_S}s"; }
 URL=$(page_url)

@@ -1,0 +1,50 @@
+# Roadmap 23 · Desktop server list
+
+The owner approved both slices on November 18, 2026, with amendments to split the work and include unsigned Windows and Linux nightlies in the coordinated update. [Approved proposal](t3-thread://v2/7b5ba43d-a4e4-4388-a505-3d60b101c0fc/thread:delegated-task:command%3Amcp%3Acabf6398-4973-4ebf-9e10-a839e574d62a%3Adelegate-task%3Aprepare-roadmap-item23-desktop-server-list-plan-1) · [Owner approval](t3-thread://v2/7b5ba43d-a4e4-4388-a505-3d60b101c0fc/e1f52710-d9e5-47df-bdca-e7c0773fa0f2)
+
+## PR 1 · Connect, switch, and sign in
+
+- First run offers **Run my LearnHarness here** or **Connect to my server**. An explicit development launch with `LH_DEV_URL` continues to target its development server. **Switch server…** in the native app menu opens the app-owned server window with **This computer** and saved servers. One server is active at a time. The first successful setup sets the launch default. Later switches are temporary until **Set as default** is chosen. Server data stays on its own server.
+- **Add a server** accepts a full LearnHarness pairing link and fills the HTTPS origin and 12-character code. Both fields can be entered manually. Submit explicitly to pair. A Tailscale hostname is a valid HTTPS address. Discovery, peer probing, the Tailscale CLI, and SSH are outside scope.
+- Before pairing or reconnecting, Electron main reads the public server descriptor and requires an exact match with the desktop's client protocol. It exchanges a pairing code for a revocable bearer using `POST /oauth/token`. Before loading any remote UI it calls `GET /api/auth/session` with that server's bearer and without cookies. Authentication failure offers **Pair again** in the shell. Unreachable servers offer **Retry**, preserving the credential and launch default. **Switch server…** stays available. All desktop pairing happens in the app-owned window. A damaged saved list is ignored while **This computer** remains usable. **Reset saved servers** moves the damaged entry out of the active path without following symlinks or removing directory contents.
+- Electron main owns persisted credentials, protected by OS-backed storage. The bearer is injected only into requests from the controlled top-level window to the exact selected HTTPS origin. The window uses its own session, context isolation and sandbox, with Node integration disabled. Redirects cannot carry the bearer off-origin. Switching closes the previous UI and streams, and remote mode leaves the bundled server off.
+- LearnHarness loads the remote server's own server-rendered Next.js UI. For example, `app/page.tsx` reads the settings record on that server. T3 ships its UI in the desktop app at `t3code://app`. The LearnHarness remote window has browser privileges and no local filesystem, local provider, or native updater IPC in PR 1. External links and provider sign-in pages open in the system browser. Main redeems one-use sign-in actions at the selected origin and hands off only the provider destination. Ordinary HTTP errors stay in the remote window. Remote paths refer to the server. Item 24 adds file and folder byte uploads through the server UI and its capabilities.
+- **Sign in to ChatGPT** in the app-owned server window reserves an ephemeral `127.0.0.1:0` listener before calling the existing `POST /api/subscriptions` ChatGPT `login` operation with its optional `desktopRedirectPort` field. Main resolves the existing one-use browser action without following its redirect, then validates the exact ChatGPT authorization endpoint and reserved callback URL before opening the system browser. A bind failure or callback mismatch stops before the browser opens. Main forwards the exact verified callback once through the existing `complete` operation to the original selected HTTPS origin with its bearer, that origin in `Origin`, and `x-learnharness-subscriptions: 1`. The server owns state, PKCE, token exchange and credentials. If the desktop abandons an acknowledged attempt, it asks the original server to cancel through the existing login controls. Web and phone retain paste-back.
+
+## PR 2 · Update everything
+
+Build on merged PR 1 and item 1's shared fork release. macOS, unsigned Windows NSIS, and unsigned Linux AppImage get the same sequence. Provider updates are outside scope.
+
+1. Expose only `window.lh.desktopUpdate` to the remote page. Its zero-argument methods are `getStatus()`, `check()`, `download()`, and `install()`. Status reports desktop version, offered target, phase, and a safe error. Main validates the sender's top-level frame and exact selected origin and chooses the official app artifact from the fixed fork feed, using existing electron-updater checksum verification. `install()` opens a native **Update everything** confirmation. Browser Settings retains its server-only flow.
+2. Pin the exact shared release and verify the desktop download before requesting a server restart. Ask a behind server through a dedicated authenticated maintenance operation to stage the exact release using the existing launcher trial and rollback. Skip server installation if it is already on target. A server ahead, unsupported updater, or missing artifact stops the run.
+3. Show restart progress in the app-owned window. Require both `/api/health` on the exact version and authenticated confirmation that the launcher committed it. A trial can serve health before commit. The maintenance response stays compatible across the restart, and ordinary UI loads still require exact protocol compatibility. Persist the target and selected server before installing the desktop. On relaunch verify the running desktop version and reconnect once to that server. The saved launch default remains in effect for subsequent launches.
+4. If server staging fails, rolls back, or times out, keep the desktop at its current version and offer **Retry** or **Switch server…**. If the server commits and desktop installation fails, leave the server at the committed version and offer an explicit retry of the pinned desktop install. A retry checks observed state before restarting either side. A newer target always requires a new run, and installer retries require user action.
+
+## Merge gates and proof
+
+Each PR requires passing CI Check, one fresh review round, and an independent `PROVED` comment naming the final head. Run heavyweight builds and runtime proof on the ThinkPad, one slot at a time, with isolated profiles and synthetic services.
+
+For PR 1, drive first-run setup in both modes, paste and manual pairing, switches between local and two remote fixtures, default selection and relaunch, revocation, offline recovery and protocol mismatch. Observe the remote server's rendered UI, an ordinary 404 staying in the window, previous streams closing, and the bundled server stopping. Verify that a damaged saved list leaves local setup usable and that resetting permits new pairing. Check that cookies are absent on preflight, that credentials cannot follow redirects, and that remote frames lack local capabilities. Verify external links and a provider sign-in action open the system browser without its paired bearer. Exercise a synthetic ChatGPT browser callback, duplicate and invalid callbacks, bind failure, a returned redirect pointing to an already occupied port, and immediate retry after desktop cancellation. Exercise web paste-back separately. Use no real accounts.
+
+For PR 2, use synthetic releases and servers to prove version skew, exact target selection, launcher commit versus health alone, rollback and timeout, failed desktop installation, retry of the pinned target and reconnect across relaunch.
+
+### PR 1 check commands
+
+Run the focused synthetic checks from the repo root.
+
+```sh
+NODE_ENV=test node_modules/.bin/tsx --test \
+  tests/desktop-server-list.test.ts tests/desktop-api.test.ts \
+  tests/desktop-dev-startup.test.ts tests/desktop-platform.test.ts \
+  tests/client-protocol.test.ts tests/chatgpt-auth.test.ts \
+  tests/chatgpt-dev-ipc.test.ts tests/web-subscriptions.test.ts
+```
+
+In the ThinkPad build slot, check out the pushed head, install the locked dependencies, and run the packaged parity plan.
+
+```sh
+cd .claude/skills/prove-learnharness
+scripts/run-plan.sh item23-pr1-desktop-server-list
+```
+
+For independent remote proof, run two isolated HTTPS test servers with throwaway auth and data and a third origin to record any redirected request. Use a fresh desktop profile and a system keyring on Linux. Trust only the test certificates in the test environment. Drive the app-owned window and the remote renderer against the PR 1 checklist above. Use a fake system-browser callback and provider exchange in the test harness, exercise the occupied-port and mismatch cases before opening any real browser, and record the observed origin, status, stream closure and capability results without credential values. Run the packaged and remote checks in the same reserved ThinkPad slot. Include the checked-out SHA in the proof receipt and PR comment.

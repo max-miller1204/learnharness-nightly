@@ -24,13 +24,14 @@
  *     would shadow every settings-page key change until restart.
  */
 
-const { app, BrowserWindow, Menu, ipcMain, nativeTheme, session, shell, dialog } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, nativeTheme, session, shell, dialog, safeStorage } = require("electron");
 const { pickAttachmentPath } = require("./attachment-picker.cjs");
 const { createChatGPT, fileStore } = require("./chatgpt.cjs");
 const { attachChatGPTChild, trustedSender, chatGPTControl } = require("./chatgpt-ipc.cjs");
 const { createSubscriptions, loadSubscriptionSDK } = require("./subscriptions.cjs");
 const { attachSubscriptionChild, subscriptionControl } = require("./subscription-ipc.cjs");
 const { desktopAPIHeaders, exchangeDesktopSession } = require("./desktop-api.cjs");
+const { createServerList } = require("./server-list.cjs");
 const { openWebSubscriptionBrowser } = require("./web-subscription-browser.cjs");
 const { randomBytes } = require("node:crypto");
 const { spawn } = require("node:child_process");
@@ -38,6 +39,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const net = require("node:net");
 const path = require("node:path");
+const { URL } = require("node:url");
 
 // Mirrors SIDEBAR_AUTOCLOSE in components/sidebar.tsx — keep in sync (the
 // renderer owns the number; this is the IPC widen target).
@@ -133,6 +135,7 @@ if (process.argv.includes("--browser-service")) {
 	} else {
 		app.on("second-instance", () => {
 			const win = BrowserWindow.getAllWindows()[0];
+			if (!win) reopenWindow?.();
 			if (win) {
 				if (win.isMinimized()) win.restore();
 				win.focus();
@@ -151,6 +154,8 @@ let subscriptionChild = null;
 let desktopAPISecret = null;
 let desktopSessionToken = null;
 let reopenWindow = null;
+let localOrigin = null;
+let serverList = null;
 const trustedAppWindows = new Set();
 
 // A GUI shell must never die to a stray exception (EPIPE dialogs, a race
@@ -241,28 +246,27 @@ function startServer(port) {
 		const fwd = (buf) => buf.toString().trimEnd().split("\n").forEach((l) => l && log(`server: ${l}`));
 		child.stdout.on("data", fwd);
 		child.stderr.on("data", fwd);
-		child.on("exit", (code, signal) => {
+		child.once("error", reject);
+		child.once("close", (code, signal) => {
 			log(`server exited (code=${code} signal=${signal})`);
+			if (serverProcess !== child) return;
 			serverProcess = null;
-			chatgptChild?.dispose();
-			chatgptChild = null;
-			subscriptionChild?.dispose();
-			subscriptionChild = null;
-			chatgpt?.close();
-			subscriptions?.close();
+			disposeLocalBackend();
 		});
-		resolve(child);
+		child.once("spawn", () => resolve(child));
 	});
 }
 
 /** No "ready" event exists — poll until the server answers (docs-confirmed). */
-function waitUntilUp(url, tries = 150) {
+function waitUntilUp(url, child, tries = 150) {
 	return new Promise((resolve, reject) => {
 		const attempt = (n) => {
+			if (serverProcess !== child || !child.connected) return reject(new Error("Bundled server stopped before startup completed."));
 			const req = http.get(url, (res) => {
 				res.resume();
 				resolve(res.statusCode !== undefined);
 			});
+			req.setTimeout(1000, () => req.destroy());
 			req.on("error", () => {
 				if (n <= 0) reject(new Error(`server never answered on ${url}`));
 				else setTimeout(() => attempt(n - 1), 200);
@@ -272,20 +276,30 @@ function waitUntilUp(url, tries = 150) {
 	});
 }
 
-function killServer() {
+function disposeLocalBackend() {
+	localOrigin = null;
+	desktopAPISecret = null;
+	desktopSessionToken = null;
+	chatgptChild?.dispose();
+	chatgptChild = null;
+	subscriptionChild?.dispose();
+	subscriptionChild = null;
 	chatgpt?.close();
+	chatgpt = null;
 	subscriptions?.close();
-	if (!serverProcess) return;
+	subscriptions = null;
+}
+
+function killServer() {
 	const child = serverProcess;
-	serverProcess = null;
-	child.kill("SIGTERM");
-	setTimeout(() => {
-		try {
-			child.kill("SIGKILL");
-		} catch {
-			/* already gone */
-		}
-	}, 3000);
+	disposeLocalBackend();
+	if (!child) return Promise.resolve();
+	return new Promise((resolve) => {
+		const force = setTimeout(() => child.kill("SIGKILL"), 3000);
+		force.unref();
+		child.once("close", () => { clearTimeout(force); resolve(); });
+		child.kill("SIGTERM");
+	});
 }
 
 /** Links leaving the app window may open only in a browser or mail client:
@@ -488,7 +502,7 @@ function reportUpdateStatus(status, version = null) {
 		const keepsNotes = status === "available" || status === "downloading" || status === "downloaded";
 		const notes = keepsNotes ? releaseNotes.capGroups(offeredGroups) : { releaseNotes: [], omittedReleaseCount: 0 };
 		updateState = { status, version: typeof version === "string" ? version : null, revision: updateState.revision + 1, ...notes };
-		for (const win of BrowserWindow.getAllWindows()) {
+		for (const win of trustedAppWindows) {
 			try {
 				win.webContents.send("lh:update-status", updateState);
 			} catch {
@@ -673,10 +687,10 @@ function setupAutoUpdater() {
 
 /** One result surface for manual checks. Preload buffers the navigation
  * request until React subscribes, including when all macOS windows closed. */
-function checkForUpdatesFromMenu() {
+async function checkForUpdatesFromMenu() {
 	try {
-		const win = BrowserWindow.getAllWindows()[0] ?? reopenWindow?.();
-		if (win) {
+		const win = [...trustedAppWindows][0] ?? await reopenWindow?.();
+		if (trustedAppWindows.has(win)) {
 			if (win.isMinimized()) win.restore();
 			win.focus();
 			const openSettings = () => {
@@ -703,19 +717,20 @@ function zoomStep(win, dir) {
 function applyZoom(win, factor) {
 	factor = Math.min(2, Math.max(0.75, factor)); // ladder clamps; ⌘0 = 1
 	win.webContents.setZoomFactor(factor);
-	win.webContents.send("lh:zoom", factor);
+	if (trustedAppWindows.has(win)) win.webContents.send("lh:zoom", factor);
 }
 
 /** macOS needs an application menu with the Edit roles — without one,
  *  Cmd+C/V/A do nothing in the renderer. Everything else stays minimal. */
-function installMenu() {
+function installMenu({ local = true } = {}) {
 	const template = [
 		{
 			label: app.name,
 			submenu: [
 				{ role: "about" },
 				// Manual checks report their result in Settings → General.
-				{ label: "Check for Updates…", click: () => checkForUpdatesFromMenu() },
+				{ label: "Check for Updates…", enabled: local, click: () => checkForUpdatesFromMenu() },
+				...(serverList ? [{ label: "Switch server…", click: () => serverList.show() }] : []),
 				{ type: "separator" },
 				{ role: "hide" },
 				{ role: "hideOthers" },
@@ -737,17 +752,17 @@ function installMenu() {
 				{
 					label: "Actual Size",
 					accelerator: "CommandOrControl+0",
-					click: () => applyZoom(BrowserWindow.getAllWindows()[0], 1),
+					click: () => { const win = BrowserWindow.getFocusedWindow(); if (win) applyZoom(win, 1); },
 				},
 				{
 					label: "Zoom In",
 					accelerator: "CommandOrControl+Plus",
-					click: () => zoomStep(BrowserWindow.getAllWindows()[0], +1),
+					click: () => { const win = BrowserWindow.getFocusedWindow(); if (win) zoomStep(win, +1); },
 				},
 				{
 					label: "Zoom Out",
 					accelerator: "CommandOrControl+-",
-					click: () => zoomStep(BrowserWindow.getAllWindows()[0], -1),
+					click: () => { const win = BrowserWindow.getFocusedWindow(); if (win) zoomStep(win, -1); },
 				},
 				{ type: "separator" },
 				{ role: "togglefullscreen" },
@@ -756,6 +771,48 @@ function installMenu() {
 		{ role: "windowMenu" },
 	];
 	Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+async function startLocalServer(signal) {
+	if (serverProcess?.connected && localOrigin) {
+		chatgpt?.resume();
+		subscriptions?.resume();
+		return localOrigin;
+	}
+	const url = `http://127.0.0.1:${await freePort()}`;
+	signal.throwIfAborted();
+	desktopAPISecret = randomBytes(32).toString("hex");
+	const ownedOrigin = new URL(url).origin;
+	chatgpt = createChatGPT({
+		store: fileStore(path.join(app.getPath("userData"), "chatgpt-credentials.json")),
+		openExternal: (target) => shell.openExternal(target),
+		onChange: (value) => {
+			chatgptChild?.send(value);
+			for (const win of trustedAppWindows) win.webContents.send("lh:chatgpt:changed");
+		},
+	});
+	subscriptions = createSubscriptions({
+		directory: app.getPath("userData"),
+		loadSDK: () => loadSubscriptionSDK(path.dirname(serverEntry())),
+		openExternal: (target) => shell.openExternal(target),
+		onChange: (snapshot) => {
+			subscriptionChild?.send(snapshot);
+			for (const win of trustedAppWindows) win.webContents.send("lh:subscriptions:changed");
+		},
+	});
+	await subscriptions.ready;
+	signal.throwIfAborted();
+	log(`starting server: ${serverEntry()}`);
+	log(`data dir: ${DATA_DIR()}${fs.existsSync(AUTH_FILE()) ? " · auth.json: present" : " · auth.json: ABSENT (no BYOK keys yet)"}`);
+	const child = await startServer(new URL(url).port);
+	await waitUntilUp(url, child);
+	log(`server up: ${url}`);
+	const token = await exchangeDesktopSession(ownedOrigin, desktopAPISecret);
+	if (serverProcess !== child || !child.connected) throw new Error("Bundled server stopped before login completed.");
+	desktopSessionToken = token;
+	localOrigin = ownedOrigin;
+	log("desktop session ready");
+	return url;
 }
 
 async function main() {
@@ -767,7 +824,7 @@ async function main() {
 	});
 
 	// The child must not outlive us — cover every quit path.
-	app.on("before-quit", killServer);
+	app.on("before-quit", () => { serverList?.close(); void killServer(); });
 	process.on("exit", killServer);
 	process.on("SIGHUP", killServer);
 
@@ -785,44 +842,7 @@ async function main() {
 	// spawn, no packaging, full HMR. The rest of this shell still applies
 	// (guards, menu, single instance).
 	const devUrl = process.env.LH_DEV_URL;
-	const url = devUrl ?? `http://127.0.0.1:${await freePort()}`;
-	if (!devUrl) {
-		desktopAPISecret = randomBytes(32).toString("hex");
-		const ownedOrigin = new URL(url).origin;
-		// All URLs, not only /api: remove the header again on external redirects.
-		session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ["<all_urls>"] }, (details, callback) => {
-			callback({ requestHeaders: desktopAPIHeaders(details, ownedOrigin, desktopSessionToken, [...trustedAppWindows]) });
-		});
-		chatgpt = createChatGPT({
-			store: fileStore(path.join(app.getPath("userData"), "chatgpt-credentials.json")),
-			openExternal: (target) => shell.openExternal(target),
-			onChange: (value) => {
-				chatgptChild?.send(value);
-				for (const win of BrowserWindow.getAllWindows()) win.webContents.send("lh:chatgpt:changed");
-			},
-		});
-		subscriptions = createSubscriptions({
-			directory: app.getPath("userData"),
-			loadSDK: () => loadSubscriptionSDK(path.dirname(serverEntry())),
-			openExternal: (target) => shell.openExternal(target),
-			onChange: (snapshot) => {
-				subscriptionChild?.send(snapshot);
-				for (const win of BrowserWindow.getAllWindows()) win.webContents.send("lh:subscriptions:changed");
-			},
-		});
-		await subscriptions.ready;
-		log(`starting server: ${serverEntry()}`);
-		log(`data dir: ${DATA_DIR()}${fs.existsSync(AUTH_FILE()) ? " · auth.json: present" : " · auth.json: ABSENT (no BYOK keys yet)"}`);
-		await startServer(new URL(url).port);
-		await waitUntilUp(url);
-		log(`server up: ${url}`);
-		try {
-			desktopSessionToken = await exchangeDesktopSession(ownedOrigin, desktopAPISecret);
-			log("desktop session ready");
-		} catch (error) {
-			log(`desktop session failed: ${error?.message ?? error}`);
-		}
-	} else {
+	if (devUrl) {
 		log(`dev mode: ${devUrl} — waiting for server`);
 		const { waitForDevServer } = require("./dev-server-readiness.cjs");
 		const startup = new AbortController();
@@ -841,18 +861,19 @@ async function main() {
 		} finally {
 			app.removeListener("before-quit", cancelStartup);
 		}
+		localOrigin = new URL(devUrl).origin;
 	}
 
 	// Renderer controls contain no token/URL/code operation. The separate server
 	// child is the only recipient of credential leases over inherited IPC.
 	ipcMain.handle("lh:chatgpt:control", async (event, command) => {
-		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, new URL(url).origin, BrowserWindow)) return { error: "Untrusted desktop request." };
+		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) return { error: "Untrusted desktop request." };
 		if (!chatgpt || !serverProcess?.connected) return { available: false, pending: false, activeId: null, accounts: [], error: "ChatGPT sign-in requires the desktop app's private server connection. Browser-only and externally launched development servers keep API-key connections." };
 		return chatGPTControl(command, chatgpt);
 	});
 
 	ipcMain.handle("lh:subscriptions:control", async (event, command) => {
-		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, new URL(url).origin, BrowserWindow)) throw new Error("Untrusted desktop request.");
+		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
 		if (!subscriptions || !serverProcess?.connected) {
 			if (command?.op === "status") return [];
 			throw new Error("Subscription sign-in requires the desktop app's private server connection.");
@@ -863,15 +884,13 @@ async function main() {
 	// The dev shell has no browser tabs. Only a one-use action on its own
 	// Next server may be resolved here; never accept an arbitrary external URL.
 	ipcMain.handle("lh:subscriptions:web-browser", async (event, action) => {
-		if (!devUrl || !trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, new URL(url).origin, BrowserWindow)) throw new Error("Untrusted development request.");
-		await openWebSubscriptionBrowser(action, new URL(url).origin, { openExternal: (target) => shell.openExternal(target) });
+		if (!devUrl || !trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted development request.");
+		await openWebSubscriptionBrowser(action, localOrigin, { openExternal: (target) => shell.openExternal(target) });
 	});
 
 	ipcMain.handle("lh:attachment:pick", (event, mode) => pickAttachmentPath(event, mode, {
-		BrowserWindow, dialog, trustedAppWindows, origin: new URL(url).origin,
+		BrowserWindow, dialog, trustedAppWindows, origin: localOrigin,
 	}));
-
-	installMenu();
 
 	// Auto-update: wire the updater before the window so the pill's
 	// channel is live from first paint; the first check (15 s after launch)
@@ -879,19 +898,19 @@ async function main() {
 	// are log lines — this can never block boot.
 	setupAutoUpdater();
 	ipcMain.on("lh:update-install", (event) => {
-		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, new URL(url).origin, BrowserWindow)) return;
+		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) return;
 		void installUpdateNow();
 	});
 	ipcMain.handle("lh:update:download", (event) => {
-		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, new URL(url).origin, BrowserWindow)) throw new Error("Untrusted desktop request.");
+		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
 		downloadUpdateNow();
 	});
 	ipcMain.handle("lh:update:get", (event) => {
-		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, new URL(url).origin, BrowserWindow)) throw new Error("Untrusted desktop request.");
+		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
 		return updateState;
 	});
 	ipcMain.handle("lh:update:check", (event) => {
-		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, new URL(url).origin, BrowserWindow)) throw new Error("Untrusted desktop request.");
+		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
 		checkForUpdates({ manual: true });
 	});
 
@@ -902,10 +921,13 @@ async function main() {
 	// window grows right. No-op when already wide.
 	// The renderer's first paint can race did-finish-load — it asks for
 	// the current factor itself (mirrors "lh:zoom" pushes).
-	ipcMain.handle("lh:zoom:get", (event) => BrowserWindow.fromWebContents(event.sender)?.webContents.getZoomFactor() ?? 1);
+	ipcMain.handle("lh:zoom:get", (event) => {
+		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
+		return event.sender.getZoomFactor();
+	});
 	ipcMain.on("lh:expand-window", (event) => {
 		const win = BrowserWindow.fromWebContents(event.sender);
-		if (!win) return;
+		if (!trustedAppWindows.has(win) || !trustedSender(event, localOrigin, BrowserWindow)) return;
 		const { x, y, width, height } = win.getBounds();
 		const target = SIDEBAR_AUTOCLOSE;
 		if (width < target) win.setBounds({ x, y, width: target, height });
@@ -913,17 +935,33 @@ async function main() {
 	// The renderer reports every appearance write (and the record on load):
 	// the chrome follows without a restart.
 	ipcMain.on("lh:appearance", (event, next) => {
-		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, new URL(url).origin, BrowserWindow)) return;
+		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) return;
 		appearance = normalizeAppearance(next);
 		nativeTheme.themeSource = themeSourceFor(appearance.mode);
-		for (const win of BrowserWindow.getAllWindows()) applyChrome(win);
+		for (const win of trustedAppWindows) applyChrome(win);
 	});
-	reopenWindow = () => { chatgpt?.resume(); subscriptions?.resume(); return createWindow(url); };
+	if (devUrl) {
+		installMenu();
+		reopenWindow = () => createWindow(devUrl);
+		reopenWindow();
+	} else {
+		// Packaged localhost requests keep their own bootstrap. Remote windows
+		// use separate sessions and never receive the local preload.
+		session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ["<all_urls>"] }, (details, callback) => {
+			callback({ requestHeaders: desktopAPIHeaders(details, localOrigin, desktopSessionToken, [...trustedAppWindows]) });
+		});
+		serverList = await createServerList({
+			app, BrowserWindow, ipcMain, session, shell, safeStorage,
+			startLocal: startLocalServer, stopLocal: killServer, createLocalWindow: createWindow,
+			setLocalMenu: (enabled) => installMenu({ local: enabled }),
+		});
+		installMenu({ local: false });
+		reopenWindow = () => serverList.reopen();
+		await serverList.launch();
+	}
 	app.on("activate", () => {
 		if (BrowserWindow.getAllWindows().length === 0) reopenWindow();
 	});
-	createWindow(url);
-	log(`window open: ${url}`);
 	// Startup (15 s) + 4h checks stay main-owned and read the current
 	// preference. No renderer subscription is required; late loads retrieve
 	// the snapshot.

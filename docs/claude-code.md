@@ -11,7 +11,7 @@ LearnHarness can use an externally installed **Claude Code CLI** as a model prov
 
 The minimum version is **2.1.259** ([contract](../src/core/contracts/claude-code.ts)). The check runs only `--version`, not authentication or inference. Fresh model processes check again and refuse old/unverifiable versions. Passing proves neither account access, quota, billing method, nor complete protocol compatibility.
 
-Install, update, sign in, and change CLI accounts externally. LearnHarness has no CLI account-status or reauthentication control. Disabling the opt-in blocks future requests without rewriting model selections or signing out the CLI; it does not interrupt an already admitted turn. Use normal cancellation for running work.
+Install, update, sign in, and change CLI accounts externally. LearnHarness has no reauthentication control. Only Claude Code web search reads `claude auth status --json`, to show and bind the signed-in account; see [subscription search](specs/subscription-search.md). Disabling the opt-in blocks future requests without rewriting model selections or signing out the CLI; it does not interrupt an already admitted turn. Use normal cancellation for running work.
 
 ## What goes through the CLI
 
@@ -38,6 +38,10 @@ The persisted LearnHarness transcript—not a CLI saved session—is authoritati
 Held children expire after **10 minutes** idle. The CLI MCP timeout is **30 minutes**, providing headroom rather than a general model deadline. If no eligible child remains after timeout/restart/configuration change, the next call starts fresh and replays active history as labelled user/assistant/tool text, preserving user/tool images. This is not CLI `--resume` or exact native-role/thinking restoration. Admitted compatibility failures are reported, not silently hidden by replay.
 
 Abort terminates the child and active stream. Cancelling a queued tool request prevents later admission but cannot undo already admitted work. Normal exit, failure, abort, and idle expiry close bridge calls/listeners and remove temporary directories, escalating process termination if necessary. Cleanup is not guaranteed after an OS crash or forced server termination.
+
+## Web search
+
+Choosing Claude Code in **Settings → Agent → Tools → Search engine** runs each LearnHarness web search as a separate headless `claude -p` with only the `WebSearch` tool, on the `haiku` alias at low effort (Haiku 5.5 for plan and Anthropic API sign-ins in CLI 2.1.327; the CLI picks Haiku 4.5 on cloud routes). Chat runs keep `--tools ""`. Search requires the opt-in above and binds to the account that `claude auth status --json` reports; signing in as another account requires choosing it again. Without a Claude plan, that binding uses a one-way fingerprint of visible credentials, with the limits described in the [spec](specs/subscription-search.md). Search uses whatever the CLI is signed in with, so it can use Claude plan usage limits or bill an API account, as the picker discloses.
 
 ## Usage and troubleshooting
 

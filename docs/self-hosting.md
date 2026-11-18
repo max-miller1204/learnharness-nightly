@@ -74,6 +74,12 @@ The launcher itself also updates by itself. An old launcher keeps working with n
 
 `lh rollback` (or `lh use <version>`) switches versions through the same trial. It asks whether to also restore your data from just before that version was replaced; the default is no, because restoring discards everything since.
 
+### Full manual recovery copy
+
+Uploaded attachments live in `$LH_HOME/attachments`, beside `$LH_HOME/userdata`. Automatic rollback and `lh restore` restore the chat records in `userdata` and leave attachment bytes in place. Deleting a chat can remove its uploaded files. Restoring an older snapshot can bring back their filenames with an unavailable status.
+
+For a full manual recovery copy, stop the server and copy both `userdata` and `attachments` from the same installation. Keep the copies together and restore both with the server stopped.
+
 ## Trying a PR (previews)
 
 PR previews are built for Linux x64 and arm64. A PR with a preview build has a bot comment saying so (design: [specs/pr-previews.md](specs/pr-previews.md)). Your own PRs build one on every push; anyone else's PR (upstream imports, outside PRs) only when you add the `preview` label, and the label comes off once it's published. Adding it means you've read the diff: a preview runs that PR's code as you.
