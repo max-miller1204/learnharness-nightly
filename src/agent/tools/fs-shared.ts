@@ -165,10 +165,10 @@ function sourcePathCheck(home = os.homedir(), allowClaim = false): (absolute: st
 		files.some((p) => isWithin(absolute, p)) || isCredentialTemp(absolute, credentialDir, path.basename(comparisonPath(AUTH_FILE)));
 }
 
-function checkedSourcePath(absolute: string, denied: (absolute: string) => boolean): string {
+function checkedSourcePath(absolute: string, denied: (absolute: string) => boolean, display = absolute): string {
 	const refuse = () => {
 		throw new Error(
-			`Access denied: ${absolute} is a protected location. Learner file tools cannot open it. ` +
+			`Access denied: ${display} is a protected location. Learner file tools cannot open it. ` +
 			"Do not paste credentials or private transcripts into chat. Use another source or a manually reviewed, non-sensitive excerpt.",
 		);
 	};
@@ -192,10 +192,10 @@ export function resolveSourcePath(p?: string, policy?: ResolvedFileAccessPolicy)
 /** The caller already verified an opaque reference against the current
  * chat's record. Keep mandatory named/canonical checks, and also reject a
  * symlink out of the private copy store. */
-export function resolveClaimedAttachment(file: string, name: string): string {
+export function resolveClaimedAttachment(file: string, name: string, source: string): string {
 	const root = path.join(/* turbopackIgnore: true */ PATHS.attachments, "claimed");
 	const denied = sourcePathCheck(os.homedir(), true);
-	const canonical = checkedSourcePath(file, denied);
+	const canonical = checkedSourcePath(file, denied, source);
 	if (denied(path.join(root, path.basename(name.replaceAll("\\", "/"))))) {
 		throw new Error("Access denied: the uploaded filename identifies a protected file.");
 	}

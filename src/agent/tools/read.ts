@@ -1,12 +1,9 @@
-import { ATTACHMENT_PREFIX, isAttachmentId } from "../../core/attachments.ts";
-import { ATTACHMENT_UNAVAILABLE } from "../../core/attachment-limits.ts";
 import * as fs from "node:fs/promises";
-import * as nodePath from "node:path";
 import { Type } from "typebox";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute, type ImageFileResult } from "../tool-execute.ts";
-import { resolveClaimedAttachment, resolveSourcePath } from "./fs-shared.ts";
+import { learnerFileErrorMessage, resolveLearnerFile, type ResolveAttachment } from "./learner-file.ts";
 import { detectSupportedImageMimeTypeFromFile, processImage } from "../image-processing/index.ts";
 import {
 	conversionFailureMessage,
@@ -154,8 +151,6 @@ export type ReadModel = Pick<Model<Api>, "input" | "inputLimits">;
  * per agent, rather than sharing mutable model state between conversations.
  * Home-relative paths, text slicing and the app's abort guard stay unchanged;
  * image detection/processing and its notes follow native Pi read behavior. */
-export type ResolveAttachment = (id: string) => { name: string; filename?: string } | undefined;
-
 export function createReadTool(model?: ReadModel, resolveAttachment?: ResolveAttachment): AgentTool<typeof readInput> {
 	return {
 		name: "read",
@@ -163,56 +158,50 @@ export function createReadTool(model?: ReadModel, resolveAttachment?: ResolveAtt
 		description: `Read the contents of a file. Supports text files, images (jpg, png, gif, webp, bmp) and documents (docx, xlsx, pptx, odt, ods, odp, rtf, epub, ipynb). Images are sent as attachments; documents are converted to text. For text files, output is truncated to 2000 lines or 50.0KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete. File access settings and protected-location denials apply; use ls without a path to discover allowed folders when restricted.`,
 		parameters: readInput,
 		execute: serverExecute("read", readInput, async ({ path: rawPath, offset, limit }, { signal }): Promise<string | ImageFileResult> => {
-			let absolute: string;
-			let name: string;
-			if (rawPath.startsWith(ATTACHMENT_PREFIX)) {
-				const id = rawPath.slice(ATTACHMENT_PREFIX.length);
-				const attached = isAttachmentId(id) ? resolveAttachment?.(id) : undefined;
-				if (!attached) throw new Error("Access denied: this attachment is not part of the current chat.");
-				if (!attached.filename) throw new Error(ATTACHMENT_UNAVAILABLE);
-				absolute = resolveClaimedAttachment(attached.filename, attached.name);
-				name = attached.name;
-			} else {
-				absolute = resolveSourcePath(rawPath);
-				name = nodePath.basename(absolute);
-			}
-			const mime = await detectSupportedImageMimeTypeFromFile(absolute);
-			const named = mime ? undefined : documentFormatFromName(name);
-			if (named && (await fs.stat(absolute)).size > MAX_DOCUMENT_BYTES) {
-				// The PDF check comes first (spec read flow step 2), even for a large file; then a
-				// password-protected OOXML file (an OLE container) says so rather than too large (item 26).
-				const head = await readHead(absolute, 8);
-				if (isPdf(head)) throw new Error(PDF_MESSAGE);
-				if (isOleCompound(head) && (named === "docx" || named === "xlsx" || named === "pptx")) throw new Error(conversionFailureMessage(name, named, "encrypted"));
-				throw new Error(conversionFailureMessage(name, named, "too-large"));
-			}
-			const buffer = await fs.readFile(absolute, { signal });
-			if (mime) {
-				const processed = await processImage(buffer, mime, { resizeOptions: model?.inputLimits?.images?.resize });
-				signal?.throwIfAborted();
-				const note = processed.ok
-					? [`Read image file [${processed.mimeType}]`, ...processed.hints]
-					: [`Read image file [${mime}]`, processed.message];
-				if (model && !model.input.includes("image")) {
-					note.push("[Current model does not support images. The image will be omitted from this request.]");
+			const file = resolveLearnerFile(rawPath, resolveAttachment);
+			const { filename: absolute, name } = file;
+			try {
+				const mime = await detectSupportedImageMimeTypeFromFile(absolute);
+				const named = mime ? undefined : documentFormatFromName(name);
+				if (named && (await fs.stat(absolute)).size > MAX_DOCUMENT_BYTES) {
+					// The PDF check comes first (spec read flow step 2), even for a large file; then a
+					// password-protected OOXML file (an OLE container) says so rather than too large (item 26).
+					const head = await readHead(absolute, 8);
+					if (isPdf(head)) throw new Error(PDF_MESSAGE);
+					if (isOleCompound(head) && (named === "docx" || named === "xlsx" || named === "pptx")) throw new Error(conversionFailureMessage(name, named, "encrypted"));
+					throw new Error(conversionFailureMessage(name, named, "too-large"));
 				}
-				return {
-					text: note.join("\n"),
-					...(processed.ok ? { images: [{ data: processed.data, mimeType: processed.mimeType }] } : {}),
-				};
+				const buffer = await fs.readFile(absolute, { signal });
+				if (mime) {
+					const processed = await processImage(buffer, mime, { resizeOptions: model?.inputLimits?.images?.resize });
+					signal?.throwIfAborted();
+					const note = processed.ok
+						? [`Read image file [${processed.mimeType}]`, ...processed.hints]
+						: [`Read image file [${mime}]`, processed.message];
+					if (model && !model.input.includes("image")) {
+						note.push("[Current model does not support images. The image will be omitted from this request.]");
+					}
+					return {
+						text: note.join("\n"),
+						...(processed.ok ? { images: [{ data: processed.data, mimeType: processed.mimeType }] } : {}),
+					};
+				}
+				if (isPdf(buffer)) {
+					throw new Error(PDF_MESSAGE);
+				}
+				const format = detectDocumentFormat(name, buffer);
+				if (format) return readTextSlice(await readDocument(buffer, format, name, signal), offset, limit);
+				if (isOleCompound(buffer)) {
+					throw new Error("This is an old binary Office file (.doc, .xls or .ppt), which read can't convert. Ask the learner to save it as .docx, .xlsx or .pptx.");
+				}
+				if (looksBinary(buffer)) {
+					throw new Error(`${file.source} is ${isZip(buffer) ? "a zip archive" : "a binary file"} and can't be read as text.`);
+				}
+				return readTextSlice(buffer.toString("utf-8"), offset, limit);
+			} catch (error) {
+				if (file.source === absolute) throw error;
+				throw new Error(learnerFileErrorMessage(error, file));
 			}
-			if (isPdf(buffer)) {
-				throw new Error(PDF_MESSAGE);
-			}
-			const format = detectDocumentFormat(name, buffer);
-			if (format) return readTextSlice(await readDocument(buffer, format, name, signal), offset, limit);
-			if (isOleCompound(buffer)) {
-				throw new Error("This is an old binary Office file (.doc, .xls or .ppt), which read can't convert. Ask the learner to save it as .docx, .xlsx or .pptx.");
-			}
-			if (looksBinary(buffer)) {
-				throw new Error(`${rawPath.startsWith(ATTACHMENT_PREFIX) ? rawPath : absolute} is ${isZip(buffer) ? "a zip archive" : "a binary file"} and can't be read as text.`);
-			}
-			return readTextSlice(buffer.toString("utf-8"), offset, limit);
 		}),
 	};
 }

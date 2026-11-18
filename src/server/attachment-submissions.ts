@@ -3,9 +3,18 @@ import type { AttachmentTarget } from "../client-protocol/index.ts";
 import { MAX_ATTACHMENTS_PER_MESSAGE } from "../core/attachment-limits.ts";
 import { isAttachmentId } from "../core/attachments.ts";
 import type { ChatRecord } from "../core/contracts/chat.ts";
-import { AttachmentError } from "../store/attachments.ts";
+import { AttachmentError, attachmentReferences, claimedAttachmentPath } from "../store/attachments.ts";
 import { authenticate, CREDENTIAL_HEADERS } from "./auth.ts";
 import { protocolRefusal } from "./server-info.ts";
+import { stores } from "./stores.ts";
+
+export function attachmentsForChat(chatId: string) {
+	return (id: string) => {
+		const current = stores.chatStore.getChat(chatId);
+		const ref = current && attachmentReferences(current.messages).find(item => item.id === id);
+		return ref ? { name: ref.name, filename: claimedAttachmentPath(id) } : undefined;
+	};
+}
 
 export function attachmentOwner(request: Request): string {
 	const auth = authenticate(request);

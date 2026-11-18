@@ -10,9 +10,9 @@ The owner approved roadmap item 24 as two PRs on 2026-11-18. PR 1 delivers indiv
 - Protocol 1 adds the optional `attachment-uploads-v1` capability. The browser uses its paired cookie. Native clients can use the same contract with an existing paired bearer credential. Staged IDs are scoped to the pairing and to the opening draft or existing target chat. Check current pairing on each operation. The signed byte route skips Next.js Proxy body buffering and applies the same pairing, origin, and protocol checks.
 - Upload grants last 10 minutes. Stream the bytes to a temporary file and require the exact declared size. Hash bytes only to compare duplicate upload retries. Copy on claim so a failed send can retry against the pending source.
 - The opening send preserves model selection and graph context. It saves the chat, opening message, and attachment references as one recoverable operation before making the chat visible or starting the turn. A refusal leaves the draft intact without creating an empty chat. Retrying the same send does not duplicate the chat, message, or claim.
-- A saved attachment has a display filename and an opaque server ID. Restricted File access permits the agent to read claimed copies referenced by its current chat, subject to the existing protected-path checks. Local desktop files and folders and existing server paths remain live references. Existing path chips, image snapshots, and graph imports continue to work.
+- A saved attachment has a display filename and an opaque server ID. The current chat can use its claimed copies in `read.path`, `pdf.path`, `show_image.path`, and `visual.image`, including in restricted File access mode. Protected-path checks apply at tool execution and again when the background worker opens a file. Records and image snapshots retain the opaque reference as provenance. Local desktop files and folders and existing server paths remain live references. Existing path chips, image snapshots, and graph imports continue to work.
 - Sweep at startup and every 15 minutes. Pending files expire after 24 hours and partial files after one hour. Skip active uploads and claims. Chat deletion schedules retryable removal of unreferenced claimed bytes. Live references protect their files. Launcher snapshots do not retain bytes.
-- Store self-hosted attachment bytes beside `userdata`. Automatic rollback and `lh restore` leave those bytes in place. A restored message referencing missing bytes shows the file's original name and **“File unavailable. Attach it again to use it.”** The agent's read reports the file as unavailable. A manual full recovery copy includes both roots with the server stopped. This release adds no backup or export command.
+- Store self-hosted attachment bytes beside `userdata`. Automatic rollback and `lh restore` leave those bytes in place. A restored message referencing missing bytes shows the file's original name and **“File unavailable. Attach it again to use it.”** Those tools report a missing claimed file as unavailable. A manual full recovery copy includes both roots with the server stopped. This release adds no backup or export command.
 
 ### Protocol 1 attachment contract
 
@@ -25,7 +25,7 @@ The capability gates these routes and fields. UUIDs are version 4. Clients reuse
 | Remove pending file | `DELETE /api/attachments/:id` with the same pairing credential. Returns `204`. |
 | Open a chat and send | `POST /api/attachments/start` with `draftId`, `sendId`, `attachmentUploadIds`, and the session creation fields. `title` carries the full opening text. Returns `{ id, title }`. |
 | Send in an idle chat | `POST /api/chat` with the existing text input and optional top-level `attachmentUploadIds` and `sendId`. Watch the existing turn stream. |
-| Read the chat | Saved user messages can carry `attachments` entries with `id` and `name`. The open-chat response lists any missing IDs in optional `unavailableAttachmentIds`. The agent can pass `attachment:<id>` to `read`. |
+| Read the chat | Saved user messages can carry `attachments` entries with `id` and `name`. The open-chat response lists any missing IDs in optional `unavailableAttachmentIds`. The agent passes `attachment:<id>` to the supported learner-file inputs. |
 
 ## Pinned T3 parity
 
@@ -46,5 +46,12 @@ LearnHarness supplies the aggregate quotas, capability and pairing contract, dra
 ## Acceptance
 
 Prove PR 1 on the exact PR head with `prove-learnharness`, synthetic fixtures, a deterministic model, the production proxy and isolated state. Drive opening and later sends, reload and agent read, failure and retry without duplicate records, and legacy path, image snapshot, graph import and capability-off compatibility. Exercise interrupted upload, concurrent quota reservations, expired grants, revoked pairings, wrong device/chat/draft, and protected-path refusal. Prove that rollback preserves claimed, pending and partial bytes and that deletion protects live references. Restore a message whose file was collected and verify the unavailable state.
+
+Extend the exact-head production drive with two deterministic scenarios:
+
+1. Upload the synthetic `tests/fixtures/sample-3page.pdf` in a paired browser. Have the prober dispatch `pdf` with the opaque reference. Have the PDF worker extract a known page and return a cited brief, then have the foreground agent answer using that page citation. Verify the extracted text in the fake-model log and the cited answer in the transcript after reload.
+2. Upload an isolated synthetic photo fixture to a teaching-phase chat. Have the teacher call `show_image` and then `visual` with the opaque reference. Have the visual worker render a deterministic annotation. Verify the shown image and annotated image in the UI and the saved snapshots after reload. Confirm the transcript and job results carry no attachment storage paths.
+
+Run both with restricted File access and no allowed folders. Probe the PDF and image inputs with an attachment from another chat, a protected source, and a restored reference with missing bytes. Check for refusals before any model sees source bytes.
 
 PR 2 separately proves a nested opening folder, browsable layout after reload, and whole-folder failure for unsafe paths and exceeded limits.

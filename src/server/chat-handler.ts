@@ -1,5 +1,5 @@
-import { attachmentOperation, attachmentSubmission, type AttachmentSubmission } from "./attachment-submissions.ts";
-import { attachmentReferences, AttachmentError, claimedAttachmentPath, claimAttachments } from "../store/attachments.ts";
+import { attachmentsForChat, attachmentOperation, attachmentSubmission, type AttachmentSubmission } from "./attachment-submissions.ts";
+import { AttachmentError, claimAttachments } from "../store/attachments.ts";
 import { saveOpeningChat } from "../store/chats.ts";
 import type { Usage } from "@earendil-works/pi-ai";
 import {
@@ -112,6 +112,7 @@ function settlementErrorText(error: unknown): string {
 }
 
 const jobRunner = createJobRunner({
+	attachmentsForChat,
 	chatStore: stores.chatStore,
 	jobStore: stores.jobStore,
 	deliver: deliverJobResult,
@@ -720,12 +721,7 @@ export async function handleChatInput(
 	let pendingSideBudgetError: Error | undefined;
 	const agentOpts: AgentBuildOptions = {
 		pluginContributions,
-		resolveAttachment: id => {
-			const current = stores.chatStore.getChat(chatId);
-			const ref = current && attachmentReferences(current.messages).find(item => item.id === id);
-			const filename = ref ? claimedAttachmentPath(id) : undefined;
-			return ref ? { name: ref.name, filename } : undefined;
-		},
+		resolveAttachment: attachmentsForChat(chatId),
 		engine,
 		callPurpose,
 		requestCycle,

@@ -724,7 +724,7 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 			if (attachments?.length) {
 				const content = typeof user.content === "string" ? [{ type: "text" as const, text: user.content }] : user.content;
 				const files = attachments.map(({ id, name }) => `${ATTACHMENT_PREFIX}${id} ${JSON.stringify(name)}`).join("\n");
-				user.content = [...content, { type: "text", text: `Attached files (pass the attachment reference as the read tool's path):\n${files}` }];
+				user.content = [...content, { type: "text", text: `Attached files (use the attachment reference with read, pdf, show_image, or visual's image input as appropriate):\n${files}` }];
 			}
 			out.push(user);
 		} else out.push(native as Message);

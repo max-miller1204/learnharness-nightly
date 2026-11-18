@@ -3,7 +3,7 @@ import type { AssistantMessage, Message, ToolResultMessage, Usage, Tool } from "
 import { normalizeContext } from "@earendil-works/pi-ai";
 import { processImage, type ProcessImageResult } from "../image-processing/index.ts";
 import { Type } from "typebox";
-import { resolveSourcePath } from "../tools/fs-shared.ts";
+import { learnerFileErrorMessage, resolveLearnerFile, type ResolveAttachment } from "../tools/learner-file.ts";
 import { piEngineFor, type PiEngine, type ThinkingLevel } from "../models.ts";
 import { providerEventObserver, type ProviderEventObserver } from "../provider-events.ts";
 import { backgroundCaptureStream, createBackgroundCapture, type BackgroundCapture } from "../background-capture.ts";
@@ -72,6 +72,7 @@ export interface PdfReaderOptions {
 	onActivity?: (line: string) => void;
 	headless?: HeadlessApi;
 	maxIterations?: number;
+	resolveAttachment?: ResolveAttachment;
 	/** Debug: raw provider-event recording key (LH_PROVIDER_EVENTS=1). */
 	chatId?: string;
 }
@@ -169,18 +170,18 @@ export async function runPdfReaderAgent(
 	opts: PdfReaderOptions = {},
 ): Promise<PdfResult> {
 	const maxIterations = opts.maxIterations ?? MAX_ITERATIONS;
-	let pdfPath = input.path;
-	let openError: string | null;
-	// Source denial is an ordinary upfront PDF failure, before parsing,
-	// rendering or any model request (including direct reader invocations).
+	// Recheck the live chat claim at worker start, before parsing or using a model.
+	let file: ReturnType<typeof resolveLearnerFile>;
 	try {
-		pdfPath = resolveSourcePath(input.path);
-		openError = await probeReadable(pdfPath);
-	} catch (err) {
-		openError = err instanceof Error ? err.message : String(err);
+		file = resolveLearnerFile(input.path, opts.resolveAttachment);
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		return { path: input.path, question: input.question, brief: `PDF failed: ${reason}`, pagesRead: [], pagesConsulted: [] };
 	}
+	const { filename: pdfPath, source } = file;
+	const openError = await probeReadable(file);
 	if (openError) {
-		return { path: pdfPath, question: input.question, brief: `PDF failed: ${openError}`, pagesRead: [], pagesConsulted: [] };
+		return { path: source, question: input.question, brief: `PDF failed: ${openError}`, pagesRead: [], pagesConsulted: [] };
 	}
 	const headless = opts.headless ?? getHeadless();
 	// No Chrome gate (Wave E, 2026-10-10): pdf_render is native now
@@ -197,7 +198,7 @@ export async function runPdfReaderAgent(
 	const capture = createBackgroundCapture({ role: "pdfReader", runId: sessionId, sourceId: opts.chatId });
 	const streamEngine = { ...engine, streamFn: backgroundCaptureStream(workerRequestStream(engine.streamFn), capture) };
 	const prompt = [
-		`PDF path: ${pdfPath}`,
+		`PDF path: ${source}`,
 		`Question (what the teacher needs from this document): ${input.question || "(no question — give a structural overview)"}`,
 		"",
 		"Read the document per your doctrine, then produce your final brief in the required format.",
@@ -252,7 +253,7 @@ export async function runPdfReaderAgent(
 					];
 					continue;
 				}
-				return { path: pdfPath, question: input.question, brief: finalText || "(no brief text)", pagesRead: [...read].sort((a, b) => a - b), pagesConsulted: [...consulted].sort((a, b) => a - b) };
+				return { path: source, question: input.question, brief: finalText || "(no brief text)", pagesRead: [...read].sort((a, b) => a - b), pagesConsulted: [...consulted].sort((a, b) => a - b) };
 			}
 
 			const toolResults: ToolResultMessage[] = [];
@@ -326,7 +327,7 @@ export async function runPdfReaderAgent(
 						toolResults.push(toolText(call.id, call.name, `ERROR: unknown tool "${call.name}"`));
 					}
 				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
+					const msg = learnerFileErrorMessage(err, file);
 					toolResults.push(toolText(call.id, call.name, `ERROR: ${msg}`));
 				}
 			}
@@ -357,15 +358,15 @@ export async function runPdfReaderAgent(
 		}
 	} catch (err) {
 		captureError = err;
-		const msg = err instanceof Error ? err.message : String(err);
-		return { path: pdfPath, question: input.question, brief: `PDF failed: the reader crashed — ${msg}`, pagesRead: [...read].sort((a, b) => a - b), pagesConsulted: [...consulted].sort((a, b) => a - b) };
+		const msg = learnerFileErrorMessage(err, file);
+		return { path: source, question: input.question, brief: `PDF failed: the reader crashed — ${msg}`, pagesRead: [...read].sort((a, b) => a - b), pagesConsulted: [...consulted].sort((a, b) => a - b) };
 	} finally {
 		capture?.finish(captureError);
 	}
 
 	// Iteration limit: deliver whatever was honestly consulted (never invention).
 	return {
-		path: pdfPath,
+		path: source,
 		question: input.question,
 		brief: finalText || `PDF failed: iteration limit (${maxIterations}) reached without a brief.`,
 		pagesRead: [...read].sort((a, b) => a - b),
@@ -402,7 +403,8 @@ function numOr(v: unknown, dflt: number): number {
 }
 
 /** Cheap upfront readability probe — real parsing happens inside the tools. */
-async function probeReadable(pdfPath: string): Promise<string | null> {
+async function probeReadable(file: ReturnType<typeof resolveLearnerFile>): Promise<string | null> {
+	const pdfPath = file.filename;
 	try {
 		const fs = await import("node:fs/promises");
 		const stat = await fs.stat(pdfPath);
@@ -412,7 +414,7 @@ async function probeReadable(pdfPath: string): Promise<string | null> {
 		await pdfProbe(pdfPath);
 		return null;
 	} catch (err) {
-		return err instanceof Error ? err.message : String(err);
+		return learnerFileErrorMessage(err, file);
 	}
 }
 

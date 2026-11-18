@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type FauxResponseStep } from "@earendil-works/pi-ai";
+import type { PdfResult, VisualResult } from "../src/core/contracts.ts";
 import { after, test } from "node:test";
 import { issueSession, revokeSession } from "../selfhost/src/auth-store.ts";
 
@@ -14,6 +16,12 @@ process.env.LH_AUTH_FILE = path.join(root, "auth.json");
 process.env.LH_SELFHOST = "0";
 process.env.LH_IGNORE_ENV_KEYS = "1";
 
+const { headlessOverride, realHeadless } = await import("../src/agent/subagents/headless.ts");
+const { createJobRunner } = await import("../src/agent/subagents/runner.ts");
+const { jobTools } = await import("../src/agent/tools/jobs.ts");
+const { createShowImageTool } = await import("../src/agent/tools/show-image.ts");
+const { jobStore } = await import("../src/store/jobs.ts");
+const { attachmentsForChat } = await import("../src/server/attachment-submissions.ts");
 const { PATHS } = await import("../config.ts");
 const { newUserMessage } = await import("../src/core/native-messages.ts");
 const { createReadTool } = await import("../src/agent/tools/read.ts");
@@ -29,7 +37,7 @@ const first = pairing("first attachment test device");
 const second = pairing("second attachment test device");
 const base = "http://attachment.test:3000";
 
-function request(pathname: string, method: string, body?: string, token = first.token, extra?: Record<string, string>) {
+function request(pathname: string, method: string, body?: string | Uint8Array<ArrayBuffer>, token = first.token, extra?: Record<string, string>) {
 	return new Request(new URL(pathname, base), {
 		method,
 		body,
@@ -128,4 +136,100 @@ test("claim scopes, protects the pending source on save failure, and collects on
 	chatStore.deleteChat(other.id);
 	sweepAttachments();
 	assert.equal(claimedAttachmentPath(id), undefined);
+});
+
+async function uploadForChat(chatId: string, name: string, mimeType: string, bytes: Uint8Array<ArrayBuffer>) {
+	const grant = await reserveAttachmentRequest(request("/api/attachments", "POST", JSON.stringify({ chatId, name, mimeType, size: bytes.byteLength })));
+	assert.equal(grant.status, 201);
+	const { id, uploadUrl } = await grant.json();
+	assert.equal((await uploadAttachmentRequest(request(uploadUrl, "PUT", bytes))).status, 204);
+	claimAttachments([id], first.session.id, { chatId }, [], attachments => {
+		chatStore.saveMessages(chatId, [{ ...newUserMessage("Use this file"), attachments }]);
+	});
+	return { id, source: `attachment:${id}` };
+}
+
+function scriptedRunner(steps: FauxResponseStep[]) {
+	const model = createFauxCore({});
+	model.setResponses(steps);
+	return createJobRunner({
+		chatStore, jobStore, attachmentsForChat,
+		deliver: async () => {},
+		engineFor: () => ({ model: model.getModel(), streamFn: model.streamSimple }),
+	});
+}
+
+test("PDF dispatch and recovery use the current chat's opaque reference for a cited brief", async () => {
+	setFileAccessPolicy(() => ({ restricted: true, folders: [] }));
+	const chat = chatStore.createChat("Uploaded PDF");
+	const other = chatStore.createChat("Other PDF chat");
+	const bytes = new Uint8Array(fs.readFileSync(path.join(import.meta.dirname, "fixtures", "sample-3page.pdf")));
+	const { id, source } = await uploadForChat(chat.id, "sample.pdf", "application/pdf", bytes);
+	const toolsFor = (chatId: string) => jobTools({ chatId, jobStore, resolveAttachment: attachmentsForChat(chatId), spawn: () => {} });
+	const input = { path: source, question: "What does page one say about integration?" };
+	await assert.rejects(toolsFor(other.id).pdf!.execute("cross-chat", input), /current chat/);
+	await assert.rejects(toolsFor(chat.id).pdf!.execute("absolute", { ...input, path: claimedAttachmentPath(id)! }), /protected location/);
+	await toolsFor(chat.id).pdf!.execute("own-pdf", input);
+	const job = jobStore.findJobByToolCallId(chat.id, "own-pdf")!;
+	assert.deepEqual(job.input, input);
+	await scriptedRunner([
+		fauxAssistantMessage([fauxToolCall("pdf_info", {})], { stopReason: "toolUse" }),
+		fauxAssistantMessage([fauxToolCall("pdf_extract", { pages: "1" })], { stopReason: "toolUse" }),
+		fauxAssistantMessage([fauxText("The integral rule appears on page 1 (p. 1).")]),
+	]).runJob(job.id);
+	const result = jobStore.getJob(job.id)!.result as PdfResult;
+	assert.equal(result.path, source);
+	assert.deepEqual(result.pagesRead, [1]);
+	assert.match(result.brief, /\(p\. 1\)/);
+	const otherJob = jobStore.createJob({ kind: "pdf", chatId: other.id, toolCallId: "other-pdf", input });
+	await scriptedRunner([]).runJob(otherJob.id);
+	assert.match((jobStore.getJob(otherJob.id)!.result as PdfResult).brief, /current chat/);
+	fs.unlinkSync(claimedAttachmentPath(id)!);
+	const missing = jobStore.createJob({ kind: "pdf", chatId: chat.id, toolCallId: "missing-pdf", input });
+	await scriptedRunner([]).runJob(missing.id);
+	assert.match((jobStore.getJob(missing.id)!.result as PdfResult).brief, /File unavailable\. Attach it again to use it\./);
+});
+
+test("show_image and visual save uploaded image snapshots with opaque provenance", async t => {
+	setFileAccessPolicy(() => ({ restricted: true, folders: [] }));
+	// The annotation uses the real native SVG renderer. Skip the browser
+	// availability probe so this test never downloads or requires Electron.
+	headlessOverride.current = { ...realHeadless, unavailableReason: () => null };
+	t.after(() => { headlessOverride.current = undefined; });
+	const chat = chatStore.createChat("Uploaded image");
+	const other = chatStore.createChat("Other image chat");
+	const { createCanvas } = await import("@napi-rs/canvas");
+	const canvas = createCanvas(40, 30);
+	const context = canvas.getContext("2d");
+	context.fillStyle = "#2244cc";
+	context.fillRect(0, 0, 40, 30);
+	const { id, source } = await uploadForChat(chat.id, "photo.png", "image/png", new Uint8Array(canvas.toBuffer("image/png")));
+	const show = (chatId: string) => createShowImageTool({ chatId, chatStore, resolveAttachment: attachmentsForChat(chatId) });
+	await assert.rejects(show(other.id).execute("other-photo", { path: source }), /current chat/);
+	await assert.rejects(show(chat.id).execute("raw-photo", { path: claimedAttachmentPath(id)! }), /protected location/);
+	const saved = chatStore.getChat(chat.id)!;
+	chatStore.saveMessages(chat.id, [{ ...newUserMessage("Protected filename"), attachments: [{ id, name: ".env" }] }]);
+	await assert.rejects(show(chat.id).execute("protected-photo", { path: source }), /protected file/);
+	chatStore.saveMessages(chat.id, saved.messages);
+	const shown = await show(chat.id).execute("show-photo", { path: source, caption: "Synthetic photo" });
+	const details = shown.details as { path: string; snapshotId: string };
+	assert.equal(details.path, source);
+	assert.ok(chatStore.getChat(chat.id)?.imageSnapshots?.[details.snapshotId]);
+	const tools = jobTools({ chatId: chat.id, jobStore, spawn: () => {}, resolveAttachment: attachmentsForChat(chat.id) });
+	await tools.visual!.execute("annotate-photo", { brief: "Circle the center", image: source });
+	const job = jobStore.findJobByToolCallId(chat.id, "annotate-photo")!;
+	const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30" viewBox="0 0 40 30"><image href="learner-image" x="0" y="0" width="40" height="30"/><circle cx="20" cy="15" r="7" fill="none" stroke="white"/></svg>';
+	await scriptedRunner([
+		fauxAssistantMessage([fauxToolCall("write_svg", { svg }), fauxToolCall("render_svg", {})], { stopReason: "toolUse" }),
+		fauxAssistantMessage([fauxText("Circled the center.")]),
+	]).runJob(job.id);
+	const result = jobStore.getJob(job.id)!.result as VisualResult;
+	assert.match(result.svg, /<circle/);
+	assert.deepEqual(result.image, { path: source, snapshotId: details.snapshotId });
+	assert.ok(chatStore.getChat(chat.id)?.imageSnapshots?.[details.snapshotId]?.data);
+	fs.unlinkSync(claimedAttachmentPath(id)!);
+	await assert.rejects(show(chat.id).execute("missing-photo", { path: source }), /File unavailable\. Attach it again to use it\./);
+	const missing = jobStore.createJob({ kind: "visual", chatId: chat.id, toolCallId: "missing-visual", input: { brief: "Circle the center", image: source } });
+	await scriptedRunner([]).runJob(missing.id);
+	assert.match((jobStore.getJob(missing.id)!.result as VisualResult).notes ?? "", /File unavailable\. Attach it again to use it\./);
 });
