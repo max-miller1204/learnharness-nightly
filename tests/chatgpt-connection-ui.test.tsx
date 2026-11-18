@@ -698,3 +698,82 @@ test("web page on a loopback host folds paste-back", async () => {
   window.open = originalOpen;
  }
 });
+
+// Polish (docs/specs/chatgpt-signin-polish.md).
+function withClipboard(readText: (() => Promise<string>) | undefined, secure: boolean) {
+ const view = window as unknown as { isSecureContext?: boolean }, hadSecure = Object.getOwnPropertyDescriptor(view, "isSecureContext");
+ const hadClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+ Object.defineProperty(view, "isSecureContext", { configurable: true, value: secure });
+ Object.defineProperty(navigator, "clipboard", { configurable: true, value: readText ? { readText } : undefined });
+ return () => {
+  if (hadSecure) Object.defineProperty(view, "isSecureContext", hadSecure); else delete view.isSecureContext;
+  if (hadClipboard) Object.defineProperty(navigator, "clipboard", hadClipboard); else delete (navigator as unknown as { clipboard?: unknown }).clipboard;
+ };
+}
+function remoteWeb(hostname: string) {
+ const original = Object.getOwnPropertyDescriptor(window, "location"), originalOpen = window.open;
+ Object.defineProperty(window, "location", { configurable: true, value: { hostname } });
+ (window as unknown as { open: () => unknown }).open = () => ({ opener: {}, closed: false, location: { href: "" }, close() {} });
+ let status: ChatGPTStatus = disconnected();
+ globalThis.fetch = async (_input, init) => {
+  if (!init?.method) return Response.json({ chatgpt: status, native: [] });
+  const body = JSON.parse(String(init.body));
+  if (body.op === "login") { status = { ...status, pending: true }; return Response.json({ value: status, browserAction: "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000000" }); }
+  status = connected(); return Response.json({ value: status });
+ };
+ return () => { if (original) Object.defineProperty(window, "location", original); else delete (window as unknown as { location?: unknown }).location; window.open = originalOpen; };
+}
+
+test("another device is told up front that the last page won't load; loopback and desktop are not", async () => {
+ let restore = remoteWeb("100.64.0.5");
+ try {
+  await mount(); await click(byTest("chatgpt-login"));
+  assert.equal(byTest("chatgpt-remote-ahead").textContent, CHATGPT_PASTE_COPY.ahead);
+  await click(byTest("chatgpt-proceed"));
+  assert(document.body.textContent?.includes("Waiting for browser sign-in"));
+  assert(!document.querySelector('[data-testid="chatgpt-remote-ahead"]'), "the paste panel takes over once pending");
+ } finally { restore(); }
+ await act(async () => root!.unmount()); host?.remove(); root = undefined;
+ restore = remoteWeb("127.0.0.1");
+ try { await mount(); await click(byTest("chatgpt-login")); assert(!document.querySelector('[data-testid="chatgpt-remote-ahead"]'), "loopback page"); }
+ finally { restore(); }
+ await act(async () => root!.unmount()); host?.remove(); root = undefined;
+ fixture(); await mount(); await click(byTest("chatgpt-login"));
+ assert(!document.querySelector('[data-testid="chatgpt-remote-ahead"]'), "desktop app");
+});
+
+test("Paste is hidden without a secure context or the clipboard API, and fills the field when allowed", async () => {
+ for (const [secure, api] of [[false, true], [true, false]] as const) {
+  const restore = withClipboard(api ? async () => "x" : undefined, secure);
+  try {
+   fixture(); await mount(); await begin(); await click(byTest("chatgpt-paste-reveal"));
+   assert(!document.querySelector('[data-testid="chatgpt-paste-clipboard"]'), `secure=${secure} api=${api}`);
+   assert(pasteField(), "manual paste stays");
+  } finally { restore(); await act(async () => root!.unmount()); host?.remove(); root = undefined; }
+ }
+ const restore = withClipboard(async () => "  http://127.0.0.1:1/auth/callback?state=s&code=c\n", true);
+ try {
+  const f = fixture(); await mount(); await begin(); await click(byTest("chatgpt-paste-reveal"));
+  assert.equal(byTest("chatgpt-paste-clipboard").textContent, CHATGPT_PASTE_COPY.clipboard);
+  await click(byTest("chatgpt-paste-clipboard"));
+  assert.equal(pasteField().value, "http://127.0.0.1:1/auth/callback?state=s&code=c");
+  assert.equal(f.calls.complete.length, 0, "Paste fills the field; it does not submit");
+  await submitPaste();
+  assert.deepEqual(f.calls.complete, ["http://127.0.0.1:1/auth/callback?state=s&code=c"]);
+  assert(!document.querySelector('[data-testid="chatgpt-account-dialog"]'));
+ } finally { restore(); }
+});
+
+test("a refused clipboard read disables Paste with a note; manual paste still completes", async () => {
+ const restore = withClipboard(async () => { throw new Error("NotAllowedError"); }, true);
+ try {
+  const f = fixture(); await mount(); await begin(); await click(byTest("chatgpt-paste-reveal"));
+  await click(byTest("chatgpt-paste-clipboard"));
+  assert.equal((byTest("chatgpt-paste-clipboard") as HTMLButtonElement).disabled, true);
+  assert.equal(byTest("chatgpt-clipboard-denied").textContent, CHATGPT_PASTE_COPY.clipboardDenied);
+  assert.equal(pasteField().value, "");
+  await typeInto(pasteField(), "http://127.0.0.1:1/auth/callback?state=s&code=c"); await submitPaste();
+  assert.equal(f.calls.complete.length, 1);
+  assert(!document.querySelector('[data-testid="chatgpt-account-dialog"]'));
+ } finally { restore(); }
+});
