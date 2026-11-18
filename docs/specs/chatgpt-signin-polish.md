@@ -9,8 +9,9 @@ Status: approved by the user on 2026-11-17. A follow-up to `docs/specs/chatgpt-r
 
    It is not shown on a loopback page or in the desktop app, and it goes away once the sign-in is pending, when the paste panel takes over.
 2. **One-tap Paste.** The paste panel gets a **Paste** button next to the address field. It reads the clipboard (`navigator.clipboard.readText()`) and puts the trimmed text in the field. It does not submit: the user still clicks **Finish sign-in**.
-   - The button appears only where the browser can read the clipboard: `window.isSecureContext` is true and `navigator.clipboard.readText` exists. On plain-http LAN or Tailscale pages it is hidden and manual paste is unchanged.
-   - If the read is refused or fails, the button is disabled for the rest of that attempt and the panel says "Clipboard access isn't allowed here. Paste into the field instead." Manual paste still works.
+   - The button appears only in the web app, and only where the browser can read the clipboard: `window.isSecureContext` is true and `navigator.clipboard.readText` exists. On plain-http LAN or Tailscale pages it is hidden and manual paste is unchanged. The desktop app does not show it, because its window never grants clipboard reads (from review; changing that would be a security change).
+   - Its accessible name is "Paste sign-in tab address from clipboard". One read runs at a time, and the button is disabled meanwhile. A read that resolves after the user typed in the field or submitted is dropped.
+   - If the read is refused or fails, the button is disabled for the rest of that attempt, focus moves to the address field, and the panel says, as a status announcement, "Clipboard access isn't allowed here. Paste into the field instead." Manual paste still works. A new attempt allows Paste again.
    - An empty clipboard leaves the field as it is.
    - A clipboard read that finishes after its attempt ended changes nothing.
 
