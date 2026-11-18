@@ -28,9 +28,28 @@ import { GET as serverInfoRoute } from "../app/.well-known/learnharness/server/r
  *   instead, and leave the version alone.
  * - It changes no shape a client sees (a TypeScript upgrade that prints the
  *   same declarations differently, say): neither.
- * Then record the new fingerprint below.
+ * Then record the new fingerprint below (the failure prints it). It is one
+ * hash per reached file, so the failure names the file that changed.
  */
-const RECORDED = { protocolVersion: 1, fingerprint: "870948b1ae63910d45aa6b0758393f09d8e54f2e7e7a447ada7a63c2a109c7e3" };
+const RECORDED = {
+	protocolVersion: 1,
+	fingerprint: {
+		"src/client-protocol/index.ts": "64a553c1743bd329",
+		"src/core/contracts/chat.ts": "937c52917f863b25",
+		"src/core/contracts/graph.ts": "b84d4803bd0c4acc",
+		"src/core/contracts/plan.ts": "feebc7e5e0e6e8cf",
+		"src/core/events.ts": "65c8c72c82ae3c97",
+		"src/core/input-events.ts": "bfc9d2408879952e",
+		"src/core/native-messages.ts": "e820a7ea1ecc9247",
+		"src/core/phases.ts": "c8f5be717bf1ff30",
+		"src/core/plugin-questions.ts": "2a40092a355d2315",
+		"src/core/plugin-submissions.ts": "41625a9ecd73afb7",
+		"src/core/prices.ts": "059a6fdabac2ec43",
+		"src/core/question-core.ts": "9ad92ef81c8b7f99",
+		"@earendil-works/pi-agent-core": "1.4.0",
+		"@earendil-works/pi-ai": "1.4.0",
+	} as Record<string, string>,
+};
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const CONTRACT = path.join(ROOT, "src/client-protocol/index.ts");
@@ -39,7 +58,7 @@ const printer = ts.createPrinter({ removeComments: true });
 /** Every top-level declaration the contract reaches in repo files (not
  * node_modules), printed without comments; functions keep only their
  * signature. Then the pinned pi versions. */
-function contractFingerprint(): { fingerprint: string; files: string[] } {
+function contractFingerprint(): { fingerprint: Record<string, string>; files: string[] } {
 	const config = ts.getParsedCommandLineOfConfigFile(path.join(ROOT, "tsconfig.json"), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => {} });
 	assert.ok(config, "tsconfig.json did not parse");
 	const program = ts.createProgram([CONTRACT], { ...config.options, noEmit: true });
@@ -70,26 +89,32 @@ function contractFingerprint(): { fingerprint: string; files: string[] } {
 		if (ts.isFunctionDeclaration(statement)) [...(statement.typeParameters ?? []), ...statement.parameters, ...(statement.type ? [statement.type] : [])].forEach(follow);
 		else follow(statement);
 	}
-	const entries = [...reached].map((statement) => {
+	const byFile = new Map<string, string[]>();
+	for (const statement of reached) {
 		const source = statement.getSourceFile();
 		const shape = ts.isFunctionDeclaration(statement)
 			? ts.factory.updateFunctionDeclaration(statement, statement.modifiers, statement.asteriskToken, statement.name, statement.typeParameters, statement.parameters, statement.type, undefined)
 			: statement;
-		return `${path.relative(ROOT, source.fileName).split(path.sep).join("/")}\n${printer.printNode(ts.EmitHint.Unspecified, shape, source)}`;
-	}).sort();
+		const file = path.relative(ROOT, source.fileName).split(path.sep).join("/");
+		byFile.set(file, [...(byFile.get(file) ?? []), printer.printNode(ts.EmitHint.Unspecified, shape, source)]);
+	}
+	const digest = (lines: string[]) => createHash("sha256").update([...lines].sort().join("\n")).digest("hex").slice(0, 16);
+	const fingerprint: Record<string, string> = {};
+	for (const file of [...byFile.keys()].sort()) fingerprint[file] = digest(byFile.get(file)!);
 	const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")) as { dependencies: Record<string, string> };
-	entries.push(...Object.entries(pkg.dependencies).filter(([name]) => name.startsWith("@earendil-works/pi-")).sort().map(([name, version]) => `${name}@${version}`));
-	const files = [...new Set([...reached].map((statement) => path.relative(ROOT, statement.getSourceFile().fileName).split(path.sep).join("/")))].sort();
-	return { fingerprint: createHash("sha256").update(entries.join("\n")).digest("hex"), files };
+	for (const [name, version] of Object.entries(pkg.dependencies).filter(([name]) => name.startsWith("@earendil-works/pi-")).sort()) fingerprint[name] = version;
+	return { fingerprint, files: [...byFile.keys()].sort() };
 }
 
 describe("shape fingerprint", () => {
 	it("the contract matches the recorded fingerprint (see RECORDED to update it)", () => {
 		assert.equal(CLIENT_PROTOCOL_VERSION, RECORDED.protocolVersion, "CLIENT_PROTOCOL_VERSION changed: update RECORDED.protocolVersion and the fingerprint together.");
-		assert.equal(
-			contractFingerprint().fingerprint,
-			RECORDED.fingerprint,
-			"The client protocol contract changed. Breaking for an old client: bump CLIENT_PROTOCOL_VERSION. Additive: add a capability instead. Then update RECORDED in tests/client-protocol.test.ts.",
+		const { fingerprint } = contractFingerprint();
+		const changed = [...new Set([...Object.keys(fingerprint), ...Object.keys(RECORDED.fingerprint)])].filter((key) => fingerprint[key] !== RECORDED.fingerprint[key]).sort();
+		assert.deepEqual(
+			changed,
+			[],
+			`The client protocol contract changed in: ${changed.join(", ")}. Breaking for an old client: bump CLIENT_PROTOCOL_VERSION. Additive: add a capability instead. Then set RECORDED.fingerprint in tests/client-protocol.test.ts to:\n${JSON.stringify(fingerprint, null, "\t")}`,
 		);
 	});
 
