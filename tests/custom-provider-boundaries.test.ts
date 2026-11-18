@@ -147,10 +147,14 @@ test("empty DELETE streams normalize consistently without accepting malformed JS
 	assert.equal((await route.DELETE(new Request("http://localhost/api/custom-provider", { method: "DELETE", headers: { ...headers, "if-match": get().headers.get("etag")! }, body: "{" }))).status, 400);
 	assert.equal((await route.POST(new Request("http://localhost/api/custom-provider", { method: "POST", headers, body: "" }))).status, 400);
 });
-test("desktop capability remains mandatory in desktop mode", async () => {
+test("desktop mode uses the same same-origin check (login is proxy.ts's job); the old secret header grants nothing", async () => {
 	process.env.LH_DESKTOP_SERVER = "1"; process.env.LH_DESKTOP_API_SECRET = "x".repeat(64);
-	assert.equal((await mutate({}, "DELETE")).status, 403);
-	assert.equal((await mutate(undefined, "DELETE", { origin: "null", "x-learnharness-desktop": "x".repeat(64) })).status, 200);
+	try {
+		assert.equal((await mutate(undefined, "DELETE", { origin: "null", "x-learnharness-desktop": "x".repeat(64) })).status, 403);
+		assert.equal((await mutate(undefined, "DELETE")).status, 200);
+	} finally {
+		delete process.env.LH_DESKTOP_SERVER; delete process.env.LH_DESKTOP_API_SECRET;
+	}
 });
 test("forbidden URL components are rejected before probing", async () => {
 	for (const baseUrl of ["ftp://h", "https://user:pass@h/v1", "http://h/v1?q=secret", "http://h/v1#x", "http://h/v1?", "http://h/v1#"]) assert.equal((await mutate({ baseUrl, authMode: "keyless" })).status, 400);

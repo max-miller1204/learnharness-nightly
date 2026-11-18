@@ -13,7 +13,7 @@ Baseline the entries build on (the self-hosting plan):
 - The separate `lh` launcher in `selfhost/` swaps versions, health-checks, rolls back and keeps snapshots.
 - Versioned installs under `~/.learnharness/runtime/versions/`, and the `learnharness.service` systemd user unit.
 - The server binds 127.0.0.1:3774, with optional Tailscale Serve on 8443.
-- Upstream is mirrored hourly to `upstream-main` with a standing Sync PR. Upstream PRs come in through the "Import upstream PR" workflow, authenticated as the fork bot GitHub App.
+- Upstream is mirrored hourly to `upstream-main` with a standing Sync PR. Upstream PRs and issues are hand-picked: the "Import upstream PR" and "Mirror upstream issues" workflows bring in one each (as the fork bot GitHub App), and when a fork PR for a picked item merges, one comment from the owner's account tells upstream (`docs/specs/upstream-handpicked.md`).
 
 One structural rule carries over to every entry: **the launcher stays a separate process from the server.** It's what recovers from a broken version, so recovery logic must never depend on the server working.
 
@@ -23,11 +23,10 @@ Rows are in build order. **Order** is the planned sequence, after the self-hosti
 
 | Order | # | Item | Group | Depends on | Touches core |
 |---|---|---|---|---|---|
-| 1 | 20 | Gemini CLI and Codex CLI providers | Providers | none | Moderate (new provider folders, Settings rows) |
+| 1 | 20 | Gemini CLI and Codex CLI providers (both parked) | Providers | none | Moderate (new provider folders, Settings rows) |
 | 2 | 12 | Preview builds of PRs | Review workflow | none | Small |
-| 3 | 13 | Upstream issue intake | Review workflow | none | No |
-| 4 | 6 | Login and pairing | Access + security | none | Yes |
-| 5 | 1 | Electron desktop nightlies | Desktop + distribution | none | Small (`electron/main.cjs`) |
+| 3 | 6 | Login and pairing | Access + security | none | Yes |
+| 4 | 1 | Electron desktop nightlies | Desktop + distribution | none | Small (`electron/main.cjs`) |
 | Later | 2 | Removing Electron | Desktop + distribution | none | Yes (deletions) |
 | Later | 3 | macOS self-hosting | Desktop + distribution | none | No |
 | Later | 4 | Docker image | Desktop + distribution | none | No |
@@ -48,10 +47,12 @@ Rows are in build order. **Order** is the planned sequence, after the self-hosti
 | Later | 25 | Office and data formats | Files + ingestion | none | Yes |
 | Later | 26 | More file types in Extract files | Files + ingestion | 25 | Yes |
 | Later | 27 | @-mentions for files and folders | Files + ingestion | none (remote use: 24) | Yes |
+| Later | 28 | Offering fork fixes upstream | Review workflow | none | No |
+| Later | 29 | Versioned plugin API package | Plugins | none | Small (build and release scripts, plugin manifests) |
 
 "Later" items have no order yet; they're listed by ID. Item 16 (in-app update status) moved into the self-hosting plan itself.
 
-Why this order: 20 was agreed as next. 12 and 13 help with reviewing upstream work, the main job of this fork. 6 unlocks 5 and any remote access beyond Tailscale. 1 is the largest single project.
+Why this order: 20 was agreed as next. 12 helps with reviewing upstream work, the main job of this fork. 6 unlocks 5 and any remote access beyond Tailscale. 1 is the largest single project.
 
 Items 21 to 24 come from comparing LearnHarness with T3 Code and OpenBot (`nightly-labs/openbot`): in both, the server is the product and every app (desktop, web, phone) is a client that connects to a server you choose. All four need login and pairing (6) first. If they're built, the suggested order among them is 21, 22, 24, 23.
 
@@ -62,6 +63,10 @@ Items 25 to 27 cover the owner's ingestion workflow (PDFs, code, spreadsheets an
 ## Providers
 
 ### 20. Gemini CLI and Codex CLI providers
+
+**Status.** Gemini CLI: **parked** after the 2026-11-17 spike. The CLI no longer accepts personal Google sign-in (it points users to Antigravity), so it can't reach Gemini subscriptions. See [docs/specs/gemini-cli-provider.md](specs/gemini-cli-provider.md).
+
+Codex CLI: **parked, not built** (2026-11-17). A spike ([record](specs/codex-cli-provider.md)) showed the Codex CLI can run with its tools off, but only with about 25 flags plus a rewrite of Codex's internal model catalog, a debug command for model discovery, and no live typing. That is much more upkeep than the Claude Code provider. The models it would have added were already offered to the ChatGPT sign-in and silently dropped by `refreshChatGPTModels`. [ChatGPT account models](specs/chatgpt-account-models.md) fixes that instead.
 
 **Why.** Reach models that LearnHarness can't use today, the same way Claude Code is used now: as an external CLI that LearnHarness drives as a model.
 - **Gemini CLI:** Google/Gemini subscriptions aren't reachable any other way. Today Gemini is API-key only.
@@ -198,6 +203,8 @@ Items 25 to 27 cover the owner's ingestion workflow (PDFs, code, spreadsheets an
 ## Access + security
 
 ### 6. Login and pairing
+
+**Status.** **Built** (2026-11-17), T3 Code's model: one-time pairing links and QR codes from `lh pair`, `lh up`, server startup and Settings → Devices; 30 day sessions as an `HttpOnly` cookie or a bearer token; no localhost bypass. See [docs/specs/login-pairing.md](specs/login-pairing.md), which settles the open questions below. The rest of this entry is the original proposal.
 
 **Why.** LearnHarness has no login: anyone who can reach the port can read every chat, change saved keys and start agent turns (`docs/development.md`). That's fine today because the server binds 127.0.0.1 and remote access goes through Tailscale. A login is required before LAN mode (item 5) or any public tunnel.
 
@@ -432,15 +439,13 @@ Where things stand, so the entries below start from facts:
 
 **Touches core.** Small (pin state in the update UI).
 
-### 13. Upstream issue intake
+### 28. Offering fork fixes upstream
 
-**Why.** The plan is to work upstream's issues here too, but only PR intake was planned.
+**Why.** Picked upstream issues get fixed here first (`docs/specs/upstream-handpicked.md`). Those fixes could go back upstream as PRs.
 
-**Decided.** Nothing yet.
+**Decided.** Upstream already hears about each merged fix through one factual comment pointing to the fork PR (`docs/specs/upstream-handpicked.md`). This item is only about sending the fix itself upstream as a PR. Carried over from item 13 (upstream issue intake).
 
-**Proposed design (not approved).** A manual "Import upstream issue" workflow and script, mirroring "Import upstream PR": it copies the title, body and labels into a fork issue with a link back and credit, and adds an `upstream` label. Optionally, a weekly digest issue lists new upstream issues and PRs with a checkbox per item to trigger an import.
-
-**Open questions.** Per-issue import only, or the digest too? Offer fork fixes back upstream as PRs, and from which branch? Keep comments in sync, or copy once?
+**Open questions.** Offer fork fixes back upstream at all? As PRs from which branch, and who opens them?
 
 **Touches core.** No.
 
@@ -515,3 +520,21 @@ Where things stand, so the entries below start from facts:
 **Open questions.** Which tool and target? Encrypt? Should `auth.json` (API keys) ever leave the machine?
 
 **Touches core.** No (Settings listing is optional).
+
+---
+
+## Plugins
+
+Items about the plugin system and the people who write plugins.
+
+### 29. Versioned plugin API package
+
+**Why.** Outside plugin authors have no published plugin API to depend on. The four SDK plugins depend on `"learnharness-plugin-api": "file:.sdk"`, a folder generated by `npm run sdk`, and since PR #13 each commits its generated `.sdk/package.json` so Dependabot can read it (interim, see [docs/specs/dependency-updates.md](specs/dependency-updates.md)). That file declares the root's Pi versions exactly (and typebox's range) as peer dependencies, so a root-only Pi bump breaks the plugins' `npm ci` and Dependabot's `pi` PR arrives red until an agent finishes it.
+
+**Decided.** Publish the plugin API (`learnharness-plugin-api`) as a versioned package for outside plugin authors. Approved by the owner as a future item. It replaces the committed `plugins/*/.sdk/package.json` files, and lets plugins accept a Pi peer range so Dependabot's `pi` PR can go green on its own.
+
+**Proposed design (not approved).** None yet.
+
+**Open questions.** All of the design: registry and package name/scope, versioning and compatibility policy, how the generated types are built and released, which Pi range plugins accept, and what happens to `.sdk/` and `npm run sdk`.
+
+**Touches core.** Small (build and release scripts, plugin manifests; no app code expected).

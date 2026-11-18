@@ -1,6 +1,6 @@
 # HTTP API (`app/api`)
 
-Next.js route handlers behind `proxy.ts`. In browser-only mode (`next start`, self-hosted, prove instances) the gate is a Host check (localhost names and IP literals pass; others need `LH_ALLOWED_HOSTS`) plus a cross-site check on writes (`Origin` and `Sec-Fetch-Site`). In desktop mode every request needs the per-launch `x-learnharness-desktop` secret, which only the Electron window has.
+Next.js route handlers behind `proxy.ts`, which is a login gate (docs/specs/login-pairing.md): every page and API request needs a session, sent as the `lh_session_<port>` cookie or `Authorization: Bearer <token>`. Signed out, API routes answer 401 and pages render the pairing screen. Public: `/pair`, `/api/health`, `/api/auth/session`, `/api/auth/browser-session`, `/oauth/token` and static files. A cookie on a cross-site request (foreign `Origin`) is refused with 403; bearer tokens skip that check. There is no Host allowlist. `start.sh` writes a session into each login-era instance's store and saves it as `APP_TOKEN` in instance.env; `scripts/sign-in.mjs` makes the scripts send it. The desktop app trades its per-launch secret for a bearer session at `/oauth/token` and its window injects `Authorization` itself.
 
 ## How a run drives it
 

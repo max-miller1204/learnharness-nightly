@@ -44,10 +44,10 @@ it("errors/notices keep selection order across appends even when requests settle
 it("unsupported-only directories are never sent; picker .DS_Store is ignored and eligible siblings proceed", async () => {
 	const paths: string[] = [];
 	const queue = createNotesImportQueue(async ([f]) => { const path = f!.webkitRelativePath || f!.name; paths.push(path); return [success(path)]; });
-	queue.append([file(".DS_Store", "Root/.DS_Store"), file("a.png", "Root/Images/a.png"), file("notes.md", "Root/Sub/notes.md"), file("bad.pptx", "../bad.pptx")]);
+	queue.append([file(".DS_Store", "Root/.DS_Store"), file("a.xlsx", "Root/Sheets/a.xlsx"), file("notes.md", "Root/Sub/notes.md"), file("bad.pptx", "../bad.pptx")]);
 	await tick();
 	assert.deepEqual(paths, ["Root/Sub/notes.md"]);
-	assert.deepEqual(queue.getSnapshot().errors, ["Skipped 1 file that isn't text, Markdown, or PDF (.png).", "Skipped 1 file with a name the import can't use (e.g. a ':' in the name)."]);
+	assert.deepEqual(queue.getSnapshot().errors, ["Skipped 1 file that isn't a supported type (.xlsx).", "Skipped 1 file with a name the import can't use (e.g. a ':' in the name)."]);
 });
 
 it("folder picks skip dot-directories such as .obsidian/ silently, even when the chosen root itself is hidden", async () => {
@@ -82,7 +82,7 @@ it("individual file picks still import hidden notes and report unsupported dotfi
 	queue.append([file(".draft.md"), file(".summary.txt"), file(".DS_Store")]);
 	await tick();
 	assert.deepEqual(paths, [".draft.md", ".summary.txt"]);
-	assert.deepEqual(queue.getSnapshot().errors, ["Skipped 1 file that isn't text, Markdown, or PDF (no extension)."]);
+	assert.deepEqual(queue.getSnapshot().errors, ["Skipped 1 file that isn't a supported type (no extension)."]);
 });
 
 it("the queue uploads every accepted extension, including the expanded text types in uppercase", async () => {
@@ -97,39 +97,39 @@ it("the queue uploads every accepted extension, including the expanded text type
 
 it("the file type check comes before the size check", () => {
 	const queue = createNotesImportQueue(async ([f]) => [success(f!.name)]);
-	const huge = file("huge.docx"); Object.defineProperty(huge, "size", { value: Number.MAX_SAFE_INTEGER });
+	const huge = file("huge.xlsx"); Object.defineProperty(huge, "size", { value: Number.MAX_SAFE_INTEGER });
 	queue.append([huge]);
-	assert.deepEqual(queue.getSnapshot().errors, ["Skipped 1 file that isn't text, Markdown, or PDF (.docx)."]);
+	assert.deepEqual(queue.getSnapshot().errors, ["Skipped 1 file that isn't a supported type (.xlsx)."]);
 });
 
 it("a folder pick of unsupported files gives one summary line with the count and each distinct type once, in first-seen order", async () => {
 	const paths: string[] = [];
 	const queue = createNotesImportQueue(async ([f]) => { const path = f!.webkitRelativePath; paths.push(path); return [success(path)]; });
 	queue.append([
-		file("Main.java", "Course/src/Main.java"),
+		file("Main.o", "Course/src/Main.o"),
 		file("Main.class", "Course/bin/Main.class"),
 		file("week1.ppt", "Course/Week1/week1.ppt"),
-		file("Util.JAVA", "Course/src/Util.JAVA"),
-		file("week2.pptx", "Course/Week2/week2.pptx"),
-		file("Week2.PPTX", "Course/Week2/Week2.PPTX"),
+		file("Util.O", "Course/src/Util.O"),
+		file("week2.xlsx", "Course/Week2/week2.xlsx"),
+		file("Week2.XLSX", "Course/Week2/Week2.XLSX"),
 		file("syllabus.doc", "Course/syllabus.doc"),
 		file("notes.md", "Course/notes.md"),
 	]);
 	await tick();
 	assert.deepEqual(paths, ["Course/notes.md"]);
-	assert.deepEqual(queue.getSnapshot().errors, ["Skipped 7 files that aren't text, Markdown, or PDF (.java, .class, .ppt, .pptx, .doc)."]);
+	assert.deepEqual(queue.getSnapshot().errors, ["Skipped 7 files that aren't a supported type (.o, .class, .ppt, .xlsx, .doc)."]);
 });
 
 it("one unsupported file uses the singular line; a file with no extension is listed as no extension", () => {
 	const single = createNotesImportQueue(async ([f]) => [success(f!.name)]);
-	single.append([file("deck.pptx")]);
-	assert.deepEqual(single.getSnapshot().errors, ["Skipped 1 file that isn't text, Markdown, or PDF (.pptx)."]);
+	single.append([file("deck.xlsx")]);
+	assert.deepEqual(single.getSnapshot().errors, ["Skipped 1 file that isn't a supported type (.xlsx)."]);
 	const mixed = createNotesImportQueue(async ([f]) => [success(f!.name)]);
-	mixed.append([file("Main.java", "Course/Main.java"), file("Makefile", "Course/Makefile")]);
-	assert.deepEqual(mixed.getSnapshot().errors, ["Skipped 2 files that aren't text, Markdown, or PDF (.java, no extension)."]);
+	mixed.append([file("Main.class", "Course/Main.class"), file("LICENSE", "Course/LICENSE")]);
+	assert.deepEqual(mixed.getSnapshot().errors, ["Skipped 2 files that aren't a supported type (.class, no extension)."]);
 	const trailingDot = createNotesImportQueue(async ([f]) => [success(f!.name)]);
 	trailingDot.append([file("notes.")]);
-	assert.deepEqual(trailingDot.getSnapshot().errors, ["Skipped 1 file that isn't text, Markdown, or PDF (no extension)."]);
+	assert.deepEqual(trailingDot.getSnapshot().errors, ["Skipped 1 file that isn't a supported type (no extension)."]);
 });
 
 it("names the import can't use are counted into one line, and path safety is checked before type", async () => {
@@ -150,7 +150,7 @@ it("in one pick the too-big file keeps its own line, hidden files stay silent, s
 	const huge = file("big.md", "Course/big.md"); Object.defineProperty(huge, "size", { value: MAX_IMPORT_BYTES + 1 });
 	queue.append([
 		file("notes.md", "Course/notes.md"),
-		file("Main.java", "Course/Main.java"),
+		file("data.csv", "Course/data.csv"),
 		huge,
 		file("a:b.txt", "Course/a:b.txt"),
 		file("Main.class", "Course/Main.class"),
@@ -161,7 +161,7 @@ it("in one pick the too-big file keeps its own line, hidden files stay silent, s
 	await tick();
 	assert.deepEqual(paths, ["Course/notes.md", "Course/slides.pdf"]);
 	assert.deepEqual(queue.getSnapshot().errors, [
-		"Skipped 2 files that aren't text, Markdown, or PDF (.java, .class).",
+		"Skipped 2 files that aren't a supported type (.csv, .class).",
 		"Course/big.md: Too big. Max 25 MB.",
 		"Skipped 2 files with names the import can't use (e.g. a ':' in the name).",
 	]);
@@ -172,7 +172,7 @@ it("each pick gets its own summary lines, so a later pick during an import adds 
 	const queue = createNotesImportQueue(() => new Promise((done) => { resolve = done; }));
 	queue.append([file("notes.md"), file("a.ppt")]);
 	queue.append([file("b.doc"), file("c.doc")]);
-	assert.deepEqual(queue.getSnapshot().errors, ["Skipped 1 file that isn't text, Markdown, or PDF (.ppt).", "Skipped 2 files that aren't text, Markdown, or PDF (.doc)."]);
+	assert.deepEqual(queue.getSnapshot().errors, ["Skipped 1 file that isn't a supported type (.ppt).", "Skipped 2 files that aren't a supported type (.doc)."]);
 	resolve([success("notes.md")]);
 	await tick();
 	assert.equal(queue.getSnapshot().importing, false);
@@ -219,4 +219,29 @@ it("synchronous transport failures settle one wave once without reentrant pump r
 	await tick();
 	assert.equal(calls, 4); assert.equal(queue.getSnapshot().completion, 1); assert.equal(queue.getSnapshot().importing, false);
 	assert.equal(queue.getSnapshot().errors.length, 4);
+});
+
+it("a code group is one request with its label on result lines; report() adds lines in order", async () => {
+	const calls: { files: File[]; group?: string }[] = [];
+	const queue = createNotesImportQueue(async (files, group) => { calls.push({ files: [...files], group });
+		return [group ? { requestIndex: 0, filePath: group, ok: true, outcome: "completed", stats: { nodes: 1 }, notice: "group notice" } : success(files[0]!.name)]; });
+	queue.append([file("notes.md", "app/notes.md")]);
+	queue.appendGroup("app", [file("a.ts", "app/a.ts"), file("b.ts", "app/b.ts")]);
+	queue.report(["Skipped 1 code file over 100 KB."]);
+	await tick();
+	assert.deepEqual(calls.map((c) => [c.group, c.files.map((f) => f.webkitRelativePath)]), [[undefined, ["app/notes.md"]], ["app", ["app/a.ts", "app/b.ts"]]]);
+	assert.deepEqual(queue.getSnapshot().notices, ["app (2 code files): group notice"]);
+	assert.deepEqual(queue.getSnapshot().errors, ["Skipped 1 code file over 100 KB."]);
+	assert.equal(queue.getSnapshot().importing, false);
+});
+
+it("a HEIC photo that can't be converted fails with the conversion message and is never posted", async () => {
+	const posted: string[] = [];
+	const queue = createNotesImportQueue(async ([f]) => { posted.push(f!.name); return [success(f!.name)]; });
+	const broken = new File([new Uint8Array([0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70])], "IMG_1.HEIC");
+	Object.defineProperty(broken, "webkitRelativePath", { value: "Phone/IMG_1.HEIC" });
+	queue.append([broken]);
+	for (let i = 0; i < 10; i++) await tick();
+	assert.deepEqual(posted, []);
+	assert.deepEqual(queue.getSnapshot().errors, ["Phone/IMG_1.HEIC: Could not convert this HEIC photo."]);
 });

@@ -7,8 +7,8 @@ import { renderWithInteractionLayers as renderToStaticMarkup } from "./interacti
 import { parseHTML } from "linkedom";
 import { InteractionLayersProvider } from "../components/interaction-layers.tsx";
 import { installModalDom } from "./modal-dom.ts";
-import { IMPORT_EXTENSIONS } from "../lib/notes-import-limits.ts";
-import { MAX_IMPORT_BYTES, NotesImportControl, NotesImportErrors, NotesImportNotices, parseNotesImportResults, postNotesImport, useNotesImport, type NotesImportResult } from "../components/notes-import.tsx";
+import { isImportable } from "../lib/notes-import-limits.ts";
+import { cancelFolderReview, confirmFolderReview, folderReviewSnapshot, MAX_IMPORT_BYTES, NotesImportControl, NotesImportErrors, NotesImportNotices, parseNotesImportResults, postNotesImport, useNotesImport, type NotesImportResult } from "../components/notes-import.tsx";
 
 const dom = parseHTML("<html><body></body></html>");
 Object.assign(globalThis, { window: dom.window, document: dom.document, HTMLElement: dom.window.HTMLElement, Element: dom.window.Element, IS_REACT_ACT_ENVIRONMENT: true });
@@ -146,12 +146,12 @@ it("25 MiB is per file, not per selection; oversized files fail locally while sm
 });
 it("picker stays enabled during imports, offers Files/Folder, and keeps PDF support", () => {
 	const html = renderToStaticMarkup(<NotesImportControl importing onImportFiles={() => {}} />);
-	assert.match(html, /webkitdirectory/); assert.match(html, /accept=".txt,.md,.markdown,.rst,.org,.adoc,.tex,.pdf"/); assert.doesNotMatch(html, /disabled/);
+	assert.match(html, /webkitdirectory/); assert.match(html, /accept=".txt,.md,.markdown,.rst,.org,.adoc,.tex,.pdf,.docx,.pptx,.odt,.odp,.rtf,.epub,.ipynb,.jpg,.jpeg,.png,.gif,.webp,.bmp,.heic,.heif,.c,/); assert.doesNotMatch(html, /disabled/);
 });
 it("the Files picker's accept lists only types the queue takes, in any letter case", () => {
 	const accepted = renderToStaticMarkup(<NotesImportControl importing={false} onImportFiles={() => {}} />).match(/accept="([^"]*)"/)![1]!.split(",");
-	for (const extension of accepted) assert.ok(IMPORT_EXTENSIONS.test(`NOTES${extension.toUpperCase()}`), extension);
-	assert.ok(!IMPORT_EXTENSIONS.test("README") && !IMPORT_EXTENSIONS.test("notes.md.bak") && !IMPORT_EXTENSIONS.test("notes.docx"));
+	for (const extension of accepted) assert.ok(isImportable(`NOTES${extension.toUpperCase()}`), extension);
+	assert.ok(!isImportable("README") && !isImportable("notes.md.bak") && !isImportable("data.xlsx") && !isImportable("data.ods") && !isImportable("data.csv"));
 });
 it("graph menu clearly distinguishes extraction from lesson material, above unchanged Files/Folder choices", async () => {
 	const selected: unknown[] = [];
@@ -190,4 +190,70 @@ it("alerts/notices stay plain and escaped", () => {
 	assert.equal((html.match(/role="alert"/g) ?? []).length, 2); assert.doesNotMatch(html, /<section|<button|border|bg-/);
 	const notices = renderToStaticMarkup(<NotesImportNotices notices={["a.pdf: Scanned pages may have errors."]} />);
 	assert.match(notices, /role="status"/); assert.match(notices, /text-muted-foreground/); assert.doesNotMatch(notices, /text-red/);
+});
+
+// ── item 26: grouped code transport and the folder review ──
+
+const inFolder = (path: string, content = "x") => { const f = new File([content], path.split("/").at(-1)!); Object.defineProperty(f, "webkitRelativePath", { value: path }); return f; };
+const settle = async () => { for (let i = 0; i < 20; i++) await act(async () => { await new Promise((r) => setTimeout(r, 5)); }); };
+
+it("a code group posts every file with the group field and parses its one folder-named row", async () => {
+	const code = [inFolder("app/a.ts"), inFolder("app/src/b.ts")];
+	const row: NotesImportResult = { requestIndex: 0, filePath: "app", ok: true, outcome: "completed", stats: { nodes: 3 } };
+	globalThis.fetch = async (_url, init) => {
+		const form = init!.body as FormData;
+		assert.equal(form.get("group"), "app");
+		assert.deepEqual(form.getAll("paths"), ["app/a.ts", "app/src/b.ts"]);
+		return Response.json({ results: [row] });
+	};
+	assert.deepEqual(await postNotesImport(code, "app"), [row]);
+	assert.throws(() => parseNotesImportResults({ results: [{ ...row, filePath: "app/a.ts" }] }, code, "app"), /Check the graph before retrying/);
+});
+
+it("a folder pick waits in review: Cancel sends nothing; Extract queues files, the code group and the summaries", async () => {
+	const requests: { url: string; group: unknown; paths: unknown[] }[] = [];
+	let estimates = 0;
+	globalThis.fetch = async (url, init) => {
+		if (url === "/api/graph/import/estimate") { estimates++; return Response.json({ tokens: 1234, usd: 0.5, rough: false }); }
+		const form = init!.body as FormData;
+		const paths = form.getAll("paths");
+		const group = form.get("group");
+		requests.push({ url: String(url), group, paths });
+		return Response.json({ results: [group ? { requestIndex: 0, filePath: group, ok: false, outcome: "failed", error: "synthetic group failure" } : completed(0, String(paths[0]))] });
+	};
+	const pick = () => [inFolder("app/notes.md", "# n"), inFolder("app/a.ts", "a"), inFolder("app/data.xlsx")] as unknown as FileList;
+	await mount();
+	await act(async () => { current.onImportFiles(pick()); });
+	await settle();
+	assert.equal(folderReviewSnapshot()?.plan.root, "app");
+	assert.deepEqual(folderReviewSnapshot()?.estimate, { tokens: 1234, usd: 0.5, rough: false });
+	assert.equal(starts, 0, "nothing starts before Extract");
+	await act(async () => { cancelFolderReview(); });
+	assert.equal(folderReviewSnapshot(), null);
+	assert.equal(requests.length, 0);
+	await act(async () => { current.onImportFiles(pick()); });
+	await settle();
+	await act(async () => { confirmFolderReview(); });
+	await settle();
+	assert.equal(estimates, 2);
+	assert.equal(starts, 1);
+	assert.deepEqual(requests.map((r) => [r.group, r.paths]), [[null, ["app/notes.md"]], ["app", ["app/a.ts"]]]);
+	assert.deepEqual(current.errors, ["app (1 code file): synthetic group failure", "Skipped 1 file that isn't a supported type (.xlsx)."]);
+});
+
+it("Extract does nothing while the estimate is still loading", async () => {
+	let release!: () => void;
+	globalThis.fetch = async (url) => {
+		if (url === "/api/graph/import/estimate") { await new Promise<void>((r) => { release = r; }); return Response.json({ tokens: 1, usd: 0, rough: false }); }
+		throw new Error("no import expected");
+	};
+	await mount();
+	await act(async () => { current.onImportFiles([inFolder("w/notes.md")] as unknown as FileList); });
+	await settle();
+	assert.equal(folderReviewSnapshot()?.estimate, "loading");
+	await act(async () => { confirmFolderReview(); });
+	assert.equal(folderReviewSnapshot()?.estimate, "loading", "still in review");
+	release();
+	await settle();
+	await act(async () => { cancelFolderReview(); });
 });

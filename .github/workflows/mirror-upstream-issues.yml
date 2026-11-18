@@ -1,0 +1,53 @@
+name: Mirror upstream issues
+
+# Hand-picked only: a dispatch with an upstream `issue` number copies that
+# issue into the fork once, as an issue labeled `upstream` (title, body and the
+# comments that exist then). Nothing is mirrored on its own. The daily run
+# only keeps each existing mirror's `upstream-closed` label matching upstream's
+# state. Mirrors stay open here. Copied text sits in code blocks and upstream
+# references are written as code, so mirroring pings no one upstream.
+# Design: docs/specs/upstream-handpicked.md.
+#
+# Local dry run: DRY_RUN=1 selfhost/scripts/mirror-upstream-issues.sh [issue]
+# (only this workflow writes mirrors; the script refuses to elsewhere).
+# Authenticates as the fork bot GitHub App (see docs/fork-workflow.md).
+
+on:
+  schedule:
+    - cron: "47 6 * * *"
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Upstream issue number to mirror (optional; without it, only the upstream-closed labels are updated)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Two runs at once could create the same mirror twice.
+concurrency:
+  group: mirror-upstream-issues
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: amosblomqvist/learnharness
+  FORK_REPO: ${{ github.repository }}
+
+jobs:
+  mirror:
+    if: github.repository == 'max-miller1204/learnharness-nightly'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      ISSUE: ${{ inputs.issue }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/fork-bot-token
+        with:
+          client-id: ${{ secrets.FORK_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.FORK_BOT_PRIVATE_KEY }}
+      - name: Mirror
+        run: bash selfhost/scripts/mirror-upstream-issues.sh ${ISSUE:+"$ISSUE"}

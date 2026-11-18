@@ -11,6 +11,7 @@ import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
+import { signFetch, smokeToken } from "./lib/smoke-auth.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const require = createRequire(import.meta.url);
@@ -65,6 +66,7 @@ async function run(mode) {
 		credential: { type: "oauth", access: id === "xai" ? "fixture-xai-access" : "tid=fixture;proxy-ep=proxy.individual.githubcopilot.com;", refresh: "fixture-refresh", expires: Date.now() + 3600000, ...(id === "github-copilot" ? { availableModelIds: [copilot.id] } : {}) },
 	}), { mode: 0o600 });
 	const port = await freePort(), origin = `http://localhost:${port}`;
+	signFetch(origin, smokeToken(env.LH_DATA_DIR));
 	let logs = "", exited = false;
 	const child = spawn(process.execPath, [path.join(ROOT, "node_modules/next/dist/bin/next"), mode, "-p", String(port)], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
 	const exit = new Promise((resolve) => child.once("exit", () => { exited = true; resolve(); }));

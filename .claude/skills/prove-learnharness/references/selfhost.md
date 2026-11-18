@@ -27,7 +27,7 @@ Guards, in order:
 
 `scripts/selfhost-b.sh "$RUN"` after `build.sh "$RUN" both`:
 
-1. Packs A (base build, `<base version>-nightly.20000101.1`, cached in `$PROVE_CACHE/base/<sha>/.prove-archive/`), B (head build, `...2`) and C (B with `server/server.js` replaced by `process.exit(3)`, `...3`) with `selfhost/scripts/package-archive.ts` and the host Node 26.
+1. Packs A (base build, `<base version>-nightly.20000101.1`, cached in `$PROVE_CACHE/base/<sha>/.prove-archive/`), B (head build, `...2`) and C (B with `server/server.js` replaced by `process.exit(3)`, `...3`) with `selfhost/scripts/package-archive.ts` and the host Node 26. B and C are cached in `$PROVE_CACHE/head-archives/<key>/`, keyed by the head build stamp (tree hash and baked version) and arch, so a rerun on an unchanged tree skips packing (the timing table says "cache hit" or "packed"); the newest `HEAD_ARCHIVE_KEEP` pairs are kept. The feed gets hard links to the cached files.
 2. `install.sh` from the base tree with `LH_FEED_URL`, `LH_YES=1`, `LH_UP_ARGS`: installs A, writes the unit, starts it.
 3. Seeds a session, then feed -> B, `lh update` (server downloads), `lh update --now`: waits for health on B and `update.status=committed`; checks the session and a backup named after A.
 4. Feed -> C, same: waits for `update.status=rolled-back` for C, health on B, C in `badVersions`, session kept.

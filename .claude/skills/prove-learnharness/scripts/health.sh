@@ -13,9 +13,11 @@ pid_alive "$SD/fake-model.pid" || die "$SIDE: fake model from $SD/fake-model.pid
 owner=$(ss -ltnpH "sport = :$APP_PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1)
 owner_group=$( [ -n "$owner" ] && ps -o pgid= -p "$owner" | tr -d ' ')
 [ "$owner_group" = "$(cat "$SD/app.pid")" ] || die "$SIDE: port $APP_PORT is owned by pid ${owner:-none} (group ${owner_group:-none}), not this run's group $(cat "$SD/app.pid")"
+AUTH=()
+[ -n "${APP_TOKEN:-}" ] && AUTH=(-H "Authorization: Bearer $APP_TOKEN")
 h=$(curl -sf "$APP_URL/api/health") || die "$SIDE: $APP_URL/api/health did not answer"
-slots=$(curl -sf "$APP_URL/api/models" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const m=JSON.parse(s);console.log(["strong","cheap","vision"].map(k=>k+"="+(m.slots?.[k]?.model?(m.slots[k].model.provider+"/"+m.slots[k].model.id):"unset")).join(" "))})')
-chats=$(curl -sf "$APP_URL/api/chats" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).chats.length))')
+slots=$(curl -sf "${AUTH[@]}" "$APP_URL/api/models" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const m=JSON.parse(s);console.log(["strong","cheap","vision"].map(k=>k+"="+(m.slots?.[k]?.model?(m.slots[k].model.provider+"/"+m.slots[k].model.id):"unset")).join(" "))})')
+chats=$(curl -sf "${AUTH[@]}" "$APP_URL/api/chats" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).chats.length))')
 echo "side:     $SIDE"
 echo "target:   $APP_URL (local, pid $(cat "$SD/app.pid")), fake model $FAKE_URL"
 echo "build:    $BUILD_DIR ($BUILD_STAMP)"

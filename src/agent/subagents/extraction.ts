@@ -1,5 +1,5 @@
 import * as crypto from "node:crypto";
-import type { Usage } from "@earendil-works/pi-ai";
+import { normalizeContext, type AssistantMessage, type Usage } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type, type Static, type TSchema } from "typebox";
 import { toToolResult } from "../tool-execute.ts";
@@ -14,6 +14,9 @@ import {
 } from "../../core/settings.ts";
 import type { PiEngine } from "../models.ts";
 import { runSubagent } from "./pi-run.ts";
+import { processImage } from "../image-processing/index.ts";
+import { workerRequestStream } from "../worker-request-admission.ts";
+import { backgroundCaptureStream, createBackgroundCapture } from "../background-capture.ts";
 import type {
 	AuditVerdicts,
 	CallUsage,
@@ -457,6 +460,76 @@ rather than constructing an argument for it. Select enough detail to preserve th
 expanding the note into a full treatment of the subject.`,
 );
 
+// Code (item 26, owner-approved wording 2026-11-17): its own goal and selection;
+// the shared contracts are identical to the other two front doors.
+export const CODE_PREAMBLE =
+	"You are the extraction stage of a learning application. You read one stretch of a source (a codebase's " +
+	"files in path order, each under a \"## File:\" heading) and report what it teaches as findings for the " +
+	"learner's global knowledge graph, building on everything already extracted from this source.";
+
+export const CODE_EXTRACTOR_INSTRUCTIONS = composeExtractionInstructions(
+	CODE_PREAMBLE,
+	`THE GOAL: bring the knowledge this code teaches into the learner's knowledge graph: the concepts it
+implements, the APIs and libraries it relies on and how they work, and the design decisions it embodies
+with the reasons for them. Code is not a lesson: the deliverable is what a reader learns by studying it,
+not a description of the code.`,
+	`Keep ideas that hold beyond this codebase: how an algorithm, protocol, data structure or library API
+works, what a pattern achieves, why a design choice fits its constraints. Do not report line-by-line
+behavior, inventories of files or functions, identifiers, configuration values, or project trivia. Use
+chains where the code's structure justifies a conclusion; otherwise record bare ideas.`,
+);
+
+/** The image reader's system prompt (item 26, owner-approved wording 2026-11-17). */
+export const IMAGE_READER_INSTRUCTIONS =
+	"You turn one image from a learner's study material into text, so its content can be added to their " +
+	"knowledge graph. Transcribe all legible text exactly, in reading order, as Markdown (headings, lists, " +
+	"tables). Write equations in LaTeX. Describe each diagram, chart or figure: what it shows, its labels, and " +
+	"the relationships or values it conveys. Transcribe handwriting; mark words you can't read as [illegible]. " +
+	"Do not add knowledge the image doesn't contain. If the image has nothing to learn from, reply with one " +
+	"sentence saying what it shows.";
+
+/** One code file as the extractor sees it: a heading, then the text in a fence longer than any backtick run inside. */
+export function renderCodeFile(path: string, text: string, continued = false): string {
+	const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
+	const fence = "`".repeat(Math.max(3, longest + 1));
+	const dot = path.lastIndexOf(".");
+	const language = dot > path.lastIndexOf("/") + 1 ? path.slice(dot + 1).toLowerCase() : "";
+	return `## File: ${path}${continued ? " (continued)" : ""}\n\n${fence}${language}\n${text.replace(/\n$/, "")}\n${fence}`;
+}
+
+/** Chunk a code source under the token budget (chars/4, like chunkNotes): files stay whole where they fit;
+ * a file larger than a chunk is split by lines, each continuation under a "(continued)" heading. */
+export function chunkCode(files: ReadonlyArray<{ path: string; text: string }>, budget: number): string[] {
+	const tokens = (text: string) => Math.ceil(text.length / 4);
+	const out: string[] = [];
+	let current = "";
+	for (const file of files) {
+		const block = renderCodeFile(file.path, file.text);
+		if (current && tokens(`${current}\n\n${block}`) <= budget) { current = `${current}\n\n${block}`; continue; }
+		if (current) out.push(current);
+		current = "";
+		if (tokens(block) <= budget) { current = block; continue; }
+		// Over one chunk: greedy by line; the rendering overhead (heading + fences) rides every piece.
+		const overhead = renderCodeFile(file.path, "", true).length;
+		let piece: string[] = [];
+		let pieceLength = 0;
+		let continued = false;
+		for (const line of file.text.split("\n")) {
+			if (piece.length > 0 && Math.ceil((overhead + pieceLength + line.length + 1) / 4) > budget) {
+				out.push(renderCodeFile(file.path, piece.join("\n"), continued));
+				continued = true;
+				piece = [];
+				pieceLength = 0;
+			}
+			piece.push(line);
+			pieceLength += line.length + 1;
+		}
+		current = renderCodeFile(file.path, piece.join("\n"), continued);
+	}
+	if (current) out.push(current);
+	return out;
+}
+
 // ── the same-source digest (owner, 2026-09-30 evening) ──
 //
 // Serialized digest-aware extraction REPLACED the spine stage (owner
@@ -529,6 +602,7 @@ function runExtractor(
 function runNotesExtractor(
 	engine: PiEngine | undefined,
 	sourceId: string,
+	systemPrompt: string,
 	prompt: string,
 	existingIds: ReadonlySet<string>,
 	signal: AbortSignal | undefined,
@@ -543,7 +617,7 @@ function runNotesExtractor(
 		parameters: findingsSchema,
 		fill: fillNotesFindings,
 		validate: (value) => validateFindingsChains(value, existingIds),
-		systemPrompt: NOTES_EXTRACTOR_INSTRUCTIONS,
+		systemPrompt,
 		prompt,
 		engine,
 		signal,
@@ -551,6 +625,42 @@ function runNotesExtractor(
 		neverSubmitted: "the extractor never submitted findings",
 		prepareArguments: healStringifiedArrays,
 	}).then(asSessionFindings);
+}
+
+/** The image reader's single model call (item 26): no tools, the reply text is the description.
+ *  Worker admission and background capture as the pdf-reader and visual-maker do. */
+async function describeImageOnce(
+	engine: PiEngine,
+	systemPrompt: string,
+	filePath: string,
+	image: { data: string; mimeType: string; hints: string[] },
+	signal: AbortSignal | undefined,
+): Promise<AssistantMessage> {
+	const runId = crypto.randomUUID();
+	const capture = createBackgroundCapture({ role: "imageReader", runId });
+	const streamFn = backgroundCaptureStream(workerRequestStream(engine.streamFn), capture);
+	const content = [
+		{ type: "text" as const, text: [`File: ${filePath}`, ...image.hints].join("\n") },
+		{ type: "image" as const, data: image.data, mimeType: image.mimeType },
+	];
+	const stream = streamFn(engine.model, normalizeContext({ systemPrompt, messages: [{ role: "user", content, timestamp: Date.now() }], tools: [] }), {
+		sessionId: runId,
+		reasoning: engine.level && engine.level !== "off" ? engine.level : undefined,
+		signal,
+	} as never);
+	for await (const event of stream) {
+		if (event.type === "done") { capture?.reply(event.message); return event.message; }
+		if (event.type === "error") {
+			capture?.reply(event.error);
+			if (event.reason === "aborted") {
+				const aborted = new Error("aborted");
+				aborted.name = "AbortError";
+				throw aborted;
+			}
+			throw new Error(event.error.errorMessage ?? "the vision model call failed");
+		}
+	}
+	throw new Error("the vision model stream ended without a result");
 }
 
 // ─── the auditor ───────────────────────────────────────────────────────────
@@ -653,6 +763,7 @@ export interface RunningExtraction {
 	usage: {
 		extractor?: ExtractionStageUsage;
 		auditor?: ExtractionStageUsage;
+		imageReader?: ExtractionStageUsage;
 	};
 	/** True-cancellation handle (the dock's abort button): one controller per
 	 *  run, shared across phases; abort() cancels the in-flight model call. */
@@ -718,6 +829,8 @@ export interface ExtractionModels {
 	 *  engineFor chain (production wires no direct values). */
 	extractor?: PiEngine;
 	auditor?: PiEngine;
+	/** The image description call (Extract files images, item 26). */
+	imageReader?: PiEngine;
 	/** Settings-resolved engine per role — the same slot treatment the
 	 *  job runner got, read FRESH per stage call (a settings PUT between
 	 *  stages lands). BYOK (owner, 2026-09-22): the chain (role override →
@@ -750,6 +863,12 @@ export interface NotesImportInput {
 	filePath: string;
 	/** The file's raw content, VERBATIM — any format. */
 	text: string;
+	/** Display label for the dock (defaults to filePath), e.g. "my-app (48 code files)". */
+	label?: string;
+	/** Code (item 26): the files, in path order, extracted with the code prompt. `text` is ignored. */
+	codeFiles?: ReadonlyArray<{ path: string; text: string }>;
+	/** An image (item 26): described by the Vision slot first; the description is the notes text. */
+	image?: { bytes: Uint8Array; mimeType: string };
 }
 
 /** A notes import did not finish. Earlier graph writes and billed usage are
@@ -807,10 +926,11 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	 *  found unset (test values count as configured — they ARE engines),
 	 *  and whether a configured stage's provider key is gone (provider-key
 	 *  interlude, 2026-09-25) — both refuse BEFORE any batch runs. */
-	function refuseIfStagesUnready(): void {
+	function refuseIfStagesUnready(withImage = false): void {
 		const stages: readonly [ModelRole, PiEngine | undefined][] = [
 			["extractor", stageEngine("extractor", deps.extractor)],
 			["auditor", stageEngine("auditor", deps.auditor)],
+			...(withImage ? [["imageReader", stageEngine("imageReader", deps.imageReader)] as [ModelRole, PiEngine | undefined]] : []),
 		];
 		const missing = new Set<ModelSlotName>();
 		for (const [role, engine] of stages) if (!engine) missing.add(ROLE_SLOT[role]);
@@ -869,7 +989,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	}
 
 	/** Accumulate one billed step into the run's registry entry (live). */
-	function recordStep(jobKey: string, stage: "extractor" | "auditor", usage: CallUsage, model: string): void {
+	function recordStep(jobKey: string, stage: "extractor" | "auditor" | "imageReader", usage: CallUsage, model: string): void {
 		const run = runningExtractions.get(jobKey);
 		if (!run) return; // not running (tests driving stages directly)
 		run.usage[stage] ??= { model, steps: [] };
@@ -1029,6 +1149,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			stages: {
 				extractor: run.usage.extractor ?? { model: "unknown", steps: [] },
 				auditor: run.usage.auditor ?? { model: "unknown", steps: [] },
+				...(run.usage.imageReader ? { imageReader: run.usage.imageReader } : {}),
 			},
 		};
 		if (run.kind === "notes") graphStore.appendSourceUsage(run.chatId, entry);
@@ -1232,9 +1353,9 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 
 	/** The raw source view the notes stages see: the file path + the text
 	 *  VERBATIM. No message ids — provenance is the file itself. */
-	function notesView(input: { filePath: string; text: string; part?: { i: number; n: number } }): string {
+	function notesView(input: { filePath: string; text: string; code?: boolean; part?: { i: number; n: number } }): string {
 		const part = input.part && input.part.n > 1 ? ` (part ${input.part.i}/${input.part.n})` : "";
-		return `SOURCE (the author's personal notes): ${input.filePath}${part}\n\n${input.text}`;
+		return `SOURCE (${input.code ? "a codebase" : "the author's personal notes"}): ${input.filePath}${part}\n\n${input.text}`;
 	}
 
 	/** Chunk the notes text under the same budget the chat path uses
@@ -1259,9 +1380,28 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		return out;
 	}
 
+	/** One Vision call (item 26): the image as Markdown text, the notes extraction's input. */
+	async function describeImage(jobKey: string, filePath: string, image: { bytes: Uint8Array; mimeType: string }): Promise<string> {
+		const signal = runningExtractions.get(jobKey)?.controller.signal;
+		signal?.throwIfAborted();
+		const engine = stageEngine("imageReader", deps.imageReader)!;
+		if (!engine.model.input.includes("image")) {
+			throw new Error(`The Vision model (${engine.model.provider}:${engine.model.id}) can't take images. Pick one that can in Settings > Models.`);
+		}
+		const processed = await processImage(image.bytes, image.mimeType, { resizeOptions: engine.model.inputLimits?.images?.resize });
+		if (!processed.ok) throw new Error(processed.message);
+		const t0 = performance.now();
+		const reply = await describeImageOnce(engine, IMAGE_READER_INSTRUCTIONS, filePath, processed, signal);
+		recordStep(jobKey, "imageReader", callUsage(reply.usage), `${reply.provider}:${reply.model}`);
+		const text = reply.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join("").trim();
+		console.info(`[extraction ${jobKey}] image described in ${Math.round(performance.now() - t0)}ms (${text.length} chars)`);
+		if (!text) throw new Error("The vision model returned no description.");
+		return text;
+	}
+
 	async function notesExtract(
 		jobKey: string,
-		input: { id: string; filePath: string; text: string; part?: { i: number; n: number } },
+		input: { id: string; filePath: string; text: string; code?: boolean; part?: { i: number; n: number } },
 	): Promise<NotesFindings> {
 		// jobKey (per-chunk jobs, owner 2026-09-28): the registry key —
 		// "src#i" for chunk jobs — so the abort signal reaches the call.
@@ -1282,6 +1422,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		const findings = await runNotesExtractor(
 			stageEngine("extractor", deps.extractor),
 			input.id,
+			input.code ? CODE_EXTRACTOR_INSTRUCTIONS : NOTES_EXTRACTOR_INSTRUCTIONS,
 			prompt,
 			new Set(graph.nodes.map((n) => n.id)),
 			signal,
@@ -1297,7 +1438,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	// The notes auditor is the SAME identity-linker as the chat one (one
 	// schema now that attribution is gone) — audit() above, verbatim.
 
-	async function runNotesExtraction(input: { id: string; filePath: string; text: string; importedAt: string }): Promise<EmissionStats> {
+	async function runNotesExtraction(input: NotesImportInput & { id: string; importedAt: string }): Promise<EmissionStats> {
 		const { id } = input;
 		// importNotes owns the source exclusion, including metadata and cleanup.
 		const t0 = performance.now();
@@ -1306,13 +1447,18 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			// BYOK per-need gate (owner, 2026-09-22) + key presence
 			// (2026-09-25): same refusal as the chat front door — no
 			// extractor/auditor engines, or a stage key gone, no run.
-			refuseIfStagesUnready();
+			refuseIfStagesUnready(input.image !== undefined);
 			// CHUNKED like the chat path (owner, 2026-09-28): each chunk is a
 			// standalone extract → audit → merge, so no single call carries a
 			// whole large file. Abort mid-run keeps earlier chunks merged
 			// (same doctrine as chat batches).
 			const chunkTokens = deps.getChunkTokens?.() ?? FACTORY_SETTINGS.graph.extractionChunkTokens;
-			const chunks = chunkNotes(input.text, chunkTokens);
+			// Code is chunked file-aware; an image is one job (describe, extract,
+			// audit, merge), so its single chunk is filled in by the description.
+			const code = input.codeFiles !== undefined;
+			const label = input.label ?? input.filePath;
+			const chunks: Array<string | undefined> = input.image ? [undefined]
+				: code ? chunkCode(input.codeFiles!, chunkTokens) : chunkNotes(input.text, chunkTokens);
 			console.info(
 				`[extraction ${id}] notes pipeline start (${input.filePath}) — ${chunks.length} chunk(s) of ≤${chunkTokens} tok`,
 			);
@@ -1333,18 +1479,19 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 				try {
 					settled.push({
 						status: "fulfilled",
-						value: await runJob({ id, kind: "notes", label: input.filePath, part }, async (jobKey) => {
-							setPhase(jobKey, "extracting", "notes", input.filePath, part);
+						value: await runJob({ id, kind: "notes", label, part }, async (jobKey) => {
+							setPhase(jobKey, "extracting", "notes", label, part);
 							chunkSignal = runningExtractions.get(jobKey)?.controller.signal;
-							const findings = await notesExtract(jobKey, { ...input, text: chunk, part });
+							const text = chunk ?? await describeImage(jobKey, input.filePath, input.image!);
+							const findings = await notesExtract(jobKey, { id: input.id, filePath: input.filePath, text, code, part });
 							// SERIALIZED AUDIT (owner, 2026-09-28): audit + merge one
 							// at a time, process-wide — the auditor explores the graph
 							// as it stands AFTER every earlier job's merge. Reacquired
 							// per chunk so cross-source runs interleave fairly.
-							return withAuditLock(jobKey, "notes", input.filePath, async () => {
-								setPhase(jobKey, "auditing", "notes", input.filePath, part);
+							return withAuditLock(jobKey, "notes", label, async () => {
+								setPhase(jobKey, "auditing", "notes", label, part);
 								const auditResult = await audit(jobKey, input.id, findings);
-								setPhase(jobKey, "merging", "notes", input.filePath, part);
+								setPhase(jobKey, "merging", "notes", label, part);
 								const merged = mergeFindings(
 									id,
 									findings,

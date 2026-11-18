@@ -1,0 +1,80 @@
+name: Notify upstream
+
+# When a fork PR that fixes a hand-picked upstream issue, or imports a
+# hand-picked upstream PR, merges into main, post one short comment on that
+# upstream item from the owner's account and link it from the fork PR. A PR
+# declares its items in `Upstream:` lines at the top of its body (the PR import
+# writes one). Never at import time, never twice for the same item, never an
+# @mention. Design: docs/specs/upstream-handpicked.md.
+#
+# The owner's token (a classic PAT with only public_repo) is a secret of the
+# `upstream-notify` environment, which only main can use: branches, including
+# imported upstream PR branches, can't read it. That's why this runs on push
+# to main (a pull_request run is on refs/pull/N/merge and wouldn't get it).
+#
+# Local dry run: DRY_RUN=1 selfhost/scripts/notify-upstream.sh <fork PR>
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Merged fork PR number (re-run its upstream notice)"
+        required: true
+        type: number
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: amosblomqvist/learnharness
+  FORK_REPO: ${{ github.repository }}
+
+jobs:
+  # Finds the merged PR and whether it declares upstream items, without the
+  # owner's token, so ordinary merges never touch it or the environment.
+  find:
+    if: github.repository == 'max-miller1204/learnharness-nightly'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      pr: ${{ steps.find.outputs.pr }}
+      count: ${{ steps.find.outputs.count }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ inputs.pr || github.sha }}
+        run: bash selfhost/scripts/notify-upstream.sh find "$TARGET" >> "$GITHUB_OUTPUT"
+
+  notify:
+    needs: find
+    if: needs.find.outputs.count != '' && needs.find.outputs.count != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: upstream-notify
+    # Only here, so ordinary merges never take a slot: GitHub keeps one waiting
+    # run per group and cancels an older waiting one. One at a time, so two
+    # merges for the same upstream item can't both miss the other's marker.
+    # (Three upstream-declaring merges at once could still cancel one; re-run
+    # it from Actions with its PR number.)
+    concurrency:
+      group: notify-upstream
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Notify
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_COMMENT_TOKEN }}
+          PR: ${{ needs.find.outputs.pr }}
+        # Fails with an ::error:: naming the secret when it's missing.
+        run: bash selfhost/scripts/notify-upstream.sh "$PR"

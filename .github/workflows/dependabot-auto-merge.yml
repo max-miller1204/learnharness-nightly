@@ -1,0 +1,84 @@
+name: Dependabot auto-merge
+
+# Queues auto-merge (squash) on Dependabot's minor and patch PRs, so they merge
+# once `Check` is green. Majors and anything touching Pi or typebox wait for an
+# agent (a review round and prove-learnharness). The fork bot App token turns
+# auto-merge on: a merge queued with the built-in token pushes to main without
+# starting CI or the nightly. See docs/specs/dependency-updates.md.
+#
+# pull_request_target, so GitHub always runs main's copy of this file: a bot PR
+# that bumps an action used here can't run the new version before it merges.
+# It also gets the normal Actions secrets (FORK_BOT_*). Never check out or run
+# the PR's code in this workflow.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  auto-merge:
+    name: Auto-merge
+    # Only Dependabot's own PRs and pushes: a PR from anyone else, or a push
+    # by anyone else to a Dependabot branch, skips this.
+    if: >-
+      github.repository == 'max-miller1204/learnharness-nightly' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.actor == 'dependabot[bot]'
+    # The newest event decides, so a late run can't re-queue a PR a rebase made
+    # ineligible.
+    concurrency:
+      group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Read the update
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      # main, never the PR: the token step below runs main's copy of the
+      # fork-bot-token action, not one a bot PR edited.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: ./.github/actions/fork-bot-token
+        with:
+          client-id: ${{ secrets.FORK_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.FORK_BOT_PRIVATE_KEY }}
+
+      - name: Queue or hold the merge
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          NAMES: ${{ steps.meta.outputs.dependency-names }}
+        run: |
+          set -euo pipefail
+          reason=""
+          case "$UPDATE_TYPE" in
+            version-update:semver-minor | version-update:semver-patch) ;;
+            *) reason="update type '${UPDATE_TYPE:-unknown}' is not minor or patch" ;;
+          esac
+          # Pi and typebox PRs need the plugin SDK files regenerated (spec, "Pi").
+          # One grep over the whole ", "-separated list (no pipeline that an
+          # early grep -q exit could fail under pipefail).
+          if grep -qE '(^|, *)(@earendil-works/[^,]+|typebox)( *,|$)' <<< "$NAMES"; then
+            reason="it touches Pi or typebox"
+          fi
+          if [ -z "$reason" ]; then
+            gh pr merge --auto --squash "$PR_URL"
+            echo "Queued auto-merge: $UPDATE_TYPE ($NAMES)"
+          else
+            echo "Waiting for an agent: $reason ($NAMES)"
+            # Holds a PR that a rebase turned ineligible.
+            if [ "$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')" = true ]; then
+              gh pr merge --disable-auto "$PR_URL"
+              echo "Turned auto-merge off."
+            fi
+          fi

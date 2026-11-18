@@ -23,7 +23,19 @@ ensure_deps() { # <dir> <log>
 	fi
 }
 
-next_build() { # <dir> <version> <log>
+next_build() { # <dir> <version> <log> <slot fd> <side>
+	local dir=$1 version=$2 log=$3 fd=$4 side=$5 try twait
+	twait=$(date +%s.%N)
+	acquire_build_slot "$fd" || { say "[$side] no machine build slot free within ${BUILD_SLOT_WAIT_S}s (MACHINE_BUILD_SLOTS=$MACHINE_BUILD_SLOTS)"; return 1; }
+	record_time "$RUN" "$side build: wait for a machine build slot (got $BUILD_SLOT of $MACHINE_BUILD_SLOTS)" "$twait"
+	# The slot is held by this fd for the build and released when it closes.
+	next_build_slotted "$dir" "$version" "$log"
+	local code=$?
+	eval "exec $fd>&-"
+	return $code
+}
+
+next_build_slotted() { # <dir> <version> <log>
 	local dir=$1 version=$2 log=$3 try
 	for try in 1 2; do
 		if (cd "$dir" && rm -rf .next/standalone && NEXT_TELEMETRY_DISABLED=1 LH_VERSION=$version npm run build && node scripts/build-server.mjs) >>"$log" 2>&1; then
@@ -59,7 +71,7 @@ build_head() {
 		say "[head] building $version"
 		# next build rewrites the tracked next-env.d.ts; put the builder's copy back.
 		saved=$(mktemp); cp "$REPO/next-env.d.ts" "$saved"
-		next_build "$REPO" "$version" "$log" || { cp "$saved" "$REPO/next-env.d.ts"; rm -f "$saved"; tail -40 "$log" >&2; die "head build failed (log: $log)"; }
+		next_build "$REPO" "$version" "$log" 5 head || { cp "$saved" "$REPO/next-env.d.ts"; rm -f "$saved"; record_time "$RUN" "head build (FAILED)" "$tstart" 1; tail -40 "$log" >&2; die "head build failed (log: $log)"; }
 		cp "$saved" "$REPO/next-env.d.ts"; rm -f "$saved"
 		printf '%s\n' "$want" >"$stamp"
 		say "[head] built in $((SECONDS - t0))s"
@@ -99,7 +111,7 @@ build_base() {
 		fi
 		ensure_deps "$dir" "$log" || { rm -rf "$dir"; die "base npm ci failed (log: $log)"; }
 		say "[base] building ${sha:0:12} as $version"
-		next_build "$dir" "$version" "$log" || { tail -40 "$log" >&2; rm -rf "$dir"; die "base build failed (log: $log)"; }
+		next_build "$dir" "$version" "$log" 4 base || { record_time "$RUN" "base build (FAILED, cold ${sha:0:12})" "$tstart" 1; tail -40 "$log" >&2; rm -rf "$dir"; die "base build failed (log: $log)"; }
 		echo "$sha $version" >"$dir/.prove-done"
 		say "[base] built in $((SECONDS - t0))s"
 		record_time "$RUN" "base build (cold ${sha:0:12}, incl. npm ci$(grep -q SecurityFatalError "$log" && echo ', Next security-notice retry'))" "$tstart"

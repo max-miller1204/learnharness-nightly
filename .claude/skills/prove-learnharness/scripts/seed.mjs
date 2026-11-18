@@ -12,6 +12,8 @@ if (!app || !fake) {
 	console.error("usage: seed.mjs <APP_URL> <FAKE_MODEL_BASE_URL> [fake|claude-code] [real model id]");
 	process.exit(2);
 }
+import { signIn } from "./sign-in.mjs";
+signIn({ APP_URL: app });
 const json = { "content-type": "application/json", origin: app };
 const slot = (id) => ({ model: { provider: mode === "claude-code" ? "claude-code" : "custom", id } });
 const want = mode === "claude-code"

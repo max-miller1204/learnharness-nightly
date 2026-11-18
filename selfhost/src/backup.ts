@@ -10,13 +10,20 @@
  * A snapshot holds everything in userdata/ except backups/ and logs/:
  * data/, auth.json and the subscription credential files the app writes
  * beside auth.json. config.json comes along too, which is harmless.
+ *
+ * The login store (data/auth/) is never snapshotted, and a restore keeps the
+ * live one: restoring old learning data must not bring back a revoked device
+ * or sign out today's devices (docs/specs/login-pairing.md).
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { layout } from "./paths.ts";
 
 export const KEEP_BACKUPS = 3;
-const EXCLUDED = new Set(["backups", "logs"]);
+const AUTH_KEEP = ".auth-restore-keep";
+const EXCLUDED = new Set(["backups", "logs", AUTH_KEEP]);
+/** The login store, relative to userdata/. */
+export const AUTH_STORE = path.join("data", "auth");
 /** Extra headroom on top of the snapshot itself (trial writes, logs). */
 export const SNAPSHOT_HEADROOM_BYTES = 256 * 1024 * 1024;
 
@@ -43,7 +50,8 @@ export function directorySize(target: string): number {
 
 export function snapshotSize(home: string): number {
 	const { userdata } = layout(home);
-	return entriesToCopy(userdata).reduce((sum, name) => sum + directorySize(path.join(userdata, name)), 0);
+	const total = entriesToCopy(userdata).reduce((sum, name) => sum + directorySize(path.join(userdata, name)), 0);
+	return Math.max(0, total - directorySize(path.join(userdata, AUTH_STORE)));
 }
 
 export function freeBytes(target: string): number {
@@ -69,8 +77,12 @@ export function snapshot(home: string, name: string): string {
 	const temp = `${target}.tmp`;
 	fs.rmSync(temp, { recursive: true, force: true });
 	fs.mkdirSync(temp, { recursive: true });
+	const authStore = path.join(userdata, AUTH_STORE);
 	for (const entry of entriesToCopy(userdata)) {
-		fs.cpSync(path.join(userdata, entry), path.join(temp, entry), { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
+		fs.cpSync(path.join(userdata, entry), path.join(temp, entry), {
+			recursive: true, preserveTimestamps: true, verbatimSymlinks: true,
+			filter: (source) => source !== authStore,
+		});
 	}
 	fs.rmSync(target, { recursive: true, force: true });
 	fs.renameSync(temp, target);
@@ -81,9 +93,18 @@ export function snapshot(home: string, name: string): string {
 export function restore(home: string, backupDir: string): void {
 	const { userdata } = layout(home);
 	if (!fs.existsSync(backupDir)) throw new Error(`Backup not found: ${backupDir}`);
+	// Keep the live login store aside (a sibling, so rename never crosses filesystems).
+	const authStore = path.join(userdata, AUTH_STORE);
+	const kept = path.join(userdata, AUTH_KEEP);
+	if (!fs.existsSync(kept) && fs.existsSync(authStore)) fs.renameSync(authStore, kept);
 	for (const entry of entriesToCopy(userdata)) fs.rmSync(path.join(userdata, entry), { recursive: true, force: true });
 	for (const entry of fs.readdirSync(backupDir)) {
 		fs.cpSync(path.join(backupDir, entry), path.join(userdata, entry), { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
+	}
+	if (fs.existsSync(kept)) {
+		fs.rmSync(authStore, { recursive: true, force: true });
+		fs.mkdirSync(path.dirname(authStore), { recursive: true });
+		fs.renameSync(kept, authStore);
 	}
 }
 

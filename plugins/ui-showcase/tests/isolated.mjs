@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer-core";
 import { surfaceProofFixture } from "./surface-fixture.mjs";
+import { signFetch, smokeToken } from "../../../scripts/lib/smoke-auth.mjs";
 
 export const fixture = Object.freeze({ chatId: "chat_ui_showcase_offline", chatTitle: "Offline UI Showcase session", practiceChatId: "chat_ui_showcase_practice", practiceTitle: "Offline UI Showcase practice", model: "ui-showcase-offline", premiseId: "prop_ui_premise", conclusionId: "prop_ui_conclusion", chainId: "chain_ui_showcase", sourceId: "notes_ui_showcase", sourceLabel: "Synthetic showcase knowledge" });
 export const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -137,6 +138,8 @@ export async function runPackagedProof(verify) {
     assert.deepEqual(fs.readdirSync(path.join(data, "plugins")).sort(), ["surface-proof", "ui-showcase"], "Install only the exact product and approved test fixture");
     const graphBefore = digestTree(path.join(data, "graph"));
     const base = `http://127.0.0.1:${await freePort()}`, port = new URL(base).port;
+    // Every request needs a login (docs/specs/login-pairing.md).
+    const authorization = `Bearer ${smokeToken(data)}`; signFetch(base, authorization.slice(7));
     evidence.origin = base;
     const guard = path.join(scratch, "imports.mjs");
     fs.writeFileSync(guard, `import {registerHooks} from 'node:module';import {realpathSync} from 'node:fs';import {fileURLToPath} from 'node:url';import path from 'node:path';const roots=${JSON.stringify([standalone, path.join(data, "plugins")])};registerHooks({resolve(s,c,n){const r=n(s,c);if(r.url.startsWith('file:')){const f=realpathSync(fileURLToPath(r.url));if(!roots.some(root=>f===root||f.startsWith(root+path.sep)))throw Error('Import escaped disposable payload: '+f)}return r}});`);
@@ -160,7 +163,7 @@ export async function runPackagedProof(verify) {
     await api("/api/custom-provider", "POST", { baseUrl: `http://127.0.0.1:${await listen(catalog)}/v1`, authMode: "keyless" }, { "If-Match": provider.response.headers.get("etag") });
     const settingsBefore = (await api("/api/settings")).payload;
     browser = await puppeteer.launch({ executablePath: chrome, headless: true, userDataDir: path.join(scratch, "chrome-profile"), env: cleanEnv, args: ["--disable-background-networking", "--disable-sync", "--no-first-run", "--no-default-browser-check"] });
-    const page = await browser.newPage(); page.setDefaultTimeout(30_000);
+    const page = await browser.newPage(); await page.setExtraHTTPHeaders({ authorization }); page.setDefaultTimeout(30_000);
     await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
     // Passive safety tripwire: no test starts dictation. An unexpected request
     // is counted and rejected before the OS can open a microphone.

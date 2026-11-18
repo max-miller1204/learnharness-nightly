@@ -15,7 +15,8 @@ One recipe per user feature. A recipe says how to reach and drive the feature; t
 | Teaching session: goal, tool call, graded question, answer, reload, delete | web, api, agent, electron | [teaching-session.md](teaching-session.md) |
 | Self-hosted update and rollback, update pill, What's new | selfhost, api, web | [update-rollback.md](update-rollback.md) |
 | Desktop window and desktop updater | electron | [desktop-window.md](desktop-window.md) |
+| Extract files: files, folders, documents, images, code, estimate | web, api, agent | [extract-files.md](extract-files.md) |
 
 ## Gaps (no recipe yet: write one, run it, then list it above)
 
-Practice sessions, the knowledge graph (view, import, extract files), plan view, side chats, settings pages (providers, models, prompts, themes, file access), plugins (install, enable, plugin views and questions), dictation, file attachments and path chips, research and demo jobs, compaction, session search and markdown export, subscription sign-ins (ChatGPT, Copilot, Grok).
+Practice sessions, the knowledge graph (view, import), plan view, side chats, settings pages (providers, models, prompts, themes, file access), plugins (install, enable, plugin views and questions), dictation, file attachments and path chips, research and demo jobs, compaction, session search and markdown export, subscription sign-ins (ChatGPT, Copilot, Grok).

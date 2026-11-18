@@ -9,6 +9,7 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import puppeteer from 'puppeteer-core';
+import { signFetch, smokeToken } from '../../../scripts/lib/smoke-auth.mjs';
 const plugin = fileURLToPath(new URL('../', import.meta.url)), repo = path.resolve(plugin, '../..');
 const require = createRequire(import.meta.url);
 const { openStore } = require('../src/store.cjs'), { createSchedule } = require('../src/scheduler.cjs');
@@ -65,6 +66,8 @@ try {
   });
   const portProbe = http.createServer(), port = await listen(portProbe); await new Promise(resolve => portProbe.close(resolve));
   const base = `http://127.0.0.1:${port}`;
+  // Every request needs a login (docs/specs/login-pairing.md).
+  const authorization = `Bearer ${smokeToken(data)}`; signFetch(base, authorization.slice(7));
   const runtime = process.env.LH_NODE_RUNTIME || path.join(repo, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
   const guard = path.join(scratch, 'imports.mjs');
   fs.writeFileSync(guard, `import {registerHooks} from 'node:module';import {realpathSync} from 'node:fs';import {fileURLToPath} from 'node:url';import path from 'node:path';const roots=${JSON.stringify([standalone, path.join(data, 'plugins')])};registerHooks({resolve(s,c,n){const r=n(s,c);if(r.url.startsWith('file:')){const f=realpathSync(fileURLToPath(r.url));if(!roots.some(root=>f===root||f.startsWith(root+path.sep)))throw Error('Import escaped disposable payload: '+f)}return r}});`);
@@ -84,7 +87,7 @@ try {
   await api('/api/custom-provider', 'POST', { baseUrl: `http://127.0.0.1:${await listen(catalog)}/v1`, authMode: 'keyless' }, { 'If-Match': provider.response.headers.get('etag') });
   const settingsBefore = (await api('/api/settings')).payload;
   browser = await puppeteer.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true, userDataDir: path.join(scratch, 'chrome-profile'), env, args: ['--disable-background-networking', '--disable-sync', '--no-first-run', '--no-default-browser-check'] });
-  page = await browser.newPage(); page.setDefaultTimeout(15000); await page.setViewport({ width: 1280, height: 900 });
+  page = await browser.newPage(); await page.setExtraHTTPHeaders({ authorization }); page.setDefaultTimeout(15000); await page.setViewport({ width: 1280, height: 900 });
   page.on('pageerror', error => evidence.errors.push(error.message));
   page.on('requestfailed', r => evidence.failedRequests.push({ stage, url: r.url(), error: r.failure()?.errorText }));
   await page.exposeFunction('__flashcardsMicTripwire', () => evidence.microphoneRequests.push(stage));

@@ -132,12 +132,21 @@ export function graphCostSummary(input: CostSummaryInput, price: CallPricer): Gr
 		extraction.runs++;
 		mergeTokens(extraction.tokens, stages.extractor.steps);
 		const extDollars = stageDollars(stages.extractor.model, stages.extractor.steps, price);
-		if (isSubscriptionModel(stages.extractor.model)) {
+		// An image's description (item 26) is part of extracting from that file.
+		const image = stages.imageReader;
+		const imgDollars = image ? stageDollars(image.model, image.steps, price) : null;
+		if (image) mergeTokens(extraction.tokens, image.steps);
+		// Each part of the stage is a subscription, unpriced or dollars. A run carries each mark at most
+		// once, and a mixed run carries both (owner, 2026-11-17: like a subscription extractor beside an
+		// unpriced auditor).
+		const parts: Array<[string, number | null]> = [[stages.extractor.model, extDollars], ...(image ? [[image.model, imgDollars] as [string, number | null]] : [])];
+		const subscriptionParts = parts.filter(([model]) => isSubscriptionModel(model));
+		if (subscriptionParts.length > 0) {
 			extraction.subscriptionRuns = (extraction.subscriptionRuns ?? 0) + 1;
-			extraction.subscriptionProviders = [...new Set([...(extraction.subscriptionProviders ?? []), ...subscriptionLabels([stages.extractor.model])])];
+			extraction.subscriptionProviders = [...new Set([...(extraction.subscriptionProviders ?? []), ...subscriptionLabels(subscriptionParts.map(([model]) => model))])];
 		}
-		else if (extDollars === null) extraction.unpricedRuns++;
-		else extraction.dollars += extDollars;
+		if (parts.some(([model, dollars]) => !isSubscriptionModel(model) && dollars === null)) extraction.unpricedRuns++;
+		for (const [model, dollars] of parts) if (!isSubscriptionModel(model) && dollars !== null) extraction.dollars += dollars;
 
 		audit.runs++;
 		mergeTokens(audit.tokens, stages.auditor.steps);
@@ -150,14 +159,14 @@ export function graphCostSummary(input: CostSummaryInput, price: CallPricer): Gr
 		else audit.dollars += audDollars;
 
 		// Run-level: null only when EVERY stage is unpriced.
-		const allStages: Array<number | null> = [extDollars, audDollars];
+		const allStages: Array<number | null> = [extDollars, audDollars, ...(image ? [imgDollars] : [])];
 		const runDollars = allStages.every((d) => d === null)
 			? null
 			: allStages.reduce<number>((a, d) => a + (d ?? 0), 0);
-		const subscriptionRuns = [stages.extractor, stages.auditor].filter((stage) => isSubscriptionModel(stage.model)).length;
-		const allSteps = [...stages.extractor.steps, ...stages.auditor.steps];
+		const subscriptionRuns = [stages.extractor, stages.auditor, ...(image ? [image] : [])].filter((stage) => isSubscriptionModel(stage.model)).length;
+		const allSteps = [...stages.extractor.steps, ...stages.auditor.steps, ...(image?.steps ?? [])];
 		runs.push({
-			...(subscriptionRuns ? { subscriptionRuns, subscriptionProviders: subscriptionLabels([stages.extractor.model, stages.auditor.model]) } : {}),
+			...(subscriptionRuns ? { subscriptionRuns, subscriptionProviders: subscriptionLabels([stages.extractor.model, stages.auditor.model, ...(image ? [image.model] : [])]) } : {}),
 			startedAt: run.startedAt,
 			at: run.at,
 			durationMs: run.durationMs,

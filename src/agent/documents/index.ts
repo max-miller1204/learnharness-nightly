@@ -180,6 +180,9 @@ function release() {
 
 type WorkerReply = { text: string } | { reason: DocumentConversionReason; error: string };
 
+/** How much of a converter child's stderr is kept for the log. */
+const STDERR_TAIL = 4096;
+
 /** Most a reply can be: 1,000,000 characters as JSON-escaped UTF-8, plus room. */
 const MAX_REPLY_BYTES = 8 * 1024 * 1024;
 
@@ -191,7 +194,7 @@ async function runWorker(bytes: Uint8Array, format: DocumentFormat, signal?: Abo
 	// process.execPath is Node, or the Electron binary in the desktop app,
 	// which ELECTRON_RUN_AS_NODE turns into Node (T3's spawn, adopted).
 	const child = spawn(process.execPath, [path.join(process.cwd(), "src/agent/documents/document-text-worker.mjs"), `.${format}`], {
-		stdio: ["pipe", "pipe", "ignore"],
+		stdio: ["pipe", "pipe", "pipe"],
 		windowsHide: true,
 		env: {
 			...process.env,
@@ -200,12 +203,16 @@ async function runWorker(bytes: Uint8Array, format: DocumentFormat, signal?: Abo
 		},
 	});
 	documentStats.peakWorkers = Math.max(documentStats.peakWorkers, ++documentStats.liveWorkers);
+	// The last few KB of the child's stderr, logged for failed and timeout results (item 26).
+	let stderr = "";
+	child.stderr.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString("utf8")).slice(-STDERR_TAIL); });
 	const exited = new Promise<void>((resolve) => {
 		child.once("close", () => resolve());
 		child.once("error", () => resolve());
 	});
+	let reply: WorkerReply | undefined;
 	try {
-		return await new Promise<WorkerReply>((resolve, reject) => {
+		reply = await new Promise<WorkerReply>((resolve, reject) => {
 			const output: Buffer[] = [];
 			let size = 0;
 			const timer = setTimeout(() => {
@@ -249,11 +256,15 @@ async function runWorker(bytes: Uint8Array, format: DocumentFormat, signal?: Abo
 			child.stdin.on("error", () => undefined);
 			child.stdin.end(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
 		});
+		return reply;
 	} finally {
 		// Hold the slot until the process is gone, so at most two ever exist.
 		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 		await exited;
 		documentStats.liveWorkers--;
+		if (reply && "reason" in reply && (reply.reason === "failed" || reply.reason === "timeout")) {
+			console.error(`[documents] ${format} conversion ${reply.reason}: ${reply.error}${stderr.trim() ? `\n${stderr.trim()}` : ""}`);
+		}
 	}
 }
 
@@ -266,8 +277,9 @@ export async function convertDocument(
 	format: DocumentFormat,
 	options: { signal?: AbortSignal } = {},
 ): Promise<{ text: string; truncated: boolean }> {
-	if (bytes.byteLength > MAX_DOCUMENT_BYTES) throw new DocumentConversionError("too-large");
+	// The OLE check comes first: a password-protected file says so even when it is also too large (item 26).
 	if (OOXML_FORMATS.has(format) && isOleCompound(bytes)) throw new DocumentConversionError("encrypted");
+	if (bytes.byteLength > MAX_DOCUMENT_BYTES) throw new DocumentConversionError("too-large");
 	const key = `${format}:${createHash("sha256").update(bytes).digest("hex")}`;
 	let entry = cache.get(key);
 	if (entry) remember(key, entry);

@@ -206,7 +206,7 @@ describe("locks", () => {
 });
 
 describe("child environment", () => {
-	it("service.env can't override managed names, LH_ALLOWED_HOSTS merges", () => {
+	it("service.env can't override managed names; the Tailscale name is no longer merged into LH_ALLOWED_HOSTS", () => {
 		const ignored: string[] = [];
 		const env = buildChildEnv({
 			home,
@@ -220,7 +220,7 @@ describe("child environment", () => {
 		assert.equal(env.OPENAI_API_KEY, "sk-test");
 		assert.equal(env.HOSTNAME, "127.0.0.1");
 		assert.equal(env[ENV.selfhost], "1");
-		assert.equal(env.LH_ALLOWED_HOSTS, "mine.example,box.tail.ts.net");
+		assert.equal(env.LH_ALLOWED_HOSTS, "mine.example", "an unmanaged service.env name passes through; nothing reads it now");
 		assert.equal(env.CHROME_PATH, "/usr/bin/chromium");
 		assert.equal(env.LH_DESKTOP_API_SECRET, undefined);
 		assert.equal(env.LH_TRIAL_UPDATE_ID, undefined);

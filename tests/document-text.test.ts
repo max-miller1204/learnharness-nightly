@@ -931,6 +931,13 @@ describe("convertDocument: worker, cache, limits", () => {
 		assert.equal(await reason(convertDocument(ole, "odt")), "invalid", "OpenDocument is never OLE-wrapped");
 	});
 
+	it("an OLE file over 16 MiB named as OOXML is encrypted, not too large (item 26)", async () => {
+		const ole = new Uint8Array(16 * 1024 * 1024 + 1);
+		ole.set([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+		assert.equal(await reason(convertDocument(ole, "pptx")), "encrypted");
+		assert.equal(await reason(convertDocument(ole, "odt")), "too-large");
+	});
+
 	it("refuses input over 16 MiB without starting a worker", async () => {
 		const before = documentStats.workerRuns;
 		assert.equal(await reason(convertDocument(new Uint8Array(16 * 1024 * 1024 + 1), "rtf")), "too-large");
@@ -945,6 +952,26 @@ describe("convertDocument: worker, cache, limits", () => {
 		assert.equal(await reason(convertDocument(bytes, "ipynb")), "failed");
 		assert.equal(documentStats.workerRuns - before, 2, "a crash is retried, not cached");
 		assert.equal((await convertDocument(docx("Still alive"), "docx")).text, "Still alive");
+	});
+
+	it("logs failed and timed-out conversions with the converter's stderr tail (item 26)", async () => {
+		const logged: string[] = [];
+		const realError = console.error;
+		console.error = (...args: unknown[]) => { logged.push(args.map(String).join(" ")); };
+		try {
+			documentLimits.heapMb = 8;
+			assert.equal(await reason(convertDocument(new Uint8Array(Buffer.from(`{"cells":[${Array(400_000).fill("{}").join(",")}]}`)), "ipynb")), "failed");
+			documentLimits.heapMb = 192;
+			documentLimits.timeoutMs = 1;
+			assert.equal(await reason(convertDocument(docx("Logged slow"), "docx")), "timeout");
+		} finally {
+			documentLimits.heapMb = 192;
+			documentLimits.timeoutMs = 15_000;
+			console.error = realError;
+		}
+		assert.match(logged[0]!, /^\[documents\] ipynb conversion failed: converter exited/);
+		assert.match(logged[0]!, /heap|memory/i, "the child's stderr tail is in the log");
+		assert.match(logged[1]!, /^\[documents\] docx conversion timeout: timed out/);
 	});
 
 	it("stops a conversion at the timeout and does not cache it", async () => {

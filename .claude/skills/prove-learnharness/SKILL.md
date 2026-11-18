@@ -24,7 +24,11 @@ git fetch origin main -q
 node scripts/scope.mjs        # the diff, the surfaces and tiers it reaches, and the exact plan to run
 ```
 
-`scope.mjs` runs `git merge-base HEAD origin/main`, `git diff --name-only <base>` and `git ls-files --others --exclude-standard`, then applies the map below and prints the plan: only the surfaces and tiers the diff reaches, each command wrapped in `scripts/timed.sh "$RUN" "<phase>"` so the run records wall-clock time per phase in `$RUN/timings.tsv` (`build.sh` records head build or reuse and base build or cache hit itself). If the user names a flow instead ("prove the update banner"), prove that flow and skip the diff.
+`scope.mjs` runs `git merge-base HEAD origin/main`, `git diff --name-only <base>` and `git ls-files --others --exclude-standard`, then applies the map below and prints the plan: only the surfaces and tiers the diff reaches, each command wrapped in `scripts/timed.sh "$RUN" "<phase>"` so the run records wall-clock time per phase in `$RUN/timings.tsv` (`build.sh` records head build or reuse, base build or cache hit, and any wait for a machine build slot itself).
+
+Run the whole plan in one go with `scripts/run-plan.sh <slug> [same args as scope.mjs]`: it makes the run folder, runs every planned step in order, carries on past failing checks (they are evidence), always cleans up, and prints a summary (each compare's result, the failed commands, the timing table) with the run folder on its last line. If the change itself fails to build, start or launch, it stops and reports BROKEN (back to the builder); if the base build, the environment or a planned surface fails, it stops as BLOCKED. Files `scope.mjs` can't map stop it as BLOCKED before anything runs: decide by hand and add a rule. `--base <ref>` applies to the whole run. Exit 0 all checks passed, 1 a check failed or the change is BROKEN, 2 BLOCKED, 3 no app surface. Then read the evidence: a script pass is not the verdict. Break-it probes beyond `probes.mjs` and recipe steps the plan doesn't script still need their own instances.
+
+If the user names a flow instead ("prove the update banner"), prove that flow and skip the diff.
 
 Follow each changed file to the surfaces and flows it reaches. Internal code counts through its callers.
 
@@ -108,7 +112,7 @@ H=$(scripts/start.sh "$RUN" head)         # fake model + standalone server on fr
 B=$(scripts/start.sh "$RUN" base)
 ```
 
-Each `start.sh` returns in about 2 s with the path of an `instance.env` (URLs, ports, data dir, model log). The server runs with `env -i` (no ambient keys) and `LH_IGNORE_ENV_KEYS=1`. `PROVE_MODEL=claude-code scripts/start.sh ...` swaps the fake model for your signed-in claude CLI (opt-in, costs usage, keeps your real HOME).
+`next build` runs only in one of `MACHINE_BUILD_SLOTS` machine-wide slots (default 2, lock files in `$PROVE_CACHE/build-slots/`, shared by every worktree and child); a build waits for a free slot up to `BUILD_SLOT_WAIT_S`, and the wait is a row in the timing table. Each `start.sh` returns in about 2 s with the path of an `instance.env` (URLs, ports, data dir, model log). The server runs with `env -i` (no ambient keys) and `LH_IGNORE_ENV_KEYS=1`. `PROVE_MODEL=claude-code scripts/start.sh ...` swaps the fake model for your signed-in claude CLI (opt-in, costs usage, keeps your real HOME).
 
 Ready when: `/api/health` answers `ok` and `/api/models` lists all three slots seeded (`start.sh` waits for both and fails otherwise).
 
@@ -189,7 +193,7 @@ The Expo mobile app (Android emulator on this machine) and the versioned client 
 
 ### Varies by and deliberate
 
-- **Varies by**: build mode (production standalone here; `next dev` is not proved), host (`localhost` and IP literals pass, other names need `LH_ALLOWED_HOSTS`), desktop vs browser (desktop secret header, native updater, desktop-owned subscriptions), model provider (fake custom endpoint vs Claude Code CLI). A flow isn't proved while a variant the change reaches is unproven.
+- **Varies by**: build mode (production standalone here; `next dev` is not proved), signed in or out (every request needs a login; `APP_TOKEN` in instance.env), desktop vs browser (desktop bearer session, native updater, desktop-owned subscriptions), model provider (fake custom endpoint vs Claude Code CLI). A flow isn't proved while a variant the change reaches is unproven.
 - **Known and deliberate**: the desktop window never calls `GET /api/updates` or `GET /api/subscriptions` (native updater, desktop-owned subscriptions). `GET /api/claude-code` answers 403 until Claude Code is turned on. `GET /api/jobs` needs `?chatId=`. The probe card shuffles options. Console: `/api/stt/token` 503 with no Deepgram key (see `budgets.json`).
 
 ### Verifying a bug fix

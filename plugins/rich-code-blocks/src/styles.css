@@ -1,5 +1,6 @@
-@import url("./assets/fonts/fonts.css");
-
+/* The build prepends the bundled TeX font faces to dist/styles.css. Never import
+   them from a second stylesheet: tools that walk the CSSOM (axe-core, accessibility
+   extensions) refetch an import rule's raw href against the page URL and get a 404. */
 .rich-code-blocks {
   /* Resolve at each mount so both existing and cached SVGs follow live theme
      changes. Mask/paint-server subtrees keep their frozen original variables. */

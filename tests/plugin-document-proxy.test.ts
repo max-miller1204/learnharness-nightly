@@ -1,3 +1,4 @@
+import "./helpers/auth-data-dir.ts";
 import assert from "node:assert/strict";
 import type { IncomingMessage } from "node:http";
 import { Readable } from "node:stream";
@@ -9,6 +10,7 @@ import { unstable_doesMiddlewareMatch as unstable_doesProxyMatch } from "next/ex
 import { config, proxy } from "../proxy.ts";
 import { createPluginDocumentConverter, MAX_DOCUMENT_BODY_BYTES } from "../src/server/plugin-documents.ts";
 import { createPluginDocumentRoute, createPluginTransport } from "../src/server/plugin-transport.ts";
+import { mintToken } from "./helpers/auth-data-dir.ts";
 
 const origin = "http://localhost";
 const documentPath = "/api/plugins/document-one/documents/markdown";
@@ -30,7 +32,7 @@ it("Proxy excludes only the exact document endpoint, optional trailing slash and
 	]) assert.equal(proxyMatches(path), false, path);
 });
 
-it("Proxy retains API roots, siblings, endpoint lookalikes and all other API routes", () => {
+it("Proxy retains API roots, siblings, endpoint lookalikes, all other API routes and pages", () => {
 	for (const path of [
 		"/api", "/api/", "/api?request=1", "/api/?request=1",
 		"/api/plugins", "/api/plugins/document-one", "/api/plugins/document-one/call",
@@ -38,10 +40,9 @@ it("Proxy retains API roots, siblings, endpoint lookalikes and all other API rou
 		`${documentPath}/extra`, `${documentPath}ish`, `${documentPath}.json`, `${documentPath}.rsc`,
 		"/api/plugins/document-one/other/documents/markdown", "/api/plugins/documents/markdown",
 		"/api/graph/import", "/api/events", "/api/chat", "/api/settings/models", "/api/chats/scratch/markdown",
+		// The login gate covers pages too (docs/specs/login-pairing.md).
+		"/", "/chat/new", "/apix", "/api-other/plugins/document-one/documents/markdown",
 	]) assert.equal(proxyMatches(path), true, path);
-	for (const path of ["/", "/chat/new", "/apix", "/api-other/plugins/document-one/documents/markdown"]) {
-		assert.equal(proxyMatches(path), false, path);
-	}
 });
 
 /** Use installed Next's real clone/finalize implementation, not a mock of its
@@ -97,21 +98,7 @@ it("current Proxy config leaves a valid no-Content-Length multipart document con
 });
 
 const methods = ["POST", "GET", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const;
-const secret = "a".repeat(64);
-const capabilityHeader = "x-learnharness-desktop";
-const forbidden = { error: "Desktop API access requires the trusted LearnHarness window." };
-
-async function withDesktopEnvironment(marker: string | undefined, capability: string | undefined, run: () => Promise<void>) {
-	const beforeMarker = process.env.LH_DESKTOP_SERVER, beforeCapability = process.env.LH_DESKTOP_API_SECRET;
-	try {
-		if (marker === undefined) delete process.env.LH_DESKTOP_SERVER; else process.env.LH_DESKTOP_SERVER = marker;
-		if (capability === undefined) delete process.env.LH_DESKTOP_API_SECRET; else process.env.LH_DESKTOP_API_SECRET = capability;
-		await run();
-	} finally {
-		if (beforeMarker === undefined) delete process.env.LH_DESKTOP_SERVER; else process.env.LH_DESKTOP_SERVER = beforeMarker;
-		if (beforeCapability === undefined) delete process.env.LH_DESKTOP_API_SECRET; else process.env.LH_DESKTOP_API_SECRET = beforeCapability;
-	}
-}
+const signIn = { error: "Sign in required: pair this device with a pairing link (run `lh pair` on the server machine)." };
 
 /** Fail immediately on body access and independently count any internal reads. */
 function unreadableRequest(method: typeof methods[number], headers?: HeadersInit) {
@@ -138,40 +125,31 @@ it("document route authenticates ALL methods before params, transport/getHost, o
 	const transport = createPluginTransport({ getHost, directory: "/unused-document-route-test" });
 	const convert = t.mock.method(transport, "convertDocument");
 	const route = createPluginDocumentRoute(transport);
-	const refusals = [
-		{ marker: "1", capability: secret, supplied: undefined },
-		{ marker: "1", capability: secret, supplied: "" },
-		{ marker: "1", capability: secret, supplied: "wrong" },
-		{ marker: "1", capability: secret, supplied: `${secret}, ${secret}` },
-		{ marker: "1", capability: undefined, supplied: secret },
-		{ marker: "1", capability: "too-short", supplied: "too-short" },
-		{ marker: undefined, capability: secret, supplied: undefined },
-	];
-	for (const { marker, capability, supplied } of refusals) await withDesktopEnvironment(marker, capability, async () => {
+	for (const supplied of [undefined, "", "wrong", "forged.token", `${mintToken()}x`]) {
 		for (const method of methods) {
-			const headers: Record<string, string> = supplied === undefined ? {} : { [capabilityHeader]: supplied };
+			const headers: Record<string, string> = supplied === undefined ? {} : { authorization: `Bearer ${supplied}` };
 			const upload = unreadableRequest(method, headers);
 			let paramsAccesses = 0;
 			const context = { get params(): Promise<{ id: string }> { paramsAccesses++; throw new Error("Authorization must precede params"); } };
 			const response = method === "POST" ? await route.POST(upload.request, context) : await route[method](upload.request);
-			assert.equal(response.status, 403, method);
+			assert.equal(response.status, 401, method);
 			assert.equal(response.headers.get("Cache-Control"), "no-store", method);
-			assert.deepEqual(await response.json(), forbidden, method);
+			assert.deepEqual(await response.json(), signIn, method);
 			const proxyRefusal = proxy(new NextRequest(new URL("/api/settings", origin), { method, headers }));
-			assert.equal(response.status, proxyRefusal.status, `${method}: same existing Proxy policy`);
-			assert.deepEqual(await proxyRefusal.json(), forbidden, method);
+			assert.equal(response.status, proxyRefusal.status, `${method}: same Proxy policy`);
+			assert.deepEqual(await proxyRefusal.json(), signIn, method);
 			assert.equal(paramsAccesses, 0, method);
 			upload.assertUntouched();
 		}
-	});
+	}
 	assert.equal(convert.mock.callCount(), 0, "no resource operation before authority");
 	assert.equal(getHost.mock.callCount(), 0, "no root composition before authority");
 });
 
 it("authorized document route methods preserve POST dispatch, empty 405s and OPTIONS 204 with Allow", async t => {
-	for (const mode of ["desktop", "browser-only", "secret-without-marker"] as const) {
-		await withDesktopEnvironment(mode === "desktop" ? "1" : undefined, mode === "browser-only" ? undefined : secret, async () => {
-			const headers: Record<string, string> = mode === "browser-only" ? {} : { [capabilityHeader]: secret };
+	for (const mode of ["bearer"] as const) {
+		{
+			const headers: Record<string, string> = { authorization: `Bearer ${mintToken()}` };
 			const forwarded = Response.json(result, { headers: { "Cache-Control": "no-store" } });
 			const convert = t.mock.fn(async (id: string, request: Request) => {
 				assert.equal(id, "document-one");
@@ -194,6 +172,6 @@ it("authorized document route methods preserve POST dispatch, empty 405s and OPT
 			assert.equal(await route.POST(post, { params: Promise.resolve({ id: "document-one" }) }), forwarded);
 			assert.equal(convert.mock.callCount(), 1);
 			assert.equal(post.bodyUsed, false, "route forwards the original request untouched");
-		});
+		}
 	}
 });

@@ -13,7 +13,7 @@ npm run dev            # normally http://localhost:3000
 npm run desktop:dev    # Next dev + Electron on localhost:3000
 ```
 
-`plugins:setup` prepares each source package under `plugins/`: it generates its ignored `.sdk/` when needed, then runs `npm ci`. Run it after a fresh checkout and again after public API or plugin lockfile changes. Root typecheck/build includes plugin sources, so CI uses the same preparation. It does not build plugin bundles, install/enable plugins in your learning-data directory, or populate `core-plugins/`.
+`plugins:setup` prepares each source package under `plugins/`: it generates its ignored `.sdk/` when needed (only `.sdk/package.json` is committed, so Dependabot can read the plugin; CI checks it matches), then runs `npm ci`. Run it after a fresh checkout and again after public API or plugin lockfile changes. Root typecheck/build includes plugin sources, so CI uses the same preparation. It does not build plugin bundles, install/enable plugins in your learning-data directory, or populate `core-plugins/`.
 
 `npm run plugins:build-core` builds the four IDs in `core-plugins.json` and stages complete app-owned packages in generated `core-plugins/<id>/`. `dev` and `build` run it automatically; `desktop:dev`, `desktop:dist` and `dev:fresh` use those entry points. Core code loads directly from this directory; restart the server after source edits/rebuilding (there is no plugin hot reload). Do not use raw `next dev`/`next build` without first staging core packages. Fresh checkouts need `plugins:setup` before these commands.
 
@@ -34,13 +34,21 @@ npm start              # serve the production build with Next
 
 ### Other devices on your network
 
-`npm run dev`, `npm start`, and `desktop:dev` listen on `localhost` only. Browser-only mode has **no login**: anyone who can reach the port can read every chat and setting, change saved keys, and start agent turns. To open it from another device on a network you trust, pass a later host flag:
+`npm run dev`, `npm start`, and `desktop:dev` listen on `localhost` only. Every request needs a login, from `localhost` too ([login and pairing](specs/login-pairing.md)). On boot the server prints a one-time pairing link:
+
+```
+[auth] Pair a browser: http://localhost:3000/pair#token=... (one-time, expires in 24 hours) ...
+```
+
+Open it to sign that browser in for 30 days. `next dev` links last 24 hours, `next start` links 5 minutes. For another link, run `npm run pair` (it writes into `./data` or `LH_DATA_DIR`, for the port in `PORT`), or use Settings → Devices on a signed-in browser. The `desktop:dev` window pairs the same way; the packaged desktop app signs itself in.
+
+To open the server from another device on a network you trust, pass a later host flag and pair that device:
 
 ```sh
 npm run dev -- -H 0.0.0.0     # then browse to http://<this machine's IP>:3000
 ```
 
-The API accepts `localhost` and IP addresses as the host name. To use any other name (`mymac.local`, a reverse-proxy domain), list it in `LH_ALLOWED_HOSTS`. Browser writes must come from the same origin as the page.
+A signed-in device has full access. Browser cookies are refused on cross-site requests (T3 Code's Origin rule); scripts send `Authorization: Bearer <token>` instead. Tests and smoke scripts write a session straight into the store with `issueSession` from `selfhost/src/auth-store.ts`.
 
 ## Configuration
 
@@ -54,7 +62,6 @@ Nonsecret settings are deltas in `<data root>/settings.json`; absent values reso
 | `TAVILY_API_KEY`, `BRAVE_API_KEY`, `EXA_API_KEY`, `FIRECRAWL_API_KEY`, `OLLAMA_API_KEY` | Optional search adapters. Without a Settings pin, the first keyed engine wins: Tavily → Brave → Exa → Firecrawl → Ollama. A pinned engine requires its own key; no silent fallback. Ollama search is hosted at ollama.com, not a local model server. Page fetching is independent; research can fetch known URLs without a search key. |
 | `DEEPGRAM_API_KEY` | Optional dictation token minting. |
 | `CHROME_PATH` | Chrome/Chromium executable fallback for demo verification; Electron's browser helper is primary. No extra Chromium is downloaded. |
-| `LH_ALLOWED_HOSTS` | Browser-only mode: extra host names the API accepts besides `localhost` and IP addresses. Comma-separated, case-insensitive, port ignored, no wildcards. |
 
 Ordinary Next development can read `.env.local`. Real environment keys take precedence over saved keys. Saved auth is restrictive-permission plaintext, not an encrypted vault. Packaged Electron sets separate data/auth locations under `userData`; it does not use the repo development profile.
 

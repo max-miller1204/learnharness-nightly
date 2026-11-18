@@ -33,7 +33,7 @@ import {
 	type ReactNode,
 	type RefObject,
 } from "react";
-import { BotIcon, KeyIcon, KeyboardIcon, PaletteIcon, PlugIcon, PuzzleIcon, SettingsIcon, WaypointsIcon, type LucideIcon } from "lucide-react";
+import { BotIcon, KeyIcon, KeyboardIcon, MonitorSmartphoneIcon, PaletteIcon, PlugIcon, PuzzleIcon, SettingsIcon, WaypointsIcon, type LucideIcon } from "lucide-react";
 import { HostDialog } from "@/components/host-dialog";
 import { useInteractionLayers, type CloseOutcome } from "@/components/interaction-layers";
 import {
@@ -55,6 +55,7 @@ import { KeysSection } from "./keys-section.tsx";
 import { Hint } from "@/components/ui/hint";
 import { AppearanceSection, GraphSection } from "./appearance-section.tsx";
 import { KeyboardSection } from "./keyboard-section.tsx";
+import { DevicesSection } from "./devices-section.tsx";
 import { PluginsSection } from "./plugins-section.tsx";
 import { PluginSettingsPage } from "./plugin-settings-page.tsx";
 import { usePlugins } from "@/components/plugins";
@@ -71,6 +72,7 @@ const SECTIONS = [
 	{ id: "graph", label: "Graph", icon: WaypointsIcon },
 	{ id: "keyboard", label: "Keyboard", icon: KeyboardIcon, hint: "Stored on this device" },
 	{ id: "general", label: "General", icon: SettingsIcon },
+	{ id: "devices", label: "Devices", icon: MonitorSmartphoneIcon },
 ] as const;
 type SectionId = (typeof SECTIONS)[number]["id"] | "plugins" | "core-plugins" | `plugin:${string}`;
 
@@ -454,6 +456,11 @@ export function SettingsDialogBody({
 											void write("general", { ...record.general, autoUpdate: on })
 										}
 									/>
+								</SettingsSection>
+							)}
+							{active === "devices" && (
+								<SettingsSection title="Devices" testid="section-devices">
+									<DevicesSection />
 								</SettingsSection>
 							)}
 							{active === "keys" && (

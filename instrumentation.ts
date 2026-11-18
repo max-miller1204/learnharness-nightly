@@ -4,7 +4,8 @@
  * Before anything touches the data folder, the server takes the
  * one-server-per-data-folder lock (src/server/data-lock.ts), except during
  * `next build`, whose workers never serve. The self-hosted updater starts
- * last; it does nothing unless the `lh` launcher started this server. */
+ * last; it does nothing unless the `lh` launcher started this server. A
+ * server outside `lh` and the desktop app prints a one-time pairing link. */
 export async function register() {
 	if (process.env.NEXT_RUNTIME === "nodejs") {
 		if (process.env.NEXT_PHASE !== "phase-production-build") {
@@ -17,6 +18,8 @@ export async function register() {
 		if (process.env.NEXT_PHASE !== "phase-production-build") {
 			const { selfUpdater } = await import("./src/server/self-update.ts");
 			selfUpdater().start();
+			const { printStartupPairingLink } = await import("./src/server/startup-pairing.ts");
+			printStartupPairingLink();
 		}
 	}
 }

@@ -30,7 +30,7 @@ const { createChatGPT, fileStore } = require("./chatgpt.cjs");
 const { attachChatGPTChild, trustedSender, chatGPTControl } = require("./chatgpt-ipc.cjs");
 const { createSubscriptions, loadSubscriptionSDK } = require("./subscriptions.cjs");
 const { attachSubscriptionChild, subscriptionControl } = require("./subscription-ipc.cjs");
-const { desktopAPIHeaders } = require("./desktop-api.cjs");
+const { desktopAPIHeaders, exchangeDesktopSession } = require("./desktop-api.cjs");
 const { openWebSubscriptionBrowser } = require("./web-subscription-browser.cjs");
 const { randomBytes } = require("node:crypto");
 const { spawn } = require("node:child_process");
@@ -152,8 +152,9 @@ let chatgpt = null;
 let chatgptChild = null;
 let subscriptions = null;
 let subscriptionChild = null;
-// Per-launch request capability, never OAuth tokens and never renderer state.
+// Per-launch secret, traded once for a desktop login session (never renderer state).
 let desktopAPISecret = null;
+let desktopSessionToken = null;
 let reopenWindow = null;
 const trustedAppWindows = new Set();
 
@@ -791,7 +792,7 @@ async function main() {
 		const ownedOrigin = new URL(url).origin;
 		// All URLs, not only /api: remove the header again on external redirects.
 		session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ["<all_urls>"] }, (details, callback) => {
-			callback({ requestHeaders: desktopAPIHeaders(details, ownedOrigin, desktopAPISecret, [...trustedAppWindows]) });
+			callback({ requestHeaders: desktopAPIHeaders(details, ownedOrigin, desktopSessionToken, [...trustedAppWindows]) });
 		});
 		chatgpt = createChatGPT({
 			store: fileStore(path.join(app.getPath("userData"), "chatgpt-credentials.json")),
@@ -816,6 +817,12 @@ async function main() {
 		await startServer(new URL(url).port);
 		await waitUntilUp(url);
 		log(`server up: ${url}`);
+		try {
+			desktopSessionToken = await exchangeDesktopSession(ownedOrigin, desktopAPISecret);
+			log("desktop session ready");
+		} catch (error) {
+			log(`desktop session failed: ${error?.message ?? error}`);
+		}
 	} else {
 		log(`dev mode: ${devUrl} — waiting for server`);
 		const { waitForDevServer } = require("./dev-server-readiness.cjs");

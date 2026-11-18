@@ -7,12 +7,18 @@
  * and runs
  * extractor → auditor → merger over the raw text.
  *
- * Only filename extensions listed in lib/notes-import-limits.ts are taken.
- * Among those files, a PDF (spotted by its %PDF- header) is converted to
- * Markdown first. Other files are decoded as UTF-8 unless a zero byte in
- * their first 8 KiB causes refusal. This is a binary-file heuristic, not
- * complete text or encoding validation. These refusals, and PDFs with
- * nothing to extract, occur before any source record or model call.
+ * Only file names lib/notes-import-limits.ts gives a kind are taken
+ * (docs/specs/extract-more-types.md). A PDF (spotted by its %PDF- header)
+ * is converted to Markdown; Office, OpenDocument, RTF, EPUB and notebook
+ * files go through item 25's converter; an image is described by the
+ * Vision slot inside the pipeline; code is extracted with the code prompt.
+ * Notes and code are decoded as UTF-8 unless a zero byte in their first
+ * 8 KiB causes refusal (a binary-file heuristic, not complete text or
+ * encoding validation). These refusals occur before any source record or
+ * model call.
+ *
+ * A request with the form field "group" is one folder's code: every file is
+ * a code file under that folder, and they become ONE source named after it.
  *
  * Small concurrency cap: the model calls are the slow part, and a burst of
  * 25 simultaneous runs would trip provider rate limits — a 3-wide worker
@@ -20,8 +26,14 @@
  * healthy. The dock's chips + graph refetch track progress live through
  * /api/graph/status, as with session runs.
  */
-import { convertPdf, extraction, joinPages, NotesImportError, sourceDirectory } from "@/src/server";
-import { IMPORT_EXTENSIONS, MAX_IMPORT_BODY_BYTES, MAX_IMPORT_BYTES, UNSUPPORTED_TYPE_MESSAGE, validNotesPath } from "@/lib/notes-import-limits.ts";
+import {
+	convertDocument, conversionFailureMessage, convertPdf, detectDocumentFormat, detectSupportedImageMimeType, DocumentConversionError,
+	extraction, isOleCompound, joinPages, looksBinary, NotesImportError, sourceDirectory,
+} from "@/src/server";
+import {
+	CODE_CAP_MESSAGE, importKind, MAX_CODE_FILE_BYTES, MAX_CODE_FILES, MAX_CODE_TOTAL_BYTES, MAX_IMPORT_BODY_BYTES, MAX_IMPORT_BYTES,
+	UNSUPPORTED_TYPE_MESSAGE, validNotesPath,
+} from "@/lib/notes-import-limits.ts";
 import { FormBodyLimitError, readBoundedFormData } from "@/lib/bounded-form-data.ts";
 import {
 	emit,
@@ -55,16 +67,47 @@ interface ImportResult {
 const MAX_PDF_PAGES = 1000;
 const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46, 0x2d]; // "%PDF-"
 
-type NotesFile = { kind: "notes"; text: string; notice?: string } | { kind: "refused"; error: string };
+type NotesInput = Omit<Parameters<typeof extraction.importNotes>[0], "filePath">;
+type NotesFile = { kind: "notes"; input: NotesInput; notice?: string } | { kind: "refused"; error: string };
+const NOT_TEXT = "This file isn't plain text.";
+const OLD_OFFICE = "This is an old binary Office file. Save it as .docx or .pptx first.";
 
-/** A PDF becomes page-marked Markdown; any other accepted file is read as text. */
-async function readNotesFile(file: File): Promise<NotesFile> {
-	if (!IMPORT_EXTENSIONS.test(file.name)) return { kind: "refused", error: UNSUPPORTED_TYPE_MESSAGE };
+/** Each accepted kind becomes the pipeline's input (spec "Server, per file"). */
+async function readNotesFile(file: File, filePath: string): Promise<NotesFile> {
+	const kind = importKind(file.name);
+	if (!kind) return { kind: "refused", error: UNSUPPORTED_TYPE_MESSAGE };
 	const bytes = new Uint8Array(await file.arrayBuffer());
-	if (!PDF_MAGIC.every((byte, i) => bytes[i] === byte)) {
-		if (bytes.subarray(0, 8192).includes(0)) return { kind: "refused", error: "This file isn't plain text." };
-		return { kind: "notes", text: new TextDecoder().decode(bytes) };
+	const text = () => new TextDecoder().decode(bytes);
+	if (PDF_MAGIC.every((byte, i) => bytes[i] === byte)) return readPdf(bytes);
+	switch (kind) {
+		// A .pdf without the PDF header is read as text, as before item 26.
+		case "pdf":
+		case "notes":
+			return looksBinary(bytes) ? { kind: "refused", error: NOT_TEXT } : { kind: "notes", input: { text: text() } };
+		case "code":
+			return looksBinary(bytes) ? { kind: "refused", error: NOT_TEXT } : { kind: "notes", input: { text: "", codeFiles: [{ path: filePath, text: text() }] } };
+		case "image": {
+			const mimeType = detectSupportedImageMimeType(bytes);
+			if (!mimeType) return { kind: "refused", error: "Could not read this image." };
+			return { kind: "notes", input: { text: "", image: { bytes, mimeType } }, notice: "Described by the vision model; details may be wrong." };
+		}
+		case "document": {
+			const format = detectDocumentFormat(file.name, bytes)!;
+			if (isOleCompound(bytes) && format !== "docx" && format !== "pptx") return { kind: "refused", error: OLD_OFFICE };
+			try {
+				const converted = await convertDocument(bytes, format);
+				return { kind: "notes", input: { text: converted.text }, ...(converted.truncated ? { notice: "Text was cut at the conversion limits." } : {}) };
+			} catch (error) {
+				if (!(error instanceof DocumentConversionError)) throw error;
+				// The two text-based formats stay useful raw when they don't parse (as `read` does).
+				if (error.reason === "invalid" && (format === "rtf" || format === "ipynb") && !looksBinary(bytes)) return { kind: "notes", input: { text: text() } };
+				return { kind: "refused", error: conversionFailureMessage(file.name, format, error.reason) };
+			}
+		}
 	}
+}
+
+async function readPdf(bytes: Uint8Array): Promise<NotesFile> {
 	const pdf = await convertPdf(bytes, MAX_PDF_PAGES);
 	switch (pdf.kind) {
 		case "unreadable":
@@ -76,7 +119,7 @@ async function readNotesFile(file: File): Promise<NotesFile> {
 			if (!text) return { kind: "refused", error: "OCR not supported yet." };
 			const skipped = pdf.pages.filter((page) => page.kind === "image-only").length;
 			const omission = skipped > 0 ? ` Skipped ${skipped} image-only ${skipped === 1 ? "page" : "pages"}; OCR is not supported.` : "";
-			return { kind: "notes", text, notice: `Scanned pages may have errors.${omission}` };
+			return { kind: "notes", input: { text }, notice: `Scanned pages may have errors.${omission}` };
 		}
 	}
 }
@@ -109,6 +152,8 @@ export async function POST(request: Request) {
 	if (files.some((file, i) => !validNotesPath(paths[i]!, file.name))) {
 		return Response.json({ results: [], error: "Import contains an unsafe or mismatched relative path" }, { status: 400 });
 	}
+	const group = form.get("group");
+	if (group !== null) return importCodeGroup(group, files, paths);
 	const results: ImportResult[] = [];
 	const queue = files.map((file, requestIndex) => ({ file, requestIndex, filePath: paths[requestIndex]! }));
 	const workers = Array.from({ length: Math.min(3, files.length) }, async () => {
@@ -117,30 +162,59 @@ export async function POST(request: Request) {
 			if (!next) return;
 			const { file, requestIndex, filePath } = next;
 			try {
-				const notes = await readNotesFile(file);
+				const notes = await readNotesFile(file, filePath);
 				if (notes.kind === "refused") {
 					results.push({ filePath, requestIndex, outcome: "failed", ok: false, error: notes.error });
 					continue;
 				}
-				sourceDirectory.registerImport(filePath);
-				const stats = await extraction.importNotes({ filePath, text: notes.text });
-				results.push({ filePath, requestIndex, outcome: "completed", ok: true, stats, ...(notes.notice ? { notice: notes.notice } : {}) });
-			} catch (err) {
-				if (err instanceof ModelsNotConfiguredError) {
-					results.push({ filePath, ok: false, requestIndex, outcome: "failed", error: err.envelope.error,
-						code: "models_not_configured", missing: err.envelope.missing });
-				} else if (err instanceof ProviderKeyMissingError) {
-					results.push({ filePath, ok: false, requestIndex, outcome: "failed", error: err.envelope.error,
-						code: PROVIDER_KEY_MISSING_CODE, provider: err.envelope.provider, slots: err.envelope.slots });
-				} else {
-					results.push({ filePath, requestIndex, ok: false,
-						outcome: err instanceof NotesImportError ? err.outcome : "failed",
-						...(err instanceof NotesImportError ? { stats: err.partialStats } : {}),
-						error: err instanceof Error ? err.message : String(err) });
-				}
+				results.push(await runImport(filePath, requestIndex, notes.input, notes.notice));
 			} finally { emit("sources-changed", {}); }
 		}
 	});
 	await Promise.all(workers);
 	return Response.json({ results });
+}
+
+/** One source through the pipeline, with every failure mapped to its result row. */
+async function runImport(filePath: string, requestIndex: number, input: NotesInput, notice?: string): Promise<ImportResult> {
+	try {
+		sourceDirectory.registerImport(filePath);
+		const stats = await extraction.importNotes({ filePath, ...input });
+		return { filePath, requestIndex, outcome: "completed", ok: true, stats, ...(notice ? { notice } : {}) };
+	} catch (err) {
+		if (err instanceof ModelsNotConfiguredError) {
+			return { filePath, ok: false, requestIndex, outcome: "failed", error: err.envelope.error,
+				code: "models_not_configured", missing: err.envelope.missing };
+		}
+		if (err instanceof ProviderKeyMissingError) {
+			return { filePath, ok: false, requestIndex, outcome: "failed", error: err.envelope.error,
+				code: PROVIDER_KEY_MISSING_CODE, provider: err.envelope.provider, slots: err.envelope.slots };
+		}
+		return { filePath, requestIndex, ok: false,
+			outcome: err instanceof NotesImportError ? err.outcome : "failed",
+			...(err instanceof NotesImportError ? { stats: err.partialStats } : {}),
+			error: err instanceof Error ? err.message : String(err) };
+	}
+}
+
+/** A folder's code as ONE source named after the folder (spec "Grouped code"). The caps are re-checked here. */
+async function importCodeGroup(group: FormDataEntryValue, files: File[], paths: string[]): Promise<Response> {
+	if (typeof group !== "string" || !validNotesPath(group, group) || group.includes("/")
+		|| files.some((file, i) => importKind(file.name) !== "code" || !paths[i]!.startsWith(`${group}/`))) {
+		return Response.json({ results: [], error: "Invalid code folder import" }, { status: 400 });
+	}
+	const failed = (error: string): Response => Response.json({ results: [{ filePath: group, requestIndex: 0, outcome: "failed", ok: false, error }] });
+	if (files.length > MAX_CODE_FILES || files.reduce((total, file) => total + file.size, 0) > MAX_CODE_TOTAL_BYTES) return failed(CODE_CAP_MESSAGE);
+	const codeFiles: Array<{ path: string; text: string }> = [];
+	for (const [i, file] of files.entries()) {
+		if (file.size > MAX_CODE_FILE_BYTES) return failed(`${paths[i]} is over 100 KB, the limit for one code file.`);
+		const bytes = new Uint8Array(await file.arrayBuffer());
+		if (looksBinary(bytes)) return failed(`${paths[i]} isn't plain text.`);
+		codeFiles.push({ path: paths[i]!, text: new TextDecoder().decode(bytes) });
+	}
+	codeFiles.sort((a, b) => a.path.localeCompare(b.path));
+	try {
+		const label = `${group} (${files.length} code ${files.length === 1 ? "file" : "files"})`;
+		return Response.json({ results: [await runImport(group, 0, { text: "", label, codeFiles })] });
+	} finally { emit("sources-changed", {}); }
 }

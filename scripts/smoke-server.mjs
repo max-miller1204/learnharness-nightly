@@ -30,6 +30,7 @@ import { verifyProviderRuntime } from "./smoke-provider-runtime.mjs";
 import { createPluginSmokeFixture, verifyPluginServer } from "./smoke-plugin-runtime.mjs";
 import { verifyCorePlugins } from "./smoke-core-plugins.mjs";
 import { verifyCompressionRuntime } from "./smoke-compression-runtime.mjs";
+import { issueSession } from "../selfhost/src/auth-store.ts";
 import { createRequire } from "node:module";
 import * as fs from "node:fs";
 import * as http from "node:http";
@@ -68,9 +69,9 @@ function freePort() {
 }
 
 /** One GET; resolves the status code (0 = connection refused/failed). */
-function get(url) {
+function get(url, headers = {}) {
 	return new Promise((resolve) => {
-		const req = http.get(url, (res) => {
+		const req = http.get(url, { headers }, (res) => {
 			res.resume();
 			resolve(res.statusCode ?? 0);
 		});
@@ -107,6 +108,9 @@ async function main() {
 	const authFile = path.join(home, "auth.json");
 	fs.writeFileSync(authFile, "{}\n", "utf-8");
 	createPluginSmokeFixture(home);
+	// Every request needs a login (docs/specs/login-pairing.md): write a
+	// session into the store the server will read, the way `lh` does.
+	const auth = { authorization: `Bearer ${issueSession(dataDir, { method: "cli", client: { label: "smoke-server", deviceType: "bot" } }).token}` };
 	const imports = [];
 	if (ISOLATED_MODE) {
 		// Reject absolute import escapes as well as incidental upward resolution.
@@ -180,26 +184,29 @@ registerHooks({resolve(specifier,context,next){ const result=next(specifier,cont
 		const deadline = Date.now() + BOOT_TIMEOUT_MS;
 		while (Date.now() < deadline) {
 			if (exited) throw new Error(`server exited before answering on ${url}`);
-			boot = await get(url);
+			boot = await get(url, auth);
 			if (boot === 200) break;
 			await new Promise((r) => setTimeout(r, POLL_MS));
 		}
 		if (boot !== 200) throw new Error(`server never answered 200 on ${url} (last status: ${boot})`);
 		console.log(`[smoke-server] boot ok: GET / → 200 (${url})`);
 
-		// 2) API surface: every probe must be 200.
+		// 2) API surface: every probe must be 200, and 401 without a login.
+		const signedOut = await get(url + "/api/settings");
+		if (signedOut !== 401) throw new Error(`GET /api/settings without a login → ${signedOut} (expected 401)`);
+		console.log("[smoke-server] GET /api/settings without a login → 401");
 		for (const route of PROBES) {
-			const status = await get(url + route);
+			const status = await get(url + route, auth);
 			if (status !== 200) throw new Error(`GET ${route} → ${status} (expected 200)`);
 			console.log(`[smoke-server] GET ${route} → 200`);
 		}
-		await verifyCorePlugins({ root: ROOT, standalone, dataDirectory: dataDir, url });
-		await verifyPluginServer(url, home);
+		await verifyCorePlugins({ root: ROOT, standalone, dataDirectory: dataDir, url, headers: auth });
+		await verifyPluginServer(url, home, auth);
 		if (BROWSER_MODE) {
 			const { verifyPluginBrowser } = await import("./smoke-plugin-browser.mjs");
 			const evidenceDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "lh-plugin-browser-evidence-"));
 			console.log("[smoke-server] browser evidence:", evidenceDirectory);
-			await verifyPluginBrowser(url, { scratchDirectory: evidenceDirectory });
+			await verifyPluginBrowser(url, { scratchDirectory: evidenceDirectory, headers: auth });
 		}
 	} catch (err) {
 		failed = err;

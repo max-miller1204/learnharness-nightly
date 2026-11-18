@@ -3,7 +3,7 @@
  * service half, for LearnHarness). Run by the bundled Node 26 straight from
  * TypeScript (type stripping). Node built-ins only.
  *
- *   lh up | status | update [--now] | rollback | use <version> | restart
+ *   lh up | pair | status | update [--now] | rollback | use <version> | restart
  *   lh restore <backup> | versions | logs [server|service|update] [-f]
  *   lh down | uninstall [--keep-data] | help
  *
@@ -17,6 +17,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
+import { CLI_SESSION_TTL_MS, createPairingLink, formatCode, issueSession, pairingUrl, revokeSession } from "./src/auth-store.ts";
 import { freeBytes, listBackups, pruneBackups, restore, snapshot, spaceForSnapshot } from "./src/backup.ts";
 import { buildChildEnv, detectChrome, readConfig, readServiceEnv, writeConfig, type LhConfig } from "./src/config.ts";
 import { appendLog, boundLog, LOG_CHECK_INTERVAL_MS } from "./src/logs.ts";
@@ -42,6 +43,7 @@ import { enableLinger, hasSystemd, lingerEnabled, repointService, shimPath, syst
 import { Supervisor, type UpdateRequestMarker } from "./src/supervisor.ts";
 import { serveOff, serveOn, tailscaleAvailable, tailscaleSelf } from "./src/tailscale.ts";
 import { pruneVersions } from "./src/versions.ts";
+import { QrCode } from "./src/qr.ts";
 
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
 /** The version folder this launcher runs from (versions/<v>/selfhost/lh.ts), or "dev". */
@@ -64,7 +66,7 @@ function parseArgs(argv: string[]): Flags {
 			const [name, inline] = arg.slice(2).split("=", 2) as [string, string | undefined];
 			const next = argv[i + 1];
 			if (inline !== undefined) flags[name] = inline;
-			else if (next !== undefined && !next.startsWith("-") && ["port", "tailscale-port", "chrome-path", "expect-version", "feed-url"].includes(name)) { flags[name] = next; i++; }
+			else if (next !== undefined && !next.startsWith("-") && ["port", "tailscale-port", "chrome-path", "expect-version", "feed-url", "label"].includes(name)) { flags[name] = next; i++; }
 			else flags[name] = true;
 		} else if (arg === "-f") flags.follow = true;
 		else if (arg === "-y") flags.yes = true;
@@ -142,6 +144,75 @@ function freePort(): Promise<number> {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ---------------------------------------------------------------------------
+// pairing (docs/specs/login-pairing.md)
+
+/** T3's renderTerminalQrCode: two QR rows per line with half-block characters. */
+function terminalQr(value: string, margin = 2): string {
+	const qr = QrCode.encodeText(value, QrCode.Ecc.MEDIUM);
+	const dark = (x: number, y: number) => x >= 0 && x < qr.size && y >= 0 && y < qr.size && qr.getModule(x, y);
+	const rows: string[] = [];
+	for (let y = -margin; y < qr.size + margin; y += 2) {
+		let row = "";
+		for (let x = -margin; x < qr.size + margin; x++) {
+			const top = dark(x, y);
+			const bottom = dark(x, y + 1);
+			row += top ? (bottom ? "\u2588" : "\u2580") : bottom ? "\u2584" : " ";
+		}
+		rows.push(row);
+	}
+	return rows.join("\n");
+}
+
+/** Write a one-time link into the server's store and print it (works with the server stopped). */
+function printPairingLink(home: string, config: LhConfig, label?: string): { local: string } {
+	const link = createPairingLink(layout(home).data, label ? { label } : {});
+	const local = pairingUrl(`http://127.0.0.1:${config.port}`, link.code);
+	const tailnet = config.tailscale.enabled && config.tailscale.hostname
+		? pairingUrl(`https://${config.tailscale.hostname}:${config.tailscale.port}`, link.code)
+		: undefined;
+	const primary = tailnet ?? local;
+	const expires = new Date(link.expiresAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+	out(`Pair a device: open this link, or scan the code below.`);
+	out(`  ${primary}`);
+	out(terminalQr(primary));
+	if (tailnet) out(`On this machine: ${local}`);
+	out(`Code: ${formatCode(link.code)} (one-time, expires at ${expires}). One code works in every link above.`);
+	return { local };
+}
+
+const isWsl = () => {
+	try { return /microsoft/i.test(fs.readFileSync("/proc/version", "utf8")); } catch { return false; }
+};
+
+/** Open a URL in this machine's browser when there is a desktop session. */
+function openInBrowser(url: string): boolean {
+	if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY && !isWsl()) return false;
+	const opened = spawnSync("sh", ["-c", "command -v xdg-open"], { encoding: "utf8" });
+	if (opened.status !== 0) return false;
+	const child = spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
+	child.on("error", () => { /* best effort */ });
+	child.unref();
+	return true;
+}
+
+async function pairCommand(flags: Flags): Promise<void> {
+	const home = lhHome();
+	requireState(home);
+	printPairingLink(home, readConfig(home), typeof flags.label === "string" ? flags.label : undefined);
+}
+
+/** `lh update` calls /api/updates/*, so it writes itself a hidden 5 minute session. */
+async function withCliSession<T>(home: string, fn: (authorization: string) => Promise<T>): Promise<T> {
+	const dataDir = layout(home).data;
+	const { token, session } = issueSession(dataDir, { method: "cli", hidden: true, ttlMs: CLI_SESSION_TTL_MS, client: { label: "lh", deviceType: "unknown" } });
+	try {
+		return await fn(`Bearer ${token}`);
+	} finally {
+		try { revokeSession(dataDir, session.id); } catch { /* it expires on its own */ }
+	}
+}
 
 /** The backup taken when switching away from `version` most recently, if any. */
 function backupFrom(home: string, version: string): string | undefined {
@@ -372,7 +443,16 @@ async function upCommand(flags: Flags): Promise<void> {
 	out("");
 	out(`LearnHarness ${state.activeVersion} is starting.`);
 	for (const url of urls(config)) out(`  ${url}`);
-	if (config.tailscale.enabled) out("Only devices on your tailnet can reach the HTTPS address. Never turn on Tailscale Funnel for this: LearnHarness has no login.");
+	out("");
+	const { local } = printPairingLink(home, config);
+	if (config.tailscale.enabled) out("Only devices on your tailnet can reach the HTTPS address.");
+	out("Pair another device with `lh pair`. Never turn on Tailscale Funnel.");
+	if (process.stdout.isTTY && flags.open !== false) {
+		// Wait for the server so the browser doesn't land on a refused connection.
+		const deadline = Date.now() + 60_000;
+		while (Date.now() < deadline && !(await health(config))?.ok) await sleep(1000);
+		if (openInBrowser(local)) out("Opened the local link in your browser.");
+	}
 }
 
 async function statusCommand(): Promise<void> {
@@ -410,7 +490,7 @@ async function updateCommand(flags: Flags): Promise<void> {
 	const h = await health(config);
 	if (h?.ok && h.selfhost) {
 		const route = flags.now === true ? "install" : "check";
-		const response = await fetch(`http://127.0.0.1:${config.port}/api/updates/${route}`, { method: "POST" });
+		const response = await withCliSession(home, (authorization) => fetch(`http://127.0.0.1:${config.port}/api/updates/${route}`, { method: "POST", headers: { Authorization: authorization } }));
 		const body = (await response.json().catch(() => ({}))) as { status?: string; version?: string | null; message?: string | null };
 		out(`${body.status ?? "unknown"}${body.version ? ` ${body.version}` : ""}${body.message ? `: ${body.message}` : ""}`);
 		if (flags.now !== true && body.status === "downloaded") out("It installs when you click Install in the app, or run `lh update --now`.");
@@ -491,7 +571,8 @@ async function uninstallCommand(flags: Flags): Promise<void> {
 
 const HELP = `lh: run LearnHarness as a self-hosted server
 
-  lh up [--port N] [--tailscale|--no-tailscale] [--tailscale-port N] [--chrome-path P] [--no-linger] [--yes]
+  lh up [--port N] [--tailscale|--no-tailscale] [--tailscale-port N] [--chrome-path P] [--no-linger] [--no-open] [--yes]
+  lh pair [--label NAME]         a one-time pairing link and QR code for a new device
   lh status                      versions, service, health, URLs
   lh update [--now]              check now; --now installs right away
   lh rollback                    switch back to the previous version
@@ -512,6 +593,7 @@ async function main(): Promise<void> {
 		case "__selftest": return selftestArchive(flags);
 		case "__install": return installCommand(flags);
 		case "up": return upCommand(flags);
+		case "pair": return pairCommand(flags);
 		case "status": return statusCommand();
 		case "update": return updateCommand(flags);
 		case "rollback": {
