@@ -40,6 +40,36 @@ async function paintFirst(win, options) {
 	trace("paintFirst done");
 }
 
+// Windows puts a newly shown window on screen before Chromium has drawn
+// into it. The window shows transparent until its page has produced a
+// frame while visible, or until this fallback.
+const firstFrame = { fallbackMs: 500 };
+
+/** Show a ghost window. Only Windows (`fade`) adds the opacity step;
+ *  macOS and Linux show it directly. */
+async function showGhost(win, { fade }) {
+	if (!fade) {
+		trace("show() call", "ghostWindow");
+		win.show();
+		tracePaint(win.webContents, "own page after show");
+		return;
+	}
+	trace("setOpacity(0)");
+	win.setOpacity(0);
+	trace("show() call", "ghostWindow");
+	win.show();
+	let timer;
+	const framed = await Promise.race([
+		win.webContents.executeJavaScript(PAINTED).then(() => true, () => false),
+		new Promise((resolve) => { timer = setTimeout(() => resolve(null), firstFrame.fallbackMs); }),
+	]);
+	clearTimeout(timer);
+	trace(framed === null ? `opacity fallback fired (${firstFrame.fallbackMs} ms)` : framed ? "frame produced while transparent" : "frame wait failed");
+	if (win.isDestroyed()) return;
+	win.setOpacity(1);
+	trace("setOpacity(1)");
+}
+
 /** Diagnostics only: when a page produces a frame. */
 function tracePaint(contents, name) {
 	if (!tracing) return;
@@ -120,4 +150,4 @@ function coverWindow(win, { WebContentsView, session, mode, status, frame }) {
 	return { reveal: remove, focus, painted };
 }
 
-module.exports = { PAGE, BACKGROUND, hostLabel, isSkeletonPage, paintFirst, tracePaint, coverWindow };
+module.exports = { PAGE, BACKGROUND, firstFrame, hostLabel, isSkeletonPage, paintFirst, showGhost, coverWindow };

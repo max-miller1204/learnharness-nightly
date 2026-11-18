@@ -15,7 +15,7 @@ const wire = require("../electron/remote-server.cjs");
 const { createRemoteWindow } = require("../electron/remote-window.cjs");
 const { createServerList } = require("../electron/server-list.cjs");
 const { openServerList } = require("../electron/server-list-store.cjs");
-const { hostLabel, coverWindow } = require("../electron/skeleton.cjs");
+const { hostLabel, coverWindow, firstFrame } = require("../electron/skeleton.cjs");
 // Quiet retries wait 15 s in the app; the fixtures need only a few steps.
 Object.assign(wire.retryTiming, { windowMs: 60, stepMs: 5 });
 const alpha = "https://one.example.test";
@@ -128,6 +128,10 @@ class TestView {
 
 class TestWindow extends EventEmitter {
 	static all: TestWindow[] = [];
+	/** While set, a window's own page waits for it before a frame. */
+	static frameGate: Promise<void> | null = null;
+	/** Opacity, show and own-page frame steps, in order. */
+	steps: string[] = [];
 	/** The windows created since `before`, in order. */
 	static since(before: number) {
 		const created = TestWindow.all.slice(before);
@@ -155,6 +159,11 @@ class TestWindow extends EventEmitter {
 		mainFrame: { url: "" },
 		isDestroyed: () => this.destroyed,
 		focus() {},
+		executeJavaScript: async () => {
+			await TestWindow.frameGate;
+			this.steps.push("frame");
+			return true;
+		},
 		setWindowOpenHandler: (handler: typeof this.windowOpen) => { this.windowOpen = handler; },
 		send: (_channel: string, snapshot: typeof this.snapshot) => { this.snapshot = snapshot; },
 	});
@@ -166,7 +175,9 @@ class TestWindow extends EventEmitter {
 	isDestroyed() { return this.destroyed; }
 	isMinimized() { return false; }
 	focus() {}
+	setOpacity(value: number) { this.steps.push(`opacity ${value}`); }
 	show() {
+		this.steps.push("show");
 		this.atShow ??= { painted: this.painted, url: this.url };
 		this.shown = true;
 	}
@@ -844,6 +855,57 @@ test("the app preload gives the ghost dashboard page no bridge", async () => {
 	};
 	assert.deepEqual(exposed("file:"), []);
 	assert.deepEqual(exposed("http:"), ["lh"]);
+});
+
+test("Windows shows a ghost window transparent until it has drawn a frame, with a bounded fallback", async (t) => {
+	const directory = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-ghost-opacity-"));
+	const fallback = firstFrame.fallbackMs;
+	t.after(() => {
+		TestWindow.frameGate = null;
+		firstFrame.fallbackMs = fallback;
+		return fs.rm(directory, { recursive: true, force: true });
+	});
+	const saved = await openServerList(path.join(directory, "servers.json"), fakeSafeStorage);
+	await saved.saveDefault("local");
+	const boot = (platform: string) => createServerList({
+		app: { getPath: () => directory }, BrowserWindow: TestWindow, WebContentsView: TestView, safeStorage: fakeSafeStorage,
+		ipcMain: { handle() {} }, session: { fromPartition: () => new TestSession() },
+		startLocal: async () => "http://localhost:3000", stopLocal: async () => {},
+		createLocalWindow: () => { const win = new TestWindow(); return { win, load: (url: string) => win.loadURL(url) }; },
+		setLocalMenu() {}, platform,
+	});
+	const launch = async (platform: string) => {
+		const controller = await boot(platform);
+		const before = TestWindow.all.length;
+		await controller.launch();
+		controller.close();
+		const { first: win } = TestWindow.since(before);
+		win.destroy();
+		return win;
+	};
+	let attachedAt: string[] = [];
+	const original = TestWindow.prototype.setOpacity;
+	TestWindow.prototype.setOpacity = function (this: TestWindow, value: number) {
+		original.call(this, value);
+		if (value === 1) attachedAt = [...this.steps, `overlays ${this.contentView.children.length}`];
+	};
+	t.after(() => { TestWindow.prototype.setOpacity = original; });
+
+	const windows = await launch("win32");
+	assert.deepEqual(windows.steps, ["opacity 0", "show", "frame", "opacity 1"], "transparent, shown, drawn, then opaque");
+	assert.equal(attachedAt.at(-1), "overlays 0", "the overlay goes on after the window is opaque");
+	assert.equal(windows.url, "http://localhost:3000");
+
+	firstFrame.fallbackMs = 20;
+	TestWindow.frameGate = new Promise<void>(() => {});
+	const stalled = await launch("win32");
+	assert.deepEqual(stalled.steps, ["opacity 0", "show", "opacity 1"], "no frame: opaque anyway after the fallback");
+	assert.equal(stalled.url, "http://localhost:3000", "the connect carries on");
+	TestWindow.frameGate = null;
+
+	for (const platform of ["darwin", "linux"]) {
+		assert.deepEqual((await launch(platform)).steps, ["show"], `${platform} shows directly, without the opacity step`);
+	}
 });
 
 test("the setup screen offers two tiles, and a pasted pairing link fills the address and the code", async () => {

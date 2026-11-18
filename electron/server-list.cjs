@@ -7,7 +7,7 @@ const { openServerList } = require("./server-list-store.cjs");
 const { ServerProblem, parseOrigin, withScheme, normalizeCode, parsePairLink, checkDescriptor, checkSession, pairServer } = require("./remote-server.cjs");
 const { remoteChatGPTSignIn } = require("./remote-chatgpt.cjs");
 const { createRemoteWindow } = require("./remote-window.cjs");
-const { BACKGROUND, hostLabel, paintFirst, tracePaint, coverWindow } = require("./skeleton.cjs");
+const { BACKGROUND, hostLabel, paintFirst, showGhost, coverWindow } = require("./skeleton.cjs");
 const { trace, traceWindow } = require("./first-frame.cjs");
 
 const SHELL = path.join(__dirname, "server-list.html");
@@ -149,9 +149,13 @@ async function createServerList({
 			traceWindow(win, server === "local" ? "local" : "remote");
 			await paintFirst(win, { mode: themeMode(), status, frame });
 			operation.signal.throwIfAborted();
-			trace("show() call", "ghostWindow");
-			win.show();
-			tracePaint(win.webContents, "own page after show");
+			// macOS and Linux show synchronously, exactly as before.
+			const fade = platform === "win32";
+			const shown = showGhost(win, { fade });
+			if (fade) {
+				await shown;
+				operation.signal.throwIfAborted();
+			}
 			const skeleton = coverWindow(win, { WebContentsView, session, mode: themeMode(), status, frame });
 			skeleton.focus();
 			return skeleton;
