@@ -102,7 +102,20 @@ describe("lh preview", { skip: process.platform !== "linux" }, () => {
 		fs.writeFileSync(layout(home).auth, '{"anthropic":"real-key"}\n');
 		fs.writeFileSync(layout(home).serviceEnv, "FROM_SERVICE_ENV=1\n");
 	});
-	afterEach(() => {
+	// Every `lh preview` a case spawns, so a failed case can't leave one holding a port.
+	const running: ChildProcess[] = [];
+	const track = (child: ChildProcess) => { running.push(child); return child; };
+	afterEach(async () => {
+		for (const child of running.splice(0)) {
+			if (child.exitCode !== null || child.signalCode !== null) continue;
+			child.kill("SIGKILL");
+			await new Promise((resolve) => child.once("exit", resolve));
+		}
+		// The preview server it started outlives a killed launcher.
+		try {
+			const pid = Number(fs.readFileSync(previewPidPath(home, 7), "utf8"));
+			if (fs.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(`LH_HOME=${previewHome(home, 7)}`)) process.kill(pid, "SIGKILL");
+		} catch { /* nothing left running */ }
 		fs.rmSync(home, { recursive: true, force: true });
 		fs.rmSync(work, { recursive: true, force: true });
 	});
@@ -112,10 +125,10 @@ describe("lh preview", { skip: process.platform !== "linux" }, () => {
 		const port = await freePort();
 		const envOut = path.join(work, "env.json");
 		let output = "";
-		const child = spawn(process.execPath, [LH, "preview", "7", "--port", String(port), "--feed-url", feedUrl], {
+		const child = track(spawn(process.execPath, [LH, "preview", "7", "--port", String(port), "--feed-url", feedUrl], {
 			env: { ...process.env, LH_HOME: home, STUB_ENV_OUT: envOut, DISPLAY: "", WAYLAND_DISPLAY: "" },
 			stdio: ["ignore", "pipe", "pipe"],
-		});
+		}));
 		child.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
 		child.stderr?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
 		await waitFor(child, /Ctrl\+C stops the preview/, () => output);
@@ -139,7 +152,7 @@ describe("lh preview", { skip: process.platform !== "linux" }, () => {
 		assert.equal(JSON.parse(fs.readFileSync(layout(pHome).config, "utf8")).port, port);
 
 		// A second preview of the same PR is refused while this one runs.
-		const second = spawn(process.execPath, [LH, "preview", "7", "--port", String(port + 1), "--feed-url", feedUrl], { env: { ...process.env, LH_HOME: home }, stdio: ["ignore", "pipe", "pipe"] });
+		const second = track(spawn(process.execPath, [LH, "preview", "7", "--port", String(port + 1), "--feed-url", feedUrl], { env: { ...process.env, LH_HOME: home }, stdio: ["ignore", "pipe", "pipe"] }));
 		let secondOut = "";
 		second.stderr?.on("data", (chunk: Buffer) => { secondOut += chunk.toString(); });
 		const secondCode = await new Promise<number | null>((resolve) => second.once("exit", resolve));
@@ -159,7 +172,7 @@ describe("lh preview", { skip: process.platform !== "linux" }, () => {
 	it("explains a missing preview and leaves nothing behind", async () => {
 		const port = await freePort();
 		let stderr = "";
-		const child = spawn(process.execPath, [LH, "preview", "9", "--port", String(port), "--feed-url", pathToFileURL(path.join(work, "nope", "latest.json")).href], { env: { ...process.env, LH_HOME: home }, stdio: ["ignore", "pipe", "pipe"] });
+		const child = track(spawn(process.execPath, [LH, "preview", "9", "--port", String(port), "--feed-url", pathToFileURL(path.join(work, "nope", "latest.json")).href], { env: { ...process.env, LH_HOME: home }, stdio: ["ignore", "pipe", "pipe"] }));
 		child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
 		const code = await new Promise<number | null>((resolve) => child.once("exit", resolve));
 		assert.equal(code, 1);
@@ -190,10 +203,10 @@ describe("lh preview", { skip: process.platform !== "linux" }, () => {
 		writeConfig(home, { port: port - 1, tailscale: { enabled: true, port: 8443, hostname: "box.tail.ts.net" } });
 		const ts = stubTailscale();
 		let output = "";
-		const child = spawn(process.execPath, [LH, "preview", "7", "--feed-url", feedUrl], {
+		const child = track(spawn(process.execPath, [LH, "preview", "7", "--feed-url", feedUrl], {
 			env: { ...process.env, ...ts.env, LH_HOME: home, STUB_ENV_OUT: path.join(work, "env.json"), DISPLAY: "", WAYLAND_DISPLAY: "" },
 			stdio: ["ignore", "pipe", "pipe"],
-		});
+		}));
 		child.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
 		child.stderr?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
 		await waitFor(child, /Ctrl\+C stops the preview/, () => output);
@@ -218,10 +231,10 @@ describe("lh preview", { skip: process.platform !== "linux" }, () => {
 		const port = await freePort();
 		const start = async () => {
 			let output = "";
-			const child = spawn(process.execPath, [LH, "preview", "7", "--port", String(port), "--feed-url", feedUrl], {
+			const child = track(spawn(process.execPath, [LH, "preview", "7", "--port", String(port), "--feed-url", feedUrl], {
 				env: { ...process.env, LH_HOME: home, STUB_ENV_OUT: path.join(work, "env.json"), DISPLAY: "", WAYLAND_DISPLAY: "" },
 				stdio: ["ignore", "pipe", "pipe"],
-			});
+			}));
 			child.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
 			child.stderr?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
 			await waitFor(child, /Ctrl\+C stops the preview/, () => output);
@@ -249,7 +262,7 @@ describe("lh preview", { skip: process.platform !== "linux" }, () => {
 		const args = [LH, "preview", "7", "--port", String(port), "--feed-url", feedUrl];
 		const env = { ...process.env, LH_HOME: home, STUB_ENV_OUT: path.join(work, "env.json") };
 		function start() {
-			const child = spawn(process.execPath, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+			const child = track(spawn(process.execPath, args, { env, stdio: ["ignore", "pipe", "pipe"] }));
 			let output = "";
 			child.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
 			child.stderr?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
@@ -302,7 +315,7 @@ require("node:module").syncBuiltinESMExports();
 		assert.equal(crashed.signal, "SIGKILL");
 		assert.equal(fs.existsSync(pidFile), false);
 
-		const retry = spawn(process.execPath, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+		const retry = track(spawn(process.execPath, args, { env, stdio: ["ignore", "pipe", "pipe"] }));
 		let output = "";
 		retry.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString(); });
 		retry.stderr?.on("data", (chunk: Buffer) => { output += chunk.toString(); });

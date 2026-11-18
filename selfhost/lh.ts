@@ -651,6 +651,10 @@ async function previewCommand(flags: Flags): Promise<void> {
 			const killDeadline = Date.now() + 3_000;
 			while (ours() && Date.now() < killDeadline) await sleep(100);
 			if (ours()) fail(`Could not stop the orphaned PR #${pr} preview server (pid ${pid}).`);
+			// A dying process loses its environment before the kernel closes its
+			// files, so its listening socket can outlive ours() for a moment.
+			const portDeadline = Date.now() + 5_000;
+			while (!(await portFree(config.port)) && Date.now() < portDeadline) await sleep(100);
 		}
 		fs.rmSync(pidFile, { force: true });
 	};
