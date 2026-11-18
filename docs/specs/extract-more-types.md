@@ -18,7 +18,7 @@ Goal: the graph's **Extract files** takes Office and OpenDocument documents, RTF
 
 ## Adopted from T3 Code (veto any)
 
-- **HEIC conversion in the browser** with `heic-to` (T3 pins `^1.5.2`, LGPL-3.0, compatible with LearnHarness's AGPL-3.0; loaded only when a HEIC file is picked), as T3's `imageCompression.ts`: a file is HEIC by MIME `image/heic|heif`, or by extension when the MIME is empty or `application/octet-stream`; images over 64 megapixels are refused before decoding; decoded to JPEG at quality 0.92 and uploaded as `<name>.jpg`. The source keeps the original path (`photo.heic`).
+- **HEIC conversion in the browser** with `heic-to` (T3 pins `^1.5.2`, LGPL-3.0, compatible with LearnHarness's AGPL-3.0; loaded only when a HEIC file is picked), as T3's `imageCompression.ts`: a file is HEIC by MIME `image/heic|heif`, or by extension when the MIME is empty or `application/octet-stream`; images over 64 megapixels are refused before decoding; decoded to JPEG at quality 0.92 and uploaded with type `image/jpeg` under its original name, so the source keeps its path (`photo.heic`); the server knows the JPEG by its signature.
 - **`.gitignore` matching:** port T3's `apps/server/src/workspace/IgnorePatterns.ts` (MIT, notice kept) to `lib/ignore-patterns.ts`. Every `.gitignore` inside the picked folder applies to paths below its own folder; a deeper file's last matching rule wins, as in git. An ignored folder hides everything under it.
 - **Two conversions at once** (item 25 carry-over): the converter keeps T3's two slots. Extract files runs three files at a time, so at most two convert while the third waits; memory peaks near 1 GB only when two documents both hit the 192 MB heap limit, which real files don't.
 - **Converter failure logging** (item 25 carry-over): T3 logs a warning on failure. Here the converter child's stderr is kept (last 4 KB) and `failed` and `timeout` results log one `console.error` line with the format, reason, detail and stderr tail.
@@ -61,6 +61,7 @@ Code extensions: c, h, cc, cpp, cxx, hpp, hh, hxx, cs, go, rs, java, kt, kts, sc
 > You turn one image from a learner's study material into text, so its content can be added to their knowledge graph. Transcribe all legible text exactly, in reading order, as Markdown (headings, lists, tables). Write equations in LaTeX. Describe each diagram, chart or figure: what it shows, its labels, and the relationships or values it conveys. Transcribe handwriting; mark words you can't read as [illegible]. Do not add knowledge the image doesn't contain. If the image has nothing to learn from, reply with one sentence saying what it shows.
 
 - User message: the image plus `File: <path>`. No tools; the reply text is the description. An empty reply fails the file with `The vision model returned no description.`
+- An image is one job: describe, extract, audit, merge (the description is its single chunk). A Vision model without image input fails the file with `The Vision model (<provider:id>) can't take images. Pick one that can in Settings > Models.`
 
 ### Code prompt (for owner approval)
 
@@ -83,6 +84,7 @@ Built with the existing `composeExtractionInstructions(preamble, goal, selection
   ````
 
   (the fence is longer than any backtick run in the file). The source's path is the folder name (`my-app`), so re-extracting the same folder updates the same source.
+- The extractor's view names the source `SOURCE (a codebase): <folder>` instead of `SOURCE (the author's personal notes): ...`.
 - Chunking keeps files whole where they fit the chunk budget; a file larger than one chunk is split by lines, and each continuation chunk starts with `## File: <path> (continued)`.
 - The response has one result row for the group; the dock and error list show it as `my-app (N code files)`.
 
@@ -108,12 +110,29 @@ About 180,000 tokens, about $0.42 (rough)
 
 ### Estimate endpoint (`POST /api/graph/import/estimate`)
 
-Input: `{ notesChars, codeChars, images, pdfBytes, documentBytes }`. Output: `{ tokens, usd: number | null, rough: boolean }`.
+Input: `{ sources, notesChars, codeChars, images, pdfBytes, documentBytes }`, where `sources` is the number of sources the pick becomes (one per file plus one for grouped code), since every source costs at least one chunk. Output: `{ tokens, usd: number | null, rough: boolean }`.
 
 - Source tokens: characters / 4 (the app's convention); PDFs and documents: bytes times a per-kind characters-per-byte ratio, then / 4.
 - Extraction cost: source tokens times measured input and output multipliers (covering the prompt, the growing source digest and the auditor), priced with `callCost` at the extractor's and auditor's current models.
 - Images: one Vision call each at a fixed token allowance, priced at the Vision model, plus extraction of a description of fixed size.
-- The ratios, multipliers and allowances are measured on the real test runs in this PR and recorded here before merge.
+- The ratios, multipliers and allowances are measured on real runs (below).
+
+### Estimate calibration (measured 2026-11-17)
+
+Runs: Extract files in the built app with Claude Code `haiku` in all three slots: the seven document fixtures, a PNG whiteboard, a HEIC photo and one code file (10 sources), then the real `p-limit` repository as a folder pick (2 notes, 1 docx, 1 image, 7 code files grouped: 155,419 tokens billed).
+
+| Measure | Fitted value | Observed |
+|---|---|---|
+| chunks | sources + floor(source tokens / 4,096) | p-limit folder: 7 chunks (estimate 8) |
+| extractor input | 4,000 per chunk + 3.5 per source token | about 2,950 for a tiny file, 2 to 2.5 times that with a schema retry; folder 74.5k (estimate 78.8k) |
+| extractor output | 500 per chunk + 2 per source token | folder 27.6k (estimate 30.7k) |
+| auditor input | 4,000 per chunk + 1.5 per source token | 3,100 to 5,600 per small file; folder 47.7k (estimate 52k) |
+| auditor output | 250 per chunk + 0.2 per source token | folder 4.0k (estimate 4.7k) |
+| Vision call | 1,400 in, 250 out; description 250 tokens | 1,368 to 1,373 in, 213 to 240 out |
+| PDF text | 0.25 characters per byte | five real PDFs: 0.13 to 0.66, median 0.26 |
+| document text | 0.5 characters per byte | text-heavy docx/odt/epub/pptx 0.76 to 1.67; a docx with pictures 0.09 |
+
+The whole folder estimates at about 168k tokens against 155k billed.
 
 ### Item 25 carry-overs
 

@@ -252,7 +252,7 @@ it("planFolder: .gitignore (nested, negated), default excludes, hidden paths, ki
 	assert.equal(plan.unsafe, 1);
 	assert.equal(plan.codeTooLarge, 1);
 	assert.deepEqual(plan.oversized, ["app/video.md"]);
-	assert.deepEqual(plan.measures, { notesChars: "# Readme".length, codeChars: "const a = 1;".length, images: 1, pdfBytes: 4000, documentBytes: 1000 });
+	assert.deepEqual(plan.measures, { sources: 5, notesChars: "# Readme".length, codeChars: "const a = 1;".length, images: 1, pdfBytes: 4000, documentBytes: 1000 });
 	assert.deepEqual(planSummaries(plan), [
 		"app/video.md: Too big. Max 25 MB.",
 		"Skipped 2 files that aren't a supported type (.xlsx, .tmp).",
@@ -291,22 +291,25 @@ it("folder review lines: unpriced models, failed estimates, nothing to extract",
 it("estimateImport prices extractor, auditor and vision calls; any unpriced model nulls the dollars", () => {
 	const priced = (call: { inputTokens: number; outputTokens: number }) => call.inputTokens * 1e-6 + call.outputTokens * 2e-6;
 	const models = { extractor: "p:e", auditor: "p:a", imageReader: "p:v" };
-	const text = estimateImport({ notesChars: 40_000, codeChars: 0, images: 0, pdfBytes: 0, documentBytes: 0 }, models, priced, 4096);
+	const text = estimateImport({ sources: 1, notesChars: 40_000, codeChars: 0, images: 0, pdfBytes: 0, documentBytes: 0 }, models, priced, 4096);
 	assert.equal(text.rough, false);
 	assert.ok(text.tokens > 10_000 && text.usd! > 0);
-	const withImages = estimateImport({ notesChars: 40_000, codeChars: 0, images: 2, pdfBytes: 0, documentBytes: 0 }, models, priced, 4096);
+	const withImages = estimateImport({ sources: 1, notesChars: 40_000, codeChars: 0, images: 2, pdfBytes: 0, documentBytes: 0 }, models, priced, 4096);
 	assert.ok(withImages.usd! > text.usd!);
-	assert.equal(estimateImport({ notesChars: 0, codeChars: 0, images: 0, pdfBytes: 1000, documentBytes: 0 }, models, priced, 4096).rough, true);
-	const unpriced = estimateImport({ notesChars: 0, codeChars: 4000, images: 1, pdfBytes: 0, documentBytes: 0 }, models, (call, model) => model === "p:v" ? null : priced(call), 4096);
+	assert.equal(estimateImport({ sources: 1, notesChars: 0, codeChars: 0, images: 0, pdfBytes: 1000, documentBytes: 0 }, models, priced, 4096).rough, true);
+	const unpriced = estimateImport({ sources: 1, notesChars: 0, codeChars: 4000, images: 1, pdfBytes: 0, documentBytes: 0 }, models, (call, model) => model === "p:v" ? null : priced(call), 4096);
 	assert.deepEqual([unpriced.usd, unpriced.unpriced], [null, "p:v"]);
-	assert.deepEqual(estimateImport({ notesChars: 0, codeChars: 0, images: 0, pdfBytes: 0, documentBytes: 0 }, models, priced, 4096), { tokens: 0, usd: 0, rough: false });
+	assert.deepEqual(estimateImport({ sources: 0, notesChars: 0, codeChars: 0, images: 0, pdfBytes: 0, documentBytes: 0 }, models, priced, 4096), { tokens: 0, usd: 0, rough: false });
+	// The live calibration folder (p-limit with notes, a docx and an image): 155,419 tokens billed.
+	const live = estimateImport({ sources: 5, notesChars: 10_110, codeChars: 36_840, images: 1, pdfBytes: 0, documentBytes: 11_029 }, models, priced, 4096);
+	assert.ok(live.tokens > 155_419 * 0.8 && live.tokens < 155_419 * 1.25, String(live.tokens));
 });
 
 it("the estimate endpoint validates its body and answers tokens and dollars", async () => {
 	const post = (body: unknown) => ESTIMATE(new Request("http://localhost/api/graph/import/estimate", { method: "POST", body: typeof body === "string" ? body : JSON.stringify(body) }));
 	assert.equal((await post("{")).status, 400);
-	assert.equal((await post({ notesChars: -1, codeChars: 0, images: 0, pdfBytes: 0, documentBytes: 0 })).status, 400);
-	const ok = await post({ notesChars: 4000, codeChars: 0, images: 0, pdfBytes: 0, documentBytes: 0 });
+	assert.equal((await post({ sources: 1, notesChars: -1, codeChars: 0, images: 0, pdfBytes: 0, documentBytes: 0 })).status, 400);
+	const ok = await post({ sources: 1, notesChars: 4000, codeChars: 0, images: 0, pdfBytes: 0, documentBytes: 0 });
 	assert.equal(ok.status, 200);
 	const body = await ok.json();
 	assert.equal(typeof body.tokens, "number");

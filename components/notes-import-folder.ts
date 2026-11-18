@@ -60,7 +60,7 @@ export async function planFolder(picked: readonly File[]): Promise<FolderPlan> {
 	}
 	const gitignored = createGitignoreFilter(ignoreFiles);
 	const plan: FolderPlan = { root, files: [], code: [], ignored: 0, oversized: [], codeTooLarge: 0, unsupported: [], unsafe: 0,
-		measures: { notesChars: 0, codeChars: 0, images: 0, pdfBytes: 0, documentBytes: 0 } };
+		measures: { sources: 0, notesChars: 0, codeChars: 0, images: 0, pdfBytes: 0, documentBytes: 0 } };
 	let codeBytes = 0;
 	for (const file of [...picked].sort((a, b) => relativePath(a).localeCompare(relativePath(b)))) {
 		const path = relativePath(file);
@@ -82,6 +82,7 @@ export async function planFolder(picked: readonly File[]): Promise<FolderPlan> {
 		plan.codeSkipped = CODE_CAP_MESSAGE;
 	}
 	for (const file of plan.code) plan.measures.codeChars += (await file.text()).length;
+	plan.measures.sources = plan.files.length + (plan.code.length > 0 ? 1 : 0);
 	return plan;
 }
 
