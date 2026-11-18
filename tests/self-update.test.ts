@@ -276,12 +276,48 @@ describe("GET /api/health's update fields", () => {
 		assert.equal(publicUpdateState({ ...v.state(), status: "downloaded", message: "Restarting to install version x…" }).message, "Restarting to install version x…");
 	});
 
-	it("is not idle while an update is checked for or downloaded (the launcher's relaunch waits for idle)", () => {
-		assert.equal(healthIdle(true, { status: "downloading" }), false);
-		assert.equal(healthIdle(true, { status: "checking" }), false);
-		assert.equal(healthIdle(true, { status: "downloaded" }), true);
-		assert.equal(healthIdle(true, { status: "up-to-date" }), true);
-		assert.equal(healthIdle(false, { status: "idle" }), false);
+	it("is not idle while an update check or download runs, even with a ready version still offered", async () => {
+		// The independent proof's sequence: an update is already staged, then another check
+		// finds a newer one and downloads it while the state keeps showing the ready one.
+		let releaseStage: () => void = () => {};
+		const f = fake({
+			stage: async (feed) => {
+				if (feed.version === NEWER) await new Promise<void>((resolve) => { releaseStage = resolve; });
+				f.flags.staged.push(feed.version);
+			},
+		});
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		await settle();
+		assert.equal(u.state().status, "downloaded");
+		assert.equal(u.busy(), false);
+		assert.equal(healthIdle(true, u.busy()), true, "ready and nothing running: idle");
+
+		f.flags.latest = NEWER;
+		f.run(CHECK_INTERVAL_MS);
+		await settle();
+		assert.equal(u.state().status, "downloaded", "the ready version stays offered");
+		assert.equal(u.state().version, NEXT);
+		assert.equal(u.busy(), true, "the newer one is downloading");
+		assert.equal(healthIdle(true, u.busy()), false, "so health is not idle");
+
+		releaseStage();
+		await settle(); await settle();
+		assert.equal(u.state().version, NEWER);
+		assert.equal(u.busy(), false);
+		assert.equal(healthIdle(true, u.busy()), true);
+
+		// A manual check while ready, and the plain checking/downloading case, count too.
+		let releaseFetch: () => void = () => {};
+		const g = fake({ fetchLatest: async () => { await new Promise<void>((resolve) => { releaseFetch = resolve; }); return feed(NEXT); } });
+		const v = createSelfUpdater(g.deps);
+		const pending = v.check();
+		assert.equal(v.state().status, "checking");
+		assert.equal(healthIdle(true, v.busy()), false, "fetching the feed");
+		releaseFetch();
+		await pending;
+		assert.equal(healthIdle(true, v.busy()), true);
+		assert.equal(healthIdle(false, false), false, "running work still counts");
 	});
 });
 

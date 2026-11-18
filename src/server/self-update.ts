@@ -220,6 +220,9 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 
 	return {
 		state: (): SelfUpdateState => state,
+		/** A check (feed fetch, and any download it starts) is running. True even while a ready
+		 *  version stays offered as "downloaded" during a look for a newer one. */
+		busy: (): boolean => checking !== undefined,
 		check,
 		/** Install / POST /api/updates/install: re-check first (a download can be hours old), then apply the ready version. */
 		async install(): Promise<void> {
@@ -351,11 +354,12 @@ export function selfUpdater(): SelfUpdater {
 	return updater;
 }
 
-/** Health's `idle`: nothing running, and no update being checked for or
- *  downloaded (the launcher's relaunch waits for idle, and stopping the
- *  server mid-download would waste it). */
-export function healthIdle(appIdle: boolean, update: Pick<SelfUpdateState, "status">): boolean {
-	return appIdle && update.status !== "checking" && update.status !== "downloading";
+/** Health's `idle`: nothing running, and no update check or download in
+ *  flight, whatever the state shows (a ready version stays "downloaded" while
+ *  a newer one is fetched). The launcher's relaunch waits for idle, and
+ *  stopping the server mid-download would waste it. */
+export function healthIdle(appIdle: boolean, updateBusy: boolean): boolean {
+	return appIdle && !updateBusy;
 }
 
 /** The update state for callers that aren't signed in (the launcher, `lh status`
@@ -372,12 +376,13 @@ export function publicUpdateState(state: SelfUpdateState): SelfUpdateState {
 /** GET /api/health: what the launcher's health check and `lh status` read.
  *  `details` (a signed-in or paired caller) includes update error text. */
 export function healthSnapshot({ details = false }: { details?: boolean } = {}): { ok: true; version: string; selfhost: boolean; idle: boolean; update: SelfUpdateState } {
-	const update = selfUpdater().state();
+	const updater = selfUpdater();
+	const update = updater.state();
 	return {
 		ok: true,
 		version: process.env.LH_VERSION ?? "",
 		selfhost: selfhostEnabled(),
-		idle: healthIdle(appIsIdle(), update),
+		idle: healthIdle(appIsIdle(), updater.busy()),
 		update: details ? update : publicUpdateState(update),
 	};
 }
