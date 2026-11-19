@@ -300,42 +300,43 @@ async function sideBySide(browser) {
 
 // ── the drive ────────────────────────────────────────────────────────────────
 
-async function main() {
+// Chrome runs only while the web is shot, never beside the simulator drive.
+async function withBrowser(work) {
 	const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ["--no-first-run"] });
 	try {
-		const web = [
-			{ screen: "pair", route: "/pair", text: "Pair", signedOut: true },
-			{ screen: "sessions", route: "/", text: QUIZ.title },
-			{ screen: "lesson", route: `/chat/${LESSON.id}`, text: LESSON.title },
-			{ screen: "quiz-waiting", route: `/chat/${QUIZ.id}`, text: "None of these" },
-		];
-		await webShots(browser, web);
-		await phone();
-		await webShots(browser, [{ screen: "quiz-answered", route: `/chat/${QUIZ.id}`, text: "The first pair fits" }]);
-		await sideBySide(browser);
+		return await work(browser);
 	} finally {
 		await browser.close();
 	}
 }
 
+async function main() {
+	await withBrowser((browser) => webShots(browser, [
+		{ screen: "pair", route: "/pair", text: "Pair", signedOut: true },
+		{ screen: "sessions", route: "/", text: QUIZ.title },
+		{ screen: "lesson", route: `/chat/${LESSON.id}`, text: LESSON.title },
+		{ screen: "quiz-waiting", route: `/chat/${QUIZ.id}`, text: "None of these" },
+	]));
+	await phone();
+	await withBrowser(async (browser) => {
+		await webShots(browser, [{ screen: "quiz-answered", route: `/chat/${QUIZ.id}`, text: "The first pair fits" }]);
+		await sideBySide(browser);
+	});
+}
+
 async function phone() {
-	// AXe reads nothing until the booted simulator has a screen. A headless
-	// one may never report it; Simulator.app on the same device gives it one.
+	// The first accessibility read after boot can overrun AXe's short
+	// bootstrap deadline while its frameworks load cold; a later read works.
 	const start = Date.now();
-	let opened = false;
-	for (;;) {
+	for (let attempt = 1; ; attempt++) {
 		try { await describe(); break; } catch (error) {
 			const why = String(error.stderr || error.message).trim().split("\n")[0];
-			if (Date.now() - start > 180_000) fail("simulator", `the accessibility tree never became readable: ${why}`);
-			if (!opened && Date.now() - start > 30_000) {
-				log(`AXe can't read the screen yet (${why}); opening Simulator.app on ${UDID}`);
-				await run("open", ["-a", "Simulator", "--args", "-CurrentDeviceUDID", UDID]);
-				opened = true;
-			}
-			await sleep(3000);
+			log(`accessibility read ${attempt} failed: ${why}`);
+			if (Date.now() - start > 240_000) fail("simulator", `the accessibility tree never became readable: ${why}`);
+			await sleep(5000);
 		}
 	}
-	log(`AXe reads the screen (${screenSize.width}x${screenSize.height} pt)${opened ? " with Simulator.app open" : ""}`);
+	log(`AXe reads the screen (${screenSize.width}x${screenSize.height} pt)`);
 	await setPhoneMode("light");
 	const bundled = () => (readFileSync(METRO_LOG, "utf8").match(/iOS Bundled/g) ?? []).length;
 	const before = bundled();
