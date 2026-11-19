@@ -55,7 +55,7 @@ export function AttachMenu({ attachments, close }: { attachments: Attachments; c
 function Chip({ name, children }: { name: string; children?: ReactNode }) {
   const { c, s } = useTheme();
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: space.sm, maxWidth: "100%",
+    <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, maxWidth: "100%",
       paddingHorizontal: space.sm, paddingVertical: space.xs, borderRadius: radius.sm, borderWidth: 1, borderColor: c.border }}>
       <Paperclip color={c.text} size={12} />
       <Text numberOfLines={1} style={[s.ui, { fontSize: 12, flexShrink: 1 }]}>{name}</Text>
@@ -67,7 +67,7 @@ function Chip({ name, children }: { name: string; children?: ReactNode }) {
 function ChipAction({ label, name, onPress }: { label: string; name: string; onPress: () => void }) {
   const { s } = useTheme();
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={`${label} ${name}`} hitSlop={8} onPress={onPress}>
+    <Pressable accessibilityRole="button" accessibilityLabel={`${label} ${name}`} hitSlop={8} onPress={onPress} style={{ flexShrink: 0 }}>
       <Text style={[s.ui, { fontSize: 12, textDecorationLine: "underline" }]}>{label}</Text>
     </Pressable>
   );
@@ -84,7 +84,7 @@ export function DraftChips({ attachments, needsText, locked = false }: { attachm
           <Chip key={row.key} name={row.name}>
             {row.error
               ? <>
-                <Text accessibilityRole="alert" style={[s.error, { fontSize: 12 }]}>{row.error}</Text>
+                <Text accessibilityRole="alert" numberOfLines={2} style={[s.error, { fontSize: 12, flexShrink: 1 }]}>{row.error}</Text>
                 <ChipAction label="Retry" name={row.name} onPress={() => attachments.retry(row)} />
               </>
               : !row.ready && <View accessibilityRole="progressbar" accessibilityLabel={`Uploading ${row.name}`}

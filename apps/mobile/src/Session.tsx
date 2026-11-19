@@ -148,7 +148,10 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
     const clear = () => setDraft((current) => current.trim() === text ? "" : current);
     if (problem) return void submit({ type: "thinking", problemCallId: problem.toolCallId, text }, clear);
     if (!canAttach || !attachments.rows.length) return void submit({ type: "text", text }, clear);
-    // Send can be pressed while files upload: wait for them, then send.
+    // Send can be pressed while files upload: wait for them, then send. The
+    // text stays locked meanwhile. On Android a focused field keeps taking
+    // keystrokes even when not editable, so the keyboard closes too.
+    Keyboard.dismiss();
     setAttachOpen(false);
     setSending(true);
     const upload = await attachments.prepare(JSON.stringify({ type: "text", text }));
@@ -254,7 +257,7 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
             <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 6, padding: 6 }}>
               {canAttach && <AttachButton open={attachOpen} setOpen={setAttachOpen} disabled={blocked || busy || sending} />}
               <TextInput accessibilityLabel={thinkingLabel} placeholder={thinkingLabel} placeholderTextColor={c.muted} selectionColor={c.accent}
-                multiline value={draft} onChangeText={setDraft} editable={!blocked && !busy && !sending}
+                multiline value={draft} onChangeText={setDraft} editable={!blocked && !busy && !sending} pointerEvents={sending ? "none" : "auto"}
                 style={{ flex: 1, minHeight: 40, maxHeight: 192, paddingHorizontal: 10, paddingVertical: 10, fontFamily: fonts.prose, fontSize: 16, lineHeight: 20, color: c.text, textAlignVertical: "top" }} />
               <Button primary label={problem ? "Submit thinking" : "Send"} disabled={blocked || busy || sending || !draft.trim()} onPress={() => void sendDraft()}
                 style={{ width: 40, paddingHorizontal: 0, borderRadius: radius.control }}>

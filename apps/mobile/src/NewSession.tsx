@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FlatList, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { FlatList, Keyboard, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
   ATTACHMENT_UPLOADS, PROTOCOL_ROUTES, PRACTICE_CONTROLS_V1, PRACTICE_CONTROL_ROUTES, hasCapability,
   type ChatKind, type ChatListResponse, type CreateChatRequest, type CreateChatResponse,
@@ -64,6 +64,8 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
     const scope = new AbortController();
     const signal = scope.signal;
     operation.current = scope;
+    // The draft stays locked while files finish uploading (Session.tsx sendDraft).
+    Keyboard.dismiss();
     setAttachOpen(false);
     setBusy(true);
     setError("");
@@ -216,7 +218,7 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
         <View style={[s.dock, { flexDirection: "row", alignItems: "flex-end", gap: 6, padding: 6 }]}>
           {canAttach && <AttachButton open={attachOpen} setOpen={setAttachOpen} disabled={locked} />}
           <TextInput accessibilityLabel={prompt} placeholder={prompt} placeholderTextColor={c.muted} selectionColor={c.accent}
-            value={draft} onChangeText={setDraft} multiline editable={!locked}
+            value={draft} onChangeText={setDraft} multiline editable={!locked} pointerEvents={locked ? "none" : "auto"}
             style={{ flex: 1, minHeight: 40, maxHeight: 192, paddingHorizontal: 10, paddingVertical: 10, fontFamily: fonts.prose, fontSize: 16, lineHeight: 20, color: c.text, textAlignVertical: "top" }} />
           <Button primary label={busy ? "Starting…" : "Start session"} disabled={busy || !draft.trim() || (!!recent && recent.length > 0)} onPress={() => void create()}
             style={{ width: 40, paddingHorizontal: 0, borderRadius: radius.control }}>
