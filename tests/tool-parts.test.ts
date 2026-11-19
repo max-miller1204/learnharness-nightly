@@ -19,7 +19,7 @@ import {
 	parseQuizInput,
 	parseExplainInput,
 } from "../src/core/tool-parts.ts";
-import { quizInputSchema, probeQuizInputSchema } from "../src/core/question-core.ts";
+import { quizInputSchema, probeQuizInputSchema, quizDisplayInputSchema, askInputSchema, explainDisplayInputSchema, explainInputObject } from "../src/core/question-core.ts";
 import { probeDoneInputSchema } from "../src/core/contracts/probe.ts";
 
 const TEACHER_QUIZ = {
@@ -88,14 +88,14 @@ describe("parseQuizInput", () => {
 		assert.deepEqual(parsed.options, PROBER_QUIZ.options);
 	});
 
-	it("boundary parity under Value.Convert: a NUMERIC correctAnswer parses (live-smoke lockout fix, 2026-09-26)", () => {
+	it("boundary parity under coercion: a NUMERIC correctAnswer parses (live-smoke lockout fix, 2026-09-26)", () => {
 		// The live smoke's model emitted correctAnswer: 17 (number). pi's
-		// boundary runs Value.Convert before Value.Check, so the quiz posed
-		// — but the record keeps the RAW args. A parse seam without Convert
-		// would reject exactly what the boundary accepted: the pending quiz
+		// boundary coerces before it checks, so the quiz posed, but the
+		// record keeps the RAW args. A parse seam without coercion would
+		// reject exactly what the boundary accepted: the pending quiz
 		// renders nowhere while the turn has ended = learner lockout.
-		// Dock-visible parity case: the smoke's real emission — options whose
-		// values ARE the numbers, correctAnswer numeric. Convert → "17",
+		// Dock-visible parity case: the smoke's real emission, options whose
+		// values ARE the numbers, correctAnswer numeric. Coerced to "17",
 		// refinement passes (it matches an option), the quiz parses.
 		const numeric = {
 			question: "What is 5 + 3 × 4?",
@@ -114,12 +114,19 @@ describe("parseQuizInput", () => {
 		const parsedArray = parseQuizInput(numericArray);
 		assert.ok(parsedArray);
 		assert.deepEqual(parsedArray.correctAnswer, ["17", "27"]);
-		// Non-convertible garbage still never parses (structure owns it)…
+		// Non-convertible garbage still never parses (structure owns it).
 		assert.equal(parseQuizInput({ ...PROBER_QUIZ, correctAnswer: { bad: true } }), undefined);
-		// …and Convert's widening (undefined → "") is caught by the refinement
-		// chain the boundary itself uses — garbage renders as a quiet fallback.
-		const widened = { ...PROBER_QUIZ, correctAnswer: undefined };
-		assert.equal(parseQuizInput(widened), undefined, "the refinement owns the reject");
+	});
+
+	it("no schema the display parse mirrors uses `format`, so leaving out Pi's formats changes no result", () => {
+		const withFormat = (node: unknown, at: string): string[] => {
+			if (Array.isArray(node)) return node.flatMap((child, i) => withFormat(child, `${at}/${i}`));
+			if (!node || typeof node !== "object") return [];
+			const own = typeof (node as { format?: unknown }).format === "string" ? [at] : [];
+			return [...own, ...Object.entries(node).flatMap(([key, child]) => withFormat(child, `${at}/${key}`))];
+		};
+		const schemas = { quizDisplayInputSchema, askInputSchema, explainDisplayInputSchema, probeDoneInputSchema, quizInputSchema, probeQuizInputSchema, explainInputObject };
+		for (const [name, schema] of Object.entries(schemas)) assert.deepEqual(withFormat(schema, name), [], `${name} uses format`);
 	});
 
 	it("garbage never parses: non-object, missing question, missing correctAnswer", () => {

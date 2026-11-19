@@ -26,7 +26,7 @@ import { CONCLUDE_ACK_TEXT } from "../core/contracts/chat.ts";
  *
  * Structural validation is NOT here: pi's loop validates arguments against
  * the tool's TypeBox parameters before execute ever runs (pi-ai's
- * validateToolArguments — the fast TypeBox path). Refinements that no
+ * validateToolArguments, through pi-schema). Refinements that no
  * schema can carry (quizInputProblems, the live-tree nodeId check) run at
  * the top of the tool's own execute and throw ToolInputError.
  */
@@ -199,9 +199,8 @@ export function serverExecute<P extends TSchema>(
 	run: (input: Static<P>, ctx: ToolExecuteContext) => unknown,
 ): AgentTool<any>["execute"] {
 	// The returned execute is deliberately typed loose (params: unknown) so
-	// it satisfies every AgentTool slot — heterogeneous registries type
-	// AgentTool<any>, whose Static is unknown, and strictFunctionTypes
-	// rejects a params-narrower function against it. The loop has already
+	// it satisfies every AgentTool slot, including the heterogeneous
+	// registries' AgentTool<any>. The loop has already
 	// validated arguments against `schema` (runtime) and `run` keeps the
 	// precise Static<P> input; `schema` exists in the signature precisely so
 	// P infers from the call site, not the loose surface.

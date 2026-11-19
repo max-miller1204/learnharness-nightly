@@ -14,7 +14,8 @@ import { collectCitations } from "../core/citations.ts";
 import { COMPACTION_RESERVE_TOKENS } from "../core/compaction.ts";
 import { resolveSideQuestionSpec } from "../core/settings-resolution.ts";
 import { modelsNotConfigured, providerKeyMissing as providerKeyMissingEnvelope } from "../core/settings.ts";
-import { piEngineForSpec, type PiEngine } from "../agent/models.ts";
+import { catalogModelGone, ModelUnavailableError, piEngineForSpec, type PiEngine } from "../agent/models.ts";
+import { MODEL_UNAVAILABLE, modelUnavailableMessage } from "../core/model-unavailable.ts";
 import { isSubscriptionProvider } from "../agent/subscription-connections.ts";
 import { usageWasAdmitted } from "../agent/subscription-request-cycle.ts";
 import { composeSideChatInstructions, streamSideAnswer } from "../agent/side-chat.ts";
@@ -264,17 +265,22 @@ export function createSideChatService(deps: SideChatDeps): SideChatService {
 		settled: (chatId, threadId) => runs.get(runKey(chatId, threadId))?.settled ?? Promise.resolve() };
 }
 
-async function productionEngineFor(record: ChatRecord): Promise<SideEngine | Response> {
+export async function productionEngineFor(record: ChatRecord): Promise<SideEngine | Response> {
 	const spec = resolveSideQuestionSpec(record.settings, stores.settingsStore.readSettings());
 	if (!spec) return Response.json(modelsNotConfigured(["strong"]), { status: 503 });
 	if (isSubscriptionProvider(spec.provider)) await refreshConnectionCatalog(spec.provider);
+	// A saved model the catalog dropped wins over a missing key.
+	if (catalogModelGone(spec.provider, spec.id)) return Response.json({ error: modelUnavailableMessage(spec.provider, spec.id), code: MODEL_UNAVAILABLE }, { status: 422 });
 	if (!providerKeyPresent(spec.provider)) return Response.json(providerKeyMissingEnvelope(spec.provider, ["strong"]), { status: 503 });
 	try {
 		let denied = false;
 		const engine = piEngineForSpec(spec, false, { captured() {}, beforeDispatch() {}, noDispatch() { denied = true; } },
 			() => stores.settingsStore.readSettings()?.models?.strong?.cacheRetention);
 		return { ...engine, sideUsageAdmitted: () => !denied };
-	} catch { return Response.json({ error: "The selected model is unavailable." }, { status: 503 }); }
+	} catch (error) {
+		if (error instanceof ModelUnavailableError) return Response.json({ error: error.message, code: MODEL_UNAVAILABLE }, { status: 422 });
+		return Response.json({ error: "The selected model is unavailable." }, { status: 503 });
+	}
 }
 interface SideChatGlobal { __lhSideChatService?: SideChatService }
 export const sideChats: SideChatService = ((globalThis as typeof globalThis & SideChatGlobal).__lhSideChatService ??= createSideChatService({

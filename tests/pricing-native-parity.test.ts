@@ -43,3 +43,25 @@ test("job capture preserves individual tier sizes and one-hour writes; old tier 
 	const resumedLegacy = accumulateJobUsage({ ...total, calls: undefined }, id, piUsageToStep(first));
 	assert.equal(resumedLegacy.calls, undefined, "never pretend the missing old calls were reconstructed");
 });
+
+test("usage recorded on a model Pi's catalog dropped keeps its estimate from the retired table", async () => {
+	const { RETIRED_MODELS } = await import("../src/server/retired-models.ts");
+	const id = "opencode-go:gemini-4-argon-contributor";
+	assert.equal(piModels().getModel("opencode-go", "gemini-4-argon-contributor"), undefined, "the current catalog has no entry");
+	const usage = nativeUsage(1_000);
+	const expected = calculateCost({ cost: RETIRED_MODELS[id]!.cost } as Parameters<typeof calculateCost>[0], structuredClone(usage)).total;
+	assert.ok(expected > 0);
+	assert.equal(callCost(saved(usage), id), expected);
+	const job = { usage: { model: id, steps: 1, inputTokens: usage.input, outputTokens: usage.output, cacheReadTokens: usage.cacheRead, cacheWriteTokens: usage.cacheWrite, cacheWrite1hTokens: usage.cacheWrite1h, reasoningTokens: 0 } };
+	assert.equal(jobCost(job as never), expected);
+	assert.equal(callCost(saved(usage), "opencode-go:never-existed"), null, "an id in neither table stays unpriced");
+});
+
+test("the retired table holds only ids the current catalog lacks", async () => {
+	const { RETIRED_MODELS } = await import("../src/server/retired-models.ts");
+	assert.equal(Object.keys(RETIRED_MODELS).length, 75);
+	for (const id of Object.keys(RETIRED_MODELS)) {
+		const colon = id.indexOf(":");
+		assert.equal(piModels().getModel(id.slice(0, colon), id.slice(colon + 1)), undefined, id);
+	}
+});

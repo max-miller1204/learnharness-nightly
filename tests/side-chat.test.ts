@@ -472,3 +472,26 @@ describe("side chat service", () => {
 		assert.equal(chatStore.getChat(other.chatId), null);
 	});
 });
+
+describe("a side chat on a saved model the catalog dropped", () => {
+	it("is refused as model_unavailable with or without the provider key", async () => {
+		const { productionEngineFor } = await import("../src/server/side-chat.ts");
+		const chat = chatStore.createChat("side retired");
+		chatStore.saveSettings(chat.id, { model: { provider: "opencode-go", id: "minimax-m3.1-flash-free" } });
+		const saved = process.env.OPENCODE_API_KEY;
+		try {
+			for (const key of [undefined, "test-side-key"]) {
+				if (key === undefined) delete process.env.OPENCODE_API_KEY; else process.env.OPENCODE_API_KEY = key;
+				const refused = await productionEngineFor(chatStore.getChat(chat.id)!);
+				assert.ok(refused instanceof Response);
+				assert.equal(refused.status, 422);
+				assert.deepEqual(await refused.json(), {
+					error: "The model opencode-go/minimax-m3.1-flash-free is no longer available. Pick another model in Settings.",
+					code: "model_unavailable",
+				});
+			}
+		} finally {
+			if (saved === undefined) delete process.env.OPENCODE_API_KEY; else process.env.OPENCODE_API_KEY = saved;
+		}
+	});
+});

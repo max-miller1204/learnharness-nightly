@@ -1,5 +1,6 @@
 import { isPluginHostError } from "./plugin-host.ts";
 import { authRefusal } from "./auth.ts";
+import { MODEL_UNAVAILABLE } from "../core/model-unavailable.ts";
 import type { PluginFrontendContext, PluginInfo } from "../core/plugins.ts";
 
 /** Thin HTTP adapter, separately injectable so its tests never boot plugins. */
@@ -20,10 +21,24 @@ async function objectBody(request: Request): Promise<Record<string, unknown>> {
 	if (!body || typeof body !== "object" || Array.isArray(body)) throw new InputError("Expected a JSON object");
 	return body as Record<string, unknown>;
 }
-export function createPluginTransport(deps: { getHost(): Promise<PluginTransportHost>; directory: string }) {
+/** A plugin operation refused for a saved model it can't use throws an Error
+ * with code "model_unavailable" and that `model`. The host answers 422 with
+ * the message, or its key-missing envelope when the model still exists and
+ * only the provider key is gone. */
+type KeyMissing = (provider: string, id: string) => object | null | Promise<object | null>;
+export function createPluginTransport(deps: { getHost(): Promise<PluginTransportHost>; directory: string; keyMissing?: KeyMissing }) {
+	const modelRefusal = async (error: unknown): Promise<Response | undefined> => {
+		const refusal = error as { code?: unknown; message?: unknown; model?: { provider?: unknown; id?: unknown } } | null;
+		if (!refusal || typeof refusal !== "object" || refusal.code !== MODEL_UNAVAILABLE || typeof refusal.message !== "string") return undefined;
+		const model = refusal.model;
+		const keyMissing = typeof model?.provider === "string" && typeof model.id === "string" ? await deps.keyMissing?.(model.provider, model.id) : null;
+		return keyMissing ? json(keyMissing, 503) : json({ error: refusal.message, code: MODEL_UNAVAILABLE }, 422);
+	};
 	const guarded = async (handle: () => Promise<Response>) => {
 		try { return await handle(); }
 		catch (error) {
+			const refused = await modelRefusal(error);
+			if (refused) return refused;
 			const status = error instanceof InputError ? 400 : isPluginHostError(error) ? error.status : 500;
 			return json({ error: error instanceof Error || isPluginHostError(error) ? error.message : "Plugin request failed" }, status);
 		}

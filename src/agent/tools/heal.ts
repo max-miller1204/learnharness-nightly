@@ -16,7 +16,7 @@
  *
  * The pure function lives in core/argument-heal (the display seam needs
  * it too — the tool-parts law); this module is the per-tool/registry
- * wiring at pi's prepareArguments seam — BEFORE TypeBox validation.
+ * wiring at pi's prepareArguments seam, BEFORE pi validates the arguments.
  * Well-formed args pass through UNTOUCHED (same reference); heals are
  * idempotent, so a per-tool heal composed under the record-level
  * wrapper is a harmless second pass.

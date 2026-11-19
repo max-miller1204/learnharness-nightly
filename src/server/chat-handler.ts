@@ -9,7 +9,8 @@ import {
 	type AgentBuildOptions,
 	type TeachingAgent,
 } from "../agent/teacher-agent.ts";
-import { piEngineForSpec, type PiEngine } from "../agent/models.ts";
+import { catalogModelGone, ModelUnavailableError, piEngineForSpec, type PiEngine } from "../agent/models.ts";
+import { MODEL_UNAVAILABLE, modelUnavailableMessage } from "../core/model-unavailable.ts";
 import { connectionBackgroundAllowed as subscriptionBackgroundAllowed, connectionScopeCurrent, isSubscriptionProvider } from "../agent/subscription-connections.ts";
 import { nativeSubscriptionError } from "../agent/subscription-stream.ts";
 import { chatGPTStreamError } from "../agent/chatgpt-stream.ts";
@@ -338,6 +339,12 @@ export async function handleChatInput(
 			return Response.json({ error: "Background use is off for this connection. Automatic follow-up remains deferred in its queue." }, { status: 403 });
 		}
 	}
+	// A saved model the catalog dropped is refused first: never ask for a
+	// key for a model that can't run.
+	if (catalogModelGone(conversation.provider, conversation.id)) {
+		console.info(`[chat ${chatId}] turn refused: ${MODEL_UNAVAILABLE} ${conversation.provider}/${conversation.id}`);
+		return Response.json({ error: modelUnavailableMessage(conversation.provider, conversation.id), code: MODEL_UNAVAILABLE }, { status: 422 });
+	}
 	if (!providerKeyPresent(conversation.provider)) {
 		const envelope = providerKeyMissingEnvelope(conversation.provider, ["strong"]);
 		console.info(`[chat ${chatId}] turn refused — ${JSON.stringify(envelope)}`);
@@ -370,7 +377,12 @@ export async function handleChatInput(
 		conversationEngine = piEngineForSpec(conversation, () => callPurpose.background, lifecycle, retentionForSlot("strong"));
 		compactionEngine = piEngineForSpec(conversation, true, undefined, retentionForSlot("strong"));
 	}
-	catch { return Response.json({ error: conversation.provider === "chatgpt" ? chatGPTStreamError("model catalog") : isSubscriptionProvider(conversation.provider) ? nativeSubscriptionError(conversation.provider, "model catalog") : "The selected model is unavailable." }, { status: 503 }); }
+	catch (error) {
+		if (conversation.provider === "chatgpt") return Response.json({ error: chatGPTStreamError("model catalog") }, { status: 503 });
+		if (isSubscriptionProvider(conversation.provider)) return Response.json({ error: nativeSubscriptionError(conversation.provider, "model catalog") }, { status: 503 });
+		if (error instanceof ModelUnavailableError) return Response.json({ error: error.message, code: MODEL_UNAVAILABLE }, { status: 422 });
+		return Response.json({ error: "The selected model is unavailable." }, { status: 503 });
+	}
 	const capturedPolicy = submissionImagePolicyKey(conversationEngine);
 	const capturedConversation = JSON.stringify(conversation);
 	try {

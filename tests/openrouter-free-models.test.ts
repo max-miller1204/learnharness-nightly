@@ -53,6 +53,6 @@ describe("native 1.4 OpenRouter free catalog (offline, no live discovery)", { co
 	}
 	it("removed/unknown native models remain unpriced and unresolvable, never aliased to a paid fallback", () => {
 		assert.equal(callCost({ inputTokens: 1, outputTokens: 1 }, "openrouter:removed/no-such-model"), null);
-		assert.throws(() => piEngineForSpec({ provider: "openrouter", id: "removed/no-such-model" }), /catalog has no model/);
+		assert.throws(() => piEngineForSpec({ provider: "openrouter", id: "removed/no-such-model" }), /is no longer available/);
 	});
 });

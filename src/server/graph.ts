@@ -14,6 +14,7 @@ import { stores } from "./stores.ts";
 import { chainsForSelection, chainsFromVisibleSources } from "../core/chains.ts";
 import type { GraphContextPick } from "../client-protocol/index.ts";
 import { callCost } from "./pricing.ts";
+import { catalogHasModel } from "./model-catalog.ts";
 import type { ModelRole } from "../../config.ts";
 import { FACTORY_SETTINGS } from "../core/settings.ts";
 import { resolveRoleSpec } from "../core/settings-resolution.ts";
@@ -151,5 +152,6 @@ export function importEstimate(input: ImportEstimateInput): ImportEstimate {
 		{ extractor: modelId("extractor"), auditor: modelId("auditor"), imageReader: modelId("imageReader") },
 		callCost,
 		FACTORY_SETTINGS.graph.extractionChunkTokens,
+		(id) => catalogHasModel(id.slice(0, id.indexOf(":")), id.slice(id.indexOf(":") + 1)),
 	);
 }

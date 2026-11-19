@@ -8,6 +8,7 @@
 // stand-ins in tests/mocks, so components render into a tree.
 import Module, { createRequire, register } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { appAnchor, fromShared, isBare, MOCKED, mockFile } from "./shared-modules-hooks.mjs";
 
 register("./shared-modules-hooks.mjs", import.meta.url);
@@ -24,6 +25,14 @@ const resolveFilename = Module._resolveFilename;
 Module._resolveFilename = function (request, parent, ...rest) {
   if (mocks[request]) return mocks[request];
   const from = !isBare(request) ? parent : parent?.filename === speechShim ? speechAnchor : fromShared(parent?.filename) ? anchor : parent;
-  const file = resolveFilename.call(this, request, from, ...rest);
+  let file;
+  try {
+    file = resolveFilename.call(this, request, from, ...rest);
+  } catch (error) {
+    // An import-only package (pi-schema) has no "require" export: resolve it
+    // as an import from this app, and Node requires the ES module.
+    if (from !== anchor || error?.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw error;
+    file = fileURLToPath(import.meta.resolve(request));
+  }
   return file === speechExternal ? speechShim : file;
 };
