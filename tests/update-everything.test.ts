@@ -301,7 +301,7 @@ test("a launcher rejection, a rollback and the 32-minute limit fail the server s
 
 test("status reports the run, and a second click while the dialog is open is ignored", async () => {
 	const f = fixture({ answers: [0, 1] });
-	assert.deepEqual(f.ue.status(), { version: V71, target: V72, phase: "available", error: null });
+	assert.deepEqual(f.ue.status(), { version: V71, target: V72, phase: "available", error: null, downloadPercent: null });
 	let phaseWhileUpdating: unknown;
 	f.remote.onInstall = () => {
 		phaseWhileUpdating = f.ue.status().phase;

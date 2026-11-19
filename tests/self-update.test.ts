@@ -12,11 +12,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { CHECK_AFTER_COMMIT_MS, CHECK_INTERVAL_MS, createSelfUpdater, healthIdle, publicUpdateState, type SelfUpdaterDeps } from "../src/server/self-update.ts";
+import { CHECK_AFTER_COMMIT_MS, CHECK_INTERVAL_MS, createSelfUpdater, healthIdle, publicUpdateState, shouldReportDownloadProgress, type SelfUpdaterDeps } from "../src/server/self-update.ts";
 import type { ReleaseNoteGroup } from "../src/core/release-notes.ts";
 import { dataLockPath, tryAcquireDataLock } from "../src/server/data-lock.ts";
 import type { ChildMessage } from "../selfhost/src/protocol.ts";
-import { fetchRelease, releaseFeedUrl, type LatestFeed, type ServiceState } from "../selfhost/src/release.ts";
+import { fetchRelease, readBody, releaseFeedUrl, type LatestFeed, type ServiceState } from "../selfhost/src/release.ts";
 
 const CURRENT = "0.6.1-nightly.20261116.1";
 const NEXT = "0.6.1-nightly.20261117.2";
@@ -376,6 +376,96 @@ describe("self-hosted updater", () => {
 		const left = u.state().pinned;
 		f.toParent({ type: "update-rejected", reason: "a later plain Install's refusal" });
 		assert.deepEqual(u.state().pinned, left);
+	});
+
+	it("the download's percent moves the progress ring at each whole 10% (T3's rule); unknown size stays null", async () => {
+		assert.equal(shouldReportDownloadProgress(null, 0), true, "the first known percent");
+		assert.equal(shouldReportDownloadProgress(0, 9.9), false);
+		assert.equal(shouldReportDownloadProgress(9.9, 10), true);
+		assert.equal(shouldReportDownloadProgress(99, 100), true);
+		assert.equal(shouldReportDownloadProgress(null, null), false, "no size, nothing to report");
+		const seen: Array<number | null> = [];
+		let feedBytes: ((received: number, total: number | null) => void) | undefined;
+		let finish = () => {};
+		const f = fake({ stage: (_feed, _bad, onBytes) => { feedBytes = onBytes; return new Promise<void>((resolve) => { finish = resolve; }); } });
+		const u = createSelfUpdater(f.deps);
+		const pending = u.check();
+		await settle();
+		assert.equal(u.state().status, "downloading");
+		assert.equal(u.state().downloadPercent, null, "the size isn't known before the response");
+		const before = f.notifications();
+		for (const received of [0, 5, 40, 99, 100, 101, 250, 999, 1000]) {
+			feedBytes!(received, 1000);
+			seen.push(u.state().downloadPercent);
+		}
+		assert.deepEqual(seen, [0, 0, 0, 0, 10, 10, 25, 99.9, 100]);
+		assert.equal(f.notifications() - before, 5, "an update event per step, not per chunk");
+		assert.equal(publicUpdateState(u.state()).downloadPercent, 100, "public: it is no secret");
+		finish();
+		await pending;
+		assert.equal(u.state().status, "downloaded");
+		assert.equal(u.state().downloadPercent, null, "only while downloading");
+
+		const g = fake({ stage: async (_feed, _bad, onBytes) => { onBytes?.(0, null); onBytes?.(5000, null); } });
+		const v = createSelfUpdater(g.deps);
+		const states: Array<number | null> = [];
+		g.deps.notify = () => { states.push(v.state().downloadPercent); };
+		await v.check();
+		assert.deepEqual(states.filter((value) => value !== null), [], "unknown size: never a percent");
+	});
+
+	it("once every byte is in, the checksum and unpack show a full ring as preparing, until it is ready", async () => {
+		let hooks: { onBytes?: (received: number, total: number | null) => void; onPhase?: (phase: "downloading" | "verifying" | "extracting") => void } = {};
+		let finish = () => {};
+		const f = fake({ stage: (_feed, _bad, onBytes, onPhase) => { hooks = { onBytes, onPhase }; return new Promise<void>((resolve) => { finish = resolve; }); } });
+		const u = createSelfUpdater(f.deps);
+		const pending = u.check();
+		await settle();
+		hooks.onPhase!("downloading");
+		hooks.onBytes!(0, null);
+		hooks.onBytes!(4000, null);
+		assert.equal(u.state().preparing, false);
+		assert.equal(u.state().downloadPercent, null, "no size yet: an empty ring");
+		hooks.onPhase!("verifying");
+		assert.equal(u.state().status, "downloading", "Install still waits for the unpack");
+		assert.equal(u.state().preparing, true);
+		assert.equal(u.state().downloadPercent, 100, "the ring is full");
+		const events = f.notifications();
+		hooks.onPhase!("extracting");
+		hooks.onBytes!(4000, 4000);
+		assert.equal(f.notifications(), events, "the unpack and late byte counts send nothing new");
+		finish();
+		await pending;
+		assert.equal(u.state().status, "downloaded");
+		assert.equal(u.state().preparing, false);
+	});
+
+	it("a pinned download (Update everything) moves the ring too", async () => {
+		let feedBytes: ((received: number, total: number | null) => void) | undefined;
+		let finish = () => {};
+		const f = fake({ stage: (_feed, _bad, onBytes) => { feedBytes = onBytes; return new Promise<void>((resolve) => { finish = resolve; }); } });
+		const u = createSelfUpdater(f.deps);
+		const started = u.startInstallVersion(NEXT);
+		await settle();
+		feedBytes!(512, 2048);
+		assert.equal(u.state().downloadPercent, 25);
+		finish();
+		await started.done;
+	});
+
+	it("counts a response's bytes as they arrive against Content-Length", async () => {
+		const chunks = [new Uint8Array(3), new Uint8Array(5), new Uint8Array(2)];
+		const body = () => new ReadableStream<Uint8Array>({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); } });
+		const calls: Array<[number, number | null]> = [];
+		const bytes = await readBody(new Response(body(), { headers: { "content-length": "10" } }), (received, total) => calls.push([received, total]));
+		assert.equal(bytes.length, 10);
+		assert.deepEqual(calls, [[0, 10], [3, 10], [8, 10], [10, 10]]);
+		const unknown: Array<number | null> = [];
+		await readBody(new Response(body()), (_received, total) => unknown.push(total));
+		assert.ok(unknown.every((total) => total === null), "no Content-Length: unknown size");
+		const encoded: Array<number | null> = [];
+		await readBody(new Response(body(), { headers: { "content-length": "4", "content-encoding": "gzip" } }), (_received, total) => encoded.push(total));
+		assert.ok(encoded.every((total) => total === null), "a compressed transfer's length isn't the bytes read");
 	});
 
 	it("is committed unless it is a trial the launcher hasn't committed yet", async () => {

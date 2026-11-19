@@ -40,8 +40,10 @@ import {
 	isInstalled,
 	readState,
 	stageVersion,
+	type DownloadBytes,
 	type LatestFeed,
 	type ServiceState,
+	type StageOptions,
 } from "../../selfhost/src/release.ts";
 
 export type SelfUpdateStatus = "idle" | "checking" | "downloading" | "up-to-date" | "downloaded" | "error" | "disabled";
@@ -69,6 +71,12 @@ export interface SelfUpdateState {
 	/** The exact version Update everything asked this server for, why it failed (null while it
 	 *  goes on), and the attempt's id: the desktop trusts only the error of the attempt it started. */
 	pinned: { version: string; error: string | null; id: string } | null;
+	/** How far the download is while "downloading", 0 to 100; null when the size is unknown
+	 *  or nothing downloads (the sidebar's progress ring, docs/specs/update-control.md). */
+	downloadPercent: number | null;
+	/** True while "downloading" once every byte is in: the archive is checked and unpacked
+	 *  ("Preparing update", owner decision 2026-11-19). Install waits for "downloaded" as before. */
+	preparing: boolean;
 	/** Detail for the Settings row (errors, rejections, progress). */
 	message: string | null;
 	/** A rolled-back switch until dismissed. */
@@ -81,6 +89,15 @@ export interface SelfUpdateState {
 export const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 /** A server started by an update checks this long after the launcher commits it. */
 export const CHECK_AFTER_COMMIT_MS = 15_000;
+
+/** T3's shouldBroadcastDownloadProgress (apps/desktop/src/updates/DesktopUpdates.ts:325-341 at
+ *  3ce21458), for a state already "downloading": report the first known percent, then each
+ *  whole 10% and 100%. An unknown size never reports (the ring stays empty). */
+export function shouldReportDownloadProgress(current: number | null, next: number | null): boolean {
+	if (next === null) return false;
+	if (current === null) return true;
+	return Math.floor(next / 10) !== Math.floor(current / 10) || next === 100;
+}
 
 export const noticeId = (notice: UpdateNotice) => `${notice.kind}:${notice.version}:${notice.at}`;
 
@@ -96,7 +113,7 @@ export interface SelfUpdaterDeps {
 	fetchLatest(feedUrl: string): Promise<LatestFeed>;
 	/** One exact version's own feed entry (selfhost/src/release.ts fetchRelease). */
 	fetchRelease(version: string, feedUrl: string): Promise<LatestFeed>;
-	stage(feed: LatestFeed, badVersions: readonly string[]): Promise<void>;
+	stage(feed: LatestFeed, badVersions: readonly string[], onBytes?: DownloadBytes, onPhase?: StageOptions["onProgress"]): Promise<void>;
 	isInstalled(version: string): boolean;
 	readState(): ServiceState | undefined;
 	/** Merge the feed's notes into the data folder's notes cache (What's new reads it). */
@@ -113,7 +130,7 @@ export interface SelfUpdaterDeps {
 
 export function createSelfUpdater(deps: SelfUpdaterDeps) {
 	let state: SelfUpdateState = {
-		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, instance: globalThis.crypto.randomUUID(), runningVersion: deps.currentVersion, committed: !deps.trialUpdateId, pinned: null, message: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
+		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, instance: globalThis.crypto.randomUUID(), runningVersion: deps.currentVersion, committed: !deps.trialUpdateId, pinned: null, downloadPercent: null, preparing: false, message: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
 	};
 	let checkTimer: unknown;
 	let commitCheckTimer: unknown;
@@ -125,7 +142,22 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 
 	const set = (next: Partial<SelfUpdateState>) => {
 		state = { ...state, ...next, revision: state.revision + 1 };
+		if (state.status !== "downloading") state = { ...state, downloadPercent: null, preparing: false };
 		deps.notify();
+	};
+
+	/** Stage `feed`, moving the progress ring while this download is the one shown. A new
+	 *  state (and update event) only at each whole 10% and at 100%, as T3 broadcasts it.
+	 *  Once the bytes are in (the checksum, then the unpack) the ring is full: "Preparing update". */
+	const stage = (feed: LatestFeed, bad: readonly string[]) => {
+		const shown = () => state.status === "downloading" && state.version === feed.version;
+		return deps.stage(feed, bad, (received, total) => {
+			if (!shown() || state.preparing) return;
+			const percent = total ? Math.min(100, (received / total) * 100) : null;
+			if (shouldReportDownloadProgress(state.downloadPercent, percent)) set({ downloadPercent: percent });
+		}, (phase) => {
+			if (phase !== "downloading" && shown() && !state.preparing) set({ downloadPercent: 100, preparing: true });
+		});
 	};
 
 	const requestUpdate = (version: string) => {
@@ -171,8 +203,8 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			}
 			const notes = notesFor(feed);
 			if (!deps.isInstalled(feed.version)) {
-				if (!ready) set({ status: "downloading", version: feed.version, ...notes });
-				await deps.stage(feed, bad);
+				if (!ready) set({ status: "downloading", version: feed.version, downloadPercent: null, preparing: false, ...notes });
+				await stage(feed, bad);
 				if (requested) return;
 			}
 			set({ status: "downloaded", version: feed.version, message: null, ...notes });
@@ -290,8 +322,8 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 				try {
 					if (!deps.isInstalled(target)) {
 						const feed = await deps.fetchRelease(target, deps.feedUrl);
-						set({ status: "downloading", version: target, message: null, ...notesFor(feed) });
-						await deps.stage(feed, bad);
+						set({ status: "downloading", version: target, message: null, downloadPercent: null, preparing: false, ...notesFor(feed) });
+						await stage(feed, bad);
 					}
 				} catch (error) {
 					return failed(error instanceof Error ? error.message : String(error));
@@ -409,9 +441,9 @@ export function selfUpdater(): SelfUpdater {
 		autoUpdateEnabled: () => readSettings()?.general?.autoUpdate !== false,
 		fetchLatest: (url) => fetchLatest(url),
 		fetchRelease: (version, url) => fetchRelease(version, url),
-		stage: async (feed, badVersions) => {
+		stage: async (feed, badVersions, onBytes, onPhase) => {
 			if (!arch) throw new Error("This platform has no self-hosted builds.");
-			await stageVersion(home, feed, arch, { badVersions });
+			await stageVersion(home, feed, arch, { badVersions, onBytes, onProgress: onPhase });
 		},
 		isInstalled: (version) => isInstalled(home, version),
 		readState: () => {

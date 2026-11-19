@@ -12,7 +12,7 @@ import { installModalDom } from "./modal-dom.ts";
 import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
 import { UpdateSettings, updateStatusText, MANUAL_UPDATE_HINT, AUTO_UPDATE_HINT, type UpdateState } from "../components/settings/update-settings.tsx";
-import { AUTO_RELOAD_KEY, AUTO_RELOAD_MEMORY, claimAutoReload, hasUnsentMessage, SidebarUpdatePill } from "../components/sidebar-update-pill.tsx";
+import { AUTO_RELOAD_KEY, AUTO_RELOAD_MEMORY, claimAutoReload, downloadingTooltip, downloadRingOffset, hasUnsentMessage, SidebarUpdatePill, updateControlTooltip } from "../components/sidebar-update-pill.tsx";
 import { createRequire } from "node:module";
 import { ServerEventsProvider } from "../components/server-events.tsx";
 import { ReleaseNoteSections } from "../components/release-notes-view.tsx";
@@ -253,6 +253,42 @@ describe("General update rows", () => {
 		assert.equal(b.calls.check, 0, "nothing here checked on its own");
 	});
 
+	it("while downloading, T3's ring fills around the arrow and the label says how far (floored); unknown size is empty and plain", async () => {
+		assert.equal(downloadingTooltip(42.9), "Downloading update (42%)");
+		assert.equal(downloadingTooltip(0), "Downloading update (0%)");
+		assert.equal(downloadingTooltip(null), "Downloading update");
+		assert.equal(downloadingTooltip(undefined), "Downloading update");
+		const full = 2 * Math.PI * 14;
+		assert.equal(downloadRingOffset(null), full, "unknown: empty ring");
+		assert.equal(downloadRingOffset(100), 0);
+		assert.equal(downloadRingOffset(150), 0, "clamped");
+		const b = bridge(); const host = await mount(<SidebarUpdatePill />);
+		const pill = () => q(host, "update-pill")!;
+		const offset = () => Number(pill().querySelectorAll("circle")[1]!.getAttribute("stroke-dashoffset"));
+		await b.push(state({ status: "downloading", version: "0.3.8", revision: 1, downloadPercent: null }));
+		assert.equal(pill().getAttribute("aria-label"), "Downloading update");
+		assert.ok(pill().querySelector(".lucide-download"), "the download arrow stays inside the ring");
+		assert.equal(offset(), full);
+		await b.push(state({ status: "downloading", version: "0.3.8", revision: 2, downloadPercent: 0 }));
+		assert.equal(pill().getAttribute("aria-label"), "Downloading update (0%)");
+		const ring = pill().querySelectorAll("circle")[1]!;
+		await b.push(state({ status: "downloading", version: "0.3.8", revision: 3, downloadPercent: 37.6 }));
+		assert.equal(pill().getAttribute("aria-label"), "Downloading update (37%)");
+		assert.ok(Math.abs(offset() - full * (1 - 0.376)) < 1e-9);
+		assert.equal(pill().querySelectorAll("circle")[1], ring, "the same ring moves, so the 300 ms transition plays");
+		assert.match(ring.getAttribute("class") ?? "", /transition-\[stroke-dashoffset\] duration-300 ease-out motion-reduce:transition-none/);
+		assert.match(pill().querySelectorAll("circle")[0]!.getAttribute("class") ?? "", /stroke-current\/22/, "the track at 22%");
+		assert.equal(pill().getAttribute("aria-disabled"), "true");
+		await b.push(state({ status: "downloading", version: "0.3.8", revision: 4, downloadPercent: 100, preparing: true }));
+		assert.equal(pill().getAttribute("aria-label"), "Preparing update", "every byte is in: checked and unpacked next");
+		assert.equal(offset(), 0, "a full ring");
+		assert.equal(pill().getAttribute("aria-disabled"), "true");
+		assert.equal(updateStatusText(state({ status: "downloading", version: "0.3.8", preparing: true })), "Preparing version 0.3.8…");
+		assert.equal(updateControlTooltip(state({ status: "downloading", preparing: true }), "downloading"), "Preparing update");
+		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 5 }));
+		assert.equal(pill().querySelector("circle"), null, "no ring once downloaded");
+	});
+
 	it("clicking checks only, and the spin lasts at least one full turn, then stops at a turn boundary once the check ends", async () => {
 		const b = bridge(); const host = await mount(<SidebarUpdatePill />);
 		const pill = () => q(host, "update-pill")!;
@@ -442,7 +478,7 @@ describe("General update rows", () => {
 describe("Update everything in the desktop app's window onto a server (roadmap item 23)", () => {
 	const V71 = "0.6.1-nightly.20261118.71";
 	const V72 = "0.6.1-nightly.20261118.72";
-	type Status = { version: string; target: string | null; phase: string; error: string | null };
+	type Status = { version: string; target: string | null; phase: string; error: string | null; downloadPercent?: number | null };
 	function remote(status: Status, server: UpdateState) {
 		let current = status;
 		const calls = { getStatus: 0, check: 0, download: 0, install: 0, fetches: [] as string[] };
@@ -473,6 +509,15 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		assert.equal(calls.install, 1, "the app opens its own confirmation");
 		assert.equal(calls.download, 0);
 		assert.ok(!calls.fetches.some((url) => url.includes("/install")), "the page never installs anything on the server itself");
+	});
+
+	it("this app's own download shows its percent in the ring and label, not the server's", async () => {
+		const r = await pillIn({ version: V71, target: V72, phase: "downloading", error: null, downloadPercent: 61.4 }, state({ status: "downloading", version: V72, runningVersion: V71, downloadPercent: 10 }));
+		assert.equal(r.pill().getAttribute("data-action"), "downloading");
+		assert.equal(r.pill().getAttribute("aria-label"), "Downloading update (61%)");
+		for (const { root, host } of roots.splice(0)) { await act(async () => { root.unmount(); }); host.remove(); }
+		const old = await pillIn({ version: V71, target: V72, phase: "downloading", error: null }, state({ status: "up-to-date", runningVersion: V71 }));
+		assert.equal(old.pill().getAttribute("aria-label"), "Downloading update", "an app that doesn't report a percent");
 	});
 
 	it("with the server already on the app's version it is a plain app download or install (T3 shows everything only while a server is behind)", async () => {
