@@ -97,6 +97,10 @@ export function claimAutoReload(version: string): boolean {
 	}
 }
 
+/** The server runs exactly `version` and its launcher committed it (not an uncommitted trial). */
+const serverKept = (state: UpdateState, version: string) =>
+	!!state.runningVersion && isExactVersion(state.runningVersion) && state.runningVersion === version && state.committed === true;
+
 /** The one place that picks the button's state (T3's resolveSidebarUpdatePresentation order).
  *  `desktop` is this app's own update, only in its window onto a self-hosted server.
  *  `installing`: the user confirmed Install in this page and the restart hasn't happened. */
@@ -106,8 +110,9 @@ export function resolveUpdateControl(state: UpdateState | null, { showCheckIcon 
 	if (showCheckIcon) return "checking";
 	if (desktop?.phase === "downloading") return "downloading";
 	const offered = desktopOffer(desktop);
-	// A run whose server already runs this app's version only has this app's restart left.
-	if (desktop?.phase === "updating") return offered && !isNewerVersion(offered, state.runningVersion) ? "restarting" : "everything";
+	// Only this app's restart is left once the server runs its version and the launcher kept it,
+	// the run's own condition (electron/update-everything.cjs, updateServer).
+	if (desktop?.phase === "updating") return offered && serverKept(state, offered) ? "restarting" : "everything";
 	if (offered && (desktop?.phase === "available" || desktop?.phase === "downloaded")) {
 		if (isNewerVersion(offered, state.runningVersion)) return "everything";
 		return desktop.phase === "downloaded" ? "app-install" : "app-download";
@@ -201,6 +206,11 @@ export const showsCheckIcon = (checking: boolean, latched: boolean, reducedMotio
 export const continuesCheckSpin = (checking: boolean, reducedMotion: boolean) => checking && !reducedMotion;
 
 const CLOSE_DELAY_MS = 150;
+
+/** Keyboard focus only (components/ui/tooltip.tsx does the same); a DOM without :focus-visible says no. */
+function focusVisible(element: Element): boolean {
+	try { return element.matches(":focus-visible"); } catch { return false; }
+}
 
 function useReducedMotion(): boolean {
 	const [reduced, setReduced] = useState(false);
@@ -360,6 +370,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 		else if (isChecking) setLatched(true);
 	}, [isChecking, reducedMotion]);
 	const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const buttonRef = useRef<HTMLButtonElement>(null);
 	const popoverId = useId();
 	useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
 
@@ -420,6 +431,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 
 	const button = (
 		<button
+			ref={buttonRef}
 			type="button"
 			data-testid="update-pill"
 			data-action={kind}
@@ -429,7 +441,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 			onClick={onClick}
 			onPointerEnter={show}
 			onPointerLeave={hideSoon}
-			onFocus={(event) => { if (event.currentTarget.matches(":focus-visible")) show(); }}
+			onFocus={(event) => { if (focusVisible(event.currentTarget)) show(); }}
 			onBlur={hideSoon}
 			className={cn(
 				"inline-flex size-8 shrink-0 items-center justify-center rounded-full outline-hidden ring-ring transition-colors focus-visible:ring-2 focus-visible:ring-inset",
@@ -446,10 +458,12 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 
 	return (
 		<div className="ml-auto shrink-0">
-			{showsNotes ? (
-				<Popper.Root>
-					<Popper.Anchor asChild>{button}</Popper.Anchor>
-					{open && createPortal(
+			{/* One tree for every state, so the button stays mounted (and keeps keyboard focus) when the
+			    release notes come and go. The notes anchor on the trigger through the Tooltip's own Popper. */}
+			<TooltipProvider>
+				<Tooltip>
+					<TooltipTrigger asChild>{button}</TooltipTrigger>
+					{showsNotes ? open && createPortal(
 						<Popper.Content side="top" align="center" sideOffset={8} collisionPadding={8} className="z-50">
 							<div
 								id={popoverId}
@@ -467,12 +481,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 							</div>
 						</Popper.Content>,
 						document.body,
-					)}
-				</Popper.Root>
-			) : (
-				<TooltipProvider>
-					<Tooltip>
-						<TooltipTrigger asChild>{button}</TooltipTrigger>
+					) : (
 						<TooltipContent side="top" data-testid="update-pill-tooltip">
 							{detail ? (
 								<div className="text-left">
@@ -481,9 +490,9 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 								</div>
 							) : tooltip}
 						</TooltipContent>
-					</Tooltip>
-				</TooltipProvider>
-			)}
+					)}
+				</Tooltip>
+			</TooltipProvider>
 			<InstallUpdateDialog
 				open={confirming && state.status === "downloaded"}
 				version={state.version}
@@ -491,6 +500,13 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 				onConfirm={() => {
 					setConfirming(false);
 					setInstalling(true);
+					// The dialog hands focus back only to an enabled opener, and the button is now disabled:
+					// put focus back on it when it would otherwise drop to the page.
+					const target = buttonRef.current;
+					setTimeout(() => {
+						const active = document.activeElement;
+						if (target?.isConnected && (!active || active === document.body || !active.isConnected)) target.focus({ preventScroll: true });
+					}, 0);
 					// A failed request (the existing error behavior: the server's error state) shows the normal button again.
 					void install().then((sent) => { if (!sent) setInstalling(false); });
 				}}

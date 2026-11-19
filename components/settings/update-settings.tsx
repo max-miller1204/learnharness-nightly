@@ -29,6 +29,8 @@ export type UpdateState = {
 	instance?: string;
 	/** Self-hosted only: the version the server runs. Newer than this page's APP_VERSION means the page should reload. */
 	runningVersion?: string;
+	/** Self-hosted only: the launcher kept the running version (false while it is an uncommitted trial). */
+	committed?: boolean;
 	message?: string | null;
 	/** While "downloading": how far, 0 to 100, or null when the size is unknown (the sidebar's progress ring). */
 	downloadPercent?: number | null;
@@ -146,10 +148,10 @@ export function useUpdateState() {
 	/** Apply now. Callers confirm first (InstallUpdateDialog). Resolves false when the request
 	 *  failed (the sidebar control then shows its normal button again), never rejects. */
 	const install = useCallback(async (): Promise<boolean> => {
-		const lh = localDesktopBridge();
-		if (lh) { lh.installUpdate?.(); return true; }
 		try {
-			accept(await fetchWebState("/api/updates/install", "POST"));
+			const lh = localDesktopBridge();
+			if (lh) lh.installUpdate?.();
+			else accept(await fetchWebState("/api/updates/install", "POST"));
 			return true;
 		} catch {
 			setFailed(true);
