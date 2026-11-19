@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { uuid } from "expo";
-import { File, UploadTask, UploadType } from "expo-file-system";
+import { Directory, File, Paths, UploadTask, UploadType } from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import type { AttachmentSend } from "../../../src/client-protocol/index.ts";
 import { AttachmentDraft, photoFileName, type DraftFile, type PickedFile, type PutFile } from "./attachments";
@@ -37,6 +37,18 @@ function photos(result: ImagePicker.ImagePickerResult): PickedFile[] {
   });
 }
 
+/** Android's file picker returns content URIs whose last segment is an ID such
+ *  as "document:21". A copy into a fresh cache folder takes the provider's
+ *  display name, so the chip and the teacher see the real filename. */
+async function named(file: File): Promise<File> {
+  if (!file.uri.startsWith("content:")) return file;
+  const folder = new Directory(Paths.cache, "attachments", uuid.v4());
+  folder.create({ intermediates: true });
+  await file.copy(folder);
+  const [copy] = folder.list();
+  return copy instanceof File ? copy : file;
+}
+
 /** The picked files, or a note to show instead. */
 async function pick(kind: PickKind): Promise<PickedFile[] | string> {
   if (kind === "camera") {
@@ -49,7 +61,10 @@ async function pick(kind: PickKind): Promise<PickedFile[] | string> {
   }
   const result = await File.pickFileAsync({ multipleFiles: true });
   if (result.canceled) return [];
-  return result.result.map((file) => ({ name: file.name, uri: file.uri, mimeType: file.type || "application/octet-stream", size: file.size }));
+  return Promise.all(result.result.map(async (picked) => {
+    const file = await named(picked);
+    return { name: file.name, uri: file.uri, mimeType: picked.type || file.type || "application/octet-stream", size: file.size };
+  }));
 }
 
 /** One composer's attachments: an existing chat's, or without `chatId` the opening draft's. */
