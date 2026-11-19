@@ -24,7 +24,7 @@ of replacing these primary examples.
 
 ## Core references are not Community packages
 
-The four IDs **`flashcards`**, **`coding-questions`**, **`drawing-pad`** and
+The IDs **`flashcards`**, **`coding-questions`**, **`drawing-pad`** and
 **`rich-code-blocks`** are reserved for app-shipped Core plugins, even when a Core
 package is disabled, broken or missing. Their sources are included for study and
 adaptation, not installation as Community duplicates. Enable the app-supplied features
@@ -230,7 +230,7 @@ feature safeguards, not a sandbox for arbitrary plugin JavaScript.
 ### UI Showcase: all 15 UI methods
 
 The [README gallery map](../plugins/ui-showcase/README.md#gallery-map) groups all methods
-into 12 families. Start in [`src/gallery.ts`](../plugins/ui-showcase/src/gallery.ts):
+into families. Start in [`src/gallery.ts`](../plugins/ui-showcase/src/gallery.ts):
 
 | Area | Methods |
 | --- | --- |

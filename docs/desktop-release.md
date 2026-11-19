@@ -101,7 +101,7 @@ The workflow maps the certificate to `CSC_LINK`/`CSC_KEY_PASSWORD`; signing cred
 
 1. Agree scope/version and complete relevant gates and human functional acceptance. Use manual dispatch if rehearsal installers are useful; unsigned rehearsal does not prove macOS signing.
 2. Update package/lockfile versions, check the intended source on main, and push the authorized matching tag. Verify signing secrets before production macOS packaging.
-3. Wait for **all OS jobs and Verify draft release**. Inspect the single draft's tag, notes, 11 assets, and feeds. Diagnose failures before retrying. Re-upload replaces same-named assets; stale extras still fail. Deleting assets/releases is a mutation, not verification.
+3. Wait for **all OS jobs and Verify draft release**. Inspect the single draft's tag, notes, assets, and feeds. Diagnose failures before retrying. Re-upload replaces same-named assets; stale extras still fail. Deleting assets/releases is a mutation, not verification.
 4. If editing draft metadata, include canonical **`tag_name: "v<version>"` in every metadata PATCH**, even for title/body changes; omission has reset tags before. Re-read tag, draft status, and assets afterward. A tag correction does not authorize deleting/recreating a release.
 5. The owner checks the packaged build as needed and explicitly publishes the complete draft. Confirm public installers/feeds and website links; use a prior installed version for real update-path checks.
 
