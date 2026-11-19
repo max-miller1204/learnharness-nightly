@@ -11,6 +11,7 @@ let ready: Promise<void> | undefined;
 export function startSpeech(): Promise<void> {
   ready ??= (async () => {
     // Required here, not imported, so the engine and its rules load only once math is read.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const sre = require("speech-rule-engine/js/common/system.js") as typeof Sre;
     await sre.engineReady();
     // Readiness resets the domain to MathSpeak, so ClearSpeak is set last.
@@ -22,10 +23,21 @@ export function startSpeech(): Promise<void> {
   return ready;
 }
 
+/** True once startSpeech has resolved, so a newly shown row reads spoken math at once. */
+export const speechReady = () => engine !== undefined;
+
+const spoken = new Map<string, string>();
+
 /** Speaks MathML. The engine catches its own errors and returns "" for math it can't speak. */
 export function speak(mathml: string): string {
   if (!engine) throw new Error("Speech has not started");
-  return engine.toSpeech(mathml);
+  let said = spoken.get(mathml);
+  if (said === undefined) {
+    said = engine.toSpeech(mathml);
+    if (spoken.size >= 500) spoken.clear();
+    spoken.set(mathml, said);
+  }
+  return said;
 }
 
 /** One equation as a screen reader reads it: spoken by the engine when it can,

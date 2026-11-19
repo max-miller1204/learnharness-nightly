@@ -9,6 +9,9 @@ import type { MobileApi } from "./protocol";
 import { helperCard, isSubagentSteer, teachSeam } from "./lesson";
 import { CompactionCut, CompactionNote, DispatchCard, GraphContextCard, ReasoningRow, SeamDivider, SteerCard, ThinkingRow } from "./LessonParts";
 import { Markdown } from "./Markdown";
+import { hasMath, joinPieces, plainText, splitLabel } from "./choice-math";
+import { spokenLabel } from "./math-speech";
+import { MathLabel, useSpeech } from "./MathLabel";
 import { SavedChips } from "./Attachments";
 import { PlanDiagram } from "./PlanDiagram";
 import { Label } from "./ui";
@@ -106,8 +109,6 @@ function Part({ part, context }: { part: LhViewPart; context: PartContext }) {
   if (part.state === "output-available") {
     const answer = part.output as Partial<QuestionAnswerData> | undefined;
     if (answer?.questionText && (answer.kind === "quiz" || answer.kind === "ask" || answer.kind === "explain")) {
-      const response = answer.dismissed ? "Skipped" : answer.dontKnow ? "I don’t know" :
-        [answer.text, ...answer.answers?.map(({ label }) => label) ?? [], answer.other].filter(Boolean).join(", ");
       const thinking = answer.thinking ?? answer.note;
       return (
         <View style={{ gap: space.sm }}>
@@ -115,7 +116,7 @@ function Part({ part, context }: { part: LhViewPart; context: PartContext }) {
           {!answer.dismissed && !!answer.readingThinking && <ThinkingRow label="Your thinking" text={answer.readingThinking} />}
           <View style={s.card}>
             <Markdown text={answer.questionText} />
-            {!!response && <Text selectable style={s.prose}>{response}</Text>}
+            <AnsweredResponse answer={answer} />
             {typeof answer.correct === "boolean" && !answer.dismissed && !answer.dontKnow &&
               <Text style={[s.label, { color: answer.correct ? c.success : c.error }]}>{answer.correct ? "Correct" : "Incorrect"}</Text>}
             {!!answer.explanation && <Markdown text={answer.explanation} />}
@@ -175,4 +176,22 @@ export function Transcript({ settled, tail, api, chatId, jobs, liveHelpers, open
       ))}
     </>
   );
+}
+
+/** The answered card's response line. Math in the chosen labels is drawn, and the line is
+ * one screen-reader stop with the math spoken, never split into pieces. Typed text and
+ * "Other" stay plain. */
+function AnsweredResponse({ answer }: { answer: Partial<QuestionAnswerData> }) {
+  const { c, s } = useTheme();
+  const response = answer.dismissed ? "Skipped" : answer.dontKnow ? "I don’t know" :
+    [answer.text, ...answer.answers?.map(({ label }) => label) ?? [], answer.other].filter(Boolean).join(", ");
+  const pieces = useMemo(() => answer.dismissed || answer.dontKnow ? plainText(response)
+    : joinPieces([plainText(answer.text ?? ""), ...answer.answers?.map(({ label }) => splitLabel(label)) ?? [], plainText(answer.other ?? "")], ", "),
+  [answer, response]);
+  const drawn = hasMath(pieces);
+  const speech = useSpeech(drawn);
+  const spoken = useMemo(() => drawn ? spokenLabel(pieces, speech) : response, [drawn, pieces, speech, response]);
+  if (!response) return null;
+  if (!drawn) return <Text selectable style={s.prose}>{response}</Text>;
+  return <View accessible accessibilityLabel={spoken}><MathLabel pieces={pieces} style={s.prose} color={c.text} /></View>;
 }

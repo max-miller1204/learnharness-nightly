@@ -12,7 +12,11 @@
       "typebox/*": ["./node_modules/typebox/build/*/index.d.mts"],
       "dagre-d3-es": ["./node_modules/dagre-d3-es"],
       "dagre-d3-es/*": ["./node_modules/dagre-d3-es/*"],
-      "d3-shape": ["./node_modules/@types/d3-shape"]
+      "d3-shape": ["./node_modules/@types/d3-shape"],
+      "katex": ["./node_modules/katex"],
+      "mdast-util-from-markdown": ["./node_modules/mdast-util-from-markdown"],
+      "mdast-util-math": ["./node_modules/mdast-util-math"],
+      "micromark-extension-math": ["./node_modules/micromark-extension-math"]
     }
   },
   "include": ["index.ts", "src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts"]
