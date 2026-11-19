@@ -254,6 +254,9 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 	const seenInputs = new Set((opts.messages ?? []).map((m) => (m as { id?: string }).id).filter(Boolean));
 	const agent = new Agent({
 		identity: APP_IDENTITY,
+		// The session id also turns on Pi's Anthropic message threads on
+		// api.anthropic.com (owner's choice to keep): later requests continue
+		// the server-side thread and send only the new messages.
 		sessionId: opts.chatId,
 		initialState: {
 			systemPrompt,

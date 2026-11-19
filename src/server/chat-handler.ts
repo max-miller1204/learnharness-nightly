@@ -9,7 +9,7 @@ import {
 	type AgentBuildOptions,
 	type TeachingAgent,
 } from "../agent/teacher-agent.ts";
-import { piEngineForSpec, type PiEngine } from "../agent/models.ts";
+import { ModelUnavailableError, piEngineForSpec, type PiEngine } from "../agent/models.ts";
 import { connectionBackgroundAllowed as subscriptionBackgroundAllowed, connectionScopeCurrent, isSubscriptionProvider } from "../agent/subscription-connections.ts";
 import { nativeSubscriptionError } from "../agent/subscription-stream.ts";
 import { chatGPTStreamError } from "../agent/chatgpt-stream.ts";
@@ -370,7 +370,11 @@ export async function handleChatInput(
 		conversationEngine = piEngineForSpec(conversation, () => callPurpose.background, lifecycle, retentionForSlot("strong"));
 		compactionEngine = piEngineForSpec(conversation, true, undefined, retentionForSlot("strong"));
 	}
-	catch { return Response.json({ error: conversation.provider === "chatgpt" ? chatGPTStreamError("model catalog") : isSubscriptionProvider(conversation.provider) ? nativeSubscriptionError(conversation.provider, "model catalog") : "The selected model is unavailable." }, { status: 503 }); }
+	catch (error) {
+		if (conversation.provider === "chatgpt") return Response.json({ error: chatGPTStreamError("model catalog") }, { status: 503 });
+		if (isSubscriptionProvider(conversation.provider)) return Response.json({ error: nativeSubscriptionError(conversation.provider, "model catalog") }, { status: 503 });
+		return Response.json(error instanceof ModelUnavailableError ? { error: error.message, code: "model_unavailable" } : { error: "The selected model is unavailable." }, { status: 503 });
+	}
 	const capturedPolicy = submissionImagePolicyKey(conversationEngine);
 	const capturedConversation = JSON.stringify(conversation);
 	try {

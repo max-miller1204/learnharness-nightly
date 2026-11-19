@@ -24,7 +24,7 @@ import { healEncodedArguments } from "../../core/argument-heal.ts";
 // OpenRouter log evidence: weak models under a big submit payload often
 // emit a whole array as ONE JSON-STRING instead of a native array
 // ("propositions.0: must be object"). pi-agent-core runs
-// `prepareArguments` BEFORE TypeBox validation — the sanctioned shim
+// `prepareArguments` BEFORE it validates the arguments, the sanctioned shim
 // point (same doctrine as restoreMathEscapes at the display seam: heal
 // weak-model wire behavior, don't punish it with a retry). Best-effort:
 // heal only a string that parses to an array; anything else passes
@@ -68,7 +68,7 @@ export async function runSubmitAgent<T>(opts: {
 	/** Debug: raw provider-event recording key (LH_PROVIDER_EVENTS=1). */
 	chatId?: string;
 	/** Weak-model argument heal at pi's prepareArguments seam (runs BEFORE
-	 *  TypeBox validation — the sanctioned shim point). Identity by
+	 *  pi validates the arguments, the sanctioned shim point). Identity by
 	 *  default; extraction wires healStringifiedArrays here. */
 	prepareArguments?: (args: unknown) => unknown;
 	/** Semantic validation at the submit seam: the value is schema-valid

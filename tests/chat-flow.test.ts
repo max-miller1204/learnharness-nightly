@@ -1117,6 +1117,42 @@ describe("the key-presence turn gate (provider-key interlude, 2026-09-25)", () =
 	});
 });
 
+describe("saved models the catalog renamed or removed (tolerant read, no data rewrite)", () => {
+	const withKey = async (run: () => Promise<void>) => {
+		const saved = process.env.OPENCODE_API_KEY;
+		process.env.OPENCODE_API_KEY = "test-saved-model";
+		try { await run(); } finally {
+			if (saved !== undefined) process.env.OPENCODE_API_KEY = saved;
+			else delete process.env.OPENCODE_API_KEY;
+		}
+	};
+
+	it("a renamed model id still runs, and the stored pin is left as saved", async () => withKey(async () => {
+		const chat = chatStore.createChat("Test: renamed model");
+		createdChats.push(chat.id);
+		chatStore.saveSettings(chat.id, { model: { provider: "opencode-go", id: "gemini-4-argon-contributor" } });
+		const res = await handleChatRequest(post(chat.id, { type: "text", text: "teach me something" }), agentFactory(scriptedTeacher(defaultLesson).engine));
+		assert.equal(res.status, 200, "the old id reads as its current catalog id");
+		await drainRunning(chat.id);
+		assert.deepEqual(chatStore.getChat(chat.id)!.settings?.model, { provider: "opencode-go", id: "gemini-4-argon-contributor" });
+	}));
+
+	it("a removed model fails the turn with a message naming it, and never switches models", async () => withKey(async () => {
+		const chat = chatStore.createChat("Test: removed model");
+		createdChats.push(chat.id);
+		chatStore.saveSettings(chat.id, { model: { provider: "opencode-go", id: "minimax-m3.1-flash-free" } });
+		const res = await handleChatRequest(post(chat.id, { type: "text", text: "teach me something" }), agentFactory(scriptedTeacher(defaultLesson).engine));
+		assert.equal(res.status, 503);
+		assert.deepEqual(await res.json(), {
+			error: "The model opencode-go/minimax-m3.1-flash-free is no longer available. Pick another model in Settings.",
+			code: "model_unavailable",
+		});
+		assert.equal(isTurnRunning(chat.id), false);
+		assert.equal(chatStore.getChat(chat.id)!.messages.length, 0, "no write-ahead persist");
+		assert.deepEqual(chatStore.getChat(chat.id)!.settings?.model, { provider: "opencode-go", id: "minimax-m3.1-flash-free" });
+	}));
+});
+
 describe("background-turn runner (owner ruling 2026-09-25: every turn is a server-side process, clients are views)", () => {
 	it("CONNECTION DIET B (owner, 2026-10-10): the POST acks and closes — the response never holds the turn's stream", async () => {
 		let release!: () => void;

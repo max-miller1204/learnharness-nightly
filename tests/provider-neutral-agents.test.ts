@@ -288,10 +288,22 @@ function assertPayload(transport: Transport, loop: Loop, round: number, body: Re
 	// Only Anthropic's own endpoint gets message threads: later rounds
 	// continue the thread, sending just the new turn, and the server keeps
 	// the tools and earlier messages.
-	const thread = (body.thread as { type?: string } | undefined)?.type;
-	assert.equal(thread, transport.provider === "anthropic" ? (round === 0 ? "create" : "continue") : undefined);
+	const thread = body.thread as { type?: string; previous_message_id?: string } | undefined;
+	assert.equal(thread?.type, transport.provider === "anthropic" ? (round === 0 ? "create" : "continue") : undefined);
 	const json = JSON.stringify(body);
-	if (thread !== "continue") {
+	if (thread?.type === "continue") {
+		// A continue builds on the previous reply and carries exactly that
+		// reply's tool results: nothing earlier (the server has it), nothing
+		// missing (or the thread would lose the conversation).
+		assert.equal(thread.previous_message_id, `msg_offline_${round - 1}`);
+		assert.equal(body.system, undefined, "the thread keeps its system prompt");
+		assert.equal(body.tools, undefined, "the thread keeps its tools");
+		const messages = body.messages as { role: string; content: { type: string; tool_use_id?: string }[] }[];
+		assert.ok(messages.every((message) => message.role === "user"), "the assistant reply is already in the thread");
+		const results = messages.flatMap((message) => message.content).filter((part) => part.type === "tool_result").map((part) => part.tool_use_id);
+		assert.deepEqual(results, callsFor(loop, round - 1).map((_, i) => `call_${round - 1}_${i}`));
+		assert.doesNotMatch(json, new RegExp(loop === "visual" ? "white square" : "Read page 1"), "the opening prompt is not resent");
+	} else {
 		// Native Responses models may declare tools in additional_tools input
 		// items rather than top-level tools; assert the SDK's complete payload.
 		assert.match(json, new RegExp(loop === "visual" ? "write_svg" : "pdf_extract"));

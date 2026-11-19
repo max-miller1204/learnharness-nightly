@@ -312,7 +312,7 @@ describe("pi thinking truth (pinned against pi-ai upgrades)", () => {
 		assert.equal(over.level, "high");
 		const clamped = piEngineForSpec({ provider: "openrouter", id: "z-ai/glm-5.3-flash", thinkingLevel: "minimal" });
 		assert.equal(clamped.level, "low");
-		assert.throws(() => piEngineForSpec({ provider: "openrouter", id: "nope/nope", thinkingLevel: "low" }), /catalog has no model/);
+		assert.throws(() => piEngineForSpec({ provider: "openrouter", id: "nope/nope", thinkingLevel: "low" }), /is no longer available/);
 	});
 
 	it("UNSET levels resolve from the baked DEFAULT_THINKING_ORDER (owner, 2026-09-22)", () => {

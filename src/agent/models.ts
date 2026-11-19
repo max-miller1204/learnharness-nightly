@@ -124,6 +124,31 @@ function defaultThinkingLevel(model: Model<Api>): ThinkingLevel {
 	return supported[0] ?? "off";
 }
 
+/** Catalog ids Pi renamed, read at lookup time so a saved slot or session
+ *  pin keeps its model without rewriting stored data. Only the same model
+ *  through the same API at the same or a lower price: a model that went
+ *  from free to paid is removed, not renamed. */
+const RENAMED_MODEL_IDS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+	"opencode-go": { "gemini-4-argon-contributor": "gemini-4-argon", "longcat-2.5-preview-free": "longcat-2.5-free" },
+	opencode: { "longcat-2.5-preview-free": "longcat-2.5-free" },
+	"vercel-ai-gateway": { "meituan/longcat-2.5-preview": "meituan/longcat-2.5" },
+};
+
+/** The id Pi's catalog knows a saved model by. */
+export function currentCatalogId(provider: string, id: string): string {
+	const renames = Object.hasOwn(RENAMED_MODEL_IDS, provider) ? RENAMED_MODEL_IDS[provider]! : undefined;
+	return renames && Object.hasOwn(renames, id) ? renames[id]! : id;
+}
+
+/** A saved model the catalog no longer has. Its message is for the learner:
+ *  the turn fails rather than silently running on another model. */
+export class ModelUnavailableError extends Error {
+	constructor(readonly provider: string, readonly id: string) {
+		super(`The model ${provider}/${id} is no longer available. Pick another model in Settings.`);
+		this.name = "ModelUnavailableError";
+	}
+}
+
 /** The production engine for a RESOLVED spec (model slots wave,
  *  2026-09-20): provider-aware catalog lookup + thinking clamp. The API
  *  key is resolved by pi-ai itself from the environment per request (the
@@ -132,14 +157,14 @@ function defaultThinkingLevel(model: Model<Api>): ThinkingLevel {
 export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (() => boolean) = true, lifecycle?: ChatGPTDispatchLifecycle, cacheRetention?: () => CacheRetention | undefined): PiEngine {
 	const models: Models = piModels();
 	const nativeId = nativeSubscriptionId(spec.provider);
-	const registeredModel = spec.provider === "chatgpt" ? chatGPTModel(spec.id) : nativeId ? nativeSubscriptionModel(spec.provider, spec.id) : models.getModel(spec.provider, spec.id);
+	const registeredModel = spec.provider === "chatgpt" ? chatGPTModel(spec.id) : nativeId ? nativeSubscriptionModel(spec.provider, spec.id) : models.getModel(spec.provider, currentCatalogId(spec.provider, spec.id));
 	const custom = providerSource?.isCustom(spec.provider) ?? false;
 	// Custom endpoint owners authorize image attempts independently of sparse
 	// discovery metadata. Never promote the registered/catalog capabilities.
 	const permitImages = (value: Model<Api>): Model<Api> => ({ ...value, input: ["text", "image"] });
 	const model = custom && registeredModel ? permitImages(registeredModel) : registeredModel;
 	if (!model) {
-		throw new Error(`${spec.provider} catalog has no model ${spec.id}`);
+		throw new ModelUnavailableError(spec.provider, spec.id);
 	}
 	// UNSET level → the baked default order (first entry the model
 	// supports); SET level → pi's native nearest-clamp (model swaps keep

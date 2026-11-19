@@ -28,7 +28,6 @@
  */
 
 import { compile, type CoercingValidator } from "@earendil-works/pi-schema";
-import { formats } from "@earendil-works/pi-schema/formats";
 import { Value } from "typebox/value";
 import type { TSchema } from "typebox";
 import { quizDisplayInputSchema, askInputSchema, askOptionProblems, quizInputProblems, explainInputProblems, explainDisplayInputSchema, type AskToolInput, type QuizToolInput, type ExplainToolInput } from "./question-core.ts";
@@ -51,21 +50,25 @@ export function posedPluginQuestionOfPart(part: { pluginQuestion?: unknown }): P
  *  poses the quiz fine. But the persisted record keeps the RAW arguments,
  *  so a parse seam that skipped coercion would reject the exact input the
  *  boundary accepted: an invisible pending quiz and a learner lockout.
- *  Every display parse therefore runs the boundary's own call with its own
- *  options, then Value.Clean strips the unknown keys pi lets through, for
- *  the display shape. One validator per schema, as pi-ai caches them. */
+ *  Every display parse therefore runs the boundary's own coercion and
+ *  check, then Value.Clean strips the unknown keys pi lets through, for
+ *  the display shape. Pi also passes its `formats`; no schema here uses
+ *  `format` (tests/tool-parts.test.ts pins that), so they would check
+ *  nothing and only add their code to every client. check() rather than
+ *  parse(), which builds an error list nobody reads. One validator per
+ *  schema, as pi-ai caches them. */
 const boundaryValidators = new WeakMap<TSchema, CoercingValidator<unknown>>();
 function boundaryParse<T>(schema: TSchema, input: unknown): T | undefined {
 	if (typeof input !== "object" || input === null) return undefined;
 	let validator = boundaryValidators.get(schema);
 	if (!validator) {
-		validator = compile(schema, { formats, coerce: true, unresolvedRefs: "reject" });
+		validator = compile(schema, { coerce: true, unresolvedRefs: "reject" });
 		boundaryValidators.set(schema, validator);
 	}
-	const result = validator.parse(input);
-	if (!result.ok) return undefined;
-	// parse() shares unchanged members with the input; Clean mutates.
-	return Value.Clean(schema, structuredClone(result.value)) as T;
+	const coerced = validator.coerce(input);
+	if (!validator.check(coerced)) return undefined;
+	// coerce() shares unchanged members with the input; Clean mutates.
+	return Value.Clean(schema, structuredClone(coerced)) as T;
 }
 
 /**
