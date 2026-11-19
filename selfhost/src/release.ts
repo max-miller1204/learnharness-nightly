@@ -128,10 +128,10 @@ export function mergeFeedNotes(entry: FeedNote, previous: readonly FeedNote[]): 
 	return merged.slice(0, FEED_NOTES_KEEP);
 }
 
-/** Read a URL (https: or file:) as bytes. */
 /** Bytes received so far and the total from Content-Length (null when the server doesn't say). */
 export type DownloadBytes = (received: number, total: number | null) => void;
 
+/** Read a URL (https: or file:) as bytes. */
 async function readUrl(url: string, signal?: AbortSignal, onBytes?: DownloadBytes): Promise<Buffer> {
 	if (url.startsWith("file:")) {
 		const bytes = await fsp.readFile(fileURLToPath(url));
