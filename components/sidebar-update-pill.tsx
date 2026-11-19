@@ -351,7 +351,7 @@ function ReloadConfirmDialog({ open, onClose, onConfirm }: { open: boolean; onCl
 }
 
 export function SidebarUpdatePill({ reload = () => window.location.reload(), pageVersion = APP_VERSION }: { reload?: () => void; pageVersion?: string } = {}) {
-	const { state, check, install, download, dismissNotice } = useUpdateState();
+	const { state, transport, check, install, download, dismissNotice } = useUpdateState();
 	const desktop = useDesktopAppUpdate();
 	const desktopStatus = desktop?.status ?? null;
 	const reducedMotion = useReducedMotion();
@@ -499,14 +499,23 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 				onClose={() => setConfirming(false)}
 				onConfirm={() => {
 					setConfirming(false);
-					setInstalling(true);
-					// The dialog hands focus back only to an enabled opener, and the button is now disabled:
-					// put focus back on it when it would otherwise drop to the page.
+					// The dialog hands focus back only to an enabled opener, and the restarting button is
+					// disabled: put focus back on it when it would otherwise drop to the page.
 					const target = buttonRef.current;
-					setTimeout(() => {
-						const active = document.activeElement;
-						if (target?.isConnected && (!active || active === document.body || !active.isConnected)) target.focus({ preventScroll: true });
-					}, 0);
+					const startRestarting = () => {
+						setInstalling(true);
+						setTimeout(() => {
+							const active = document.activeElement;
+							if (target?.isConnected && (!active || active === document.body || !active.isConnected)) target.focus({ preventScroll: true });
+						}, 0);
+					};
+					if (transport === "desktop") {
+						// The app can turn it down (an Update everything run owns its updater): Restarting
+						// only after its yes, and until then the normal button, focus untouched.
+						void install().then((accepted) => { if (accepted) startRestarting(); });
+						return;
+					}
+					startRestarting();
 					// A failed request (the existing error behavior: the server's error state) shows the normal button again.
 					void install().then((sent) => { if (!sent) setInstalling(false); });
 				}}

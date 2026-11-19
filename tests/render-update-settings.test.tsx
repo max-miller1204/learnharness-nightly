@@ -425,25 +425,48 @@ describe("General update rows", () => {
 		assert.ok(document.activeElement === before);
 	});
 
-	it("an install the app turns down (an Update everything run owns the updater), or a bridge without installUpdate, is Install again", async () => {
+	it("an install the app turns down (an Update everything run owns the updater), or a bridge without installUpdate, never renders Restarting", async () => {
 		const b = bridge(state({ status: "downloaded", version: "0.3.8", revision: 1 }));
-		window.lh!.installUpdate = async () => { b.calls.install++; return false; };
-		const host = await mount(<SidebarUpdatePill />);
-		const confirm = async (root: ParentNode) => {
-			await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-			await click(q(root, "update-pill"));
+		let answer = deferred<boolean>();
+		window.lh!.installUpdate = () => { b.calls.install++; return answer.promise; };
+		const settle = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+		const watch = async () => {
+			const host = await mount(<SidebarUpdatePill />);
+			await settle();
+			const pill = q(host, "update-pill")!;
+			// Every value React writes to this button (it stays the same element), so even one render shows.
+			const shown: string[] = [];
+			const setAttribute = pill.setAttribute.bind(pill);
+			pill.setAttribute = (name: string, value: string) => { if (name === "data-action" || name === "aria-label") shown.push(value); setAttribute(name, value); };
+			await click(pill);
 			await click(q(document, "install-update-confirm"));
-			await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+			return { pill, shown };
 		};
-		await confirm(host);
+		const first = await watch();
 		assert.equal(b.calls.install, 1);
-		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "install", "main ignored it: no Restarting");
-		assert.equal(q(host, "update-pill")!.getAttribute("aria-disabled"), null);
+		assert.equal(first.pill.getAttribute("data-action"), "install", "while the app answers: the normal button");
+		assert.equal(first.pill.getAttribute("aria-disabled"), null);
+		answer.resolve(false);
+		await settle();
+		assert.equal(first.pill.getAttribute("data-action"), "install", "main ignored it");
+		assert.equal(first.pill.getAttribute("aria-disabled"), null);
+		assert.ok(!first.shown.some((value) => value === "restarting" || value.startsWith("Restarting")), `never Restarting: ${first.shown.join(", ")}`);
 		for (const { root, host: old } of roots.splice(0)) { await act(async () => { root.unmount(); }); old.remove(); }
+
 		delete window.lh!.installUpdate;
-		const bare = await mount(<SidebarUpdatePill />);
-		await confirm(bare);
-		assert.equal(q(bare, "update-pill")!.getAttribute("data-action"), "install");
+		const bare = await watch();
+		await settle();
+		assert.equal(bare.pill.getAttribute("data-action"), "install");
+		assert.ok(!bare.shown.includes("restarting"));
+		for (const { root, host: old } of roots.splice(0)) { await act(async () => { root.unmount(); }); old.remove(); }
+
+		answer = deferred<boolean>();
+		window.lh!.installUpdate = () => { b.calls.install++; return answer.promise; };
+		const accepted = await watch();
+		assert.equal(accepted.pill.getAttribute("data-action"), "install", "not before the app's yes");
+		answer.resolve(true);
+		await settle();
+		assert.equal(accepted.pill.getAttribute("data-action"), "restarting");
 	});
 
 	it("an install the desktop bridge throws on never rejects; the button is Install again", async () => {
