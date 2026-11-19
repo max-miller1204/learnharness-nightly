@@ -896,7 +896,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 		await pipeline.runExtraction(chatId);
 
 		// Live: mid-audit the extractor's usage was fully accumulated (faux
-		// estimates tokens from the prompt/response text — deterministic and
+		// estimates tokens from the prompt/response text: deterministic and
 		// positive; a fresh native conversation writes its whole prompt to cache).
 		assert.equal(usageSeen.length, 1);
 		assert.ok(typeof usageSeen[0] === "number" && usageSeen[0]! > 0, "the extractor's step billed its prompt");
