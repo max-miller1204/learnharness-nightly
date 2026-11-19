@@ -206,12 +206,6 @@ Each user feature has a recipe in `references/features/<feature>.md`. [reference
 
 A recipe says how to reach and drive a feature, never what right looks like: that is the answer key. Its sections, in order: a title and one paragraph on what the user can do, `Sub-features` (a short id and one line each), `How to get to it` (every entry point a user has, such as a button, a shortcut, a CLI command), `Driving it` (preconditions, then each action paired with its exact command and what you can see afterwards) and `Gotchas`. Proving one entry point does not prove another.
 
-## Keep the recipes current
-
-When your change alters how a feature is reached or driven (a route, a selector, a command, a new entry point), update its recipe in the same change, and add a recipe for a new feature. Write it in only after it ran. Never change what right looks like in a recipe to make it pass: if the change alters an expected result, the spec or the user has to say so first.
-
-Keep recipes by feature, never by PR, commit or issue. Update the existing recipe before adding one. Remove one only with the commit that removed its feature, and never because a check fails.
-
 ## Try to break it
 
 After the happy path passes, run at least one probe that matches what you changed. `node scripts/probes.mjs "$B"` and `"$H"`, then `compare.mjs` on `probes/result.json`, script the first and third:
