@@ -60,3 +60,26 @@ export function staleExportFolders(names: readonly string[], now: number): strin
     return !Number.isFinite(made) || now - made > DAY_MS;
   });
 }
+
+export interface DeleteBoxState { traces: boolean; busy: boolean; failure: string }
+
+/** The delete box's state. Opening it and toggling the checkbox send nothing:
+ *  only `press` (Delete or Try again) does, once at a time, with the mode the
+ *  checkbox shows at that moment. */
+export function deleteFlow(api: MobileApi, id: string, changed: (state: DeleteBoxState) => void) {
+  let state: DeleteBoxState = { traces: false, busy: false, failure: "" };
+  const set = (patch: Partial<DeleteBoxState>) => { state = { ...state, ...patch }; changed(state); };
+  return {
+    get state() { return state; },
+    toggle() { if (!state.busy) set({ traces: !state.traces }); },
+    async press(signal: AbortSignal): Promise<DeleteOutcome | undefined> {
+      if (state.busy) return undefined;
+      const retry = !!state.failure;
+      set({ busy: true, failure: "" });
+      const outcome = await deleteSession(api, id, state.traces, retry, signal);
+      if (signal.aborted) return undefined;
+      if (!outcome.deleted) set({ busy: false, failure: outcome.message });
+      return outcome;
+    },
+  };
+}

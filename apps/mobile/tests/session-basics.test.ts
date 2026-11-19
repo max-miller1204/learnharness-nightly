@@ -4,8 +4,9 @@ import test from "node:test";
 import { SESSION_BASICS_V1, type ChatListItem } from "../../../src/client-protocol/index.ts";
 import { resolveTheme } from "../../../src/core/themes.ts";
 import { apiClient } from "../src/protocol.ts";
-import { RENAME_EMPTY, deleteSession, exportFileName, exportFolderName, renameSession, staleExportFolders } from "../src/session-actions.ts";
+import { RENAME_EMPTY, deleteFlow, deleteSession, exportFileName, exportFolderName, renameSession, staleExportFolders } from "../src/session-actions.ts";
 import { KIND_FILTERS, KIND_FILTER_KEY, emptyListText, readKindFilter, sessionActions, shownSessions } from "../src/session-list.ts";
+import { freshView, workspaceView } from "../src/workspace-view.ts";
 
 const origin = "https://test.learnharness.example";
 const signal = new AbortController().signal;
@@ -69,6 +70,18 @@ test("the long-press menu needs session-basics-v1 and keeps the web's order with
   assert.deepEqual(actions.map(({ destructive }) => !!destructive), [false, false, true]);
 });
 
+test("the query survives opening a session and coming back; a new server's workspace starts empty", () => {
+  let view = workspaceView(freshView(), { type: "search", query: "alg" });
+  for (const page of [{ type: "session", id: "c1" }, { type: "new", kind: "practice" }] as const) {
+    view = workspaceView(view, { type: "open", page });
+    assert.deepEqual(view.page, page);
+    view = workspaceView(view, { type: "back" });
+    assert.deepEqual(view, { page: { type: "list" }, query: "alg" });
+  }
+  // App.tsx mounts a new Workspace for each server connection.
+  assert.deepEqual(freshView(), { page: { type: "list" }, query: "" });
+});
+
 test("rename sends the trimmed text and keeps the server's title", async () => {
   const { api, calls } = server(Response.json({ title: "Sets, renamed" }));
   assert.deepEqual(await renameSession(api, "chat 1", "Sets", "  Sets, renamed  ", signal), { kind: "renamed", title: "Sets, renamed" });
@@ -108,6 +121,34 @@ test("delete sends the mode the checkbox shows at each press, Try again included
     `DELETE ${origin}/api/chats/c1?mode=preserve-graph`,
     `DELETE ${origin}/api/chats/c1?mode=delete-nodes`,
   ]);
+});
+
+test("the delete box sends nothing until Delete, then one request at a time with the checkbox's mode", async () => {
+  const { api, calls } = server(
+    Response.json({ error: "Background jobs are still running in this session", code: "jobs_running" }, { status: 409 }),
+    Response.json({ ok: true, mode: "preserve-graph", stats: {}, jobsRemoved: 0, graphRevision: 1 }),
+  );
+  const states: { traces: boolean; busy: boolean; failure: string }[] = [];
+  const box = deleteFlow(api, "c1", (state) => states.push(state));
+  box.toggle();
+  assert.deepEqual(box.state, { traces: true, busy: false, failure: "" });
+  assert.equal(calls.length, 0, "opening the box and ticking the checkbox send nothing");
+
+  const first = box.press(signal);
+  assert.equal(box.state.busy, true);
+  box.toggle(); // the checkbox is locked while a press is in flight
+  assert.equal(await box.press(signal), undefined, "a second press while busy sends nothing");
+  const refused = await first;
+  assert.equal(refused && !refused.deleted && refused.message, "Background jobs are still running in this session");
+  assert.deepEqual(box.state, { traces: true, busy: false, failure: "Background jobs are still running in this session" });
+
+  box.toggle(); // unticked before Try again
+  assert.deepEqual(await box.press(signal), { deleted: true });
+  assert.deepEqual(calls.map(({ method, url }) => `${method} ${url}`), [
+    `DELETE ${origin}/api/chats/c1?mode=delete-nodes`,
+    `DELETE ${origin}/api/chats/c1?mode=preserve-graph`,
+  ]);
+  assert.equal(states.at(-1)!.failure, "", "Try again clears the old message");
 });
 
 test("a network failure keeps the box; 404 counts as deleted only on Try again", async () => {

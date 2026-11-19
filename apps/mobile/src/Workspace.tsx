@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Alert, BackHandler, FlatList, Keyboard, Platform, Pressable, Text, View } from "react-native";
-import { PROTOCOL_ROUTES, type ChatKind, type ChatListItem, type ChatListResponse, type ServerInfo } from "../../../src/client-protocol/index.ts";
+import { PROTOCOL_ROUTES, type ChatListItem, type ChatListResponse, type ServerInfo } from "../../../src/client-protocol/index.ts";
 import type { MobileApi } from "./protocol";
 import { loadKindFilter, saveKindFilter } from "./device-storage";
 import { RENAME_FAILED, renameSession } from "./session-actions";
 import { shareSessionMarkdown } from "./session-export";
 import { emptyListText, sessionActions, shownSessions, type SessionAction, type SessionKindFilter } from "./session-list";
 import { DeleteBox, KindSwitch, RenameBox, SearchField, SessionRow } from "./SessionList";
+import { freshView, workspaceView, type Page } from "./workspace-view";
 import { useEvents } from "./use-events";
 import { errorText } from "./use-session";
 import { NewSession } from "./NewSession";
@@ -25,13 +26,12 @@ function SideLink({ children, label, onPress }: { children: string; label?: stri
   );
 }
 
-type Page = { type: "list" } | { type: "new"; kind: ChatKind } | { type: "session"; id: string; draft?: string; sendDraft?: boolean };
-
 export function Workspace({ api, initialInfo, active, servers, connectionFault }: {
   api: MobileApi; initialInfo: ServerInfo; active: boolean; servers: () => void; connectionFault: (error: unknown) => boolean;
 }) {
   const { s } = useTheme();
-  const [page, setPage] = useState<Page>({ type: "list" });
+  const [{ page, query }, dispatch] = useReducer(workspaceView, undefined, freshView);
+  const setPage = (next: Page) => dispatch({ type: "open", page: next });
   const [chats, setChats] = useState<ChatListResponse["chats"]>();
   const [listError, setListError] = useState("");
   const [revision, setRevision] = useState(0);
@@ -39,9 +39,6 @@ export function Workspace({ api, initialInfo, active, servers, connectionFault }
   const [offline, setOffline] = useState(false);
   const chatReload = useRef<((reconnect?: boolean) => void) | null>(null);
   const jobsReload = useRef<(() => void) | null>(null);
-  // The query lives here, so it survives opening a session; a server switch
-  // mounts a new Workspace and clears it.
-  const [query, setQuery] = useState("");
   const [kind, setKind] = useState<SessionKindFilter>("all");
   const [renaming, setRenaming] = useState<ChatListItem>();
   const [deleting, setDeleting] = useState<ChatListItem>();
@@ -49,7 +46,7 @@ export function Workspace({ api, initialInfo, active, servers, connectionFault }
   const kindChosen = useRef(false);
   const lifetime = useRef(new AbortController());
   const listing = page.type === "list";
-  const back = () => setPage({ type: "list" });
+  const back = () => dispatch({ type: "back" });
   const shown = useMemo(() => chats && shownSessions(chats, query, kind), [chats, query, kind]);
   const actions = sessionActions(info);
 
@@ -175,7 +172,7 @@ export function Workspace({ api, initialInfo, active, servers, connectionFault }
               </View>
               <View style={{ gap: space.sm, paddingHorizontal: space.md }}>
                 <Label>Sessions</Label>
-                <SearchField value={query} onChange={setQuery} />
+                <SearchField value={query} onChange={(next) => dispatch({ type: "search", query: next })} />
                 <KindSwitch value={kind} onChange={chooseKind} />
               </View>
               {!!listError && <View style={{ gap: space.sm, paddingHorizontal: space.md }}>

@@ -4,7 +4,7 @@ import { MenuView } from "@react-native-menu/menu";
 import type { ChatListItem } from "../../../src/client-protocol/index.ts";
 import { DELETE_SESSION_COPY } from "../../../src/core/session-delete-copy.ts";
 import type { MobileApi } from "./protocol";
-import { deleteSession } from "./session-actions";
+import { deleteFlow, type DeleteBoxState } from "./session-actions";
 import { KIND_FILTERS, type SessionAction, type SessionKindFilter, type sessionActions } from "./session-list";
 import { alpha, fonts, radius, space, useTheme } from "./theme";
 
@@ -70,7 +70,9 @@ function Box({ label, blocked, onClose, children }: { label: string; blocked: bo
     <Modal transparent visible animationType="fade" statusBarTranslucent onRequestClose={close}>
       <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
         <Pressable accessible={false} onPress={close} style={{ flex: 1, justifyContent: "center", padding: space.lg, backgroundColor: alpha(c.background, 0.8) }}>
-          <Pressable accessibilityViewIsModal accessibilityLabel={label} onPress={() => {}}
+          {/* Not one accessible element, so screen readers reach every control inside;
+              the empty press keeps taps on the card from closing the box. */}
+          <Pressable accessible={false} accessibilityViewIsModal accessibilityLabel={label} onPress={() => {}}
             style={{ padding: 20, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: c.border, backgroundColor: c.card,
               boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)" }}>
             {children}
@@ -119,9 +121,8 @@ export function DeleteBox({ api, chat, onClose, onDeleted, connectionFault }: {
   api: MobileApi; chat: Pick<ChatListItem, "id" | "title">; onClose: () => void; onDeleted: (id: string) => void; connectionFault: (error: unknown) => boolean;
 }) {
   const { c, s } = useTheme();
-  const [traces, setTraces] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState("");
+  const [{ traces, busy, failure }, setState] = useState<DeleteBoxState>({ traces: false, busy: false, failure: "" });
+  const [flow] = useState(() => deleteFlow(api, chat.id, setState));
   const scope = useRef(new AbortController());
   useEffect(() => {
     const lifetime = new AbortController();
@@ -130,16 +131,10 @@ export function DeleteBox({ api, chat, onClose, onDeleted, connectionFault }: {
   }, []);
 
   async function run() {
-    if (busy) return;
-    setBusy(true);
-    const retry = !!failure;
-    setFailure("");
-    const outcome = await deleteSession(api, chat.id, traces, retry, scope.current.signal);
-    if (scope.current.signal.aborted) return;
-    if (outcome.deleted) return onDeleted(chat.id);
-    if (connectionFault(outcome.error)) return;
-    setFailure(outcome.message);
-    setBusy(false);
+    const outcome = await flow.press(scope.current.signal);
+    if (!outcome) return;
+    if (outcome.deleted) onDeleted(chat.id);
+    else connectionFault(outcome.error);
   }
 
   return (
@@ -147,8 +142,8 @@ export function DeleteBox({ api, chat, onClose, onDeleted, connectionFault }: {
       <Text accessibilityRole="header" style={{ fontFamily: fonts.uiMedium, fontSize: 12.5, lineHeight: 18, color: c.error }}>{DELETE_SESSION_COPY.title}</Text>
       <Text style={[s.ui, { marginTop: 6 }]}>{chat.title}</Text>
       <Text style={[s.muted, { marginTop: space.sm }]}>{DELETE_SESSION_COPY.body}</Text>
-      <Pressable accessibilityRole="checkbox" accessibilityLabel={DELETE_SESSION_COPY.tracesTitle} accessibilityState={{ checked: traces, disabled: busy }}
-        disabled={busy} onPress={() => setTraces((value) => !value)}
+      <Pressable accessibilityRole="checkbox" accessibilityLabel={DELETE_SESSION_COPY.tracesTitle} accessibilityHint={DELETE_SESSION_COPY.tracesBody}
+        accessibilityState={{ checked: traces, disabled: busy }} disabled={busy} onPress={() => flow.toggle()}
         style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, marginTop: space.lg, paddingHorizontal: space.lg, paddingVertical: space.md,
           borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: alpha(c.border, 0.6) }}>
         <View style={{ width: 16, height: 16, marginTop: 2, alignItems: "center", justifyContent: "center", borderRadius: radius.sm, borderWidth: 1,
