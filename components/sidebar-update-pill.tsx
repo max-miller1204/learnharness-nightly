@@ -16,6 +16,14 @@
  *   reload         the server runs a different version than this page: reload
  *                  (newer: the page also reloads by itself, once per version)
  *
+ * In the desktop app's window onto a self-hosted server (window.lh.desktopUpdate):
+ *
+ *   everything     circle-arrow-up: this app has a newer version and the server
+ *                  is behind it. Opens the app's own Update everything confirmation
+ *   app-download   this app's update is available, the server already runs it
+ *   app-install    this app's update is downloaded, the server already runs it
+ *                  (also through the app's confirmation: just an app restart)
+ *
  * Adapted from T3 Code's SidebarUpdateControl and DesktopUpdateStatusIcon
  * (apps/web/src/components/sidebar/SidebarUpdatePill.tsx and
  * DesktopUpdateStatusIcon.tsx at 7e4c429): the states, icons and tooltip
@@ -25,23 +33,25 @@
  * 150 ms close delay. MIT License, Copyright (c) 2026 T3 Tools Inc. (full
  * notice in components/release-notes-view.tsx).
  *
- * Seam for "Update everything" (roadmap item 23 PR 2): resolveUpdateControl
- * is the one place that picks the button's state; a later kind slots in there.
+ * Update everything (roadmap item 23 PR 2) follows T3 at 8cf97b5:
+ * resolveSidebarUpdatePresentation (SidebarUpdatePill.tsx:82-117) and its
+ * "everything" icon (DesktopUpdateStatusIcon.tsx:119), shown only while a
+ * server is behind (useUpdateEverything.ts:104).
  */
 
 import { useCallback, useEffect, useId, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import * as Popper from "@radix-ui/react-popper";
-import { CheckIcon, DownloadIcon, RefreshCwIcon, RotateCwIcon, TriangleAlertIcon } from "lucide-react";
+import { CheckIcon, CircleArrowUpIcon, DownloadIcon, RefreshCwIcon, RotateCwIcon, TriangleAlertIcon } from "lucide-react";
 import { HostDialog } from "@/components/host-dialog";
 import { InstallUpdateDialog } from "@/components/install-update-dialog";
 import { ReleaseNoteSections } from "@/components/release-notes-view";
-import { APP_VERSION, HOMEPAGE, useUpdateState, type UpdateState } from "@/components/settings/update-settings";
+import { APP_VERSION, HOMEPAGE, desktopOffer, useDesktopAppUpdate, useUpdateState, type DesktopAppStatus, type UpdateState } from "@/components/settings/update-settings";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { isExactVersion, isNewerVersion } from "@/selfhost/src/version-order.ts";
 
-export type UpdateControlKind = "check" | "checking" | "unavailable" | "download" | "downloading" | "install" | "dismiss-notice" | "reload";
+export type UpdateControlKind = "check" | "checking" | "unavailable" | "download" | "downloading" | "install" | "dismiss-notice" | "reload" | "everything" | "app-download" | "app-install";
 
 /** True when the server runs a different exact version than the code of this
  *  page: newer after an update, older after a rollback. Either way, reload. */
@@ -83,11 +93,19 @@ export function claimAutoReload(version: string): boolean {
 	}
 }
 
-/** The one place that picks the button's state (T3's resolveSidebarUpdatePresentation order). */
-export function resolveUpdateControl(state: UpdateState | null, { showCheckIcon = false, pageVersion = APP_VERSION }: { showCheckIcon?: boolean; pageVersion?: string } = {}): UpdateControlKind | null {
+/** The one place that picks the button's state (T3's resolveSidebarUpdatePresentation order).
+ *  `desktop` is this app's own update, only in its window onto a self-hosted server. */
+export function resolveUpdateControl(state: UpdateState | null, { showCheckIcon = false, pageVersion = APP_VERSION, desktop = null }: { showCheckIcon?: boolean; pageVersion?: string; desktop?: DesktopAppStatus | null } = {}): UpdateControlKind | null {
 	if (!state) return null;
 	if (pageIsStale(state, pageVersion)) return "reload";
 	if (showCheckIcon) return "checking";
+	if (desktop?.phase === "downloading") return "downloading";
+	if (desktop?.phase === "updating") return "everything";
+	const offered = desktopOffer(desktop);
+	if (offered && (desktop?.phase === "available" || desktop?.phase === "downloaded")) {
+		if (isNewerVersion(offered, state.runningVersion)) return "everything";
+		return desktop.phase === "downloaded" ? "app-install" : "app-download";
+	}
 	if (state.status === "downloading") return "downloading";
 	if (state.status === "downloaded") return "install";
 	if (state.status === "available") return "download";
@@ -111,8 +129,17 @@ export function updateControlTooltip(state: UpdateState, kind: UpdateControlKind
 		case "downloading": return "Downloading update";
 		case "install": return `Update ${state.version ?? "ready"} downloaded. Click to restart and install.`;
 		case "dismiss-notice": return state.notice?.text ?? "";
+		// T3's updateTargetsSentence for this app and one server (updateEverything.logic.ts:765-772).
+		case "everything": return "Update this app and 1 server";
 		default: return "Check for updates";
 	}
+}
+
+/** Tooltips for this app's own update (T3's getDesktopUpdateButtonTooltip, desktopUpdate.logic.ts:131-145). */
+export function appUpdateTooltip(desktop: DesktopAppStatus, kind: "app-download" | "app-install"): string {
+	const version = desktopOffer(desktop);
+	if (kind === "app-download") return version ? `Update ${version} ready to download` : "Update available ready to download";
+	return version ? `Update ${version} downloaded. Click to restart and install.` : "Update ready downloaded. Click to restart and install.";
 }
 
 /** The second tooltip line of "unavailable" (T3's getDesktopUpdateDisabledReason fallback). */
@@ -185,7 +212,7 @@ function RestartIcon() {
 }
 
 function ControlIcon({ kind, spinning, onIteration }: { kind: UpdateControlKind; spinning: boolean; onIteration: () => void }) {
-	if (kind === "download") {
+	if (kind === "download" || kind === "app-download") {
 		return (
 			<span className="relative grid size-4 place-items-center">
 				<DownloadIcon className="size-4" aria-hidden />
@@ -194,7 +221,8 @@ function ControlIcon({ kind, spinning, onIteration }: { kind: UpdateControlKind;
 		);
 	}
 	if (kind === "downloading") return <DownloadIcon className="size-4" aria-hidden />;
-	if (kind === "install" || kind === "reload") return <RestartIcon />;
+	if (kind === "everything") return <CircleArrowUpIcon className="size-4" aria-hidden />;
+	if (kind === "install" || kind === "app-install" || kind === "reload") return <RestartIcon />;
 	if (kind === "dismiss-notice") return <TriangleAlertIcon className="size-3.5 text-destructive" aria-hidden />;
 	return (
 		<RefreshCwIcon
@@ -245,13 +273,15 @@ function ReloadConfirmDialog({ open, onClose, onConfirm }: { open: boolean; onCl
 
 export function SidebarUpdatePill({ reload = () => window.location.reload(), pageVersion = APP_VERSION }: { reload?: () => void; pageVersion?: string } = {}) {
 	const { state, check, install, download, dismissNotice } = useUpdateState();
+	const desktop = useDesktopAppUpdate();
+	const desktopStatus = desktop?.status ?? null;
 	const reducedMotion = useReducedMotion();
 	const [confirming, setConfirming] = useState(false);
 	const [confirmingReload, setConfirmingReload] = useState(false);
 	const [pending, setPending] = useState(false);
 	const [open, setOpen] = useState(false);
 	const [spinKey, setSpinKey] = useState(0);
-	const isChecking = state?.status === "checking";
+	const isChecking = state?.status === "checking" || desktopStatus?.phase === "checking";
 	const [latched, setLatched] = useState(false);
 	// Latch when a check starts (also one started elsewhere: Settings, the timer); drop it under reduced motion.
 	useEffect(() => {
@@ -263,7 +293,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
 
 	const showCheckIcon = showsCheckIcon(isChecking, latched, reducedMotion);
-	const kind = resolveUpdateControl(state, { showCheckIcon, pageVersion });
+	const kind = resolveUpdateControl(state, { showCheckIcon, pageVersion, desktop: desktopStatus });
 	const autoReloadTo = autoReloadVersion(state, pageVersion);
 	useEffect(() => {
 		if (autoReloadTo && claimAutoReload(autoReloadTo)) reload();
@@ -274,9 +304,9 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	const onIteration = useCallback(() => setLatched(continuesCheckSpin(isChecking, reducedMotion)), [isChecking, reducedMotion]);
 
 	if (!state || !kind) return null;
-	const tooltip = updateControlTooltip(state, kind, pageVersion);
+	const tooltip = (kind === "app-download" || kind === "app-install") && desktopStatus ? appUpdateTooltip(desktopStatus, kind) : updateControlTooltip(state, kind, pageVersion);
 	const detail = kind === "unavailable" ? unavailableDetail(state) : null;
-	const disabled = kind === "checking" || kind === "downloading" || kind === "unavailable" || pending;
+	const disabled = kind === "checking" || kind === "downloading" || kind === "unavailable" || pending || (kind === "everything" && desktopStatus?.phase === "updating");
 	const surface = kind !== "check" && kind !== "checking" && kind !== "unavailable";
 
 	const cancelClose = () => {
@@ -294,14 +324,19 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 		if (kind === "reload") {
 			if (hasUnsentMessage()) setConfirmingReload(true);
 			else reload();
-		} else if (kind === "download") download();
+		} else if (desktop && (kind === "everything" || kind === "app-install")) {
+			// The app asks first in its own dialog (electron/update-everything.cjs).
+			setPending(true);
+			void desktop.install().catch(() => {}).finally(() => setPending(false));
+		} else if (desktop && kind === "app-download") void desktop.download().catch(() => {});
+		else if (kind === "download") download();
 		else if (kind === "install") { setOpen(false); setConfirming(true); }
 		else if (kind === "dismiss-notice") dismissNotice();
 		else if (kind === "check") {
 			if (!reducedMotion) { setLatched(true); setSpinKey((key) => key + 1); }
 			setPending(true);
 			// A failed check comes back as the "error" state, which shows the refresh button again.
-			void check().catch(() => {}).finally(() => setPending(false));
+			void Promise.all([check().catch(() => {}), desktop?.check().catch(() => {})]).finally(() => setPending(false));
 		}
 	};
 

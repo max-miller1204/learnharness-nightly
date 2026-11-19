@@ -28,8 +28,12 @@ class NightlyProvider extends GenericProvider {
 	}
 
 	async getLatestVersion() {
-		const url = newUrlFromBase("nightly/latest.json", this.releaseRoot, true);
-		const pointer = JSON.parse(await this.httpRequest(url, { "Cache-Control": "no-cache" }));
+		// An app-only retry of Update everything's pinned version reads that exact
+		// release, never the moving pointer (electron/update-actions.cjs downloadExact).
+		const pinned = NightlyProvider.pinned;
+		const pointer = pinned
+			? { version: pinned, tag: `v${pinned}`, notes: [] }
+			: JSON.parse(await this.httpRequest(newUrlFromBase("nightly/latest.json", this.releaseRoot, true), { "Cache-Control": "no-cache" }));
 		const { version, tag, notes, publishedAt } = pointer ?? {};
 		if (tag !== `v${version}`) throw new Error("Nightly pointer tag and version disagree");
 		const provider = this.providerFor(version);
@@ -71,4 +75,21 @@ class NightlyProvider extends GenericProvider {
 	}
 }
 
-module.exports = { NightlyProvider };
+/** While set, every check offers exactly this nightly (see getLatestVersion). */
+NightlyProvider.pinned = null;
+
+/** Pin every check to exactly `version`, or null for the newest again (the app-only
+ *  retry of Update everything). The real feed reads `v<version>/` beside
+ *  `nightly/latest.json`. The LH_UPDATE_FEED test feed (a plain folder with the newest
+ *  manifest) reads `<feed>/v<version>/` the same way, so a real updater run can prove it. */
+function pinFeed(updater, version, { override } = {}) {
+	if (version !== null && (typeof version !== "string" || !NIGHTLY_VERSION.test(version))) throw new Error("Invalid nightly version");
+	if (override) {
+		const base = override.endsWith("/") ? override : `${override}/`;
+		updater.setFeedURL({ provider: "generic", url: version ? new URL(`v${version}/`, base).href : override });
+		return;
+	}
+	NightlyProvider.pinned = version;
+}
+
+module.exports = { NightlyProvider, pinFeed };

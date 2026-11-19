@@ -38,4 +38,16 @@ GET /api/health stays public (the launcher calls it without a credential) and ke
 
 What's new waits for the reload (owner decision): while the server runs a newer version than the page's code, the "What's new" popup is held back (not shown, not marked seen), so the reload button stays visible until the page reloads by itself. It shows once on the first page that runs the new version, after the automatic reload (or a click on the button, or the next time the app opens). GET /api/whats-new already answers the running version, so the page compares that with its own build version.
 
-Seam: "Update everything" (roadmap item 23 PR 2) adds its state in `resolveUpdateControl`. Not built here.
+## Update everything (roadmap item 23 PR 2)
+
+Only in the desktop app's window onto a self-hosted server, which gets `window.lh.desktopUpdate` (see [desktop-server-list.md](desktop-server-list.md), PR 2). `resolveUpdateControl` takes this app's status too, in T3's order (`SidebarUpdatePill.tsx:82-117` at 8cf97b5): after reload and checking, this app's downloading, then:
+
+| State | Icon | Tooltip | Click |
+|---|---|---|---|
+| everything (this app has a newer version and the server is behind it, or a run is going) | CircleArrowUp (T3's `DesktopUpdateStatusIcon.tsx:119`) | "Update this app and 1 server" (T3's `updateEverything.logic.ts:765-772`) | this app's native Update everything confirmation; disabled while a run is going |
+| app-download (the server already runs that version) | download arrow with a dot | "Update X ready to download" | download this app's update |
+| app-install (downloaded, the server already runs it) | RotateCw with check badge | "Update X downloaded. Click to restart and install." | the same native confirmation, which then only restarts the app |
+
+T3 shows "everything" only while a server is behind (`useUpdateEverything.ts:104`), so the plain app states cover the rest. The check button checks the server and this app. The page reads this app's status every 5 s (the bridge has no push channel) and when the tab shows again. A page that sees its server back on a newer version reloads by itself as above, also during a run: it does so under the app's ghost cover, where the app's own rechecks wait until the run ends.
+
+Settings → General there has two rows, with T3's labels (`UpdateEverythingDialog.tsx:91-92`): **Server X** (the existing row) and **This app Y**, T3's About button (`SettingsPanels.tsx:308-328`): Check for Updates, Checking…, Downloading…, Up to Date, Download, Install. The description reads "Update available." or "Current version of the application.", or why updates are off. Install opens the same native confirmation (owner decision: Update everything, unlike T3's app-only Install). Browsers and the local desktop window keep one "Version X" row.

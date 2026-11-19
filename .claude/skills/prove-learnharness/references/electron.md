@@ -14,6 +14,8 @@
 
 Parity answer key: `compare.mjs "$RUN/head/web-teach/result.json" "$RUN/electron-<mode>/web-teach/result.json" --allow 'apiCalls=GET /api/updates 200' --allow 'apiCalls=GET /api/subscriptions 200'`.
 
+Update everything (the desktop app onto a self-hosted server, roadmap item 23 PR 2) needs AppImages, a tier B server and HTTPS: [features/update-everything.md](features/update-everything.md).
+
 ## Not covered on this machine
 
 - macOS and Windows builds, signing, notarization and deb installs. `electron.sh` builds unpacked `dir` builds, which have no update feed (the log says "not an AppImage"); electron-updater moving between versions is driven by hand with AppImages: see [features/desktop-window.md](features/desktop-window.md) step 4.

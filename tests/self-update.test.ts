@@ -16,7 +16,7 @@ import { CHECK_AFTER_COMMIT_MS, CHECK_INTERVAL_MS, createSelfUpdater, healthIdle
 import type { ReleaseNoteGroup } from "../src/core/release-notes.ts";
 import { dataLockPath, tryAcquireDataLock } from "../src/server/data-lock.ts";
 import type { ChildMessage } from "../selfhost/src/protocol.ts";
-import type { LatestFeed, ServiceState } from "../selfhost/src/release.ts";
+import { fetchRelease, releaseFeedUrl, type LatestFeed, type ServiceState } from "../selfhost/src/release.ts";
 
 const CURRENT = "0.6.1-nightly.20261116.1";
 const NEXT = "0.6.1-nightly.20261117.2";
@@ -33,7 +33,7 @@ function fake(overrides: Partial<SelfUpdaterDeps> = {}) {
 	let notifications = 0;
 	const flags = {
 		auto: true, installed: false, staged: [] as string[], latest: NEXT, state: undefined as ServiceState | undefined, now: 10_000_000,
-		merged: [] as ReleaseNoteGroup[][], dismissed: undefined as string | undefined, fetchFails: false,
+		merged: [] as ReleaseNoteGroup[][], dismissed: undefined as string | undefined, fetchFails: false, pinned: [] as string[],
 	};
 	const deps: SelfUpdaterDeps = {
 		enabled: true,
@@ -44,6 +44,7 @@ function fake(overrides: Partial<SelfUpdaterDeps> = {}) {
 		onParentMessage: (cb) => { parent = cb; },
 		autoUpdateEnabled: () => flags.auto,
 		fetchLatest: async () => { if (flags.fetchFails) throw new Error("offline"); return feed(flags.latest); },
+		fetchRelease: async (version) => { if (flags.fetchFails) throw new Error("offline"); flags.pinned.push(version); return feed(version); },
 		stage: async (f) => { flags.staged.push(f.version); },
 		isInstalled: () => flags.installed,
 		readState: () => flags.state,
@@ -67,6 +68,11 @@ function fake(overrides: Partial<SelfUpdaterDeps> = {}) {
 }
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+/** The refusal, or how staging ended. */
+const pin = async (u: ReturnType<typeof createSelfUpdater>, version: string) => {
+	const started = u.startInstallVersion(version);
+	return started.refused ?? await started.done;
+};
 
 describe("self-hosted updater", () => {
 	it("is disabled and inert outside self-hosting", async () => {
@@ -223,6 +229,167 @@ describe("self-hosted updater", () => {
 		assert.deepEqual(off.flags.staged, [], "the toggle still gates it");
 	});
 
+	it("startInstallVersion stages exactly the pinned version from its own release, never the newest", async () => {
+		const f = fake();
+		f.flags.auto = false;
+		f.flags.latest = NEWER;
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		assert.equal(await pin(u, NEXT), null);
+		assert.deepEqual(f.flags.pinned, [NEXT], "read from v<NEXT>/latest.json, not the moving pointer");
+		assert.deepEqual(f.flags.staged, [NEXT]);
+		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }]);
+		assert.equal(await pin(u, NEXT), null, "a repeat of the same request is fine");
+		assert.match(await pin(u, NEWER) ?? "", /already starting/);
+		await u.check();
+		assert.deepEqual(f.flags.staged, [NEXT], "no background check after the request");
+	});
+
+	it("startInstallVersion refuses older, same-as-bad, malformed and non-launcher requests, and reports staging failures", async () => {
+		const f = fake();
+		const u = createSelfUpdater(f.deps);
+		assert.equal(await pin(u, CURRENT), null, "already on it: nothing to do");
+		assert.match(await pin(u, OLDER) ?? "", /already runs .* newer than/);
+		assert.match(await pin(u, "latest") ?? "", /not an exact version/);
+		f.flags.state = { protocol: 1, activeVersion: CURRENT, badVersions: [NEXT] };
+		assert.match(await pin(u, NEXT) ?? "", /failed to start on this server earlier/);
+		f.flags.state = undefined;
+		f.flags.fetchFails = true;
+		assert.equal(await pin(u, NEXT), "offline");
+		assert.equal(u.state().status, "error");
+		assert.deepEqual(f.sent, []);
+		const off = createSelfUpdater(fake({ enabled: false }).deps);
+		assert.match(await pin(off, NEXT) ?? "", /isn't run by the lh launcher/);
+	});
+
+	it("startInstallVersion waits for a check in flight and holds the slot while staging", async () => {
+		const f = fake();
+		let release: () => void = () => {};
+		f.deps.stage = (fd) => new Promise<void>((resolve) => { release = () => { f.flags.staged.push(fd.version); resolve(); }; });
+		const u = createSelfUpdater(f.deps);
+		const checking = u.check();
+		const pinned = pin(u, NEXT);
+		await settle();
+		assert.equal(u.busy(), true);
+		release();
+		await checking;
+		await settle();
+		assert.equal(u.busy(), true, "the pinned install holds the slot after the check ends");
+		release();
+		assert.equal(await pinned, null);
+		await settle();
+		assert.equal(u.busy(), false);
+		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }]);
+	});
+
+	it("answers at once and follows the staging in `pinned`", async () => {
+		const f = fake();
+		f.flags.auto = false;
+		let release: () => void = () => {};
+		f.deps.stage = () => new Promise<void>((resolve) => { release = resolve; });
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		const started = u.startInstallVersion(NEXT);
+		assert.equal(started.refused, null, "the route can answer before the download");
+		const id = u.state().pinned!.id;
+		assert.deepEqual(u.state().pinned, { version: NEXT, error: null, id });
+		assert.equal(u.startInstallVersion(NEXT).refused, null, "the same request again is harmless");
+		assert.equal(u.state().pinned!.id, id, "and joins the same attempt");
+		assert.match(u.startInstallVersion(NEWER).refused ?? "", /already starting/);
+		await settle();
+		release();
+		assert.equal(await started.done, null);
+		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }]);
+		f.toParent({ type: "update-rejected", reason: "Not enough disk space" });
+		assert.deepEqual(u.state().pinned, { version: NEXT, error: "Not enough disk space", id }, "the launcher's refusal reaches the desktop");
+		assert.equal(publicUpdateState(u.state()).pinned?.error, "The update failed.", "no details without a session");
+
+		const g = fake();
+		g.flags.fetchFails = true;
+		const v = createSelfUpdater(g.deps);
+		assert.equal(await pin(v, NEXT), "offline");
+		const failedId = v.state().pinned!.id;
+		assert.deepEqual(v.state().pinned, { version: NEXT, error: "offline", id: failedId });
+		g.flags.fetchFails = false;
+		assert.equal(await pin(v, NEXT), null, "after a failure the same request retries");
+		assert.equal(v.state().pinned!.error, null);
+		assert.notEqual(v.state().pinned!.id, failedId, "as a new attempt, so the old error can't be read as its result");
+	});
+
+	it("a stale pinned error is never this attempt's: joining a switch already under way starts a fresh attempt, and a plain Install's refusal stays out of it", async () => {
+		const f = fake();
+		f.flags.auto = false;
+		f.flags.fetchFails = true;
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		assert.equal(await pin(u, NEXT), "offline");
+		const stale = u.state().pinned!.id;
+		// The server's own Install then switches to NEXT; a desktop run joins it.
+		f.flags.fetchFails = false;
+		await u.install();
+		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }]);
+		assert.equal(u.startInstallVersion(NEXT).refused, null);
+		assert.equal(u.state().pinned!.error, null);
+		assert.notEqual(u.state().pinned!.id, stale);
+
+		const g = fake();
+		g.flags.auto = false;
+		g.flags.fetchFails = true;
+		const v = createSelfUpdater(g.deps);
+		v.start();
+		assert.equal(await pin(v, NEXT), "offline");
+		const left = v.state().pinned;
+		g.flags.fetchFails = false;
+		await v.install();
+		g.toParent({ type: "update-rejected", reason: "Not enough disk space" });
+		assert.deepEqual(v.state().pinned, left, "a plain Install's refusal isn't written into an old attempt");
+	});
+
+	it("an attempt queued behind the server's own Install for the same version joins it: the launcher's refusal is the attempt's", async () => {
+		const f = fake();
+		f.flags.auto = false;
+		let release: () => void = () => {};
+		f.deps.fetchLatest = async () => { await new Promise<void>((resolve) => { release = resolve; }); return feed(NEXT); };
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		// Install's re-check is in flight; Update everything asks for the same version meanwhile.
+		const installing = u.install();
+		await settle();
+		const started = u.startInstallVersion(NEXT);
+		assert.equal(started.refused, null);
+		const id = u.state().pinned!.id;
+		release();
+		await installing;
+		assert.equal(await started.done, null, "the plain Install asked the launcher first; the attempt joined");
+		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }], "one request");
+		f.toParent({ type: "update-rejected", reason: "Not enough disk space" });
+		assert.deepEqual(u.state().pinned, { version: NEXT, error: "Not enough disk space", id }, "the desktop sees the refusal");
+		assert.equal(u.startInstallVersion(NEXT).refused, null);
+		assert.notEqual(u.state().pinned!.id, id, "a later run starts a fresh attempt instead of joining a dead one");
+	});
+
+	it("an attempt whose launcher can't be reached fails without leaving the launcher's next answer to it", async () => {
+		const f = fake({ send: () => { throw new Error("channel closed"); } });
+		f.flags.auto = false;
+		const u = createSelfUpdater(f.deps);
+		assert.match(await pin(u, NEXT) ?? "", /Couldn't reach the launcher/);
+		const left = u.state().pinned;
+		f.toParent({ type: "update-rejected", reason: "a later plain Install's refusal" });
+		assert.deepEqual(u.state().pinned, left);
+	});
+
+	it("is committed unless it is a trial the launcher hasn't committed yet", async () => {
+		assert.equal(createSelfUpdater(fake().deps).state().committed, true);
+		const f = fake({ trialUpdateId: "u-1" });
+		f.flags.auto = false;
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		await settle();
+		assert.equal(u.state().committed, false, "a trial answers health before it is kept");
+		f.toParent({ type: "committed", updateId: "u-1" });
+		assert.equal(u.state().committed, true);
+	});
+
 	it("adopts a rollback recorded by the launcher at boot", () => {
 		const f = fake();
 		f.flags.auto = false;
@@ -242,6 +409,32 @@ describe("self-hosted updater", () => {
 		assert.equal(again.state().notice, null, "a dismissed notice is not adopted again at boot");
 		assert.equal(again.state().message, null, "nor its text (Settings shows it only while undismissed)");
 		assert.notEqual(again.state().instance, u.state().instance, "each server process has its own instance id");
+	});
+});
+
+describe("one exact release's feed (Update everything)", () => {
+	it("sits beside the nightly pointer, under the version's own tag", () => {
+		assert.equal(releaseFeedUrl(NEXT), `https://github.com/max-miller1204/learnharness-nightly/releases/download/v${NEXT}/latest.json`);
+		assert.equal(releaseFeedUrl(NEXT, "file:///tmp/x/nightly/latest.json"), `file:///tmp/x/v${NEXT}/latest.json`);
+		assert.throws(() => releaseFeedUrl(NEXT, "https://mirror.example/feed.json"), /next to the feed/);
+		assert.throws(() => releaseFeedUrl("../../evil"), /not an exact version/);
+	});
+
+	it("must name the version it was asked for", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "lh-release-"));
+		try {
+			const write = (version: string, body: LatestFeed) => {
+				fs.mkdirSync(path.join(root, `v${version}`), { recursive: true });
+				fs.writeFileSync(path.join(root, `v${version}`, "latest.json"), JSON.stringify(body));
+			};
+			write(NEXT, { ...feed(NEXT), sha: "abc" });
+			write(NEWER, feed(NEXT));
+			const pointer = `file://${root}/nightly/latest.json`;
+			assert.equal((await fetchRelease(NEXT, pointer)).sha, "abc");
+			await assert.rejects(fetchRelease(NEWER, pointer), /names/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
 

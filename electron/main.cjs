@@ -33,6 +33,10 @@ const { attachSubscriptionChild, subscriptionControl } = require("./subscription
 const { desktopAPIHeaders, exchangeDesktopSession } = require("./desktop-api.cjs");
 const { setTraceSink } = require("./first-frame.cjs");
 const { createServerList } = require("./server-list.cjs");
+const { createUpdateEverything } = require("./update-everything.cjs");
+const { registerDesktopUpdateIPC } = require("./update-everything-ipc.cjs");
+const { createUpdateActions } = require("./update-actions.cjs");
+const { requestServer } = require("./remote-server.cjs");
 const { openWebSubscriptionBrowser } = require("./web-subscription-browser.cjs");
 const { randomBytes } = require("node:crypto");
 const { spawn } = require("node:child_process");
@@ -569,7 +573,7 @@ function checkForUpdates({ manual = false } = {}) {
 
 /** Download the offered version (the user clicked Download). */
 function downloadUpdateNow() {
-	if (!autoUpdater || updateState.status !== "available") return;
+	if (!autoUpdater || updateState.status !== "available" || updateEverything?.running()) return;
 	reportUpdateStatus("downloading", updateState.version);
 	autoUpdater.downloadUpdate().catch((err) => {
 		log(`update download failed: ${err?.message ?? err}`);
@@ -583,7 +587,8 @@ const INSTALL_QUIT_GRACE_MS = 10 * 1000;
 
 /** The user confirmed Install: re-check, take a newer build if one appeared, then quit and install. */
 async function installUpdateNow() {
-	if (!autoUpdater || installing || updateState.status !== "downloaded") return;
+	// An Update everything run owns its pinned install (electron/update-everything.cjs).
+	if (!autoUpdater || installing || updateState.status !== "downloaded" || updateEverything?.running()) return;
 	installing = true;
 	const downloaded = updateState.version;
 	let offered = null;
@@ -610,6 +615,11 @@ async function installUpdateNow() {
 			return;
 		}
 	}
+	quitAndInstallNow();
+}
+
+/** Save the notes for What's new, stop the server, then quit and install the staged update. */
+function quitAndInstallNow() {
 	try {
 		releaseNotes.mergeNotesCache(DATA_DIR(), offeredGroups);
 	} catch (err) {
@@ -637,6 +647,79 @@ async function installUpdateNow() {
 		app.relaunch();
 		app.exit(0);
 	}, INSTALL_QUIT_GRACE_MS);
+}
+
+/* ── Update everything (roadmap item 23 PR 2, electron/update-everything.cjs) ──
+ * One pinned version for the whole run: never a newer one picked at install. */
+
+// The run in progress, for the guards below (set once the server list exists).
+let updateEverything = null;
+const updateActions = createUpdateActions({
+	updater: () => autoUpdater,
+	state: () => updateState,
+	offerAgain: (version) => {
+		updateState = { ...updateState, status: "available" };
+		reportUpdateStatus("available", version);
+	},
+	report: (status) => reportUpdateStatus(status),
+	installing: () => installing,
+	startInstall: () => { installing = true; quitAndInstallNow(); },
+	adoptNotes: (info) => adoptOfferedNotes(info),
+	// Read when used: main.cjs loads before Electron's app is ready (and under test fakes).
+	get appVersion() { return app.getVersion(); },
+	compareVersions: releaseNotes.compareVersions,
+	show: (options) => {
+		const parent = BrowserWindow.getFocusedWindow();
+		return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
+	},
+	download: () => downloadUpdateNow(),
+	install: () => installUpdateNow(),
+	running: () => updateEverything?.running() ?? false,
+	pinFeed: (version) => require("./nightly-updater.cjs").pinFeed(autoUpdater, version, { override: process.env.LH_UPDATE_FEED }),
+	log,
+});
+
+const UPDATE_EVERYTHING_RESULT = () => path.join(app.getPath("userData"), "update-everything.json");
+
+/** Main's side of electron/update-everything.cjs. */
+function updateEverythingDeps(list) {
+	const ask = (options) => {
+		const parent = list.current()?.win;
+		const settings = { type: "question", noLink: true, defaultId: 0, cancelId: options.buttons.length - 1, ...options };
+		return (parent ? dialog.showMessageBox(parent, settings) : dialog.showMessageBox(settings)).then(({ response }) => response);
+	};
+	return {
+		appVersion: app.getVersion(),
+		updater: {
+			state: () => (autoUpdater ? updateState : { ...updateState, status: "disabled" }),
+			check: () => checkForUpdates({ manual: true }),
+			download: downloadUpdateNow,
+			pin: updateActions.pin,
+			downloadPinned: updateActions.downloadPinned,
+			downloadExact: updateActions.downloadExact,
+			installPinned: updateActions.installPinned,
+		},
+		selection: () => list.current(),
+		// No protocol header: the server may come back speaking a newer one.
+		request: (origin, pathname, { token, method = "GET", body, timeoutMs } = {}) => requestServer(origin, pathname, {
+			token, method, protocol: false, ...(timeoutMs && { timeoutMs }),
+			...(body && { body: JSON.stringify(body), headers: { "content-type": "application/json" } }),
+		}),
+		confirm: ask,
+		tell: ({ message, detail }) => ask({ type: "info", message, detail, buttons: ["OK"] }),
+		progress: (origin, text) => list.coverForUpdate(origin, text),
+		fail: (origin, problem) => list.endUpdate(origin, problem),
+		reconnect: (origin, version) => list.endUpdate(origin, null, { version }),
+		saveResult: (record) => fs.writeFileSync(UPDATE_EVERYTHING_RESULT(), JSON.stringify(record), { mode: 0o600 }),
+		takeResult: () => {
+			let raw;
+			try { raw = fs.readFileSync(UPDATE_EVERYTHING_RESULT(), "utf8"); } catch { return null; }
+			try { fs.unlinkSync(UPDATE_EVERYTHING_RESULT()); } catch { /* read once anyway */ }
+			return JSON.parse(raw);
+		},
+		now: () => Date.now(),
+		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+	};
 }
 
 function setupAutoUpdater() {
@@ -739,7 +822,9 @@ function installMenu({ local = true } = {}) {
 			submenu: [
 				{ role: "about" },
 				// Manual checks report their result in Settings → General.
-				{ label: "Check for Updates…", enabled: local, click: () => checkForUpdatesFromMenu() },
+				// Connected to a server there is no local Settings page: native dialogs instead,
+				// also the way out when this app is too old to open the server (owner, 2026-11-18).
+				{ label: "Check for Updates…", click: () => (local ? checkForUpdatesFromMenu() : updateActions.checkNatively()) },
 				...(serverList ? [{ label: "Switch server…", click: () => serverList.show() }] : []),
 				{ type: "separator" },
 				{ role: "hide" },
@@ -967,7 +1052,12 @@ async function main() {
 		});
 		installMenu({ local: false });
 		reopenWindow = () => serverList.reopen();
-		await serverList.launch();
+		updateEverything = createUpdateEverything(updateEverythingDeps(serverList));
+		registerDesktopUpdateIPC(ipcMain, { current: () => serverList.current(), updateEverything });
+		const relaunch = updateEverything.takeLaunch();
+		await serverList.launch({ server: relaunch?.server });
+		// The app update didn't apply: offer the app-only retry of that same version.
+		void updateEverything.afterLaunch(relaunch);
 	}
 	app.on("activate", () => {
 		if (BrowserWindow.getAllWindows().length === 0) reopenWindow();

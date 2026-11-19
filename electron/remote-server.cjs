@@ -60,13 +60,15 @@ function atOrigin(value, origin) {
 	} catch { return false; }
 }
 
-function requestServer(origin, pathname, { request = fetch, signal, redirect = "error", token, headers, timeoutMs = 15000, ...options } = {}) {
+// `protocol: false` leaves out the protocol header, so Update everything can
+// follow a server across a restart onto a version with another protocol.
+function requestServer(origin, pathname, { request = fetch, signal, redirect = "error", token, headers, timeoutMs = 15000, protocol = true, ...options } = {}) {
 	const url = new URL(pathname, origin);
 	if (parseOrigin(origin) !== origin || !atOrigin(url, origin)) throw new Error("Expected a request to the selected server.");
 	const timeout = AbortSignal.timeout(timeoutMs);
 	return request(url, {
 		...options, redirect, credentials: "omit", cache: "no-store",
-		headers: { [PROTOCOL_HEADER]: String(CLIENT_PROTOCOL_VERSION), ...headers, ...(token && { authorization: `Bearer ${token}` }) },
+		headers: { ...(protocol && { [PROTOCOL_HEADER]: String(CLIENT_PROTOCOL_VERSION) }), ...headers, ...(token && { authorization: `Bearer ${token}` }) },
 		signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
 	});
 }

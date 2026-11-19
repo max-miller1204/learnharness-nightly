@@ -15,6 +15,7 @@ One recipe per user feature. A recipe says how to reach and drive the feature; t
 | Teaching session: goal, tool call, graded question, answer, reload, delete | web, api, agent, electron | [teaching-session.md](teaching-session.md) |
 | Self-hosted update and rollback, update pill, What's new | selfhost, api, web | [update-rollback.md](update-rollback.md) |
 | Desktop window and desktop updater | electron | [desktop-window.md](desktop-window.md) |
+| Update everything: desktop app and its self-hosted server to one exact version | electron, selfhost, api, web | [update-everything.md](update-everything.md) |
 | Extract files: files, folders, documents, images, code, estimate | web, api, agent | [extract-files.md](extract-files.md) |
 | Client protocol: server info, version check, native client pairing and chat flow | api | [client-protocol.md](client-protocol.md) |
 | Subscription search: ChatGPT, Claude Code and Grok in the Search engine picker, research job sources | web, api, agent | [subscription-search.md](subscription-search.md) |

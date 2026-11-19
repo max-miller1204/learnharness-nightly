@@ -109,3 +109,38 @@ test("Windows resolves old and new blockmaps by exact tag even when a later chec
 	]);
 	assert.equal(f.provider.isUseMultipleRangeRequest, false);
 });
+
+test("a pinned retry reads exactly that release, never the moving pointer", async (t) => {
+	t.after(() => { NightlyProvider.pinned = null; });
+	const { provider, requests, setFeed } = fixture("darwin", "latest-mac.yml", "zip");
+	setFeed({ ...pointer, version: newer, tag: `v${newer}` });
+	NightlyProvider.pinned = version;
+	const info = await provider.getLatestVersion();
+	assert.equal(info.version, version, "the pinned version, though the pointer has moved on");
+	assert.deepEqual(requests, [`/example/learnharness-nightly/releases/download/v${version}/latest-mac.yml`]);
+	NightlyProvider.pinned = null;
+	assert.equal((await provider.getLatestVersion()).version, newer, "unpinned: the newest again");
+	NightlyProvider.pinned = "../evil";
+	await assert.rejects(provider.getLatestVersion(), /Invalid nightly version/);
+});
+
+test("pinFeed pins the real feed through the provider, and the LH_UPDATE_FEED test feed to its v<version>/ folder", (t) => {
+	const { pinFeed } = require("../electron/nightly-updater.cjs");
+	t.after(() => { NightlyProvider.pinned = null; });
+	const feeds: unknown[] = [];
+	const updater = { setFeedURL: (options: unknown) => feeds.push(options) };
+	pinFeed(updater, version);
+	assert.equal(NightlyProvider.pinned, version);
+	pinFeed(updater, null);
+	assert.equal(NightlyProvider.pinned, null);
+	assert.deepEqual(feeds, [], "the real feed keeps its provider");
+
+	pinFeed(updater, version, { override: "http://127.0.0.1:4100" });
+	pinFeed(updater, null, { override: "http://127.0.0.1:4100" });
+	assert.deepEqual(feeds, [
+		{ provider: "generic", url: `http://127.0.0.1:4100/v${version}/` },
+		{ provider: "generic", url: "http://127.0.0.1:4100" },
+	], "the test feed's own folder for that version, then the newest again");
+	assert.throws(() => pinFeed(updater, "../evil", { override: "http://127.0.0.1:4100/" }), /Invalid nightly version/);
+	assert.equal(feeds.length, 2);
+});

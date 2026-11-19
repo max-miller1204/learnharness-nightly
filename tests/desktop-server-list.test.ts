@@ -159,14 +159,19 @@ class TestWindow extends EventEmitter {
 		mainFrame: { url: "" },
 		isDestroyed: () => this.destroyed,
 		focus() {},
-		executeJavaScript: async () => {
+		executeJavaScript: async (script?: string) => {
+			if (script && !script.startsWith("new Promise")) { this.scripts.push(script); return undefined; }
 			await TestWindow.frameGate;
 			this.steps.push("frame");
 			return true;
 		},
 		setWindowOpenHandler: (handler: typeof this.windowOpen) => { this.windowOpen = handler; },
 		send: (_channel: string, snapshot: typeof this.snapshot) => { this.snapshot = snapshot; },
+		reload: () => { this.reloads++; },
 	});
+	reloads = 0;
+	/** Scripts run in the page other than the first-frame probe. */
+	scripts: string[] = [];
 	constructor(options: { backgroundColor?: string; webPreferences?: { preload?: string; session?: TestSession } } = {}) {
 		super();
 		this.options = options;
@@ -257,9 +262,10 @@ test("the app-owned switch flow keeps defaults, enforces preflight and isolates 
 	assert.equal(localStops, 1);
 	assert.equal(remote.url, alpha);
 	assert.equal(remote.shown, true);
-	assert.equal(remote.options.webPreferences?.preload, undefined);
+	// Only the narrow Update everything bridge (tests/update-everything.test.ts).
+	assert.equal(remote.options.webPreferences?.preload, path.join(import.meta.dirname, "../electron/remote-preload.cjs"));
 	assert.deepEqual(Object.entries(remote.options.webPreferences!).filter(([key]) => key !== "session"), [
-		["sandbox", true], ["contextIsolation", true], ["nodeIntegration", false],
+		["sandbox", true], ["contextIsolation", true], ["nodeIntegration", false], ["preload", path.join(import.meta.dirname, "../electron/remote-preload.cjs")],
 	]);
 	await assert.rejects(send(remote, "state"), /Untrusted/);
 	const chooser = panel();
@@ -1070,4 +1076,114 @@ test("the ghost dashboard's own page gets the first-load bearer, and only that l
 	assert.notDeepEqual(request(`${alpha}/`), { cancel: true });
 	assert.deepEqual(request(skeleton), { cancel: true }, "never again once the server page loads");
 	remote.destroy();
+});
+
+test("Update everything: the relaunch reopens its server once, and a covered restart is quiet until the run ends", async (t) => {
+	const directory = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-update-everything-"));
+	const originalFetch = globalThis.fetch;
+	t.after(async () => { globalThis.fetch = originalFetch; await fs.rm(directory, { recursive: true, force: true }); });
+	const saved = await openServerList(path.join(directory, "servers.json"), fakeSafeStorage);
+	await saved.savePairing(alpha, "alpha-secret");
+	await saved.savePairing(beta, "beta-secret");
+	await saved.saveDefault(alpha);
+	const calls: string[] = [];
+	globalThis.fetch = async (input) => {
+		const url = new URL(String(input));
+		calls.push(`${url.origin}${url.pathname}`);
+		if (url.pathname === PROTOCOL_ROUTES.serverInfo) return Response.json({ name: "Test server", protocolVersion: CLIENT_PROTOCOL_VERSION });
+		if (url.pathname === PROTOCOL_ROUTES.session) return Response.json({ authenticated: true });
+		throw new Error("Unexpected request " + url.pathname);
+	};
+	const controller = await createServerList({
+		app: { getPath: () => directory }, BrowserWindow: TestWindow, WebContentsView: TestView, safeStorage: fakeSafeStorage,
+		ipcMain: { handle() {} }, session: { fromPartition: () => new TestSession() },
+		startLocal: async () => "http://localhost:3000", stopLocal: async () => {},
+		createLocalWindow: () => { const win = new TestWindow(); return { win, load: (url: string) => win.loadURL(url) }; },
+		setLocalMenu() {},
+	});
+	const before = TestWindow.all.length;
+	await controller.launch({ server: beta });
+	const win = TestWindow.since(before).first;
+	assert.equal(win.url, beta, "the server the run restarted from, not the default");
+	assert.equal(saved.defaultServer, alpha);
+	const current = controller.current()!;
+	assert.equal(current.origin, beta);
+	assert.equal(current.token, "beta-secret");
+	assert.equal(current.win, win);
+
+	// A run for another server never covers this one (a switch before the cover went up).
+	controller.coverForUpdate(alpha, "Updating one…");
+	assert.equal(win.contentView.children.length, 0);
+	controller.coverForUpdate(beta, "Updating two to 0.6.1-nightly.20261118.72… This can take a few minutes.");
+	const cover = win.contentView.children.at(-1)!;
+	await cover.webContents.loadFile("x");
+	assert.ok(cover.options.webPreferences, "the ghost dashboard lies over the page");
+	const seen = calls.length;
+	win.webContents.emit("did-fail-load", {}, -102, "", beta, true);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(calls.length, seen, "no recheck while the server restarts under the cover");
+	assert.equal(win.destroyed, false);
+
+	const opened = TestWindow.all.length;
+	controller.endUpdate(beta, { kind: "retry", message: "two wasn’t back after 32 minutes. Your app wasn’t changed." });
+	assert.equal(win.destroyed, true);
+	const list = TestWindow.since(opened).first;
+	assert.deepEqual(list.snapshot?.problem, { server: beta, kind: "retry", message: "two wasn’t back after 32 minutes. Your app wasn’t changed." });
+	assert.equal(controller.current(), null);
+
+	// Later: the same window stays and loads the updated server's page. Destroying it first
+	// would leave no window, and Windows and Linux quit then (the 91b5951 proof).
+	await controller.launch({ server: beta });
+	const again = controller.current()!.win as TestWindow;
+	controller.coverForUpdate(beta, "Updating two…");
+	assert.equal(again.contentView.children.length, 1);
+	const reopened = TestWindow.all.length;
+	await controller.endUpdate(beta, null, { version: "0.6.1-nightly.20261118.72" });
+	assert.equal(again.destroyed, false, "never zero windows");
+	assert.equal(TestWindow.all.length, reopened, "no replacement window");
+	assert.equal(again.contentView.children.length, 0, "the cover is gone");
+	assert.equal(again.reloads, 1, "the updated server's page loads in it, once");
+	assert.equal(again.scripts.length, 1, "after claiming that version in the page's once-per-version memory (#264)");
+	assert.match(again.scripts[0]!, /lh-auto-reloaded-versions/);
+	assert.match(again.scripts[0]!, /0\.6\.1-nightly\.20261118\.72/);
+
+	// The page already reloaded itself under the cover (#264): Later adds no second reload.
+	controller.coverForUpdate(beta, "Updating two…");
+	again.webContents.emit("did-navigate", {}, `${beta}/`, 200);
+	await controller.endUpdate(beta, null, { version: "0.6.1-nightly.20261118.72" });
+	assert.equal(again.reloads, 1, "still one reload");
+	assert.equal(again.scripts.length, 1);
+	assert.equal(again.contentView.children.length, 0);
+	// A failed load under the cover (the proxy's 502) is not a reload of the new version.
+	controller.coverForUpdate(beta, "Updating two…");
+	again.webContents.emit("did-navigate", {}, `${beta}/`, 502);
+	await controller.endUpdate(beta, null, { version: "0.6.1-nightly.20261118.72" });
+	assert.equal(again.reloads, 2);
+	assert.equal(controller.current()?.win, again);
+	assert.equal(controller.current()?.origin, beta);
+	const rechecked = calls.length;
+	again.options.webPreferences!.session!.headersReceived!({ webContentsId: again.webContents.id, url: `${beta}/api/x`, resourceType: "xhr", statusCode: 401, responseHeaders: {} }, () => {});
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.ok(calls.length > rechecked, "rechecks are on again");
+	const quiet = TestWindow.all.length;
+	await controller.endUpdate(beta, null);
+	assert.equal(TestWindow.all.length, quiet, "without a cover, Later leaves the open page alone");
+
+	// A switch to another server mid-run: the run's end leaves that server's window alone.
+	controller.coverForUpdate(beta, "Updating two…");
+	await controller.launch({ server: alpha });
+	const other = controller.current()!.win as TestWindow;
+	assert.equal(controller.current()!.origin, alpha);
+	const checks = calls.length;
+	// A 401 on one of its requests makes the shell recheck that server.
+	other.options.webPreferences!.session!.headersReceived!({ webContentsId: other.webContents.id, url: `${alpha}/api/x`, resourceType: "xhr", statusCode: 401, responseHeaders: {} }, () => {});
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.ok(calls.length > checks, "the other server's rechecks are on");
+	assert.equal(controller.current()?.win, other);
+	controller.endUpdate(beta, { kind: "retry", message: "two wasn’t back after 32 minutes. Your app wasn’t changed." });
+	assert.equal(controller.current()?.win, other, "the open window stays");
+	assert.equal(other.destroyed, false);
+	const windows = TestWindow.all.length;
+	await controller.endUpdate(beta, null);
+	assert.equal(TestWindow.all.length, windows, "Later doesn't switch back");
 });
