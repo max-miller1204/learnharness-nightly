@@ -35,7 +35,7 @@ import { prepareAuditorReview } from "../tools/graph.ts";
 import { runSubmitAgent, healStringifiedArrays } from "./submit-agent.ts";
 
 /**
- * The extraction pipeline (vision §1 construction, 2026-09-02 redesign;
+ * The extraction pipeline (2026-09-02 redesign;
  * relinked 2026-09-27) — the sole graph writer. Three stages, one
  * orchestrator (the spine stage came and went, 2026-09-30: serialized
  * digest-aware extraction replaced it — the owner's live test showed

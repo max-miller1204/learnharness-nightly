@@ -4,9 +4,9 @@
  * Part of the domain-split contracts (src/core/contracts/): each domain file
  * is owned outright by its stream — cross-domain schema changes go through
  * master. Pure types + protocol docs + tiny pure helpers; type-only imports
- * of "ai" (safe everywhere: server, client, tests). See docs/archive/vision.md.
+ * of "ai" (safe everywhere: server, client, tests).
  */
-// ─── Plan tree (vision §2 "formal plan tree") ────────────────────────────────
+// ─── Plan tree ────────────────────────────────
 // A session-scoped dependency tree authored by the teacher via plan tools.
 // One substrate with the global graph: tree nodes fold into graph nodes.
 
@@ -33,18 +33,18 @@ export interface PlanTree {
 	version: number;
 }
 
-// NOTE (2026-09-11 pivot, docs/archive/probe-teach-split.md): the tree once carried
+// NOTE (2026-09-11 pivot): the tree once carried
 // `currentNodeId` / `doneNodeIds` — progress fields. They are GONE by
 // design: the tree carries structure ONLY; position and visited-ness derive
 // from the transcript at render time (derivePlanStatuses below). There is no
 // done ledger of any kind. No backwards compatibility for old records.
 
-/** Derived, never stored: status of a node for the panel (vision §2). */
+/** Derived, never stored: status of a node for the panel. */
 export type PlanNodeStatus = "current" | "visited" | "upcoming";
 
 // ─── derived statuses: position from CALLS, never from results ─────────────
 //
-// (2026-09-11 pivot — docs/archive/probe-teach-split.md §3.) The teacher AUTHORS the
+// (2026-09-11 pivot.) The teacher AUTHORS the
 // map (plan_init, mermaid — re-callable rewrite) and never tracks progress.
 // The quiz `nodeId` means "this question is ABOUT this node" — a position
 // signal, never a completion signal. Derivation reads CALLS only:

@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 import { bearerKey } from "./protocol";
+import { KIND_FILTER_KEY, readKindFilter, type SessionKindFilter } from "./session-list";
 
 export interface SavedServer {
   origin: string;
@@ -24,3 +25,5 @@ export const saveDirectory = (directory: ServerDirectory) => AsyncStorage.setIte
 export const readBearer = (origin: string) => SecureStore.getItemAsync(bearerKey(origin), KEYCHAIN);
 export const saveBearer = (origin: string, token: string) => SecureStore.setItemAsync(bearerKey(origin), token, KEYCHAIN);
 export const clearBearer = (origin: string) => SecureStore.deleteItemAsync(bearerKey(origin), KEYCHAIN);
+export const loadKindFilter = async () => readKindFilter(await AsyncStorage.getItem(KIND_FILTER_KEY));
+export const saveKindFilter = (kind: SessionKindFilter) => AsyncStorage.setItem(KIND_FILTER_KEY, kind);

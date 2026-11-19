@@ -21,6 +21,7 @@ export function useSession(api: MobileApi, id: string, active: boolean, connecti
   const [tail, setTail] = useState<LhMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshError, setRefreshError] = useState("");
+  const [deleted, setDeleted] = useState(false);
   const [writeError, setWriteError] = useState("");
   const [streamError, setStreamError] = useState("");
   const [writing, setWriting] = useState(false);
@@ -117,6 +118,7 @@ export function useSession(api: MobileApi, id: string, active: boolean, connecti
           latest.current = fresh;
           setRecord(fresh);
           setRefreshError("");
+          setDeleted(false);
           const outstanding = pending.current;
           if (outstanding && inputWasSaved(fresh.messages, outstanding.priorIds, outstanding.input)) {
             pending.current = null;
@@ -144,7 +146,9 @@ export function useSession(api: MobileApi, id: string, active: boolean, connecti
       } catch (error) {
         if (!signal.aborted && !connectionFault(error)) {
           setRefreshError(errorText(error));
-          if (!(error instanceof ApiError && error.status === 404)) retry();
+          const gone = error instanceof ApiError && error.status === 404;
+          setDeleted(gone);
+          if (!gone) retry();
         }
       } finally {
         if (!signal.aborted) setLoading(false);
@@ -229,5 +233,5 @@ export function useSession(api: MobileApi, id: string, active: boolean, connecti
     }
   }
 
-  return { record, tail, loading, refreshError, writeError, streamError, writing, stopping, unconfirmed, refresh, submit, stop };
+  return { record, tail, loading, refreshError, deleted, writeError, streamError, writing, stopping, unconfirmed, refresh, submit, stop };
 }

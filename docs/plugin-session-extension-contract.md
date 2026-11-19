@@ -1,6 +1,6 @@
 # Session extensions: submissions, images and page-body surfaces
 
-Current API v1 contract for the matching source/build; use documentation/types matching
+API v1 contract for the matching source/build; use documentation/types matching
 the target app. Use the downloaded skill's `bundle.json` to identify the app;
 API v1 alone does not identify every available capability. Exact types live in `src/core/plugin-submissions.ts`
 and `plugin-ui.ts`. Custom practice submissions additionally follow the

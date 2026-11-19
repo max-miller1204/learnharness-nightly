@@ -144,8 +144,7 @@ export function quizInputProblems(input: {
 }
 
 // The SHARED quiz authoring fields — everything except `nodeId`. The probe
-// and teach agents use DIFFERENT tools under the same name (docs/probe-teach-
-// split.md §1): the prober's quiz has NO nodeId field at all (there is no
+// and teach agents use DIFFERENT tools under the same name: the prober's quiz has NO nodeId field at all (there is no
 // map to position on), the teacher's adds it (the position signal — the
 // per-session tree validation runs in the tool's execute, tools.ts).
 // Grading rules are identical, single-sourced here. The cross-field
@@ -201,7 +200,7 @@ export const quizInputBase = Type.Object({
 // purely MECHANICAL — no instructions on what the questions should be);
 // the enum's one-liners below say only WHEN each kind fires.
 // nodeId means "this question is ABOUT this node" — a position signal,
-// never a completion signal (docs/archive/probe-teach-split.md §3). BOTH teaching
+// never a completion signal. BOTH teaching
 // types carry it. The cross-field authoring contract (the Gate-3
 // hardening: a quiz whose correctAnswer can't be graded NEVER reaches the
 // learner — schema-valid ⇔ gradeable, the rules exactly what the grading

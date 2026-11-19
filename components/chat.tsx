@@ -627,7 +627,7 @@ export function Chat({
 		[send],
 	);
 
-	// Teach-phase check (W5, vision §2): a pending QUIZ that lands once a
+	// Teach-phase check (W5): a pending QUIZ that lands once a
 	// plan node is OCCUPIED (phaseAt3 "teach") starts collapsed behind a
 	// "Check your understanding" reveal button; probe- and plan-phase
 	// questions auto-open as today. Both teach quizzing tools obey the
