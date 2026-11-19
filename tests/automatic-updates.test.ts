@@ -229,6 +229,29 @@ describe("status observation never controls the updater", () => {
 		assert.equal(win.webContents.messages.at(-1)!.channel, "lh:update-status");
 	});
 
+	it("passes the download's percent to the page for the progress ring: 0 at the start, then each whole 10% (T3's rule)", () => {
+		const f = fixture(); const win = f.window(); f.run("setupAutoUpdater()");
+		f.updater.emit("update-available", { version: "0.3.8" });
+		assert.equal(f.state().downloadPercent, null, "not downloading");
+		f.updater.downloadUpdate = () => new Promise<never[]>(() => {});
+		f.run("downloadUpdateNow()");
+		assert.equal(f.state().status, "downloading");
+		assert.equal(f.state().downloadPercent, 0);
+		const pushes = () => win.webContents.messages.filter((m) => m.channel === "lh:update-status").length;
+		const before = pushes();
+		const seen: unknown[] = [];
+		for (const percent of [3.2, 9.9, 12.5, 19, 47.1, 100]) {
+			f.updater.emit("download-progress", { percent, transferred: 0, total: 1, bytesPerSecond: 1 });
+			seen.push(f.state().downloadPercent);
+		}
+		assert.deepEqual(seen, [0, 0, 12.5, 12.5, 47.1, 100]);
+		assert.equal(pushes() - before, 3, "a push per step, not per event");
+		assert.equal((win.webContents.messages.at(-1)!.value as { downloadPercent: number }).downloadPercent, 100);
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		assert.equal(f.state().status, "downloaded");
+		assert.equal(f.state().downloadPercent, null);
+	});
+
 	for (const status of ["checking", "downloading", "error", "disabled", "downloaded"]) {
 		it(`a ${status} display state does not block a future automatic check`, async () => {
 			const f = fixture(); f.run(`setupAutoUpdater(); reportUpdateStatus("${status}")`); await f.check();

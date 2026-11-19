@@ -504,18 +504,20 @@ const releaseNotes = require("./release-notes.cjs");
 let autoUpdater = null; // electron-updater's, packaged builds only
 // Observational only: this snapshot NEVER gates a check, download or install.
 // The revision lets late subscribers reject an older in-flight IPC snapshot.
-let updateState = { status: "idle", version: null, revision: 0, releaseNotes: [], omittedReleaseCount: 0 };
+// `downloadPercent` (0 to 100, or null when unknown) only while "downloading": the sidebar's progress ring.
+let updateState = { status: "idle", version: null, revision: 0, downloadPercent: null, releaseNotes: [], omittedReleaseCount: 0 };
 // Every group of the offered version (uncapped): the notes cache keeps them all.
 let offeredGroups = [];
 let installing = false;
 
-function reportUpdateStatus(status, version = null) {
+function reportUpdateStatus(status, version = null, downloadPercent = null) {
 	try {
 		// A later check/error must not hide an update already staged.
 		if (updateState.status === "downloaded" && status !== "downloaded") return;
 		const keepsNotes = status === "available" || status === "downloading" || status === "downloaded";
 		const notes = keepsNotes ? releaseNotes.capGroups(offeredGroups) : { releaseNotes: [], omittedReleaseCount: 0 };
-		updateState = { status, version: typeof version === "string" ? version : null, revision: updateState.revision + 1, ...notes };
+		const percent = status === "downloading" && Number.isFinite(downloadPercent) ? Math.min(100, Math.max(0, downloadPercent)) : null;
+		updateState = { status, version: typeof version === "string" ? version : null, revision: updateState.revision + 1, downloadPercent: percent, ...notes };
 		for (const win of trustedAppWindows) {
 			try {
 				win.webContents.send("lh:update-status", updateState);
@@ -526,6 +528,15 @@ function reportUpdateStatus(status, version = null) {
 	} catch {
 		/* Status reporting must never interrupt the updater. */
 	}
+}
+
+/** T3's shouldBroadcastDownloadProgress (apps/desktop/src/updates/DesktopUpdates.ts:325-341 at
+ *  3ce21458): a new state only on entering "downloading", at each whole 10%, and at 100%. */
+function shouldReportDownloadProgress(state, percent) {
+	if (state.status !== "downloading") return true;
+	if (percent === null) return false; // no size: the ring stays empty
+	if (state.downloadPercent === null) return true;
+	return Math.floor(percent / 10) !== Math.floor(state.downloadPercent / 10) || percent === 100;
 }
 
 function adoptOfferedNotes(info) {
@@ -574,7 +585,8 @@ function checkForUpdates({ manual = false } = {}) {
 /** Download the offered version (the user clicked Download). */
 function downloadUpdateNow() {
 	if (!autoUpdater || updateState.status !== "available" || updateEverything?.running()) return;
-	reportUpdateStatus("downloading", updateState.version);
+	// 0 at the start, like T3's reduceDesktopUpdateStateOnDownloadStart (updateMachine.ts:145-156 at 3ce21458).
+	reportUpdateStatus("downloading", updateState.version, 0);
 	autoUpdater.downloadUpdate().catch((err) => {
 		log(`update download failed: ${err?.message ?? err}`);
 		reportUpdateStatus("error");
@@ -764,8 +776,9 @@ function setupAutoUpdater() {
 		adoptOfferedNotes(info);
 		reportUpdateStatus("available", info?.version);
 	});
-	autoUpdater.on("download-progress", () => {
-		if (updateState.status !== "downloading") reportUpdateStatus("downloading", updateState.version);
+	autoUpdater.on("download-progress", (progress) => {
+		const percent = Number.isFinite(progress?.percent) ? progress.percent : null;
+		if (shouldReportDownloadProgress(updateState, percent)) reportUpdateStatus("downloading", updateState.version, percent);
 	});
 	autoUpdater.on("update-not-available", () => { if (!offering()) reportUpdateStatus("up-to-date"); });
 	autoUpdater.on("update-downloaded", (info) => {

@@ -129,11 +129,39 @@ export function mergeFeedNotes(entry: FeedNote, previous: readonly FeedNote[]): 
 }
 
 /** Read a URL (https: or file:) as bytes. */
-async function readUrl(url: string, signal?: AbortSignal): Promise<Buffer> {
-	if (url.startsWith("file:")) return fsp.readFile(fileURLToPath(url));
+/** Bytes received so far and the total from Content-Length (null when the server doesn't say). */
+export type DownloadBytes = (received: number, total: number | null) => void;
+
+async function readUrl(url: string, signal?: AbortSignal, onBytes?: DownloadBytes): Promise<Buffer> {
+	if (url.startsWith("file:")) {
+		const bytes = await fsp.readFile(fileURLToPath(url));
+		onBytes?.(bytes.length, bytes.length);
+		return bytes;
+	}
 	const response = await fetch(url, { signal, redirect: "follow", headers: { "User-Agent": "learnharness-selfhost" } });
 	if (!response.ok) throw new Error(`GET ${url} failed: HTTP ${response.status}`);
-	return Buffer.from(await response.arrayBuffer());
+	return readBody(response, onBytes);
+}
+
+/** A response's whole body, reporting each chunk as it arrives (the sidebar's download ring). */
+export async function readBody(response: Response, onBytes?: DownloadBytes): Promise<Buffer> {
+	if (!onBytes || !response.body) return Buffer.from(await response.arrayBuffer());
+	// A compressed transfer's Content-Length counts the compressed bytes, not the ones read here.
+	const encoded = (response.headers.get("content-encoding") ?? "identity").toLowerCase() !== "identity";
+	const length = Number(response.headers.get("content-length"));
+	const total = !encoded && Number.isSafeInteger(length) && length > 0 ? length : null;
+	const chunks: Uint8Array[] = [];
+	let received = 0;
+	onBytes(0, total);
+	const reader = response.body.getReader();
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		chunks.push(value);
+		received += value.byteLength;
+		onBytes(received, total);
+	}
+	return Buffer.concat(chunks);
 }
 
 export async function fetchLatest(feedUrl: string = DEFAULT_FEED_URL, signal?: AbortSignal): Promise<LatestFeed> {
@@ -281,6 +309,8 @@ export interface StageOptions {
 	/** Never install these (state.badVersions). */
 	badVersions?: readonly string[];
 	onProgress?: (phase: "downloading" | "verifying" | "extracting") => void;
+	/** The archive's bytes as they arrive. */
+	onBytes?: DownloadBytes;
 }
 
 /**
@@ -300,7 +330,7 @@ export async function stageVersion(home: string, feed: LatestFeed, arch: Arch, o
 
 	options.onProgress?.("downloading");
 	const archive = path.join(dirs.downloads, `learnharness-${version}-${arch}.tar.gz`);
-	const bytes = await readUrl(asset.url, options.signal);
+	const bytes = await readUrl(asset.url, options.signal, options.onBytes);
 	options.onProgress?.("verifying");
 	const actual = createHash("sha256").update(bytes).digest("hex");
 	if (actual !== asset.sha256) throw new Error(`Checksum mismatch for ${version} (${arch}): expected ${asset.sha256}, got ${actual}.`);

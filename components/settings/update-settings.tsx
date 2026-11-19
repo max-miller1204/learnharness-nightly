@@ -30,6 +30,8 @@ export type UpdateState = {
 	/** Self-hosted only: the version the server runs. Newer than this page's APP_VERSION means the page should reload. */
 	runningVersion?: string;
 	message?: string | null;
+	/** While "downloading": how far, 0 to 100, or null when the size is unknown (the sidebar's progress ring). */
+	downloadPercent?: number | null;
 	notice?: UpdateNotice | null;
 	/** Newest first: versions newer than the running one up to the offered one. */
 	releaseNotes?: ReleaseNoteGroup[];
@@ -47,6 +49,8 @@ export type DesktopAppStatus = {
 	target: string | null;
 	phase: UpdateState["status"] | "updating";
 	error: string | null;
+	/** While this app downloads its update: how far, 0 to 100, or null when unknown. Older apps omit it. */
+	downloadPercent?: number | null;
 };
 
 export type DesktopUpdateBridge = {

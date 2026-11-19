@@ -10,7 +10,7 @@
  *   checking       spinning refresh icon, disabled
  *   unavailable    dimmed refresh icon, disabled ("Updates unavailable")
  *   download       desktop "available": download it
- *   downloading    download arrow, disabled
+ *   downloading    download arrow in a ring that fills with the download, disabled
  *   install        "downloaded": the install confirm dialog
  *   dismiss-notice rolled-back notice: dismiss it (per server)
  *   reload         the server runs a different version than this page: reload
@@ -126,13 +126,26 @@ export function updateControlTooltip(state: UpdateState, kind: UpdateControlKind
 		case "checking": return "Checking for updates…";
 		case "unavailable": return UNAVAILABLE_TITLE;
 		case "download": return state.version ? `Update ${state.version} ready to download` : "Update available ready to download";
-		case "downloading": return "Downloading update";
+		case "downloading": return downloadingTooltip(state.downloadPercent);
 		case "install": return `Update ${state.version ?? "ready"} downloaded. Click to restart and install.`;
 		case "dismiss-notice": return state.notice?.text ?? "";
 		// T3's updateTargetsSentence for this app and one server (updateEverything.logic.ts:765-772).
 		case "everything": return "Update this app and 1 server";
 		default: return "Check for updates";
 	}
+}
+
+/** T3's downloading label (desktopUpdate.logic.ts:134-139 at 3ce21458): the percent floored,
+ *  or the plain label while the size is unknown. */
+export function downloadingTooltip(percent: number | null | undefined): string {
+	return typeof percent === "number" && Number.isFinite(percent) ? `Downloading update (${Math.floor(percent)}%)` : "Downloading update";
+}
+
+/** How far the download shown by the "downloading" state is: this app's own when it is the
+ *  one downloading (resolveUpdateControl checks it first), else the server's. */
+export function shownDownloadPercent(state: UpdateState | null, desktop: DesktopAppStatus | null = null): number | null {
+	const percent = desktop?.phase === "downloading" ? desktop.downloadPercent : state?.downloadPercent;
+	return typeof percent === "number" && Number.isFinite(percent) ? percent : null;
 }
 
 /** Tooltips for this app's own update (T3's getDesktopUpdateButtonTooltip, desktopUpdate.logic.ts:131-145). */
@@ -199,6 +212,41 @@ function pauseWhileHidden(element: SVGSVGElement | null) {
 	return () => document.removeEventListener("visibilitychange", update);
 }
 
+const DOWNLOAD_PROGRESS_RADIUS = 14;
+const DOWNLOAD_PROGRESS_CIRCUMFERENCE = 2 * Math.PI * DOWNLOAD_PROGRESS_RADIUS;
+
+/** How much of the ring is left unfilled, from a percent (empty when unknown). */
+export function downloadRingOffset(percent: number | null): number {
+	const filled = percent === null || !Number.isFinite(percent) ? 0 : Math.min(100, Math.max(0, percent));
+	return DOWNLOAD_PROGRESS_CIRCUMFERENCE * (1 - filled / 100);
+}
+
+/** T3's DesktopUpdateDownloadingIcon (DesktopUpdateStatusIcon.tsx:15-18 and 56-90 at 3ce21458):
+ *  a ring around the download arrow that fills as the download goes, 300 ms ease-out, no
+ *  transition under reduced motion. */
+function DownloadingIcon({ percent }: { percent: number | null }) {
+	return (
+		<span className="relative grid size-8 place-items-center" data-testid="update-download-ring" data-percent={percent ?? undefined}>
+			<svg aria-hidden className="pointer-events-none absolute inset-0 size-full -rotate-90" viewBox="0 0 32 32">
+				<circle cx="16" cy="16" r={DOWNLOAD_PROGRESS_RADIUS} fill="none" className="stroke-current/22" strokeWidth="1.5" />
+				<circle
+					cx="16"
+					cy="16"
+					r={DOWNLOAD_PROGRESS_RADIUS}
+					fill="none"
+					stroke="currentColor"
+					strokeDasharray={DOWNLOAD_PROGRESS_CIRCUMFERENCE}
+					strokeDashoffset={downloadRingOffset(percent)}
+					strokeLinecap="round"
+					strokeWidth="1.5"
+					className="transition-[stroke-dashoffset] duration-300 ease-out motion-reduce:transition-none"
+				/>
+			</svg>
+			<DownloadIcon className="size-4" aria-hidden />
+		</span>
+	);
+}
+
 /** T3's DesktopUpdateDownloadedIcon: RotateCw with a check badge. */
 function RestartIcon() {
 	return (
@@ -211,7 +259,7 @@ function RestartIcon() {
 	);
 }
 
-function ControlIcon({ kind, spinning, onIteration }: { kind: UpdateControlKind; spinning: boolean; onIteration: () => void }) {
+function ControlIcon({ kind, spinning, onIteration, downloadPercent = null }: { kind: UpdateControlKind; spinning: boolean; onIteration: () => void; downloadPercent?: number | null }) {
 	if (kind === "download" || kind === "app-download") {
 		return (
 			<span className="relative grid size-4 place-items-center">
@@ -220,7 +268,7 @@ function ControlIcon({ kind, spinning, onIteration }: { kind: UpdateControlKind;
 			</span>
 		);
 	}
-	if (kind === "downloading") return <DownloadIcon className="size-4" aria-hidden />;
+	if (kind === "downloading") return <DownloadingIcon percent={downloadPercent} />;
 	if (kind === "everything") return <CircleArrowUpIcon className="size-4" aria-hidden />;
 	if (kind === "install" || kind === "app-install" || kind === "reload") return <RestartIcon />;
 	if (kind === "dismiss-notice") return <TriangleAlertIcon className="size-3.5 text-destructive" aria-hidden />;
@@ -304,7 +352,10 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	const onIteration = useCallback(() => setLatched(continuesCheckSpin(isChecking, reducedMotion)), [isChecking, reducedMotion]);
 
 	if (!state || !kind) return null;
-	const tooltip = (kind === "app-download" || kind === "app-install") && desktopStatus ? appUpdateTooltip(desktopStatus, kind) : updateControlTooltip(state, kind, pageVersion);
+	const downloadPercent = shownDownloadPercent(state, desktopStatus);
+	const tooltip = (kind === "app-download" || kind === "app-install") && desktopStatus ? appUpdateTooltip(desktopStatus, kind)
+		: kind === "downloading" ? downloadingTooltip(downloadPercent)
+		: updateControlTooltip(state, kind, pageVersion);
 	const detail = kind === "unavailable" ? unavailableDetail(state) : null;
 	const disabled = kind === "checking" || kind === "downloading" || kind === "unavailable" || pending || (kind === "everything" && desktopStatus?.phase === "updating");
 	const surface = kind !== "check" && kind !== "checking" && kind !== "unavailable";
@@ -362,7 +413,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 				kind === "unavailable" && "opacity-60",
 			)}
 		>
-			<ControlIcon key={showCheckIcon ? `spin-${spinKey}` : kind} kind={kind} spinning={kind === "checking" && !reducedMotion} onIteration={onIteration} />
+			<ControlIcon key={showCheckIcon ? `spin-${spinKey}` : kind} kind={kind} spinning={kind === "checking" && !reducedMotion} onIteration={onIteration} downloadPercent={downloadPercent} />
 		</button>
 	);
 
