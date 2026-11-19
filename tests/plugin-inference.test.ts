@@ -127,7 +127,7 @@ test("every model is explicit and available: missing, unknown, removed keys and 
 	await assert.rejects(f.adapter.inference.complete({ ...request(), model: undefined as never }), /explicit model/);
 	await assert.rejects(f.adapter.engineFor({ provider: "", id: "" }, "user"), /explicit model/);
 	await assert.rejects(f.adapter.engineFor({ provider: "unknown", id: spec.id }, "user"), /Unknown model provider/);
-	await assert.rejects(f.adapter.engineFor({ provider: spec.provider, id: "missing" }, "background"), /Selected model unavailable/);
+	await assert.rejects(f.adapter.engineFor({ provider: spec.provider, id: "missing" }, "background"), /is no longer available\. Pick another model in Settings\./);
 	await assert.rejects(f.adapter.engineFor(spec, "automatic" as never), /purpose/);
 	await assert.rejects(f.adapter.engineFor({ ...spec, thinkingLevel: "guess" as never }, "user"), /thinkingLevel/);
 	const fallback = createPluginInference({ signal: f.signal.signal, dataDirectory: f.directory }, { ...f.deps, engineForSpec: () => ({ model: { provider: "another-provider", id: "another-model" } as never, streamFn: () => { throw new Error("must not run"); } }) });

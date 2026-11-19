@@ -19,7 +19,8 @@
 
 import { clampThinkingLevel, getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { currentCatalogId, piModels } from "../agent/models.ts";
+import { piModels } from "../agent/models.ts";
+import { RETIRED_MODELS } from "./retired-models.ts";
 import { customProviderAvailable } from "./custom-provider.ts";
 import { chatGPTConnected, chatGPTModel, chatGPTModels, refreshChatGPTModels } from "../agent/chatgpt-bridge.ts";
 import { NATIVE_SUBSCRIPTIONS } from "../core/contracts/subscriptions.ts";
@@ -33,8 +34,10 @@ export async function refreshConnectionCatalog(provider?: string): Promise<void>
 }
 function connectionModel(provider: string, id: string): Model<Api> | undefined {
 	if (provider === CLAUDE_CODE_PROVIDER && !claudeCodeAvailable()) return undefined;
-	return provider === "chatgpt" ? chatGPTModel(id) : nativeSubscriptionId(provider) ? nativeSubscriptionModel(provider, id) : piModels().getModel(provider, currentCatalogId(provider, id));
+	return provider === "chatgpt" ? chatGPTModel(id) : nativeSubscriptionId(provider) ? nativeSubscriptionModel(provider, id) : piModels().getModel(provider, id);
 }
+/** Whether a saved provider/id would run now. */
+export function catalogHasModel(provider: string, id: string): boolean { return connectionModel(provider, id) !== undefined; }
 function connectionProviderIds(): string[] { return [...piModels().getProviders().map((p) => p.id), "chatgpt", ...NATIVE_SUBSCRIPTIONS.map((p) => p.logicalId)]; }
 import { settingsStore } from "../store/settings.ts";
 import { effectiveSettings } from "./stores.ts";
@@ -209,6 +212,10 @@ export function catalogContextLimits(): Map<string, number> {
 		}
 	}
 	for (const model of [...chatGPTModels(), ...nativeSubscriptionModels()]) index.set(`${model.provider}:${model.id}`, model.contextWindow);
+	// History on a model the catalog dropped keeps its context limit.
+	for (const [id, retired] of Object.entries(RETIRED_MODELS)) {
+		if (keyed.has(id.slice(0, id.indexOf(":"))) && !index.has(id)) index.set(id, retired.contextWindow);
+	}
 	return index;
 }
 

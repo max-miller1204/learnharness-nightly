@@ -393,6 +393,18 @@ describe("the claude-code provider (native CLI authentication, no LearnHarness k
 		});
 	});
 
+	it("catalogContextLimits() keeps a retired model's limit for history, only for a connected provider", () => {
+		const saved = process.env.OPENCODE_API_KEY;
+		try {
+			delete process.env.OPENCODE_API_KEY;
+			assert.equal(catalogContextLimits().has("opencode-go:gemini-4-argon-contributor"), false);
+			process.env.OPENCODE_API_KEY = "test-retired-limit";
+			assert.equal(catalogContextLimits().get("opencode-go:gemini-4-argon-contributor"), 1048576);
+		} finally {
+			if (saved === undefined) delete process.env.OPENCODE_API_KEY; else process.env.OPENCODE_API_KEY = saved;
+		}
+	});
+
 	it("catalogContextLimits() never advertises placeholder CLI limits, even when installed", () => {
 		withClaudeInstalled(true, () => {
 			assert.equal(catalogContextLimits().has("claude-code:opus"), false);

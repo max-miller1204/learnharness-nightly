@@ -229,7 +229,7 @@ function activate(ctx) {
     const pin = settings.modelOverride ? { model: settings.modelOverride } : catalog.slots?.cheap;
     if (!pin?.model) fail('Configure the cheap model slot or choose a Flashcards model override.');
     const entry = catalog.models.find(m => m.provider === pin.model.provider && m.id === pin.model.id);
-    if (!entry) fail('The selected model is unavailable. Choose a configured model.');
+    if (!entry) fail(`The model ${pin.model.provider}/${pin.model.id} is no longer available. Pick another model in Settings${settings.modelOverride ? ' or as the Flashcards model' : ''}.`);
     const thinkingLevel = settings.thinkingOverride ?? pin.thinkingLevel;
     if (thinkingLevel && !entry.supportedLevels.includes(thinkingLevel)) fail('The selected thinking level is not supported by this model.');
     return { spec: { ...pin.model, ...(thinkingLevel ? { thinkingLevel } : {}) }, entry };

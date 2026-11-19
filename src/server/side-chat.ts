@@ -15,6 +15,7 @@ import { COMPACTION_RESERVE_TOKENS } from "../core/compaction.ts";
 import { resolveSideQuestionSpec } from "../core/settings-resolution.ts";
 import { modelsNotConfigured, providerKeyMissing as providerKeyMissingEnvelope } from "../core/settings.ts";
 import { ModelUnavailableError, piEngineForSpec, type PiEngine } from "../agent/models.ts";
+import { MODEL_UNAVAILABLE } from "../core/model-unavailable.ts";
 import { isSubscriptionProvider } from "../agent/subscription-connections.ts";
 import { usageWasAdmitted } from "../agent/subscription-request-cycle.ts";
 import { composeSideChatInstructions, streamSideAnswer } from "../agent/side-chat.ts";
@@ -274,7 +275,10 @@ async function productionEngineFor(record: ChatRecord): Promise<SideEngine | Res
 		const engine = piEngineForSpec(spec, false, { captured() {}, beforeDispatch() {}, noDispatch() { denied = true; } },
 			() => stores.settingsStore.readSettings()?.models?.strong?.cacheRetention);
 		return { ...engine, sideUsageAdmitted: () => !denied };
-	} catch (error) { return Response.json(error instanceof ModelUnavailableError ? { error: error.message, code: "model_unavailable" } : { error: "The selected model is unavailable." }, { status: 503 }); }
+	} catch (error) {
+		if (error instanceof ModelUnavailableError) return Response.json({ error: error.message, code: MODEL_UNAVAILABLE }, { status: 422 });
+		return Response.json({ error: "The selected model is unavailable." }, { status: 503 });
+	}
 }
 interface SideChatGlobal { __lhSideChatService?: SideChatService }
 export const sideChats: SideChatService = ((globalThis as typeof globalThis & SideChatGlobal).__lhSideChatService ??= createSideChatService({

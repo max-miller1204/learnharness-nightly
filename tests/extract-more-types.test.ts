@@ -318,6 +318,8 @@ it("folder review lines: unpriced models, failed estimates, nothing to extract",
 	assert.equal(folderReviewLines({ plan, estimate: { tokens: 100, usd: null, rough: false, unpriced: "claude-code:opus" } }).estimate, "About 100 tokens; cost not estimated for claude-code:opus.");
 	assert.equal(folderReviewLines({ plan, estimate: { tokens: 100, usd: 0.001, rough: false } }).estimate, "About 100 tokens, about less than $0.01");
 	assert.equal(folderReviewLines({ plan, estimate: "failed" }).estimate, "Could not estimate the cost.");
+	assert.equal(folderReviewLines({ plan, estimate: { tokens: 100, usd: null, rough: false, unavailable: "opencode-go:minimax-m3.1-flash-free" } }).estimate,
+		"About 100 tokens. The model opencode-go/minimax-m3.1-flash-free is no longer available. Pick another model in Settings.");
 	const empty = await planFolder([picked("e/data.xlsx")]);
 	assert.deepEqual(folderReviewLines({ plan: empty, estimate: "failed" }), { title: "Nothing to extract in e", skipped: "Skipped: 1 unsupported", empty: true });
 });
@@ -335,6 +337,9 @@ it("estimateImport prices extractor, auditor and vision calls; any unpriced mode
 	assert.equal(estimateImport({ sources: 1, notesChars: 0, codeChars: 0, images: 0, pdfBytes: 1000, documentBytes: 0 }, models, priced, 4096).rough, true);
 	const unpriced = estimateImport({ sources: 1, notesChars: 0, codeChars: 4000, images: 1, pdfBytes: 0, documentBytes: 0 }, models, (call, model) => model === "p:v" ? null : priced(call), 4096);
 	assert.deepEqual([unpriced.usd, unpriced.unpriced], [null, "p:v"]);
+	// A configured slot the catalog no longer has is unavailable, even when its history still has a price.
+	const gone = estimateImport({ sources: 1, notesChars: 4000, codeChars: 0, images: 1, pdfBytes: 0, documentBytes: 0 }, models, priced, 4096, (model) => model !== "p:a");
+	assert.deepEqual([gone.usd, gone.unavailable, gone.unpriced], [null, "p:a", undefined]);
 	assert.deepEqual(estimateImport({ sources: 0, notesChars: 0, codeChars: 0, images: 0, pdfBytes: 0, documentBytes: 0 }, models, priced, 4096), { tokens: 0, usd: 0, rough: false });
 	// The live calibration folder (p-limit with notes, a docx and an image): 155,419 tokens billed.
 	const live = estimateImport({ sources: 5, notesChars: 10_110, codeChars: 36_840, images: 1, pdfBytes: 0, documentBytes: 11_029 }, models, priced, 4096);

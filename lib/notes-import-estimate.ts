@@ -22,6 +22,8 @@ export interface ImportEstimate {
 	rough: boolean;
 	/** The first model without a price, when usd is null. */
 	unpriced?: string;
+	/** The first model that would run but the catalog no longer has, when usd is null. */
+	unavailable?: string;
 }
 type Call = { inputTokens: number; outputTokens: number };
 export type ImportPricer = (call: Call, modelId: string) => number | null;
@@ -57,6 +59,7 @@ export function estimateImport(
 	models: { extractor?: string; auditor?: string; imageReader?: string },
 	price: ImportPricer,
 	chunkTokens: number,
+	available: (modelId: string) => boolean = () => true,
 ): ImportEstimate {
 	const rough = input.pdfBytes > 0 || input.documentBytes > 0;
 	const sourceTokens = Math.ceil((input.notesChars + input.codeChars + input.pdfBytes * PDF_CHARS_PER_BYTE + input.documentBytes * DOCUMENT_CHARS_PER_BYTE) / 4)
@@ -73,6 +76,7 @@ export function estimateImport(
 	let usd: number | null = 0;
 	let unpriced: string | undefined;
 	for (const [model, call] of calls) {
+		if (model && !available(model)) return { tokens, usd: null, rough, unavailable: model };
 		const cost = model ? price(call, model) : null;
 		if (cost === null) {
 			usd = null;

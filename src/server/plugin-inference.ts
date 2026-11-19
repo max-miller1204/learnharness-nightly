@@ -9,6 +9,7 @@ import type { PluginInference, PluginInferenceOptions, PluginInferenceRequest } 
 import type { ModelCatalogResponse } from "../core/contracts/models.ts";
 import { NATIVE_SUBSCRIPTIONS } from "../core/contracts/subscriptions.ts";
 import { providerKeyMissing } from "../core/settings.ts";
+import { MODEL_UNAVAILABLE, modelUnavailableMessage } from "../core/model-unavailable.ts";
 import { validatePluginInferenceOptions as optionsFor } from "../core/plugin-validation.ts";
 
 /** Complete dependency seam for off-network tests; production defaults are lazy
@@ -98,7 +99,7 @@ export function createPluginInference(
 			const missing = providerKeyMissing(spec.provider, []);
 			throw Object.assign(new Error(missing.error), missing);
 		}
-		if (!listing.models.some((m) => m.provider === spec.provider && m.id === spec.id)) throw new Error(`Selected model unavailable in host catalog: ${spec.provider}/${spec.id}`);
+		if (!listing.models.some((m) => m.provider === spec.provider && m.id === spec.id)) throw Object.assign(new Error(modelUnavailableMessage(spec.provider, spec.id)), { code: MODEL_UNAVAILABLE });
 		check(caller);
 		return deps;
 	};

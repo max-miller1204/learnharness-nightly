@@ -1117,7 +1117,7 @@ describe("the key-presence turn gate (provider-key interlude, 2026-09-25)", () =
 	});
 });
 
-describe("saved models the catalog renamed or removed (tolerant read, no data rewrite)", () => {
+describe("a saved model the catalog no longer has", () => {
 	const withKey = async (run: () => Promise<void>) => {
 		const saved = process.env.OPENCODE_API_KEY;
 		process.env.OPENCODE_API_KEY = "test-saved-model";
@@ -1127,22 +1127,12 @@ describe("saved models the catalog renamed or removed (tolerant read, no data re
 		}
 	};
 
-	it("a renamed model id still runs, and the stored pin is left as saved", async () => withKey(async () => {
-		const chat = chatStore.createChat("Test: renamed model");
-		createdChats.push(chat.id);
-		chatStore.saveSettings(chat.id, { model: { provider: "opencode-go", id: "gemini-4-argon-contributor" } });
-		const res = await handleChatRequest(post(chat.id, { type: "text", text: "teach me something" }), agentFactory(scriptedTeacher(defaultLesson).engine));
-		assert.equal(res.status, 200, "the old id reads as its current catalog id");
-		await drainRunning(chat.id);
-		assert.deepEqual(chatStore.getChat(chat.id)!.settings?.model, { provider: "opencode-go", id: "gemini-4-argon-contributor" });
-	}));
-
 	it("a removed model fails the turn with a message naming it, and never switches models", async () => withKey(async () => {
 		const chat = chatStore.createChat("Test: removed model");
 		createdChats.push(chat.id);
 		chatStore.saveSettings(chat.id, { model: { provider: "opencode-go", id: "minimax-m3.1-flash-free" } });
 		const res = await handleChatRequest(post(chat.id, { type: "text", text: "teach me something" }), agentFactory(scriptedTeacher(defaultLesson).engine));
-		assert.equal(res.status, 503);
+		assert.equal(res.status, 422);
 		assert.deepEqual(await res.json(), {
 			error: "The model opencode-go/minimax-m3.1-flash-free is no longer available. Pick another model in Settings.",
 			code: "model_unavailable",

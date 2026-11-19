@@ -14,6 +14,7 @@ import { lazyApi, lazyStream } from "@earendil-works/pi-ai/api/lazy";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type ModelRole } from "../../config.ts";
 import { DEFAULT_THINKING_ORDER } from "../core/settings.ts";
+import { modelUnavailableMessage } from "../core/model-unavailable.ts";
 import packageMetadata from "../../package.json" with { type: "json" };
 import { chatGPTModel } from "./chatgpt-bridge.ts";
 import { chatGPTStream } from "./chatgpt-stream.ts";
@@ -124,27 +125,11 @@ function defaultThinkingLevel(model: Model<Api>): ThinkingLevel {
 	return supported[0] ?? "off";
 }
 
-/** Catalog ids Pi renamed, read at lookup time so a saved slot or session
- *  pin keeps its model without rewriting stored data. Only the same model
- *  through the same API at the same or a lower price: a model that went
- *  from free to paid is removed, not renamed. */
-const RENAMED_MODEL_IDS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-	"opencode-go": { "gemini-4-argon-contributor": "gemini-4-argon", "longcat-2.5-preview-free": "longcat-2.5-free" },
-	opencode: { "longcat-2.5-preview-free": "longcat-2.5-free" },
-	"vercel-ai-gateway": { "meituan/longcat-2.5-preview": "meituan/longcat-2.5" },
-};
-
-/** The id Pi's catalog knows a saved model by. */
-export function currentCatalogId(provider: string, id: string): string {
-	const renames = Object.hasOwn(RENAMED_MODEL_IDS, provider) ? RENAMED_MODEL_IDS[provider]! : undefined;
-	return renames && Object.hasOwn(renames, id) ? renames[id]! : id;
-}
-
 /** A saved model the catalog no longer has. Its message is for the learner:
  *  the turn fails rather than silently running on another model. */
 export class ModelUnavailableError extends Error {
 	constructor(readonly provider: string, readonly id: string) {
-		super(`The model ${provider}/${id} is no longer available. Pick another model in Settings.`);
+		super(modelUnavailableMessage(provider, id));
 		this.name = "ModelUnavailableError";
 	}
 }
@@ -157,7 +142,7 @@ export class ModelUnavailableError extends Error {
 export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (() => boolean) = true, lifecycle?: ChatGPTDispatchLifecycle, cacheRetention?: () => CacheRetention | undefined): PiEngine {
 	const models: Models = piModels();
 	const nativeId = nativeSubscriptionId(spec.provider);
-	const registeredModel = spec.provider === "chatgpt" ? chatGPTModel(spec.id) : nativeId ? nativeSubscriptionModel(spec.provider, spec.id) : models.getModel(spec.provider, currentCatalogId(spec.provider, spec.id));
+	const registeredModel = spec.provider === "chatgpt" ? chatGPTModel(spec.id) : nativeId ? nativeSubscriptionModel(spec.provider, spec.id) : models.getModel(spec.provider, spec.id);
 	const custom = providerSource?.isCustom(spec.provider) ?? false;
 	// Custom endpoint owners authorize image attempts independently of sparse
 	// discovery metadata. Never promote the registered/catalog capabilities.

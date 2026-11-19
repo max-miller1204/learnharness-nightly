@@ -66,8 +66,17 @@ export function ModelMenuList({
 	const visionItems = vision
 		? models?.filter((m) => m.input.includes("image") || m.provider === CUSTOM_PROVIDER.id)
 		: models;
+	// A saved model the loaded catalog lacks is never swapped for another:
+	// the menu says why the pick is needed.
+	const unavailable = !!models && !!effectiveId && !!effectiveProvider
+		&& !models.some((m) => m.id === effectiveId && m.provider === effectiveProvider);
 	return (
 		<>
+			{unavailable && (
+				<div role="status" data-testid="model-unavailable" className="mb-1.5 px-2 text-destructive">
+					{`The model ${effectiveProvider}/${effectiveId} isn't available: it was removed or its provider isn't connected. Pick another model.`}
+				</div>
+			)}
 			<SearchMenuList
 				items={visionItems}
 				itemKey={(m) => `${m.provider}/${m.id}`}
