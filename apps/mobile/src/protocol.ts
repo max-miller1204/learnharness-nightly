@@ -54,17 +54,24 @@ type Transport = (url: string, init: {
 export function apiClient(transport: Transport, address: string, bearer?: string) {
   const origin = httpsOrigin(address);
 
-  async function request(path: string, options: { signal: AbortSignal; body?: string; contentType?: string; stream?: boolean }) {
+  function route(path: string): string {
     const url = new URL(path, origin);
     if (url.origin !== origin || !path.startsWith("/") || path.startsWith("//")) {
       throw new Error("Invalid LearnHarness route.");
     }
+    return url.href;
+  }
 
+  function credentialHeaders(): Record<string, string> {
+    return { [PROTOCOL_HEADER]: String(CLIENT_PROTOCOL_VERSION), ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) };
+  }
+
+  async function request(path: string, options: { signal: AbortSignal; body?: string; contentType?: string; stream?: boolean; method?: "DELETE"; dated?: boolean }) {
+    const href = route(path);
     const headers: Record<string, string> = {
-      [PROTOCOL_HEADER]: String(CLIENT_PROTOCOL_VERSION),
+      ...credentialHeaders(),
       Accept: options.stream ? "text/event-stream" : "application/json",
     };
-    if (bearer) headers.Authorization = `Bearer ${bearer}`;
     if (options.body !== undefined) headers["Content-Type"] = options.contentType ?? "application/json";
 
     const deadline = new AbortController();
@@ -75,8 +82,8 @@ export function apiClient(transport: Transport, address: string, bearer?: string
     try {
       let response;
       try {
-        response = await transport(url.href, {
-          method: options.body === undefined ? "GET" : "POST",
+        response = await transport(href, {
+          method: options.method ?? (options.body === undefined ? "GET" : "POST"),
           headers,
           body: options.body,
           signal: options.stream ? options.signal : deadline.signal,
@@ -104,7 +111,10 @@ export function apiClient(transport: Transport, address: string, bearer?: string
         await response.body?.cancel();
         return { ok: true };
       }
-      return await response.json();
+      if (response.status === 204) return undefined;
+      const body = await response.json();
+      // A grant's deadline is read against the server's clock (attachment-draft.tsx).
+      return options.dated ? { body, date: response.headers.get("date") } : body;
     } finally {
       clearTimeout(timeout);
       options.signal.removeEventListener("abort", abort);
@@ -120,6 +130,17 @@ export function apiClient(transport: Transport, address: string, bearer?: string
     get,
     post<T>(path: string, body: object, signal: AbortSignal): Promise<T> {
       return request(path, { body: JSON.stringify(body), signal }) as Promise<T>;
+    },
+    /** The body with the response's Date header. */
+    postDated<T>(path: string, body: object, signal: AbortSignal): Promise<{ body: T; date: string | null }> {
+      return request(path, { body: JSON.stringify(body), signal, dated: true }) as Promise<{ body: T; date: string | null }>;
+    },
+    async remove(path: string, signal: AbortSignal): Promise<void> {
+      await request(path, { signal, method: "DELETE" });
+    },
+    /** A same-origin upload route with this pairing's headers, for a native upload task. */
+    upload(path: string): { url: string; headers: Record<string, string> } {
+      return { url: route(path), headers: credentialHeaders() };
     },
     stream(path: string, signal: AbortSignal): Promise<ReadableStream<Uint8Array>> {
       return request(path, { signal, stream: true }) as Promise<ReadableStream<Uint8Array>>;

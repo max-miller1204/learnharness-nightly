@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   LESSON_VIEW_ROUTES, PRACTICE_CONTROL_ROUTES, PROTOCOL_ROUTES,
-  type AbortTurnResponse, type ChatResponse, type LhMessage, type SendResponse, type TurnStreamEvent,
+  type AbortTurnResponse, type AttachmentSend, type ChatResponse, type LhMessage, type SendResponse, type TurnStreamEvent,
 } from "../../../src/client-protocol/index.ts";
 import { ApiError, type MobileApi } from "./protocol";
 import { consumeSse } from "./sse";
@@ -168,8 +168,9 @@ export function useSession(api: MobileApi, id: string, active: boolean, connecti
     };
   }, [active, api, connectionFault, id, refresh]);
 
-  /** `accepted` receives the server's answer body (absent when a lost response is confirmed from the record). */
-  async function submit(input: SessionInput, accepted: (result?: unknown) => void = () => {}) {
+  /** `accepted` receives the server's answer body (absent when a lost response is confirmed from the record).
+   *  `attachment` rides a text send: its uploaded files and the send ID that makes a retry safe. */
+  async function submit(input: SessionInput, accepted: (result?: unknown) => void = () => {}, attachment?: AttachmentSend) {
     const before = latest.current;
     if (!active || !before || writingNow.current || pending.current || refreshError || before.compacting) return;
     // Discards and skips may land mid-turn: the server parks them for the settle.
@@ -186,7 +187,7 @@ export function useSession(api: MobileApi, id: string, active: boolean, connecti
       } else if (input.type === "dismiss") {
         result = await api.post(LESSON_VIEW_ROUTES.dismiss(id), { input }, signal);
       } else {
-        result = await api.post<SendResponse>(PROTOCOL_ROUTES.send, { chatId: id, input }, signal);
+        result = await api.post<SendResponse>(PROTOCOL_ROUTES.send, { chatId: id, input, ...attachment }, signal);
       }
       if (!signal.aborted) accepted(result);
     } catch (error) {
