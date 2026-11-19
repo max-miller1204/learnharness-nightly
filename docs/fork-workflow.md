@@ -30,6 +30,8 @@ The nightly starts only after CI passes on a push to `main`, and builds that exa
 
 `.github/workflows/pr-agent.yml` runs [PR-Agent](https://github.com/The-PR-Agent/pr-agent) on every PR: an AI review and code suggestions as comments, on open and on each push. It's advisory and never blocks a merge. People with write access can also comment `/review`, `/improve`, `/describe` or `/ask ...` on a PR. It uses the `OPENROUTER_API_KEY` secret and the model in the `OPENROUTER_MODEL` repository variable (a bare OpenRouter ID such as `anthropic/claude-haiku-5.5`, which is also the default when the variable is unset). It runs with low reasoning effort.
 
+PR-Agent is turned off for now (disabled in GitHub Actions). It stays off until the approved [PR-Agent through LiteLLM](specs/pr-agent-litellm.md) spec is built, which replaces this setup.
+
 ## PR previews
 
 Every PR can have a preview build to try on your server with `lh preview <N>` before merging (design: [specs/pr-previews.md](specs/pr-previews.md); running one: [self-hosting](self-hosting.md#trying-a-pr-previews)).
