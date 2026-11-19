@@ -56,7 +56,7 @@ function appWindow() {
 		setInterval() {}, setTimeout() {},
 	});
 	runInContext(mainSource, context, { filename: mainFile });
-	const win = runInContext(`createWindow(${JSON.stringify(appUrl)})`, context) as FakeWindow;
+	const win = runInContext(`createWindow(${JSON.stringify(appUrl)}).win`, context) as FakeWindow;
 	const navigate = (target: string) => {
 		let prevented = false;
 		win.webContents.emit("will-navigate", { preventDefault: () => { prevented = true; } }, target);

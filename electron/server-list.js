@@ -7,13 +7,13 @@ let adding = false;
 
 function showPair(origin = "") {
 	adding = true;
-	$("pair-title").textContent = origin ? "Pair again" : "Add a server";
-	$("link").value = "";
-	$("origin").value = origin;
+	$("pair-title").textContent = origin ? "Pair again" : "Connect to my server";
+	$("address").value = origin;
 	$("code").value = "";
+	$("filled").hidden = true;
 	$("form-error").textContent = "";
 	render();
-	$(origin ? "code" : "link").focus();
+	$(origin ? "code" : "address").focus();
 }
 
 function render() {
@@ -64,6 +64,7 @@ function render() {
 	$("add").hidden = damaged;
 	$("reset").hidden = !damaged;
 	$("sign-in").hidden = !active || active === "local";
+	$("pair-submit").textContent = busy ? "Connecting…" : "Connect";
 	document.querySelectorAll("button, input").forEach((input) => { input.disabled = busy; });
 	$("sign-in").disabled = busy || signingIn;
 }
@@ -76,18 +77,19 @@ $("reset").onclick = () => void api.reset();
 $("add").onclick = () => { state = { ...state, problem: null }; showPair(); };
 $("back").onclick = () => { adding = false; render(); };
 $("sign-in").onclick = () => void api.signIn();
-$("link").addEventListener("input", async (event) => {
+// A pasted pairing link becomes the address and fills in the code.
+$("address").addEventListener("input", async (event) => {
+	$("filled").hidden = true;
 	const text = event.target.value;
 	const parsed = await api.parseLink(text);
-	if (text !== $("link").value) return;
-	if (parsed) {
-		$("origin").value = parsed.origin;
-		$("code").value = parsed.code;
-		$("link").value = "";
-		$("form-error").textContent = "";
-	}
+	if (text !== $("address").value || !parsed) return;
+	$("address").value = parsed.origin;
+	$("code").value = parsed.code;
+	$("filled").hidden = false;
+	$("form-error").textContent = "";
 });
+$("code").addEventListener("input", () => { $("filled").hidden = true; });
 $("pair").onsubmit = async (event) => {
 	event.preventDefault();
-	$("form-error").textContent = await api.pair($("origin").value, $("code").value) ?? "";
+	$("form-error").textContent = await api.pair($("address").value, $("code").value) ?? "";
 };

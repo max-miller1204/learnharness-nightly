@@ -24,13 +24,14 @@
  *     would shadow every settings-page key change until restart.
  */
 
-const { app, BrowserWindow, Menu, ipcMain, nativeTheme, session, shell, dialog, safeStorage } = require("electron");
+const { app, BrowserWindow, WebContentsView, Menu, ipcMain, nativeTheme, session, shell, dialog, safeStorage } = require("electron");
 const { pickAttachmentPath } = require("./attachment-picker.cjs");
 const { createChatGPT, fileStore } = require("./chatgpt.cjs");
 const { attachChatGPTChild, trustedSender, chatGPTControl } = require("./chatgpt-ipc.cjs");
 const { createSubscriptions, loadSubscriptionSDK } = require("./subscriptions.cjs");
 const { attachSubscriptionChild, subscriptionControl } = require("./subscription-ipc.cjs");
 const { desktopAPIHeaders, exchangeDesktopSession } = require("./desktop-api.cjs");
+const { setTraceSink } = require("./first-frame.cjs");
 const { createServerList } = require("./server-list.cjs");
 const { openWebSubscriptionBrowser } = require("./web-subscription-browser.cjs");
 const { randomBytes } = require("node:crypto");
@@ -190,6 +191,7 @@ function freePort() {
  *  effect on the next model call — no restart. Real environment variables
  *  still win over the file inside the child (its documented rule). */
 
+setTraceSink((line) => log(line));
 function log(line) {
 	const stamp = new Date().toISOString();
 	// The stdout write is guarded (EPIPE hardening, 2026-10-10): a packaged
@@ -382,7 +384,11 @@ function createWindow(url) {
 
 	trustedAppWindows.add(win);
 	win.once("closed", () => trustedAppWindows.delete(win));
-	const allowedOrigin = () => new URL(url).origin;
+	// Without a URL the window waits, unshown, for its caller to cover it
+	// with the ghost dashboard and later load the bundled server.
+	// (undefined matches no request origin, which may be null.)
+	let appOrigin = url ? new URL(url).origin : undefined;
+	const allowedOrigin = () => appOrigin;
 	// Deny-by-default; the ONLY grants are media (mic/STT groundwork) and
 	// clipboard-sanitized-write — the copy affordances in the transcript
 	// (md-blocks copy corners) call navigator.clipboard.writeText(), which
@@ -413,7 +419,11 @@ function createWindow(url) {
 		return { action: "deny" };
 	});
 
-	void win.loadURL(url);
+	const load = (target) => {
+		appOrigin = new URL(target).origin;
+		return win.loadURL(target);
+	};
+	if (url) void load(url);
 	// Zoom truth reaches the renderer for EVERY load (reload, nav): the
 	// renderer's --lh-zoom must never go stale. The fallback catcher below
 	// covers ⌘= / layout variants the menu's ⌘Plus may not claim — menu-
@@ -431,8 +441,8 @@ function createWindow(url) {
 		event.preventDefault();
 	});
 
-	win.once("ready-to-show", () => win.show());
-	return win;
+	if (url) win.once("ready-to-show", () => win.show());
+	return { win, load };
 }
 
 /* ── Zoom (owner round 7, 2026-10-05): ⌘±/⌘0 as an OWNED ladder ──────────
@@ -942,7 +952,7 @@ async function main() {
 	});
 	if (devUrl) {
 		installMenu();
-		reopenWindow = () => createWindow(devUrl);
+		reopenWindow = () => createWindow(devUrl).win;
 		reopenWindow();
 	} else {
 		// Packaged localhost requests keep their own bootstrap. Remote windows
@@ -951,9 +961,9 @@ async function main() {
 			callback({ requestHeaders: desktopAPIHeaders(details, localOrigin, desktopSessionToken, [...trustedAppWindows]) });
 		});
 		serverList = await createServerList({
-			app, BrowserWindow, ipcMain, session, shell, safeStorage,
-			startLocal: startLocalServer, stopLocal: killServer, createLocalWindow: createWindow,
-			setLocalMenu: (enabled) => installMenu({ local: enabled }),
+			app, BrowserWindow, WebContentsView, ipcMain, session, shell, safeStorage,
+			startLocal: startLocalServer, stopLocal: killServer, createLocalWindow: () => createWindow(),
+			setLocalMenu: (enabled) => installMenu({ local: enabled }), themeMode: () => appearance.mode,
 		});
 		installMenu({ local: false });
 		reopenWindow = () => serverList.reopen();

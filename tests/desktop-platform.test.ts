@@ -36,7 +36,7 @@ function windowOptions(platform: string, env: Record<string, string> = {}, repor
 	runInNewContext(mainSource, context, { filename: mainFile });
 	// What the renderer reports over lh:appearance (the active theme).
 	if (reported) runInNewContext(`appearance = normalizeAppearance(${JSON.stringify(reported)})`, context);
-	const win = runInNewContext('createWindow("http://127.0.0.1:9000")', context) as FakeWindow;
+	const win = runInNewContext('createWindow("http://127.0.0.1:9000").win', context) as FakeWindow;
 	// The options originate in a VM realm; normalize prototypes for assertions.
 	return JSON.parse(JSON.stringify(win.options));
 }

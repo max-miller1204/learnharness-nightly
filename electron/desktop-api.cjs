@@ -4,6 +4,8 @@
  * per-launch secret for a bearer session at /oauth/token, then injects
  * `Authorization: Bearer <token>` on requests to the app's own origin from
  * trusted app windows, pages and API alike. Never expose the token to preload. */
+const { isSkeletonPage } = require("./skeleton.cjs");
+
 const HEADER = "authorization";
 const DESKTOP_BOOTSTRAP_TOKEN_TYPE = "urn:learnharness:params:oauth:token-type:desktop-bootstrap";
 
@@ -25,9 +27,10 @@ function desktopAPIHeaders(details, origin, token, windows) {
 		const contents = win.webContents;
 		if (details.webContents && details.webContents !== contents) return headers;
 		if (!details.frame || details.frame !== contents.mainFrame) return headers;
-		// The window's own first navigation has no committed URL yet.
+		// The window's own first navigation has no committed URL yet, or
+		// the bundled ghost dashboard (a local page with no network).
 		const committed = contents.mainFrame.url;
-		if (committed && committed !== "about:blank" && new URL(committed).origin !== origin) return headers;
+		if (committed && committed !== "about:blank" && !isSkeletonPage(committed) && new URL(committed).origin !== origin) return headers;
 		if (details.initiatorOrigin !== undefined && details.initiatorOrigin !== origin) return headers;
 		headers[HEADER] = `Bearer ${token}`;
 	} catch { /* Missing/destroyed/navigated frames fail closed. */ }

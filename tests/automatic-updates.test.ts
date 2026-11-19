@@ -139,7 +139,7 @@ function fixture({ packaged = true, updaterMissing = false } = {}) {
 		run, updater, windows, intervals, timeouts, handles, settingsReads, order, app,
 		setSettings: (value: unknown) => { settings = JSON.stringify(value); },
 		setSettingsFailure: (value: string | Error) => { settings = value; },
-		window: () => run("createWindow(process.env.LH_DEV_URL)") as FakeWindow,
+		window: () => run("createWindow(process.env.LH_DEV_URL).win") as FakeWindow,
 		untrustedWindow: () => new FakeWindow(),
 		state: () => JSON.parse(JSON.stringify(run("updateState"))),
 		check: async (manual = false) => { run(`checkForUpdates({ manual: ${manual} })`); await Promise.resolve(); await Promise.resolve(); },

@@ -59,6 +59,8 @@ esac
 # env -i: no ambient keys or settings reach Electron or the server it spawns
 # (packaged mode passes its environment on), and a throwaway HOME.
 mkdir -p "$ED/home"
+# Opt-in first-frame timings pass through the clean environment.
+[ "${LH_DEBUG_FIRST_FRAME:-}" = 1 ] && ENVS+=(LH_DEBUG_FIRST_FRAME=1)
 setsid nohup env -i PATH="$PATH" HOME="$ED/home" LANG=C.UTF-8 XDG_CONFIG_HOME="$ED/config" LH_IGNORE_ENV_KEYS=1 "${ENVS[@]}" \
 	xvfb-run -a --server-args="-screen 0 1280x900x24" "$BIN" "${ARGS[@]}" </dev/null >>"$ED/electron.log" 2>&1 &
 echo $! >"$ED/electron.pid"

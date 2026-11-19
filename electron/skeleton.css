@@ -1,0 +1,67 @@
+/* The ghost dashboard: the app layout from components/sidebar.tsx and
+   components/home.tsx in the Default theme (app/globals.css) or the app's
+   original light default. */
+:root {
+	color-scheme: dark;
+	--bg: #141414;
+	--card: #1c1c1c;
+	--text: #e6e6e6;
+	--muted: #919191;
+	--border: #434343;
+	--bone: color-mix(in srgb, var(--border) 45%, var(--bg));
+	font: 14px/1.5 system-ui, sans-serif;
+}
+:root[data-mode="light"] {
+	color-scheme: light;
+	--bg: #f5f5f3;
+	--card: #ffffff;
+	--text: #1a1a1a;
+	--muted: #6b6b68;
+	--border: #d4d4d2;
+	--bone: color-mix(in srgb, var(--border) 70%, var(--bg));
+}
+* { box-sizing: border-box; }
+body { margin: 0; height: 100vh; display: flex; overflow: hidden; background: var(--bg); color: var(--text); }
+.drag { position: fixed; inset: 0 0 auto; height: 52px; }
+:root[data-frame] .drag { -webkit-app-region: drag; }
+
+.bone { display: block; border-radius: 4px; background: var(--bone); animation: pulse 1.6s ease-in-out infinite alternate; }
+@keyframes pulse { from { opacity: 1; } to { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .bone { animation: none; } }
+
+.sidebar { width: 288px; flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--border); }
+.band { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; height: 60px; }
+:root[data-frame="inset"] .band { padding-left: 80px; }
+.mark { width: 24px; height: 24px; margin-left: 6px; border-radius: 50%; }
+.toggle { width: 16px; height: 16px; }
+.rows { padding: 0 8px 8px; }
+.row { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; }
+.icon { width: 12px; height: 12px; flex: none; }
+.line { height: 9px; }
+.w-teaching { width: 72px; }
+.w-practice { width: 64px; }
+.w-label { width: 56px; flex: none; }
+.w-activity { width: 96px; }
+.w-settings { width: 60px; }
+.search { display: flex; align-items: center; gap: 8px; margin: 0 12px 8px; }
+.field { flex: 1; height: 24px; border: 1px solid var(--border); border-radius: 4px; }
+.filter { display: flex; gap: 2px; margin: 0 12px; padding: 2px; height: 28px; border: 1px solid color-mix(in srgb, var(--border) 60%, transparent); border-radius: 6px; }
+.filter .bone { flex: 1; }
+.sessions { flex: 1; display: grid; align-content: start; gap: 14px; padding: 18px 16px; }
+.session { height: 10px; }
+.w-1 { width: 78%; }
+.w-2 { width: 62%; }
+.w-3 { width: 84%; }
+.w-4 { width: 55%; }
+.w-5 { width: 70%; }
+.footer { padding: 4px 4px 12px; }
+
+main { flex: 1; position: relative; min-width: 0; }
+.dock { position: absolute; inset: auto 0 0; margin: 0 auto; width: 100%; max-width: 46rem; padding: 0 16px 20px; }
+.composer { display: flex; align-items: flex-end; gap: 6px; padding: 6px; border: 1px solid var(--border); border-radius: 16px; background: var(--card); box-shadow: 0 10px 15px -3px rgb(0 0 0 / .1), 0 4px 6px -4px rgb(0 0 0 / .1); }
+#status { flex: 1; margin: 0; min-height: 40px; padding: 8px 10px; color: var(--muted); }
+.button { width: 40px; height: 40px; flex: none; border-radius: 10px; }
+.controls { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; padding: 0 4px; }
+.switch { display: flex; gap: 2px; width: 132px; height: 24px; padding: 2px; border: 1px solid color-mix(in srgb, var(--border) 60%, transparent); border-radius: 6px; }
+.switch .bone { flex: 1; }
+.pill { width: 120px; height: 20px; border-radius: 999px; }
