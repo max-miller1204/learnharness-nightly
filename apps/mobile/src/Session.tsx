@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject, type ComponentRef } from "react";
-import { Alert, FlatList, Keyboard, Linking, Pressable, ScrollView, Text, TextInput, View, type NativeScrollEvent } from "react-native";
+import { AccessibilityInfo, Alert, Animated, FlatList, Keyboard, Linking, Platform, Pressable, ScrollView, Text, TextInput, View, type NativeScrollEvent } from "react-native";
 import {
   BROWSER_HANDOFF_ROUTES, BROWSER_HANDOFF_V1, LESSON_VIEW_V1, PRACTICE_CONTROLS_V1, hasCapability,
   type LhMessage, type PairingTokenResponse, type ServerInfo,
@@ -13,7 +13,7 @@ import { useTranscriptItems, type TranscriptItem } from "./Transcript";
 import { Button, Label, Notice } from "./ui";
 import { fonts, radius, space, useTheme } from "./theme";
 import { revealOffset } from "./reveal";
-import { followsBottom } from "./follow-bottom";
+import { followsBottom, scrollPosition } from "./follow-bottom";
 import { checkNeedsReveal, livePlan, PHASE_LABEL, sessionPhase, skipAnswer, skipParked } from "./lesson";
 import { PlanScreen } from "./PlanScreen";
 import { useJobs } from "./use-jobs";
@@ -33,9 +33,46 @@ function MenuItem({ label, onPress, close, disabled = false }: { label: string; 
   );
 }
 
-/** Large enough that the list never unmounts a message. */
+/** Large enough that the list renders every message at once and never unmounts one. */
 const KEEP_MOUNTED = 1000;
 const Gap = () => <View style={{ height: space.lg }} />;
+
+/** Whether a screen reader is on, and whether the learner asked for reduced motion. */
+function useAccessibilitySettings() {
+  const [screenReader, setScreenReader] = useState(false);
+  const [reduceMotion, setReduceMotion] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void AccessibilityInfo.isScreenReaderEnabled().then((on) => { if (live) setScreenReader(on); });
+    void AccessibilityInfo.isReduceMotionEnabled().then((on) => { if (live) setReduceMotion(on); });
+    const reader = AccessibilityInfo.addEventListener("screenReaderChanged", setScreenReader);
+    const motion = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduceMotion);
+    return () => { live = false; reader.remove(); motion.remove(); };
+  }, []);
+  return { screenReader, reduceMotion };
+}
+
+/** T3's scroll-to-end control (floating-working-control.tsx): a round pill with a down
+ *  chevron, centered just above the bottom, fading in over 180ms and out over 120ms. */
+function ScrollToEndButton({ visible, reduceMotion, onPress }: { visible: boolean; reduceMotion: boolean; onPress: () => void }) {
+  const { c } = useTheme();
+  const [opacity] = useState(() => new Animated.Value(visible ? 1 : 0));
+  useEffect(() => {
+    Animated.timing(opacity, { toValue: visible ? 1 : 0, duration: reduceMotion ? 0 : visible ? 180 : 120, useNativeDriver: true }).start();
+  }, [opacity, reduceMotion, visible]);
+  return (
+    <Animated.View pointerEvents={visible ? "auto" : "none"} accessibilityElementsHidden={!visible}
+      importantForAccessibility={visible ? "auto" : "no-hide-descendants"}
+      style={{ position: "absolute", left: 0, right: 0, bottom: space.sm, alignItems: "center", opacity }}>
+      <Pressable accessibilityRole="button" accessibilityLabel="Scroll to end" disabled={!visible} onPressIn={onPress}
+        style={({ pressed }) => ({ width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center",
+          borderWidth: 1, borderColor: c.border, backgroundColor: pressed ? c.hover : c.card,
+          boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1)" })}>
+        <View style={{ width: 10, height: 10, marginTop: -4, borderRightWidth: 2, borderBottomWidth: 2, borderColor: c.text, transform: [{ rotate: "45deg" }] }} />
+      </Pressable>
+    </Animated.View>
+  );
+}
 
 export function Session({ api, info, id, initialText, sendInitialText, active, reloadRef, jobsRef, back, connectionFault }: {
   api: MobileApi; info: ServerInfo; id: string; initialText?: string; sendInitialText?: boolean; active: boolean;
@@ -56,13 +93,19 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const browserScope = useRef<AbortController | null>(null);
   const started = useRef(false);
   // The transcript is an inverted list: it starts at the latest message, and older
-  // messages growing above (math views loading) can't move the bottom.
+  // messages growing above (math views loading) can't move the bottom. A screen
+  // reader follows the list's own order, so while one is on the list is a plain
+  // one, oldest first, and opens by jumping to the end.
+  const { screenReader, reduceMotion } = useAccessibilitySettings();
+  const inverted = !screenReader;
   const list = useRef<FlatList<TranscriptItem>>(null);
+  const statusBarTarget = useRef<ComponentRef<typeof ScrollView>>(null);
   const following = useRef(true);
-  // While not following, the list holds the message in view in place as new ones arrive.
+  // Not following: the scroll-to-end button shows, and the inverted list holds
+  // the message in view in place as new ones arrive.
   const [holding, setHolding] = useState(false);
   const userScrolling = useRef(false);
-  const lastDistance = useRef(0);
+  const lastOffset = useRef(0);
   const messages = record?.messages ?? EMPTY;
   const problem = activeProblemOf(messages);
   const question = pendingQuestionOf(messages);
@@ -92,21 +135,41 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const jobsSettled = useCallback(() => refresh(), [refresh]);
   const jobs = useJobs(api, id, active && lessonView, jobsRef, jobsSettled, connectionFault);
   const items = useTranscriptItems({ settled: settledView, tail: session.tail, api, chatId: id, jobs, liveHelpers: lessonView, openPlan: () => setPlanOpen(true) });
-  const newestFirst = useMemo(() => [...items].reverse(), [items]);
+  const ordered = useMemo(() => inverted ? [...items].reverse() : items, [inverted, items]);
+  // Switching between the two lists starts the new one at the bottom.
+  const [listMode, setListMode] = useState(inverted);
+  if (listMode !== inverted) {
+    setListMode(inverted);
+    setHolding(false);
+  }
+  useEffect(() => {
+    following.current = true;
+    lastOffset.current = 0;
+  }, [inverted]);
 
-  // An inverted list's offset is the distance from the bottom.
-  function scrolled({ contentOffset }: NativeScrollEvent, dragging: boolean) {
-    const distance = contentOffset.y;
-    const next = followsBottom(following.current, { distance, previousDistance: lastDistance.current, dragging });
-    lastDistance.current = distance;
+  function follow(next: boolean) {
     if (next === following.current) return;
     following.current = next;
     setHolding(!next);
   }
-  // Following but a little above the bottom (within the threshold): new content, or a
-  // shorter view when the question dock below grows, brings the bottom back.
+  function scrolled({ contentOffset, contentSize, layoutMeasurement }: NativeScrollEvent, dragging: boolean) {
+    const { distance, movedUp } = scrollPosition(inverted,
+      { offset: contentOffset.y, content: contentSize.height, viewport: layoutMeasurement.height }, lastOffset.current);
+    lastOffset.current = contentOffset.y;
+    follow(followsBottom(following.current, { distance, movedUp, dragging }));
+  }
+  // While following, new content, or a shorter view when the question dock below
+  // grows, brings the bottom back.
   function pin() {
-    if (following.current && lastDistance.current > 0) list.current?.scrollToOffset({ offset: 0, animated: false });
+    if (!following.current) return;
+    if (!inverted) list.current?.scrollToEnd({ animated: false });
+    else if (lastOffset.current > 0) list.current?.scrollToOffset({ offset: 0, animated: false });
+  }
+  // The scroll-to-end button (T3 ThreadDetailScreen.tsx handleScrollToEnd).
+  function toEnd() {
+    follow(true);
+    if (inverted) list.current?.scrollToOffset({ offset: 0, animated: !reduceMotion });
+    else list.current?.scrollToEnd({ animated: !reduceMotion });
   }
 
   useEffect(() => {
@@ -206,6 +269,9 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
     record && pendingPlugin && <Text key="plugin" style={s.muted}>Use the browser to complete this interaction. Open it from the … menu above.</Text>,
     !!browserError && <Notice key="browser-error">{browserError}</Notice>,
   ].filter(Boolean);
+  const status = statusRows.length > 0
+    ? <View style={{ gap: space.lg, paddingTop: items.length > 0 ? space.lg : 0 }}>{statusRows}</View>
+    : undefined;
 
   const thinkingLabel = problem ? "Your thinking" : "Message";
   // Browser handoff lives in the top bar's menu until the phone handles these flows itself.
@@ -224,25 +290,43 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
           <Text style={[s.ui, { fontSize: 16 }]}>…</Text>
         </Button>}
       </View>
-      <FlatList ref={list} inverted data={newestFirst} keyExtractor={({ key }) => key} renderItem={({ item }) => item.node}
-        style={{ flex: 1 }} contentContainerStyle={[s.section, { flexGrow: 1, justifyContent: "flex-end" }]}
-        ItemSeparatorComponent={Gap} ListHeaderComponent={statusRows.length > 0 ? (
-          // The list's header sits at its bottom: status lines under the latest message.
-          <View style={{ gap: space.lg, paddingTop: items.length > 0 ? space.lg : 0 }}>{statusRows}</View>
-        ) : undefined}
-        // Every message stays mounted, as in a plain scroll view: a math view that remounts reloads and changes height.
-        windowSize={KEEP_MOUNTED} removeClippedSubviews={false}
-        maintainVisibleContentPosition={holding ? { minIndexForVisible: 0 } : undefined}
-        keyboardShouldPersistTaps="handled" scrollEventThrottle={100} onLayout={pin} onContentSizeChange={pin}
-        onScrollBeginDrag={() => { userScrolling.current = true; }} onMomentumScrollBegin={() => { userScrolling.current = true; }}
-        // The last scroll event of a fling can be dropped, so the ends check again.
-        onScrollEndDrag={({ nativeEvent }) => { scrolled(nativeEvent, true); userScrolling.current = false; }}
-        onMomentumScrollEnd={({ nativeEvent }) => { scrolled(nativeEvent, true); userScrolling.current = false; }}
-        onScroll={({ nativeEvent }) => scrolled(nativeEvent, userScrolling.current)} />
+      <View style={{ flex: 1 }}>
+        <FlatList key={inverted ? "newest-first" : "oldest-first"} ref={list} inverted={inverted} data={ordered}
+          keyExtractor={({ key }) => key} renderItem={({ item }) => item.node}
+          // Short sessions stay at the top of the screen in the inverted list too.
+          style={{ flex: 1 }} contentContainerStyle={[s.section, { gap: 0 }, inverted && { flexGrow: 1, justifyContent: "flex-end" }]}
+          // Status lines sit under the latest message: the inverted list's header is at its bottom.
+          ItemSeparatorComponent={Gap} ListHeaderComponent={inverted ? status : undefined} ListFooterComponent={inverted ? undefined : status}
+          // Every message renders at once and stays mounted, as in a plain scroll view:
+          // a math view that remounts reloads and changes height.
+          initialNumToRender={KEEP_MOUNTED} windowSize={KEEP_MOUNTED} removeClippedSubviews={false}
+          maintainVisibleContentPosition={inverted && holding ? { minIndexForVisible: 0 } : undefined}
+          // A status bar tap goes to the start of the session. Only the plain list starts
+          // there; the inverted list hands the tap to the target below.
+          scrollsToTop={!inverted && !planOpen}
+          keyboardShouldPersistTaps="handled" scrollEventThrottle={100} onLayout={pin} onContentSizeChange={pin}
+          onScrollBeginDrag={() => { userScrolling.current = true; }} onMomentumScrollBegin={() => { userScrolling.current = true; }}
+          // The last scroll event of a fling can be dropped, so the ends check again.
+          onScrollEndDrag={({ nativeEvent }) => { scrolled(nativeEvent, true); userScrolling.current = false; }}
+          onMomentumScrollEnd={({ nativeEvent }) => { scrolled(nativeEvent, true); userScrolling.current = false; }}
+          onScroll={({ nativeEvent }) => scrolled(nativeEvent, userScrolling.current)} />
+        {Platform.OS === "ios" && inverted && (
+          // iOS scrolls the one scroll view that takes status bar taps to its top. This 1pt
+          // one, scrolled down a point, takes the tap and sends the list to the first message.
+          <ScrollView ref={statusBarTarget} scrollsToTop={!planOpen} pointerEvents="none" accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants" showsVerticalScrollIndicator={false} contentOffset={{ x: 0, y: 1 }}
+            style={{ position: "absolute", top: 0, left: 0, width: 1, height: 1 }} contentContainerStyle={{ height: 2 }}
+            onScrollToTop={() => {
+              list.current?.scrollToEnd({ animated: !reduceMotion });
+              statusBarTarget.current?.scrollTo({ y: 1, animated: false });
+            }} />
+        )}
+        <ScrollToEndButton visible={holding} reduceMotion={reduceMotion} onPress={toEnd} />
+      </View>
       {question && !pendingPlugin && (
         <View style={{ paddingHorizontal: space.md, paddingBottom: space.md, maxHeight: "55%" }}>
           <View style={[s.dock, { flexShrink: 1, overflow: "hidden" }]}>
-            <ScrollView ref={dock} keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: space.lg }} scrollEventThrottle={16}
+            <ScrollView ref={dock} scrollsToTop={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: space.lg }} scrollEventThrottle={16}
               onScroll={({ nativeEvent }) => { dockState.current.offset = nativeEvent.contentOffset.y; }}
               onLayout={({ nativeEvent }) => {
                 const shrank = nativeEvent.layout.height < dockState.current.viewport;
