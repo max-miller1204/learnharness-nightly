@@ -1680,7 +1680,9 @@ describe("abort (src/server/jobs.ts abortJob)", () => {
 			assert.equal(job.usage!.model, "faux:faux-1");
 			// faux estimates tokens from the prompt/response text — the
 			// pinned fact is that the ONE completed step's spend survived.
-			assert.ok(job.usage!.inputTokens! > 0, "input tokens billed");
+			// With a session, faux bills the prompt as cache reads and writes.
+			const prompt = job.usage!.inputTokens! + job.usage!.cacheReadTokens! + job.usage!.cacheWriteTokens!;
+			assert.ok(prompt > 0, "prompt tokens billed");
 			assert.ok(job.usage!.outputTokens! > 0, "output tokens billed");
 		} finally {
 			researchModelOverride.current = undefined;
