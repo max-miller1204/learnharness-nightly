@@ -107,8 +107,6 @@ Key rotation would ship a new public key inside a release signed by the old one.
 
 **Why.** Typing `@` to pick a file is faster than the paperclip, drag-and-drop, or typing a full path.
 
-**Decided.** Nothing yet.
-
 **Facts.** T3 Code's design (MIT):
 - Typing `@` opens a fuzzy search whose index lives **on the server** (`apps/server/src/workspace/WorkspaceSearchIndex.ts`, `WorkspaceEntries.ts`), with ignore patterns such as `.gitignore` (`IgnorePatterns.ts`).
 - Picking a result inserts a mention segment that holds the path (`apps/web/src/composer-editor-mentions.ts`; menu in `apps/web/src/components/chat/useComposerMenuItems.ts`).

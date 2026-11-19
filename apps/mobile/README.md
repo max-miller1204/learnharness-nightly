@@ -25,10 +25,8 @@ eas submit --profile beta --platform android --id <android-build-id>
 
 Assign the iOS build to the TestFlight group. Roll out the Android bundle to Play's **Internal testing** track and confirm an invited tester can install it. Use `android-proof` for an installable APK on the proof device. Record the Git SHA, EAS build IDs, iOS build number, Android version code, and server revision. Every beta update uses fresh store builds.
 
-## TestFlight expiration and proposed cadence
+## TestFlight expiration
 
-**A TestFlight build expires 90 days after upload.** Once it expires, the installed copy stops opening. Upload and assign a fresh build in time for testers to install it. [Apple TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/) · [App Store Connect build statuses](https://developer.apple.com/help/app-store-connect/reference/app-uploads/app-build-statuses)
-
-**Proposal for owner approval:** Build and submit when a nightly includes changes to `apps/mobile/`, the shared protocol, or portable code the app imports. If TestFlight hasn't had a fresh upload by day 75, set a reminder to rebuild and submit the current approved source, then confirm the new build is available to testers. This cadence is pending approval.
+A TestFlight build stops opening 90 days after upload. [Apple TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/) · [App Store Connect build statuses](https://developer.apple.com/help/app-store-connect/reference/app-uploads/app-build-statuses)
 
 Google's Play internal testing documentation lists no equivalent build expiration. Its separate **Internal App Sharing** feature expires download links after 60 days. This beta uses the internal testing track. [Play internal testing](https://support.google.com/googleplay/android-developer/answer/9845334?hl=en) · [Play Internal App Sharing](https://support.google.com/googleplay/android-developer/answer/9844679?hl=en)
