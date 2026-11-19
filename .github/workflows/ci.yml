@@ -220,8 +220,8 @@ jobs:
           node ../../.github/scripts/mobile-release.cjs check-config "$RUNNER_TEMP/expo-config.json" eas.json
       - name: The iOS fingerprint hashes Expo native modules
         run: |
-          npx expo-updates fingerprint:generate --platform ios > "$RUNNER_TEMP/fingerprint.json"
-          node ../../.github/scripts/mobile-release.cjs expo-modules "$RUNNER_TEMP/fingerprint.json"
+          npx expo-updates runtimeversion:resolve --platform ios > "$RUNNER_TEMP/runtime.json"
+          node ../../.github/scripts/mobile-release.cjs expo-modules "$RUNNER_TEMP/runtime.json"
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test

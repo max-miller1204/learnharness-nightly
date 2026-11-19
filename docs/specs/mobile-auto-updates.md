@@ -19,7 +19,7 @@ Approved by the owner on 2026-11-19. The phone app gets over-the-air (OTA) updat
 - [Expo Submit for iOS](https://docs.expo.dev/submit/ios/): non-interactive submit needs an App Store Connect API key, either assigned in `eas credentials` or given as `ascApiKeyPath`, `ascApiKeyIssuerId` and `ascApiKeyId` in eas.json, plus `ascAppId` in the submit profile.
 - Expo Free plan ([pricing](https://expo.dev/pricing), [billing FAQ](https://docs.expo.dev/billing/faq/)): "Up to 15 Android and 15 iOS builds", with one macOS build at a time, a low-priority queue and a 45-minute timeout. Once the quota is used, builds stop until the first day of the next calendar month, with no overage charge. Update covers 1,000 MAU, 100 GiB bandwidth and 20 GiB storage, with "no update overage pricing". Submit is included.
 - [Expo's build images](https://docs.expo.dev/build-reference/infrastructure/) map `sdk-58` to `macos-tahoe-26.6-xcode-27.1`. GitHub-hosted runners offer Xcode 27 only as a preview image (actions/runner-images `xcode-27-arm64-Readme.md`). This is why builds run on Expo, not on GitHub's Macs.
-- A TestFlight build expires 90 days after upload (`apps/mobile/README.md`, "TestFlight expiration").
+- A TestFlight build expires 90 days after upload.
 - eas-cli 27.10.0 has `fingerprint:generate`, `fingerprint:compare`, `update:insights` (launches, crashes and unique users per update group) and `update:republish`.
 - T3's design (`.github/workflows/mobile-eas-production.yml`): it runs on pushes to main with a path filter (`:58-70`). Runs are serialized (`:77-82`), and it refuses OTAs from a fingerprint that hashes no Expo native modules (`:292-313`). Per target it computes the fingerprint and publishes `eas update --channel production` when a finished build with that fingerprint exists, and otherwise builds and submits (`:338-439`). An errored build fails the run and is retried by hand (`:401-406`). A manual `workflow_dispatch` covers build and update (`:23-57`). Builds and OTAs come only from CI, never a laptop (`:3-7`). In the app it uses the `fingerprint` runtime policy (`apps/mobile/app.config.ts:15-17`, `:241-244`) and `updates` with `checkAutomatically: "ON_LOAD"` and `fallbackToCacheTimeout: 0` (`:248-253`), on one `production` channel (`apps/mobile/eas.json:73`). This spec differs on purpose in two places: builds run on Expo's servers, not T3's paid Blacksmith Macs (`:554`), and there is a 75-day refresh, because T3's iOS production ships through the App Store.
 - **I could not verify** (no Expo login on this machine) that Expo still stores the iPhone distribution certificate and profile, that the existing key works for Expo's submit, or that the fingerprint Expo's macOS builder embeds equals the one the Linux runner computes. T3 notes that a laptop's fingerprint differed (`:4-6`), and this repo uses npm, not T3's pinned pnpm. If any of these is false, builds fail or OTAs never reach the phone. Until they are probed, nothing may be published.
@@ -38,7 +38,7 @@ Approved by the owner on 2026-11-19. The phone app gets over-the-air (OTA) updat
 1. A merge to main that changes phone or shared client code publishes an OTA on channel `production` for iOS, when a finished TestFlight build with the same fingerprint exists. Without one, nothing is published.
 2. The owner's iPhone, on that build, runs the update after opening the app twice. The first launch downloads it and the next launch uses it.
 3. A merge that changes the iOS fingerprint automatically starts one build on Expo's servers with the `beta` profile and sends it to TestFlight. No one presses anything.
-4. Every Monday, if the newest finished `beta` iOS build is more than 75 days old and none is in progress, the workflow builds and sends a fresh one from main.
+4. Every Monday, if the newest finished `beta` iOS build is 76 or more whole days old and none is in progress, the workflow builds and sends a fresh one from main.
 5. A GitHub **Run workflow** button offers `build` (retry or force a build), `update` (publish an OTA now) and `check` (read-only: print the newest build, the newest update, their fingerprints and the update's launch records).
 6. The mobile README's release section describes this flow and no longer says every update needs a fresh store build.
 
@@ -111,8 +111,8 @@ Halt and report when: a first-task probe fails; Expo has no valid iOS credential
 
 **Docs to change** (each reader of the old rule):
 
-- `apps/mobile/README.md:26`: "Every beta update uses fresh store builds." and the hand-run release commands. Replace them with the CI flow, the button, and "never build from a laptop".
-- `apps/mobile/README.md:32`: the day-75 proposal "pending approval" is now decided as the Monday refresh.
+- `apps/mobile/README.md`: "Every beta update uses fresh store builds." and the hand-run release commands. Replace them with the CI flow, the button, and "never build from a laptop".
+- `apps/mobile/README.md`: the day-75 proposal "pending approval" is now decided as the Monday refresh.
 - `docs/specs/mobile-beta.md:11`: "Push notifications and OTA updates are outside beta 1." Point OTA to this spec.
 - `docs/specs/mobile-beta.md:27`: "Beta updates are fresh signed binaries." Replace it with OTA plus fingerprint builds.
 
