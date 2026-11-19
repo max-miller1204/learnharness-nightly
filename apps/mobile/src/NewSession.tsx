@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ComponentRef } from "react";
 import { FlatList, Keyboard, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
   ATTACHMENT_UPLOADS, PROTOCOL_ROUTES, PRACTICE_CONTROLS_V1, PRACTICE_CONTROL_ROUTES, hasCapability,
@@ -30,6 +30,9 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
   const [graphRevision, setGraphRevision] = useState(0);
   const [recent, setRecent] = useState<ChatListResponse["chats"]>();
   const operation = useRef<AbortController | null>(null);
+  // A locked draft drops text a keyboard still sends (see Session.tsx).
+  const lockedNow = useRef(false);
+  const field = useRef<ComponentRef<typeof TextInput>>(null);
   useEffect(() => () => operation.current?.abort(), []);
   // Graph picks ride the creation for teaching and practice alike (home.tsx).
   const canPick = hasCapability(info, PRACTICE_CONTROLS_V1);
@@ -65,11 +68,14 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
     const signal = scope.signal;
     operation.current = scope;
     // The draft stays locked while files finish uploading (Session.tsx sendDraft).
+    lockedNow.current = true;
+    field.current?.blur();
     Keyboard.dismiss();
     setAttachOpen(false);
     setBusy(true);
     setError("");
     setRecent(undefined);
+    let unconfirmed = false;
     try {
       const upload = await attachments.prepare(JSON.stringify({ text, kind, picks: picks.map(({ id }) => id) }));
       if (!upload || signal.aborted) return;
@@ -86,11 +92,13 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
     } catch (error) {
       if (signal.aborted || connectionFault(error)) return;
       const refused = error instanceof ApiError && error.status < 500;
-      setUnconfirmedStart(!refused && !!attachments.rows.length);
+      unconfirmed = !refused && !!attachments.rows.length;
+      setUnconfirmedStart(unconfirmed);
       setError(refused ? errorText(error)
         : "The server didn't confirm the start. Send again to finish it without creating a second session.");
     } finally {
       operation.current = null;
+      lockedNow.current = unconfirmed;
       if (!signal.aborted) setBusy(false);
     }
   }
@@ -218,7 +226,8 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
         <View style={[s.dock, { flexDirection: "row", alignItems: "flex-end", gap: 6, padding: 6 }]}>
           {canAttach && <AttachButton open={attachOpen} setOpen={setAttachOpen} disabled={locked} />}
           <TextInput accessibilityLabel={prompt} placeholder={prompt} placeholderTextColor={c.muted} selectionColor={c.accent}
-            value={draft} onChangeText={setDraft} multiline editable={!locked} pointerEvents={locked ? "none" : "auto"}
+            ref={field} value={draft} onChangeText={(text) => { if (!lockedNow.current) setDraft(text); }}
+            multiline editable={!locked} pointerEvents={locked ? "none" : "auto"}
             style={{ flex: 1, minHeight: 40, maxHeight: 192, paddingHorizontal: 10, paddingVertical: 10, fontFamily: fonts.prose, fontSize: 16, lineHeight: 20, color: c.text, textAlignVertical: "top" }} />
           <Button primary label={busy ? "Starting…" : "Start session"} disabled={busy || !draft.trim() || (!!recent && recent.length > 0)} onPress={() => void create()}
             style={{ width: 40, paddingHorizontal: 0, borderRadius: radius.control }}>
