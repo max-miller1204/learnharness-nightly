@@ -53,7 +53,7 @@ function bridge(initial = state(), snapshot = Promise.resolve(initial)) {
 		getUpdateState: () => { calls.get++; return snapshot; },
 		onUpdateStatus: cb => { listeners.add(cb); return () => { listeners.delete(cb); }; },
 		checkForUpdates: async () => { calls.check++; if (checkFailure) throw checkFailure; },
-		installUpdate: () => { calls.install++; },
+		installUpdate: async () => { calls.install++; return true; },
 		downloadUpdate: async () => { calls.download++; },
 		onOpenSettings: cb => { onOpen = cb; return () => { onOpen = null; }; },
 	};
@@ -316,6 +316,192 @@ describe("General update rows", () => {
 		assert.equal(pill().getAttribute("aria-label"), "Check for updates");
 	});
 
+	// Owner decision 2026-11-19 (docs/specs/update-control.md, Restarting).
+	it("after Install and restart the button greys out, spins and reads Restarting to install X… until the restart; a failure gives the normal button back", async () => {
+		const b = bridge(state({ status: "downloaded", version: "0.3.8", revision: 1 }));
+		const host = await mount(<SidebarUpdatePill />);
+		const pill = () => q(host, "update-pill")!;
+		const icon = () => q(host, "update-control-restart-icon")!;
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		assert.equal(pill().getAttribute("data-action"), "install");
+		assert.equal(icon().getAttribute("data-spinning"), null, "no spin before the confirm");
+		await click(pill());
+		await click(q(document, "install-update-confirm"));
+		assert.equal(b.calls.install, 1);
+		assert.equal(pill().getAttribute("data-action"), "restarting");
+		assert.equal(pill().getAttribute("aria-label"), "Restarting to install 0.3.8…");
+		assert.equal(pill().getAttribute("aria-disabled"), "true");
+		assert.match(pill().className, /opacity-60/);
+		assert.match(pill().className, /cursor-not-allowed/);
+		assert.equal(icon().getAttribute("data-spinning"), "true");
+		assert.match(icon().getAttribute("class") ?? "", /motion-safe:animate-spin/);
+		await click(pill());
+		assert.equal(q(document, "install-update-title"), null, "a second click opens nothing");
+		assert.equal(b.calls.install, 1);
+		// The app's install found a newer build and couldn't download it: offered again, as before.
+		await b.push(state({ status: "available", version: "0.3.9", revision: 2 }));
+		assert.equal(pill().getAttribute("data-action"), "download");
+		assert.equal(pill().getAttribute("aria-disabled"), null);
+		await b.push(state({ status: "downloaded", version: "0.3.9", revision: 3 }));
+		assert.equal(pill().getAttribute("data-action"), "install", "the earlier confirm doesn't carry over");
+		assert.equal(pill().getAttribute("aria-disabled"), null);
+	});
+
+	it("on a self-hosted server: a refused install (error state) or a failed request gives the normal button back", async () => {
+		const ready = state({ status: "downloaded", version: "0.3.8", revision: 1 });
+		let answer: () => Response = () => Response.json({ ...ready, revision: 2, message: "Restarting to install version 0.3.8…" });
+		const posts: string[] = [];
+		globalThis.fetch = async (input, init) => {
+			if (init?.method === "POST") { posts.push(String(input)); return answer(); }
+			return String(input) === "/api/updates/running" ? Response.json({ items: [] }) : Response.json(ready);
+		};
+		const host = await mount(<SidebarUpdatePill />);
+		const pill = () => q(host, "update-pill")!;
+		const confirm = async () => {
+			await click(pill());
+			await click(q(document, "install-update-confirm"));
+			await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		};
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		await confirm();
+		assert.deepEqual(posts, ["/api/updates/install"]);
+		assert.equal(pill().getAttribute("data-action"), "restarting", "the server is restarting: it stays");
+		assert.equal(pill().getAttribute("aria-label"), "Restarting to install 0.3.8…");
+		for (const { root, host: old } of roots.splice(0)) { await act(async () => { root.unmount(); }); old.remove(); }
+
+		answer = () => Response.json({ ...ready, revision: 2, status: "error", message: "Couldn't reach the launcher: gone" });
+		const refused = await mount(<SidebarUpdatePill />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		await click(q(refused, "update-pill"));
+		await click(q(document, "install-update-confirm"));
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		assert.equal(q(refused, "update-pill")!.getAttribute("data-action"), "check", "the existing error state: the check button");
+		for (const { root, host: old } of roots.splice(0)) { await act(async () => { root.unmount(); }); old.remove(); }
+
+		answer = () => new Response("nope", { status: 502 });
+		const failed = await mount(<SidebarUpdatePill />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		await click(q(failed, "update-pill"));
+		await click(q(document, "install-update-confirm"));
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		assert.equal(q(failed, "update-pill")!.getAttribute("data-action"), "install", "the request failed: Install again");
+		assert.equal(q(failed, "update-pill")!.getAttribute("aria-disabled"), null);
+	});
+
+	it("from install with release notes to restarting, the same button stays mounted and keeps keyboard focus", async () => {
+		const notes = [{ version: "0.3.8", items: ["A change"] }];
+		bridge(state({ status: "downloaded", version: "0.3.8", revision: 1, releaseNotes: notes }));
+		const host = await mount(<SidebarUpdatePill />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const before = q(host, "update-pill")!;
+		// Keyboard focus (linkedom can't match :focus-visible).
+		const matches = before.matches.bind(before);
+		before.matches = (selector: string) => selector === ":focus-visible" || matches(selector);
+		await act(async () => { before.focus(); });
+		await click(before);
+		await click(q(document, "install-update-confirm"));
+		// The dialog hands focus back to its opener on the next tick.
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "restarting");
+		// assert.ok, not assert.equal: a failing equal would print linkedom's whole node graph.
+		assert.ok(q(host, "update-pill") === before, "not remounted");
+		assert.ok(before.isConnected);
+		assert.ok(document.activeElement === before, "focus is still on the button");
+	});
+
+	it("from download with release notes to downloading, the same button stays mounted with focus on it", async () => {
+		const b = bridge(state({ status: "available", version: "0.3.8", revision: 1, releaseNotes: [{ version: "0.3.8", items: ["A change"] }] }));
+		const host = await mount(<SidebarUpdatePill />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const before = q(host, "update-pill")!;
+		const matches = before.matches.bind(before);
+		before.matches = (selector: string) => selector === ":focus-visible" || matches(selector);
+		await act(async () => { before.focus(); });
+		await click(before);
+		assert.equal(b.calls.download, 1);
+		await b.push(state({ status: "downloading", version: "0.3.8", revision: 2 }));
+		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "downloading");
+		assert.ok(q(host, "update-pill") === before, "not remounted");
+		assert.ok(document.activeElement === before);
+	});
+
+	it("an install the app turns down (an Update everything run owns the updater), or a bridge without installUpdate, never renders Restarting", async () => {
+		const b = bridge(state({ status: "downloaded", version: "0.3.8", revision: 1 }));
+		let answer = deferred<boolean>();
+		window.lh!.installUpdate = () => { b.calls.install++; return answer.promise; };
+		const settle = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+		const watch = async () => {
+			const host = await mount(<SidebarUpdatePill />);
+			await settle();
+			const pill = q(host, "update-pill")!;
+			// Every value React writes to this button (it stays the same element), so even one render shows.
+			const shown: string[] = [];
+			const setAttribute = pill.setAttribute.bind(pill);
+			pill.setAttribute = (name: string, value: string) => { if (name === "data-action" || name === "aria-label") shown.push(value); setAttribute(name, value); };
+			await click(pill);
+			await click(q(document, "install-update-confirm"));
+			return { pill, shown };
+		};
+		const first = await watch();
+		assert.equal(b.calls.install, 1);
+		assert.equal(first.pill.getAttribute("data-action"), "install", "while the app answers: the normal button");
+		assert.equal(first.pill.getAttribute("aria-disabled"), null);
+		answer.resolve(false);
+		await settle();
+		assert.equal(first.pill.getAttribute("data-action"), "install", "main ignored it");
+		assert.equal(first.pill.getAttribute("aria-disabled"), null);
+		assert.ok(!first.shown.some((value) => value === "restarting" || value.startsWith("Restarting")), `never Restarting: ${first.shown.join(", ")}`);
+		for (const { root, host: old } of roots.splice(0)) { await act(async () => { root.unmount(); }); old.remove(); }
+
+		delete window.lh!.installUpdate;
+		const bare = await watch();
+		await settle();
+		assert.equal(bare.pill.getAttribute("data-action"), "install");
+		assert.ok(!bare.shown.includes("restarting"));
+		for (const { root, host: old } of roots.splice(0)) { await act(async () => { root.unmount(); }); old.remove(); }
+
+		answer = deferred<boolean>();
+		window.lh!.installUpdate = () => { b.calls.install++; return answer.promise; };
+		const accepted = await watch();
+		assert.equal(accepted.pill.getAttribute("data-action"), "install", "not before the app's yes");
+		answer.resolve(true);
+		await settle();
+		assert.equal(accepted.pill.getAttribute("data-action"), "restarting");
+	});
+
+	it("an install the desktop bridge throws on never rejects; the button is Install again", async () => {
+		bridge(state({ status: "downloaded", version: "0.3.8", revision: 1 }));
+		window.lh!.installUpdate = () => { throw new Error("bridge gone"); };
+		const host = await mount(<SidebarUpdatePill />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		await click(q(host, "update-pill"));
+		await click(q(document, "install-update-confirm"));
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "install");
+		assert.equal(q(host, "update-pill")!.getAttribute("aria-disabled"), null);
+	});
+
+	it("under reduced motion the restarting arrow doesn't spin; it is still grey, disabled and labeled", async () => {
+		const query = { matches: true, addEventListener() {}, removeEventListener() {} };
+		Object.defineProperty(dom.window, "matchMedia", { configurable: true, writable: true, value: () => query });
+		try {
+			bridge(state({ status: "downloaded", version: "0.3.8", revision: 1 }));
+			const host = await mount(<SidebarUpdatePill />);
+			await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+			await click(q(host, "update-pill"));
+			await click(q(document, "install-update-confirm"));
+			const pill = q(host, "update-pill")!;
+			assert.equal(pill.getAttribute("data-action"), "restarting");
+			assert.equal(pill.getAttribute("aria-disabled"), "true");
+			assert.equal(pill.getAttribute("aria-label"), "Restarting to install 0.3.8…");
+			const icon = q(host, "update-control-restart-icon")!;
+			assert.equal(icon.getAttribute("data-spinning"), null);
+			assert.doesNotMatch(icon.getAttribute("class") ?? "", /animate-spin/);
+		} finally {
+			delete (dom.window as { matchMedia?: unknown }).matchMedia;
+		}
+	});
+
 	it("a server newer than the page reloads it by itself, even with unsent text; the button stays as the fallback and asks first", async () => {
 		const b = bridge(state({ status: "up-to-date", revision: 1, runningVersion: "0.6.1-nightly.20261118.65" }));
 		const composer = document.createElement("div"); composer.setAttribute("data-testid", "composer");
@@ -548,6 +734,31 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		await click(r.pill()); await settle();
 		assert.equal(r.calls.check, 1, "the app checks too");
 		assert.ok(r.calls.fetches.includes("/api/updates/check"), "and the server");
+	});
+
+	it("an uncommitted trial or an inexact server version keeps the run's everything state", async () => {
+		const trial = await pillIn({ version: V71, target: V72, phase: "updating", error: null }, state({ status: "up-to-date", runningVersion: V72, committed: false }));
+		assert.equal(trial.pill().getAttribute("data-action"), "everything", "the run still waits for the launcher to keep it");
+		for (const { root, host } of roots.splice(0)) { await act(async () => { root.unmount(); }); host.remove(); }
+		const dev = await pillIn({ version: V71, target: V72, phase: "updating", error: null }, state({ status: "up-to-date", runningVersion: "dev", committed: true }));
+		assert.equal(dev.pill().getAttribute("data-action"), "everything");
+	});
+
+	it("once the server runs the app's version and its launcher kept it, the run's restart greys out, spins and reads Restarting to install X…", async () => {
+		const r = await pillIn({ version: V71, target: V72, phase: "updating", error: null }, state({ status: "up-to-date", runningVersion: V72, committed: true }));
+		assert.equal(r.pill().getAttribute("data-action"), "restarting");
+		assert.equal(r.pill().getAttribute("aria-label"), `Restarting to install ${V72}…`);
+		assert.equal(r.pill().getAttribute("aria-disabled"), "true");
+		assert.match(r.pill().className, /opacity-60/);
+		assert.equal(q(document, "update-control-restart-icon")!.getAttribute("data-spinning"), "true");
+		await click(r.pill()); await settle();
+		assert.equal(r.calls.install, 0);
+		// Later, or a failed install: the app offers its downloaded update again.
+		r.set({ version: V71, target: V72, phase: "downloaded", error: null });
+		await act(async () => { document.dispatchEvent(new dom.window.Event("visibilitychange")); });
+		await settle();
+		assert.equal(r.pill().getAttribute("data-action"), "app-install");
+		assert.equal(r.pill().getAttribute("aria-disabled"), null);
 	});
 
 	it("mid-run, a page whose server came back on the new version still reloads by itself, once (#264), under the app's cover", async () => {

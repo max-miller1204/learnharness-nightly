@@ -597,10 +597,15 @@ function downloadUpdateNow() {
 // installer) leaves the app without its server: relaunch onto the old version.
 const INSTALL_QUIT_GRACE_MS = 10 * 1000;
 
+/** Whether a confirmed Install goes ahead now (or one is already under way). Not while an Update
+ *  everything run owns its pinned install (electron/update-everything.cjs), nor with nothing staged. */
+function installAccepted() {
+	return installing || (!!autoUpdater && updateState.status === "downloaded" && !updateEverything?.running());
+}
+
 /** The user confirmed Install: re-check, take a newer build if one appeared, then quit and install. */
 async function installUpdateNow() {
-	// An Update everything run owns its pinned install (electron/update-everything.cjs).
-	if (!autoUpdater || installing || updateState.status !== "downloaded" || updateEverything?.running()) return;
+	if (installing || !installAccepted()) return;
 	installing = true;
 	const downloaded = updateState.version;
 	let offered = null;
@@ -1006,9 +1011,12 @@ async function main() {
 	// and the 4h interval are scheduled after it below. setupAutoUpdater's contract: failures
 	// are log lines — this can never block boot.
 	setupAutoUpdater();
-	ipcMain.on("lh:update-install", (event) => {
-		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) return;
+	// Answers whether main took the install, so the page shows "Restarting" only when it did.
+	ipcMain.handle("lh:update-install", (event) => {
+		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
+		const accepted = installAccepted();
 		void installUpdateNow();
+		return accepted;
 	});
 	ipcMain.handle("lh:update:download", (event) => {
 		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
