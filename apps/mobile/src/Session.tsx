@@ -13,7 +13,8 @@ import { useTranscriptItems, type TranscriptItem } from "./Transcript";
 import { Button, Label, Notice } from "./ui";
 import { fonts, radius, space, useTheme } from "./theme";
 import { revealOffset } from "./reveal";
-import { followsBottom, scrollPosition } from "./follow-bottom";
+import { createFollower, listMode } from "./follow-bottom";
+import { pressInGuard } from "./press-in";
 import { checkNeedsReveal, livePlan, PHASE_LABEL, sessionPhase, skipAnswer, skipParked } from "./lesson";
 import { PlanScreen } from "./PlanScreen";
 import { useJobs } from "./use-jobs";
@@ -37,17 +38,22 @@ function MenuItem({ label, onPress, close, disabled = false }: { label: string; 
 const KEEP_MOUNTED = 1000;
 const Gap = () => <View style={{ height: space.lg }} />;
 
-/** Whether a screen reader is on, and whether the learner asked for reduced motion. */
+// The last known settings, so a later session opens with them already known.
+const known = { screenReader: null as boolean | null, reduceMotion: false };
+
+/** Whether a screen reader is on (null until known), and whether the learner asked for reduced motion. */
 function useAccessibilitySettings() {
-  const [screenReader, setScreenReader] = useState(false);
-  const [reduceMotion, setReduceMotion] = useState(false);
+  const [screenReader, setScreenReader] = useState(known.screenReader);
+  const [reduceMotion, setReduceMotion] = useState(known.reduceMotion);
   useEffect(() => {
     let live = true;
-    void AccessibilityInfo.isScreenReaderEnabled().then((on) => { if (live) setScreenReader(on); });
-    void AccessibilityInfo.isReduceMotionEnabled().then((on) => { if (live) setReduceMotion(on); });
-    const reader = AccessibilityInfo.addEventListener("screenReaderChanged", setScreenReader);
-    const motion = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduceMotion);
-    return () => { live = false; reader.remove(); motion.remove(); };
+    const reader = (on: boolean) => { known.screenReader = on; if (live) setScreenReader(on); };
+    const motion = (on: boolean) => { known.reduceMotion = on; if (live) setReduceMotion(on); };
+    void AccessibilityInfo.isScreenReaderEnabled().then(reader, () => reader(false));
+    void AccessibilityInfo.isReduceMotionEnabled().then(motion, () => {});
+    const readerChanged = AccessibilityInfo.addEventListener("screenReaderChanged", reader);
+    const motionChanged = AccessibilityInfo.addEventListener("reduceMotionChanged", motion);
+    return () => { live = false; readerChanged.remove(); motionChanged.remove(); };
   }, []);
   return { screenReader, reduceMotion };
 }
@@ -57,6 +63,7 @@ function useAccessibilitySettings() {
 function ScrollToEndButton({ visible, reduceMotion, onPress }: { visible: boolean; reduceMotion: boolean; onPress: () => void }) {
   const { c } = useTheme();
   const [opacity] = useState(() => new Animated.Value(visible ? 1 : 0));
+  const [guard] = useState(pressInGuard);
   useEffect(() => {
     Animated.timing(opacity, { toValue: visible ? 1 : 0, duration: reduceMotion ? 0 : visible ? 180 : 120, useNativeDriver: true }).start();
   }, [opacity, reduceMotion, visible]);
@@ -64,7 +71,8 @@ function ScrollToEndButton({ visible, reduceMotion, onPress }: { visible: boolea
     <Animated.View pointerEvents={visible ? "auto" : "none"} accessibilityElementsHidden={!visible}
       importantForAccessibility={visible ? "auto" : "no-hide-descendants"}
       style={{ position: "absolute", left: 0, right: 0, bottom: space.sm, alignItems: "center", opacity }}>
-      <Pressable accessibilityRole="button" accessibilityLabel="Scroll to end" disabled={!visible} onPressIn={onPress}
+      <Pressable accessibilityRole="button" accessibilityLabel="Scroll to end" disabled={!visible}
+        onPressIn={() => guard.pressIn(onPress)} onPressOut={guard.pressOut} onPress={() => guard.press(onPress)}
         style={({ pressed }) => ({ width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center",
           borderWidth: 1, borderColor: c.border, backgroundColor: pressed ? c.hover : c.card,
           boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1)" })}>
@@ -97,15 +105,15 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   // reader follows the list's own order, so while one is on the list is a plain
   // one, oldest first, and opens by jumping to the end.
   const { screenReader, reduceMotion } = useAccessibilitySettings();
-  const inverted = !screenReader;
+  const mode = listMode(screenReader);
+  const inverted = mode !== "plain";
   const list = useRef<FlatList<TranscriptItem>>(null);
   const statusBarTarget = useRef<ComponentRef<typeof ScrollView>>(null);
-  const following = useRef(true);
   // Not following: the scroll-to-end button shows, and the inverted list holds
   // the message in view in place as new ones arrive.
   const [holding, setHolding] = useState(false);
+  const [follower] = useState(() => createFollower((following) => setHolding(!following)));
   const userScrolling = useRef(false);
-  const lastOffset = useRef(0);
   const messages = record?.messages ?? EMPTY;
   const problem = activeProblemOf(messages);
   const question = pendingQuestionOf(messages);
@@ -137,39 +145,30 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const items = useTranscriptItems({ settled: settledView, tail: session.tail, api, chatId: id, jobs, liveHelpers: lessonView, openPlan: () => setPlanOpen(true) });
   const ordered = useMemo(() => inverted ? [...items].reverse() : items, [inverted, items]);
   // Switching between the two lists starts the new one at the bottom.
-  const [listMode, setListMode] = useState(inverted);
-  if (listMode !== inverted) {
-    setListMode(inverted);
-    setHolding(false);
+  const [shownMode, setShownMode] = useState(mode);
+  if (shownMode !== mode) {
+    setShownMode(mode);
+    follower.reset();
   }
-  useEffect(() => {
-    following.current = true;
-    lastOffset.current = 0;
-  }, [inverted]);
 
-  function follow(next: boolean) {
-    if (next === following.current) return;
-    following.current = next;
-    setHolding(!next);
-  }
   function scrolled({ contentOffset, contentSize, layoutMeasurement }: NativeScrollEvent, dragging: boolean) {
-    const { distance, movedUp } = scrollPosition(inverted,
-      { offset: contentOffset.y, content: contentSize.height, viewport: layoutMeasurement.height }, lastOffset.current);
-    lastOffset.current = contentOffset.y;
-    follow(followsBottom(following.current, { distance, movedUp, dragging }));
+    follower.scrolled(inverted, { offset: contentOffset.y, content: contentSize.height, viewport: layoutMeasurement.height }, dragging);
+  }
+  // The scroll view's own ends. FlatList's scrollToEnd works from its measured
+  // rows, which leaves out the padding and rows not measured yet.
+  function scrollToBottom(animated: boolean) {
+    if (inverted) list.current?.scrollToOffset({ offset: 0, animated });
+    else list.current?.getNativeScrollRef()?.scrollToEnd({ animated });
   }
   // While following, new content, or a shorter view when the question dock below
   // grows, brings the bottom back.
   function pin() {
-    if (!following.current) return;
-    if (!inverted) list.current?.scrollToEnd({ animated: false });
-    else if (lastOffset.current > 0) list.current?.scrollToOffset({ offset: 0, animated: false });
+    if (follower.following && (!inverted || follower.lastOffset > 0)) scrollToBottom(false);
   }
   // The scroll-to-end button (T3 ThreadDetailScreen.tsx handleScrollToEnd).
   function toEnd() {
-    follow(true);
-    if (inverted) list.current?.scrollToOffset({ offset: 0, animated: !reduceMotion });
-    else list.current?.scrollToEnd({ animated: !reduceMotion });
+    follower.follow(true);
+    scrollToBottom(!reduceMotion);
   }
 
   useEffect(() => {
@@ -291,7 +290,8 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
         </Button>}
       </View>
       <View style={{ flex: 1 }}>
-        <FlatList key={inverted ? "newest-first" : "oldest-first"} ref={list} inverted={inverted} data={ordered}
+        {/* Until the screen reader state is known, which takes a moment on the first open only. */}
+        {mode !== "unknown" && <FlatList key={mode} ref={list} inverted={inverted} data={ordered}
           keyExtractor={({ key }) => key} renderItem={({ item }) => item.node}
           // Short sessions stay at the top of the screen in the inverted list too.
           style={{ flex: 1 }} contentContainerStyle={[s.section, { gap: 0 }, inverted && { flexGrow: 1, justifyContent: "flex-end" }]}
@@ -309,15 +309,16 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
           // The last scroll event of a fling can be dropped, so the ends check again.
           onScrollEndDrag={({ nativeEvent }) => { scrolled(nativeEvent, true); userScrolling.current = false; }}
           onMomentumScrollEnd={({ nativeEvent }) => { scrolled(nativeEvent, true); userScrolling.current = false; }}
-          onScroll={({ nativeEvent }) => scrolled(nativeEvent, userScrolling.current)} />
-        {Platform.OS === "ios" && inverted && (
-          // iOS scrolls the one scroll view that takes status bar taps to its top. This 1pt
-          // one, scrolled down a point, takes the tap and sends the list to the first message.
+          onScroll={({ nativeEvent }) => scrolled(nativeEvent, userScrolling.current)} />}
+        {Platform.OS === "ios" && mode === "inverted" && (
+          // iOS scrolls the one scroll view under the tap that takes status bar taps to its
+          // top. This one, full width and 1pt tall, scrolled down a point, takes the tap and
+          // sends the list to the first message. It takes no touches or screen reader focus.
           <ScrollView ref={statusBarTarget} scrollsToTop={!planOpen} pointerEvents="none" accessibilityElementsHidden
             importantForAccessibility="no-hide-descendants" showsVerticalScrollIndicator={false} contentOffset={{ x: 0, y: 1 }}
-            style={{ position: "absolute", top: 0, left: 0, width: 1, height: 1 }} contentContainerStyle={{ height: 2 }}
+            style={{ position: "absolute", top: 0, left: 0, right: 0, height: 1 }} contentContainerStyle={{ height: 2 }}
             onScrollToTop={() => {
-              list.current?.scrollToEnd({ animated: !reduceMotion });
+              list.current?.getNativeScrollRef()?.scrollToEnd({ animated: !reduceMotion });
               statusBarTarget.current?.scrollTo({ y: 1, animated: false });
             }} />
         )}

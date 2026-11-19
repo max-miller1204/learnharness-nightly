@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { followsBottom, scrollPosition } from "../src/follow-bottom.ts";
+import { createFollower, followsBottom, listMode, scrollPosition } from "../src/follow-bottom.ts";
 
 test("only the learner's own scrolling stops following the bottom", () => {
   const at = (distance: number, movedUp: boolean, dragging = false) => ({ distance, movedUp, dragging });
@@ -32,4 +32,40 @@ test("the plain list (screen reader on) measures from the top", () => {
   assert.deepEqual(scrollPosition(false, { offset: 3600, content: 5000, viewport: 800 }, 4200), { distance: 600, movedUp: true });
   // New content below grows the distance, but the offset did not move up.
   assert.deepEqual(scrollPosition(false, { offset: 4200, content: 5600, viewport: 800 }, 4200), { distance: 600, movedUp: false });
+});
+
+test("the scroll-to-end button shows while scrolled away and hides again at the end", () => {
+  const shown: boolean[] = [];
+  const follower = createFollower((following) => shown.push(!following));
+  // Inverted list: scrolling up toward older messages.
+  follower.scrolled(true, { offset: 600, content: 5000, viewport: 800 }, true);
+  assert.equal(follower.following, false);
+  assert.deepEqual(shown, [true]);
+  // The button jumps to the end and follows again.
+  follower.follow(true);
+  assert.deepEqual(shown, [true, false]);
+  // Its own scroll down does not stop following.
+  follower.scrolled(true, { offset: 300, content: 5000, viewport: 800 }, false);
+  follower.scrolled(true, { offset: 0, content: 5000, viewport: 800 }, false);
+  assert.equal(follower.following, true);
+  assert.deepEqual(shown, [true, false]);
+});
+
+test("switching list mode starts the new list at the bottom", () => {
+  const shown: boolean[] = [];
+  const follower = createFollower((following) => shown.push(!following));
+  follower.scrolled(true, { offset: 600, content: 5000, viewport: 800 }, true);
+  follower.reset();
+  assert.equal(follower.following, true);
+  assert.equal(follower.lastOffset, 0);
+  assert.deepEqual(shown, [true, false]);
+  // In the plain list the first jump to the end moves down: still following.
+  follower.scrolled(false, { offset: 4200, content: 5000, viewport: 800 }, false);
+  assert.equal(follower.following, true);
+});
+
+test("the list waits for the screen reader state, then picks the order", () => {
+  assert.equal(listMode(null), "unknown");
+  assert.equal(listMode(false), "inverted");
+  assert.equal(listMode(true), "plain");
 });

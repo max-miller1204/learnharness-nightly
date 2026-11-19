@@ -21,3 +21,38 @@ export function followsBottom(following: boolean, scroll: { distance: number; mo
   if (scroll.distance < threshold) return true;
   return scroll.dragging || scroll.movedUp ? false : following;
 }
+
+/**
+ * The transcript's follow state. `following` is false while the learner is
+ * scrolled away, which is when the scroll-to-end button shows. A new list
+ * (switching between the inverted and the plain one) starts at the bottom.
+ */
+export function createFollower(onChange: (following: boolean) => void) {
+  let following = true;
+  let lastOffset = 0;
+  const follow = (next: boolean) => {
+    if (next === following) return;
+    following = next;
+    onChange(next);
+  };
+  return {
+    get following() { return following; },
+    get lastOffset() { return lastOffset; },
+    follow,
+    scrolled(inverted: boolean, metrics: { offset: number; content: number; viewport: number }, dragging: boolean) {
+      const { distance, movedUp } = scrollPosition(inverted, metrics, lastOffset);
+      lastOffset = metrics.offset;
+      follow(followsBottom(following, { distance, movedUp, dragging }));
+    },
+    reset() {
+      lastOffset = 0;
+      follow(true);
+    },
+  };
+}
+
+/** Which transcript list to show: the inverted one, the plain one while a
+ *  screen reader is on, or none until the screen reader state is known. */
+export function listMode(screenReader: boolean | null): "inverted" | "plain" | "unknown" {
+  return screenReader === null ? "unknown" : screenReader ? "plain" : "inverted";
+}
