@@ -59,7 +59,14 @@ const STANDALONE_TESTS = [
 ];
 
 const WEB_GATES = ["typecheck", "test", "selfhost", "standalone"];
-const GATES = [...WEB_GATES, "mobile"];
+const GATES = [...WEB_GATES, "mobile", "iphone"];
+// The iPhone job runs whenever the mobile job does, and also when the
+// fixtures, scenario and scripts it drives the app and server with change.
+const IPHONE_OWN = [
+	/^scripts\/iphone-check\//,
+	/^tests\/fixtures\/(mobile-lesson|mobile-quiz)\//,
+	/^\.claude\/skills\/prove-learnharness\/scripts\/(lib\.sh|knobs\.env|new-run\.sh|build\.sh|start\.sh|seed\.mjs|sign-in\.mjs|fake-model\.mjs)$/,
+];
 const MOBILE_SHARED = /^(src\/(client-protocol|core)\/|\.github\/|package(-lock)?\.json$|build\/icon\.png$|public\/fonts\/cmunbx\.ttf$)/;
 
 /** Web gate class for one repo-relative path. */
@@ -86,6 +93,7 @@ function decide(files, full = false) {
 		if (kind === "mobile" || (kind !== "inert" && MOBILE_SHARED.test(file))) {
 			outputs.mobile = true;
 		}
+		if (outputs.mobile || IPHONE_OWN.some((pattern) => pattern.test(file))) outputs.iphone = true;
 		if (kind === "tests") {
 			outputs.typecheck = true;
 			outputs.test = true;

@@ -1,0 +1,268 @@
+{
+	"id": "chat_zzmobilequiz",
+	"title": "Splits and gradient steps",
+	"createdAt": "2026-11-19T15:00:00.000Z",
+	"updatedAt": "2026-11-19T15:04:00.000Z",
+	"messages": [
+		{
+			"role": "user",
+			"content": "Quiz me on train and test splits and on one gradient step",
+			"id": "u_goal",
+			"timestamp": 1795100000000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "Two words before we start:\n\n| Term | Meaning |\n| --- | --- |\n| **Train** | The rows the model learns its weights from. It may look at them as often as it likes while it fits. |\n| **Test** | The rows kept back until the end and used once, to estimate how the model does on rows it has never seen. |"
+				},
+				{
+					"type": "toolCall",
+					"id": "call_q1",
+					"name": "probe",
+					"arguments": {
+						"question": "You keep one third of $12$ rows for training and the rest for testing. Which split is that?",
+						"options": [
+							{
+								"label": "Train: $4$; test: $8$"
+							},
+							{
+								"label": "Train: $8$; test: $4$"
+							},
+							{
+								"label": "Train: $6$; test: $6$"
+							}
+						],
+						"explanation": "One third of $12$ is $4$, so the test part keeps $12 - 4 = 8$.",
+						"correctAnswer": "Train: $4$; test: $8$"
+					}
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "toolUse",
+			"id": "a_q1",
+			"timestamp": 1795100020000
+		},
+		{
+			"role": "toolResult",
+			"toolCallId": "call_q1",
+			"toolName": "probe",
+			"content": [
+				{
+					"type": "text",
+					"text": "answered"
+				}
+			],
+			"details": {
+				"kind": "quiz",
+				"tool": "probe",
+				"questionText": "You keep one third of $12$ rows for training and the rest for testing. Which split is that?",
+				"options": [
+					{
+						"index": 1,
+						"label": "Train: $4$; test: $8$"
+					},
+					{
+						"index": 2,
+						"label": "Train: $8$; test: $4$"
+					},
+					{
+						"index": 3,
+						"label": "Train: $6$; test: $6$"
+					}
+				],
+				"dontKnow": false,
+				"answers": [
+					{
+						"index": 1,
+						"label": "Train: $4$; test: $8$"
+					}
+				],
+				"correct": true,
+				"correctIndices": [
+					1
+				],
+				"confidence": 70,
+				"explanation": "One third of $12$ is $4$, so the test part keeps $12 - 4 = 8$.",
+				"thinking": "A third of twelve is four.",
+				"answeredAt": "2026-11-19T15:01:00.000Z"
+			},
+			"isError": false,
+			"id": "r_q1",
+			"timestamp": 1795100060000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "Right. Now one gradient step. For a product like $0.1(-1)(-2)$, multiply the signs first: two negatives make a positive, so it equals $0.2$. The same rule gives each weight its change, and the step ends at $w + \\Delta w$."
+				},
+				{
+					"type": "toolCall",
+					"id": "call_q2",
+					"name": "probe",
+					"arguments": {
+						"question": "The gradients are $g = (-2, 1)$ and the step size is $0.1$. Which change $\\Delta w = -0.1\\,g$ does one step make?",
+						"options": [
+							{
+								"label": "$(+0.20, -0.10)$"
+							},
+							{
+								"label": "$(-0.20, +0.10)$"
+							},
+							{
+								"label": "$(+0.10, -0.20)$"
+							}
+						],
+						"explanation": "Each change is $-0.1$ times its gradient, so the first weight moves by $-0.1 \\cdot (-2) = 0.2$.",
+						"correctAnswer": "$(+0.20, -0.10)$"
+					}
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "toolUse",
+			"id": "a_q2",
+			"timestamp": 1795100120000
+		},
+		{
+			"role": "toolResult",
+			"toolCallId": "call_q2",
+			"toolName": "probe",
+			"content": [
+				{
+					"type": "text",
+					"text": "answered"
+				}
+			],
+			"details": {
+				"kind": "quiz",
+				"tool": "probe",
+				"questionText": "The gradients are $g = (-2, 1)$ and the step size is $0.1$. Which change $\\Delta w = -0.1\\,g$ does one step make?",
+				"options": [
+					{
+						"index": 1,
+						"label": "$(+0.20, -0.10)$"
+					},
+					{
+						"index": 2,
+						"label": "$(-0.20, +0.10)$"
+					},
+					{
+						"index": 3,
+						"label": "$(+0.10, -0.20)$"
+					}
+				],
+				"dontKnow": false,
+				"answers": [
+					{
+						"index": 1,
+						"label": "$(+0.20, -0.10)$"
+					}
+				],
+				"correct": true,
+				"correctIndices": [
+					1
+				],
+				"confidence": 50,
+				"explanation": "Each change is $-0.1$ times its gradient, so the first weight moves by $-0.1 \\cdot (-2) = 0.2$.",
+				"thinking": "Flip the sign of each gradient, then scale it.",
+				"answeredAt": "2026-11-19T15:03:00.000Z"
+			},
+			"isError": false,
+			"id": "r_q2",
+			"timestamp": 1795100180000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "Both right. One more, and this one can have more than one answer."
+				},
+				{
+					"type": "toolCall",
+					"id": "call_q3",
+					"name": "probe",
+					"arguments": {
+						"question": "Pick every pair whose first number is smaller than its second.",
+						"options": [
+							{
+								"label": "Train: $4$; test: $8$"
+							},
+							{
+								"label": "$(+0.20, -0.10)$"
+							},
+							{
+								"label": "$(-0.10, +0.20)$"
+							},
+							{
+								"label": "None of these"
+							}
+						],
+						"multiSelect": true,
+						"explanation": "A pair qualifies when its first number is below its second, as in $4 < 8$.",
+						"correctAnswer": [
+							"Train: $4$; test: $8$",
+							"$(-0.10, +0.20)$"
+						]
+					}
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "toolUse",
+			"id": "a_q3",
+			"timestamp": 1795100240000
+		}
+	],
+	"version": 2
+}

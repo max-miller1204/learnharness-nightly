@@ -40,7 +40,7 @@ printf 'PROVE-FIXTURE-SKY: Rayleigh scattering makes short (blue) wavelengths sc
 FAKE_PORT=$(free_port)
 # setsid: each process leads its own process group, so stop.sh can end it
 # with every child (the standalone server forks next-server).
-PROVE_FIXTURE=$FIXTURE setsid nohup node "$PROVE_SCRIPTS/fake-model.mjs" --port "$FAKE_PORT" --scenario "$SCENARIO" \
+PROVE_FIXTURE=$FIXTURE "${SETSID[@]}" nohup node "$PROVE_SCRIPTS/fake-model.mjs" --port "$FAKE_PORT" --scenario "$SCENARIO" \
 	--log "$SD/model-requests.jsonl" </dev/null >"$SD/fake-model.log" 2>&1 &
 echo $! >"$SD/fake-model.pid"
 
@@ -55,10 +55,10 @@ fi
 # PROVE_MODEL=claude-code keeps your real HOME so the claude CLI finds its login.
 APP_HOME=$SD/home
 [ "$PROVE_MODEL" = claude-code ] && APP_HOME=$HOME
-setsid nohup env -C "$(dirname "$SERVER")" -i PATH="$PATH:$HOME/.local/bin" HOME="$APP_HOME" LANG=C.UTF-8 \
+(cd "$(dirname "$SERVER")" && exec "${SETSID[@]}" nohup env -i PATH="$PATH:$HOME/.local/bin" HOME="$APP_HOME" LANG=C.UTF-8 \
 	NODE_ENV=production HOSTNAME=127.0.0.1 PORT="$APP_PORT" NEXT_TELEMETRY_DISABLED=1 \
 	LH_DATA_DIR="$SD/data" LH_AUTH_FILE="$SD/auth.json" LH_IGNORE_ENV_KEYS=1 CHROME_PATH="$PROVE_CHROME" \
-	node "$SERVER" </dev/null >"$SD/app.log" 2>&1 &
+	node "$SERVER") </dev/null >"$SD/app.log" 2>&1 &
 echo $! >"$SD/app.pid"
 
 APP_URL=http://127.0.0.1:$APP_PORT
