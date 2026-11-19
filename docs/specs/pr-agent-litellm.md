@@ -6,19 +6,19 @@ Placeholders: `<server>` is the always-on self-host machine, `<tailnet>` its Tai
 
 ## 1. Starting point
 
-**Why.** The owner turned PR-Agent off (`gh workflow list --all`: `PR-Agent disabled_manually`, checked 2026-11-19) because its only model path was pay-per-token OpenRouter, so it ran on a cheap model (`anthropic/claude-haiku-5.5`, `pr-agent.yml:51`). The owner has a ChatGPT subscription (Codex login `auth_mode: chatgpt`, plan `prolite`, `~/.codex/auth.json`, 2026-11-19) and an always-on `<server>` (sleep and suspend targets masked, systemd user lingering on, 2026-11-19). LiteLLM can serve that subscription through its `chatgpt/` provider (docs.litellm.ai/docs/providers/chatgpt).
+**Why.** The owner turned PR-Agent off (`gh workflow list --all`: `PR-Agent disabled_manually`, checked 2026-11-19) because its only model path was pay-per-token OpenRouter, so it ran on a cheap model (`anthropic/claude-haiku-5.5`, `pr-agent.yml:51`). The owner has a ChatGPT subscription (Codex login `auth_mode: chatgpt`, `~/.codex/auth.json`, 2026-11-19) and an always-on `<server>` (sleep and suspend targets masked, systemd user lingering on, 2026-11-19). LiteLLM can serve that subscription through its `chatgpt/` provider (docs.litellm.ai/docs/providers/chatgpt).
 
 **Current state** (all checked 2026-11-19):
 - The repository is public (`gh repo view`).
 - `pr-agent.yml` runs on `pull_request` and `issue_comment`, skips Bot senders and fork PRs (`pr-agent.yml:24-31`). Its model, key and reasoning are OpenRouter's (`pr-agent.yml:48-64`).
 - The only imported upstream PR so far, #7, was opened by `app/learnharness-nightly-bot` from same-repo branch `upstream-pr/757`; its PR-Agent run was `skipped` (Bot sender). The Sync PR is opened by the same App from `upstream-main` (`upstream-sync.yml:118`). No stranger fork PR has ever been opened (`gh pr list --state all --limit 300`).
-- A same-repo imported PR's `pull_request` runs use the PR's own workflow files and can read every repository secret; the `.github/` import guard is the mitigation (`upstream-handpicked.md:54-60`).
+- A same-repo imported PR's `pull_request` runs use the PR's own workflow files and can read every repository secret; the `.github/` import guard is the mitigation (`upstream-handpicked.md:54-63`).
 - `pull_request_target` always runs the default branch's workflow and can use a main-only environment (`dependabot-auto-merge.yml:9-14`). GitHub blocks `pull_request_target` on public repositories without an Actions event policy from 2026-12-02; the one existing policy covers only `dependabot-auto-merge.yml` (`gh api repos/{owner}/{repo}/actions/policies`). `pr-preview-approval.yml` also uses `pull_request_target` and is not covered, so preview approvals stop on 2026-12-02 unless added.
 - PR-Agent ignores events outside `github_action_config.pr_actions` (default opened, reopened, ready_for_review, review_requested), so `labeled` must be listed; it skips pushes from bots by default (`push_trigger_ignore_bot_commits`). It supports `pull_request_target` and reads `.pr_agent.toml` from the default branch (PR-Agent v0.50.0 source).
 - LiteLLM's `chatgpt/` provider: one device-code login made outside the proxy, stored in an `auth.json` the proxy rewrites on each refresh (refresh tokens are single use, so one process only). A failed refresh needs a manual re-login. It strips token-limit fields (so PR-Agent's `max_output_tokens` cap no longer applies, see `pr-agent.yml:58-60` for why the cap existed) and records spend as $0, so budgets never fire; rate limits work.
 - LiteLLM virtual keys and request logs need Postgres; without it only the admin (master) key exists (docs.litellm.ai/docs/proxy/virtual_keys).
 - Claude through LiteLLM is pass-through only: Claude Code sends its own login through the proxy. Anthropic forbids subscription logins in any other tool (Feb 2026).
-- `<server>`: Docker running, no Postgres, about 5.8 GB memory available with swap full. Tailscale Serve already publishes T3 Code and LearnHarness tailnet-only; port 8444 is taken by `lh preview`. T3 Code listens on all interfaces.
+- `<server>`: Docker running, no Postgres, about 5.8 GB memory available with swap full. Other services there already use Tailscale Serve and some local ports, so the build checks that LiteLLM's port (Defaults 7) is free and publishes LiteLLM tailnet-only.
 - `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` are also read by `nightly.yml:200-201` for release notes.
 - LiteLLM releases: v1.108.11 (LTS line, 2026-11-17), v1.110.0 (2026-11-18). tailscale/github-action v4.4.0. PR-Agent image 0.50.0.
 
@@ -86,7 +86,7 @@ The builder does the rest itself: LiteLLM + Postgres on `<server>`, Tailscale Se
 | No stored Tailscale secret: Tailscale trusts GitHub's identity only from this repo's `pr-agent` environment | Tailscale federated identity | machine (probe) |
 | `tag:ci` reaches only LiteLLM's port on `<server>`; owner devices keep today's access | Tailscale access rules | machine (probe) |
 | PR-Agent's LiteLLM key can call only the ChatGPT model, rate-limited | LiteLLM virtual key (Postgres) | machine |
-| A non-owner's push, label or comment never starts a run; the owner's label starts exactly one | workflow `if:`, label removal | machine |
+| A stranger's push, label or comment never starts a run; a person starts one only by the owner adding `ai-review` (exactly one run) or by a comment command from an OWNER, MEMBER or COLLABORATOR | workflow `if:`, label removal | machine |
 | The Actions policy allows `pull_request_target` for `pr-agent.yml` and `pr-preview-approval.yml` | repository Actions policy | machine |
 | No secret in any git repository; LiteLLM secrets stay in `~/litellm` on `<server>` | file layout | human review |
 | On any failure (server off, proxy down, login expired, plan limit) the PR-Agent check goes red with a reason and posts nothing else; it never blocks a merge (not in `Check`) | workflow | machine |
@@ -123,9 +123,10 @@ LiteLLM admin UI checklist (confirmed): revocation by rotating the admin key; re
 **Ordering and rollback**
 1. Owner console steps (First task). No `tag:ci` node joins before the access rules are in place.
 2. LiteLLM + Postgres up on `<server>`, ChatGPT signed in, keys created, Tailscale Serve publishing LiteLLM.
-3. Proof checks 1 to 6.
-4. The PR (workflow, docs, this spec), the `pr-agent` environment and its secrets, the Actions policy, the `ai-review` label.
-5. Merge, enable the workflow, proof checks 7 to 10. Because `pull_request_target` only ever runs `main`'s copy, these can only run after merge. Rollback: `gh workflow disable PR-Agent`, fix in a follow-up PR.
+3. The `pr-agent` environment and its secrets, the Actions policy, the `ai-review` label.
+4. Proof checks 1 to 6, now that what they test exists.
+5. The PR (workflow, docs, this spec).
+6. Merge, enable the workflow, proof checks 7 to 10. Because `pull_request_target` only ever runs `main`'s copy, these can only run after merge. Rollback: `gh workflow disable PR-Agent`, fix in a follow-up PR.
 
 **Defaults the owner accepted**
 1. Imports run automatically only on opened, reopened and ready_for_review.
@@ -164,6 +165,6 @@ LiteLLM admin UI checklist (confirmed): revocation by rotating the admin key; re
 | 9 | The stranger path | a fork PR from the test account | Open it; owner adds `ai-review`; test account pushes; test account comments `/review` | GitHub | Skipped; one run and the label removed; skipped; skipped |
 | 10 | Fails red | `/review` with LiteLLM stopped | Stop LiteLLM, comment, restart | GitHub + `<server>` | Red with a reason naming the proxy; nothing else posted |
 
-Checks 1 to 6 pass before merge; 7 to 10 pass right after merge, or the workflow is disabled again (rollback).
+Checks 1 to 6 pass before merge, after the environment and the Actions policy exist (Ordering step 3); 7 to 10 pass right after merge, or the workflow is disabled again (rollback).
 
 Not applicable: data migration, app code, project invariants list or ADRs (the repository has none; decisions live here and in `docs/fork-workflow.md`).
