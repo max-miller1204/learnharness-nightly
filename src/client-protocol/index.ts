@@ -317,7 +317,8 @@ export interface PairingTokenResponse {
 /** Optional protocol 1 extension: the session's background helpers (research,
  * PDF reader, plugin workers) with live status, and skipping a built-in
  * question. Refetch `jobs` on a `jobs-changed` event for the chat (or one
- * without a chatId) and on reconnect. */
+ * without a chatId) and on reconnect. The listed jobs carry status only:
+ * results arrive in the saved transcript. */
 export const LESSON_VIEW_V1 = "lesson-view-v1";
 
 export const LESSON_VIEW_ROUTES = {
@@ -329,6 +330,9 @@ export const LESSON_VIEW_ROUTES = {
 	dismiss: (chatId: string) => `/api/chats/${segment(chatId)}/dismiss`,
 } as const;
 
+/** Each job is status only: this route never sends `result`, `input`,
+ * `usage`, `delivery` or `plugin.input` (all optional in JobRecord). An older
+ * server may still send them; clients ignore them. */
 export interface JobsResponse {
 	jobs: JobRecord[];
 	turnInFlight: boolean;

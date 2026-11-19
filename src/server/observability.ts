@@ -8,10 +8,11 @@
  * extraction runs — in one poll. The dock is BACKGROUND PROCESSES ONLY
  * (user decision, 2026-09-11): teaching sessions already have their own
  * observability, so in-flight teacher turns are deliberately NOT in the
- * feed. /api/jobs stays chat-scoped untouched: it is the transcript
- * machinery's poll and carries turnInFlight for the re-attach seam
- * (chat-transport); the dock is a different consumer with a different
- * shape, served here. Single sources of truth are unchanged: the job
+ * feed. /api/jobs stays chat-scoped: it is the transcript machinery's
+ * poll, carries turnInFlight for the re-attach seam (chat-transport) and
+ * sends each job status only (no result, input, usage or delivery). The
+ * dock is a different consumer with a different shape, served here, and
+ * reads full records (usage included). Single sources of truth are unchanged: the job
  * store and the pipeline registry — this file only composes them.
  *
  * The extraction side of the dock's controls also surfaces here:
