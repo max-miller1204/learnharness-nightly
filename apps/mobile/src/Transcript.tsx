@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Image, Pressable, Text, useWindowDimensions, View } from "react-native";
+import { Image, Pressable, Text, useWindowDimensions, View, type LayoutChangeEvent } from "react-native";
 import { PROTOCOL_ROUTES, type AttachmentReference, type ImageSnapshot, type JobRecord, type LhMessage } from "../../../src/client-protocol/index.ts";
 import type { PlanBlockData } from "../../../src/core/contracts/chat.ts";
 import { blockLayout, GRAPH_PAD, TEXT_CAP_SCALE } from "../../../src/core/plan-layout.ts";
@@ -57,6 +57,28 @@ function PlanBlock({ data, openPlan }: { data: PlanBlockData; openPlan: () => vo
 /** The block's viewBox width, for the prose-size cap. */
 function planWidth(data: PlanBlockData) {
   return Math.max(blockLayout(data.nodes, data.edges).width, 1) + 2 * GRAPH_PAD;
+}
+
+/** The texts a message shows through Markdown when it first appears, matching Part, so
+ * their math can be drawn before the message is shown. Folded rows (reasoning, briefs)
+ * draw theirs when opened. */
+export function markdownTexts(message: LhViewMessage): string[] {
+  if (isSubagentSteer(message)) return [];
+  return message.parts.flatMap((part): (string | undefined)[] => {
+    if (part.type === "text") return [part.text];
+    if (part.pluginQuestion?.status === "posed") return [part.pluginQuestion.snapshot.input.question];
+    if (part.pluginProblem || (part.type === "tool-problem" && part.state === "input-available")) return [(part.input as { statement?: string } | undefined)?.statement];
+    if (part.type === "tool-conclude" && part.state === "output-available") {
+      const input = part.input as { outcome?: string; verdict?: string; solutionReveal?: string } | undefined;
+      return [input?.verdict, typeof part.reveal === "string" ? part.reveal : input?.solutionReveal];
+    }
+    if (part.type === "data-practice-thinking") return [(part.data as { text?: string } | undefined)?.text];
+    if (part.state === "output-available") {
+      const answer = part.output as Partial<QuestionAnswerData> | undefined;
+      if (answer?.questionText) return [answer.questionText, answer.explanation, answer.committed];
+    }
+    return [];
+  }).filter((text): text is string => typeof text === "string" && text.length > 0);
 }
 
 type PartContext = { api: MobileApi; chatId: string; jobs: readonly JobRecord[]; liveHelpers: boolean; openPlan: () => void };
@@ -129,11 +151,14 @@ function Part({ part, context }: { part: LhViewPart; context: PartContext }) {
   return helper ? <DispatchCard kind={helper.kind} job={helper.job} /> : null;
 }
 
-export function Transcript({ settled, tail, api, chatId, jobs, liveHelpers, openPlan, files, unavailableFiles }: {
-  settled: LhViewMessage[]; tail: LhMessage[]; api: MobileApi; chatId: string;
+export function Transcript({ settled, from = 0, tail, api, chatId, jobs, liveHelpers, openPlan, files, unavailableFiles, onMessageLayout }: {
+  /** `from` is the first settled message shown: older ones are still being drawn. */
+  settled: LhViewMessage[]; from?: number; tail: LhMessage[]; api: MobileApi; chatId: string;
   jobs: readonly JobRecord[]; liveHelpers: boolean; openPlan: () => void;
   /** Saved user messages' uploaded files, by message ID. */
   files: ReadonlyMap<string, readonly AttachmentReference[]>; unavailableFiles: ReadonlySet<string>;
+  /** Spike instrumentation (SessionOpenSpike.tsx). */
+  onMessageLayout?: (id: string, event: LayoutChangeEvent) => void;
 }) {
   const { s } = useTheme();
   const live = useMemo(() => projectView(tail), [tail]);
@@ -141,9 +166,10 @@ export function Transcript({ settled, tail, api, chatId, jobs, liveHelpers, open
   const context = { api, chatId, jobs, liveHelpers, openPlan };
   return (
     <>
-      {settled.map((message) => {
-        if (isSubagentSteer(message)) return <SteerCard key={message.id} message={message} />;
-        if (message.parts.some(({ type }) => type === "data-probe-handoff")) return <SeamDivider key={message.id} label="Planning" />;
+      {settled.slice(from).map((message) => {
+        const layout = onMessageLayout && ((event: LayoutChangeEvent) => onMessageLayout(message.id, event));
+        if (isSubagentSteer(message)) return <View key={message.id} onLayout={layout}><SteerCard message={message} /></View>;
+        if (message.parts.some(({ type }) => type === "data-probe-handoff")) return <View key={message.id} onLayout={layout}><SeamDivider label="Planning" /></View>;
         const teachAt = seam?.messageId === message.id ? seam.stepIndex : null;
         const parts = message.parts.map((part, index) => index === teachAt && part.type === "step-start"
           ? <SeamDivider key={part.id ?? index} label="Teaching" />
@@ -151,11 +177,11 @@ export function Transcript({ settled, tail, api, chatId, jobs, liveHelpers, open
         // The learner's words sit in the web's band: card fill, left rail, YOU label.
         if (message.role === "user" && message.parts.some(({ type }) => type === "text")) {
           const attached = files.get(message.id);
-          return <View key={message.id} style={s.band}><Label>You</Label>{parts}
+          return <View key={message.id} onLayout={layout} style={s.band}><Label>You</Label>{parts}
             {attached && <View style={{ paddingVertical: space.xs }}><SavedChips files={attached} unavailable={unavailableFiles} /></View>}</View>;
         }
         return (
-          <View key={message.id} style={{ gap: space.sm }}>
+          <View key={message.id} onLayout={layout} style={{ gap: space.sm }}>
             {teachAt === -1 && <SeamDivider label="Teaching" />}
             {parts}
           </View>

@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { Platform, StyleSheet, Text, View, useWindowDimensions, type StyleProp, type TextStyle } from "react-native";
-import { SvgXml } from "react-native-svg";
+import { parse, SvgAst, type JsxAST } from "react-native-svg";
 import type { DrawnMath, LabelPiece } from "./choice-math";
 import { speechReady, startSpeech } from "./math-speech";
 import { useTheme } from "./theme";
 
 /** The web draws math with KaTeX at 1.21em; MathJax's TeX fonts share its metrics. */
-const MATH_SCALE = 1.21;
+export const MATH_SCALE = 1.21;
 /** Source Sans 3's ascent and descent (hhea 1024 and 400 per 1000), which the phone lays
  * prose lines out with. */
 const ASCENT = 1.024;
@@ -14,7 +14,7 @@ const DESCENT = 0.4;
 /** Row and screen padding beside a label, so inline math wider than this scales down. */
 const BESIDE_LABEL = 120;
 /** No equation is drawn taller than this many lines, so huge math never allocates a huge picture. */
-const MAX_LINES = 8;
+export const MAX_LINES = 8;
 
 /** Whether spoken math is ready. Starts the speech engine only when `enabled`
  * (a label with math is on screen); until then labels read their math as text. */
@@ -29,10 +29,10 @@ export function useSpeech(enabled: boolean): boolean {
   return ready;
 }
 
-type Size = { width: number; height: number; depth: number };
+export type Size = { width: number; height: number; depth: number };
 
 /** A drawn equation's size in unscaled points, scaled down to fit `maxWidth` and the line cap. */
-function fit(drawn: DrawnMath, em: number, maxWidth: number, maxHeight: number): Size {
+export function fit(drawn: DrawnMath, em: number, maxWidth: number, maxHeight: number): Size {
   const scale = Math.min(1, maxWidth / (drawn.width * em), maxHeight / (drawn.height * em));
   return { width: drawn.width * em * scale, height: drawn.height * em * scale, depth: drawn.depth * em * scale };
 }
@@ -56,7 +56,7 @@ function paragraphLine(sizes: Size[], fontSize: number, line: number): number {
  * scales large sp values less than small ones (Android 14's non-linear font scaling), so a
  * tall line height barely grows while the math grows by the full font scale. There it is
  * worked out at the scaled size and passed as is: Android never scales a size down. */
-function lineHeightFor(sizes: Size[], fontSize: number, line: number, fontScale: number): number {
+export function lineHeightFor(sizes: Size[], fontSize: number, line: number, fontScale: number): number {
   if (Platform.OS !== "android") return paragraphLine(sizes, fontSize, line);
   const scaled = sizes.map(({ width, height, depth }) => ({ width: width * fontScale, height: height * fontScale, depth: depth * fontScale }));
   return paragraphLine(scaled, fontSize * fontScale, line * fontScale);
@@ -104,7 +104,7 @@ export function MathLabel({ pieces, style, color }: { pieces: LabelPiece[]; styl
   );
 }
 
-function MathPicture({ svg, drawn, size, scale, color, inline }: {
+export function MathPicture({ svg, drawn, size, scale, color, inline }: {
   svg: string; drawn: DrawnMath; size: Size; scale: number; color: string; inline?: boolean;
 }) {
   const width = size.width * scale;
@@ -113,7 +113,7 @@ function MathPicture({ svg, drawn, size, scale, color, inline }: {
     // Block math scales down to fit the row instead of scrolling; the layout pass sizes it, not a re-measure.
     return (
       <View style={{ width, maxWidth: "100%", aspectRatio: drawn.width / drawn.height }}>
-        <SvgXml xml={svg} width="100%" height="100%" color={color} />
+        <Picture svg={svg} color={color} />
       </View>
     );
   }
@@ -122,8 +122,21 @@ function MathPicture({ svg, drawn, size, scale, color, inline }: {
   return (
     <View style={{ width, height: (size.height - size.depth) * scale }}>
       <View style={{ position: "absolute", top: 0, left: 0, width, height }}>
-        <SvgXml xml={svg} width="100%" height="100%" color={color} />
+        <Picture svg={svg} color={color} />
       </View>
     </View>
   );
+}
+
+/** Parsed pictures, so an equation shown many times is parsed once. */
+const parsedPictures = new Map<string, JsxAST | null>();
+
+function Picture({ svg, color }: { svg: string; color: string }) {
+  let ast = parsedPictures.get(svg);
+  if (ast === undefined) {
+    try { ast = parse(svg); } catch { ast = null; }
+    if (parsedPictures.size >= 1000) parsedPictures.delete(parsedPictures.keys().next().value as string);
+    parsedPictures.set(svg, ast);
+  }
+  return <SvgAst ast={ast} override={{ width: "100%", height: "100%", color }} />;
 }

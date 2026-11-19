@@ -1,7 +1,13 @@
 import { Fragment, memo, type ReactNode } from "react";
-import { Text, View } from "react-native";
+import { Text, View, useWindowDimensions } from "react-native";
+import { drawEquation, equationOf } from "./message-math";
+import { fit, lineHeightFor, MathPicture, MATH_SCALE, MAX_LINES, type Size } from "./MathLabel";
 import { httpsLink, type MarkdownToken } from "./render-markdown";
 import { fonts, radius, space, useTheme } from "./theme";
+
+/** Room beside a message's text (screen padding, cards, bands and list indents), so inline
+ * math wider than the rest scales down. */
+const BESIDE_TEXT = 120;
 
 interface Node {
   token: MarkdownToken;
@@ -28,19 +34,39 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
   openLink: (url: string) => void;
 }) {
   const { c, s } = useTheme();
+  const { width: windowWidth, fontScale } = useWindowDimensions();
   const heading = { h1: 25, h2: 20 } as Record<string, number>;
+  const maxWidth = Math.max(40, (windowWidth - BESIDE_TEXT) / fontScale);
+
+  /** Each inline equation's drawn size, for a line of text at `fontSize`. */
+  function mathSizes(nodes: Node[], fontSize: number, lineHeight: number, found = new Map<MarkdownToken, Size>()) {
+    for (const { token, children } of nodes) {
+      const equation = token.type === "math_inline" ? equationOf(token) : undefined;
+      const drawn = equation && drawEquation(equation);
+      if (drawn) found.set(token, fit(drawn, fontSize * MATH_SCALE, maxWidth, MAX_LINES * lineHeight));
+      mathSizes(children, fontSize, lineHeight, found);
+    }
+    return found;
+  }
+
+  /** A line of text whose line height leaves room for the inline math in it. */
+  function line(key: number, nodes: Node[], style: { fontSize: number; lineHeight: number }, extra?: object, role?: "header") {
+    const sizes = mathSizes(nodes, style.fontSize, style.lineHeight);
+    const lineHeight = sizes.size ? lineHeightFor([...sizes.values()], style.fontSize, style.lineHeight, fontScale) : style.lineHeight;
+    return <Text key={key} accessibilityRole={role} selectable style={[s.prose, style, extra, { lineHeight }]}>{inline(nodes, sizes)}</Text>;
+  }
 
   // Each weight and slant is its own font file, so nested emphasis picks the combined face.
-  function inline(nodes: Node[], bold = false, italic = false): ReactNode {
+  function inline(nodes: Node[], sizes: Map<MarkdownToken, Size>, bold = false, italic = false): ReactNode {
     const face = (b: boolean, i: boolean) => b ? (i ? fonts.proseBoldItalic : fonts.proseBold) : i ? fonts.proseItalic : fonts.prose;
     return nodes.map(({ token, children }, index) => {
       switch (token.type) {
         case "strong_open":
-          return <Text key={index} style={{ fontFamily: face(true, italic), color: c.strong }}>{inline(children, true, italic)}</Text>;
+          return <Text key={index} style={{ fontFamily: face(true, italic), color: c.strong }}>{inline(children, sizes, true, italic)}</Text>;
         case "em_open":
-          return <Text key={index} style={{ fontFamily: face(bold, true), color: c.italic }}>{inline(children, bold, true)}</Text>;
+          return <Text key={index} style={{ fontFamily: face(bold, true), color: c.italic }}>{inline(children, sizes, bold, true)}</Text>;
         case "s_open":
-          return <Text key={index} style={{ textDecorationLine: "line-through" }}>{inline(children, bold, italic)}</Text>;
+          return <Text key={index} style={{ textDecorationLine: "line-through" }}>{inline(children, sizes, bold, italic)}</Text>;
         case "code_inline":
           return <Text key={index} style={[s.well, { fontSize: 14 }]}>{token.content}</Text>;
         case "softbreak":
@@ -50,12 +76,17 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
           const href = httpsLink(token.attrGet("href"));
           return <Text key={index} accessibilityRole={href ? "link" : undefined}
             onPress={href ? () => openLink(href) : undefined}
-            style={href ? { color: c.text, textDecorationLine: "underline" } : undefined}>{inline(children, bold, italic)}</Text>;
+            style={href ? { color: c.text, textDecorationLine: "underline" } : undefined}>{inline(children, sizes, bold, italic)}</Text>;
         }
-        case "math_inline":
-          return token.markup === "$" ? `$${token.content}$` : `\\(${token.content}\\)`;
+        case "math_inline": {
+          const size = sizes.get(token);
+          const drawn = size && drawEquation(equationOf(token) as NonNullable<ReturnType<typeof equationOf>>);
+          // Math that can't be drawn shows its source.
+          if (!size || !drawn) return token.markup === "$" ? `$${token.content}$` : `\\(${token.content}\\)`;
+          return <MathPicture key={index} svg={drawn.svg[c.mode]} drawn={drawn} size={size} scale={fontScale} color={c.text} inline />;
+        }
         default:
-          return children.length > 0 ? inline(children, bold, italic) : token.content;
+          return children.length > 0 ? inline(children, sizes, bold, italic) : token.content;
       }
     });
   }
@@ -66,11 +97,10 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
         case "paragraph_open":
           return <Fragment key={index}>{blocks(children)}</Fragment>;
         case "inline":
-          return <Text key={index} selectable style={s.prose}>{inline(children)}</Text>;
+          return line(index, children, s.prose);
         case "heading_open": {
           const size = heading[token.tag] ?? 16;
-          return <Text key={index} accessibilityRole="header" selectable
-            style={[s.prose, { fontFamily: fonts.proseBlack, fontSize: size, lineHeight: Math.round(size * 1.3), marginTop: space.xs }]}>{inline(children)}</Text>;
+          return line(index, children, { fontSize: size, lineHeight: Math.round(size * 1.3) }, { fontFamily: fonts.proseBlack, marginTop: space.xs }, "header");
         }
         case "bullet_list_open":
         case "ordered_list_open": {
@@ -95,8 +125,8 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
           return <View key={index} style={{ flexDirection: "row", borderBottomWidth: 1, borderColor: c.border }}>{blocks(children)}</View>;
         case "th_open":
         case "td_open":
-          return <Text key={index} selectable style={[s.prose, { flex: 1, paddingHorizontal: space.sm, paddingVertical: space.xs, borderLeftWidth: 1, borderColor: c.border, marginLeft: -1 },
-            token.type === "th_open" && { fontFamily: fonts.proseBold }]}>{inline(children)}</Text>;
+          return line(index, children, s.prose, [{ flex: 1, paddingHorizontal: space.sm, paddingVertical: space.xs, borderLeftWidth: 1, borderColor: c.border, marginLeft: -1 },
+            token.type === "th_open" && { fontFamily: fonts.proseBold }]);
         case "hr":
           return <View key={index} style={s.divider} />;
         case "code_block":
@@ -106,8 +136,18 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
               <Text selectable style={[s.ui, { color: c.code }]}>{token.content.trimEnd()}</Text>
             </View>
           );
-        case "math_block":
-          return <Text key={index} selectable style={s.prose}>{token.content.trim()}</Text>;
+        case "math_block": {
+          const equation = equationOf(token);
+          const drawn = equation && drawEquation(equation);
+          if (!drawn) return <Text key={index} selectable style={s.prose}>{token.content.trim()}</Text>;
+          // Display math is centered as on the web, and scales down to fit the column instead of scrolling.
+          return (
+            <View key={index} style={{ alignItems: "center" }}>
+              <MathPicture svg={drawn.svg[c.mode]} drawn={drawn} size={fit(drawn, s.prose.fontSize * MATH_SCALE, Infinity, MAX_LINES * s.prose.lineHeight)}
+                scale={fontScale} color={c.text} />
+            </View>
+          );
+        }
         default:
           return <View key={index} style={{ gap: space.sm }}>{blocks(children)}</View>;
       }
