@@ -480,3 +480,12 @@ test("Claude Code explicit pins retain host availability gating without forwardi
 	await assert.rejects(f.adapter.inference.complete(request(pin)), /Claude Code is unavailable.*Settings/);
 	assert.equal(f.calls.length, 1, "unavailable CLI never dispatches or falls back to an API provider");
 });
+
+test("a model the catalog dropped is refused as model_unavailable before the provider key is checked", async (t) => {
+	const f = fixture(t);
+	f.removeKey();
+	const gone = createPluginInference({ signal: f.signal.signal, dataDirectory: f.directory }, { ...f.deps, modelGone: (provider, id) => provider === spec.provider && id === "retired" });
+	await assert.rejects(gone.engineFor({ provider: spec.provider, id: "retired" }, "background"), (error: Error & { code?: string }) =>
+		error.code === "model_unavailable" && error.message === `The model ${spec.provider}/retired is no longer available. Pick another model in Settings.`);
+	await assert.rejects(gone.engineFor(spec, "background"), /key/i, "a model that still exists keeps the key refusal");
+});

@@ -15,6 +15,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type ModelRole } from "../../config.ts";
 import { DEFAULT_THINKING_ORDER } from "../core/settings.ts";
 import { modelUnavailableMessage } from "../core/model-unavailable.ts";
+import { CLAUDE_CODE_PROVIDER } from "../core/contracts/claude-code.ts";
 import packageMetadata from "../../package.json" with { type: "json" };
 import { chatGPTModel } from "./chatgpt-bridge.ts";
 import { chatGPTStream } from "./chatgpt-stream.ts";
@@ -132,6 +133,17 @@ export class ModelUnavailableError extends Error {
 		super(modelUnavailableMessage(provider, id));
 		this.name = "ModelUnavailableError";
 	}
+}
+
+/** A saved model a built-in Pi catalog provider no longer lists. That
+ *  catalog does not depend on keys, so every gate checks this before the
+ *  provider key: a model that can't run never asks for a key. ChatGPT,
+ *  subscriptions, Claude Code and custom endpoints list models live and are
+ *  not judged here. */
+export function catalogModelGone(provider: string, id: string): boolean {
+	if (provider === "chatgpt" || provider === CLAUDE_CODE_PROVIDER || nativeSubscriptionId(provider) || providerSource?.isCustom(provider)) return false;
+	const models = piModels();
+	return models.getProviders().some((p) => p.id === provider) && !models.getModel(provider, id);
 }
 
 /** The production engine for a RESOLVED spec (model slots wave,

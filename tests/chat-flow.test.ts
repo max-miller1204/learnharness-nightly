@@ -1078,10 +1078,10 @@ describe("the key-presence turn gate (provider-key interlude, 2026-09-25)", () =
 		const saved = process.env.TOGETHER_API_KEY;
 		delete process.env.TOGETHER_API_KEY;
 		try {
-			// The chat's own model override pins the provider — the same
-			// chain the strong slot rides. The gate fires BEFORE the engine
-			// build, so the fake model id never hits the catalog.
-			chatStore.saveSettings(chat.id, { model: { provider: "together", id: "no-such-model" } });
+			// The chat's own model override pins the provider, the same
+			// chain the strong slot rides. A real catalog model: a dropped
+			// one is refused as model_unavailable before the key gate.
+			chatStore.saveSettings(chat.id, { model: { provider: "together", id: "deepseek-ai/DeepSeek-V4.1-Flash" } });
 			const res = await handleChatRequest(post(chat.id, { type: "text", text: "teach me something" }), agentFactory(scriptedTeacher(defaultLesson).engine));
 
 			assert.equal(res.status, 503, "the key-presence gate refuses before beginTurn");
@@ -1126,6 +1126,26 @@ describe("a saved model the catalog no longer has", () => {
 			else delete process.env.OPENCODE_API_KEY;
 		}
 	};
+
+	it("a removed model with no provider key is still model_unavailable, never a key request", async () => {
+		const chat = chatStore.createChat("Test: removed keyless model");
+		createdChats.push(chat.id);
+		const saved = process.env.OPENCODE_API_KEY;
+		delete process.env.OPENCODE_API_KEY;
+		try {
+			chatStore.saveSettings(chat.id, { model: { provider: "opencode-go", id: "minimax-m3.1-flash-free" } });
+			const res = await handleChatRequest(post(chat.id, { type: "text", text: "teach me something" }), agentFactory(scriptedTeacher(defaultLesson).engine));
+			assert.equal(res.status, 422);
+			assert.deepEqual(await res.json(), {
+				error: "The model opencode-go/minimax-m3.1-flash-free is no longer available. Pick another model in Settings.",
+				code: "model_unavailable",
+			});
+			assert.equal(isTurnRunning(chat.id), false);
+			assert.equal(chatStore.getChat(chat.id)!.messages.length, 0, "no write-ahead persist");
+		} finally {
+			if (saved !== undefined) process.env.OPENCODE_API_KEY = saved;
+		}
+	});
 
 	it("a removed model fails the turn with a message naming it, and never switches models", async () => withKey(async () => {
 		const chat = chatStore.createChat("Test: removed model");

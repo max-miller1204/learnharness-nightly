@@ -9,8 +9,8 @@ import {
 	type AgentBuildOptions,
 	type TeachingAgent,
 } from "../agent/teacher-agent.ts";
-import { ModelUnavailableError, piEngineForSpec, type PiEngine } from "../agent/models.ts";
-import { MODEL_UNAVAILABLE } from "../core/model-unavailable.ts";
+import { catalogModelGone, ModelUnavailableError, piEngineForSpec, type PiEngine } from "../agent/models.ts";
+import { MODEL_UNAVAILABLE, modelUnavailableMessage } from "../core/model-unavailable.ts";
 import { connectionBackgroundAllowed as subscriptionBackgroundAllowed, connectionScopeCurrent, isSubscriptionProvider } from "../agent/subscription-connections.ts";
 import { nativeSubscriptionError } from "../agent/subscription-stream.ts";
 import { chatGPTStreamError } from "../agent/chatgpt-stream.ts";
@@ -338,6 +338,12 @@ export async function handleChatInput(
 		if (input.type === "steers" && !connectionBackgroundAllowed(conversation.provider)) {
 			return Response.json({ error: "Background use is off for this connection. Automatic follow-up remains deferred in its queue." }, { status: 403 });
 		}
+	}
+	// A saved model the catalog dropped is refused first: never ask for a
+	// key for a model that can't run.
+	if (catalogModelGone(conversation.provider, conversation.id)) {
+		console.info(`[chat ${chatId}] turn refused: ${MODEL_UNAVAILABLE} ${conversation.provider}/${conversation.id}`);
+		return Response.json({ error: modelUnavailableMessage(conversation.provider, conversation.id), code: MODEL_UNAVAILABLE }, { status: 422 });
 	}
 	if (!providerKeyPresent(conversation.provider)) {
 		const envelope = providerKeyMissingEnvelope(conversation.provider, ["strong"]);

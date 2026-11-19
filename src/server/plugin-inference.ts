@@ -17,6 +17,8 @@ import { validatePluginInferenceOptions as optionsFor } from "../core/plugin-val
 export interface PluginInferenceDeps {
 	catalog(): ModelCatalogResponse | Promise<ModelCatalogResponse>;
 	providerKeyPresent(provider: string): boolean | Promise<boolean>;
+	/** Whether a built-in catalog no longer lists the model (checked before the key). */
+	modelGone?(provider: string, id: string): boolean;
 	engineForSpec(model: PluginModelSpec, background: boolean, lifecycle?: SubscriptionDispatchLifecycle): PiEngine | Promise<PiEngine>;
 }
 export interface PluginInferenceAdapter {
@@ -84,7 +86,7 @@ export function createPluginInference(
 		check(signal);
 		if (injected) return Promise.resolve(injected);
 		return defaults ??= Promise.all([import("./model-catalog.ts"), import("../agent/models.ts"), import("./keys.ts")]).then(([catalog, models, keys]) => ({
-			catalog: catalog.modelCatalog, providerKeyPresent: keys.providerKeyPresent, engineForSpec: models.piEngineForSpec,
+			catalog: catalog.modelCatalog, providerKeyPresent: keys.providerKeyPresent, modelGone: models.catalogModelGone, engineForSpec: models.piEngineForSpec,
 		}));
 	};
 	const catalog = async (caller = signal) => {
@@ -95,11 +97,14 @@ export function createPluginInference(
 		const deps = await bounded(dependencies(), caller);
 		const listing = await bounded(deps.catalog(), caller);
 		if (!listing.providers.some((p) => p.id === spec.provider)) throw new Error(`Unknown model provider: ${spec.provider}`);
+		const gone = () => Object.assign(new Error(modelUnavailableMessage(spec.provider, spec.id)), { code: MODEL_UNAVAILABLE });
+		// A model that can't run never asks for a key.
+		if (deps.modelGone?.(spec.provider, spec.id)) throw gone();
 		if (!await bounded(deps.providerKeyPresent(spec.provider), caller)) {
 			const missing = providerKeyMissing(spec.provider, []);
 			throw Object.assign(new Error(missing.error), missing);
 		}
-		if (!listing.models.some((m) => m.provider === spec.provider && m.id === spec.id)) throw Object.assign(new Error(modelUnavailableMessage(spec.provider, spec.id)), { code: MODEL_UNAVAILABLE });
+		if (!listing.models.some((m) => m.provider === spec.provider && m.id === spec.id)) throw gone();
 		check(caller);
 		return deps;
 	};
