@@ -90,6 +90,9 @@ jobs:
             exit 1
           fi
       - run: npm run lint
+      # Dead Markdown links and docs/ paths in any tracked file.
+      - name: Link check
+        run: node .github/scripts/link-check.cjs
       - name: CI script tests
         run: node --test .github/scripts/*.test.cjs
 

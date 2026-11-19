@@ -143,7 +143,7 @@ describe("desktop standalone payload", () => {
 			const result = run();
 			assert.equal(result.status, 0, String(result.stderr));
 			const authoring = path.join(root, STANDALONE, "plugin-authoring");
-			assert.equal(fs.existsSync(path.join(authoring, "docs/archive")), false);
+			assert.equal(fs.existsSync(path.join(authoring, "docs/archive")), false); // link-check-ignore: must stay absent
 			const files = [...AUTHORING_DOCS.map(file => `docs/${file}`), ...fs.readdirSync(path.join(authoring, "docs/plugin-api")).map(file => `docs/plugin-api/${file}`), "SKILL.md", "README.md"];
 			const headings = (text: string) => {
 				const seen = new Map<string, number>();

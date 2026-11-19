@@ -3,8 +3,7 @@
 /**
  * The home knowledge-graph view (W4).
  *
- * ARCHITECTURE (2026-09-13, decided after the research pass —
- * docs/research/graph-rendering.md, Option B): sigma.js is GONE. The
+ * ARCHITECTURE (2026-09-13, decided after the research pass, Option B): sigma.js is GONE. The
  * renderer is now a hand-rolled single Canvas 2D (./graph-canvas.ts) —
  * a DUMB DRAW FUNCTION over plain data with ONE requestAnimationFrame
  * loop and a dirty flag. Everything that made the sigma era fragile is

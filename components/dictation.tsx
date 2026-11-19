@@ -13,7 +13,7 @@ export { isDictationActive } from "@/components/dictation-state";
 /**
  * Voice dictation — the cloud engine (STT wave 1, 2026-09-17).
  *
- * Architecture (docs/research/stt.md): the renderer captures mic audio in
+ * Architecture: the renderer captures mic audio in
  * an AudioWorklet (public/worklets/pcm-capture.js → linear16 16kHz mono),
  * opens the Deepgram streaming WebSocket DIRECTLY (audio never loops
  * through our server) with a short-lived token minted by /api/stt/token

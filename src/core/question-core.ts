@@ -144,8 +144,7 @@ export function quizInputProblems(input: {
 }
 
 // The SHARED quiz authoring fields — everything except `nodeId`. The probe
-// and teach agents use DIFFERENT tools under the same name (docs/probe-teach-
-// split.md §1): the prober's quiz has NO nodeId field at all (there is no
+// and teach agents use DIFFERENT tools under the same name: the prober's quiz has NO nodeId field at all (there is no
 // map to position on), the teacher's adds it (the position signal — the
 // per-session tree validation runs in the tool's execute, tools.ts).
 // Grading rules are identical, single-sourced here. The cross-field
