@@ -168,8 +168,24 @@ async function phonePages(screen, mode, marker, { dock = false } = {}) {
 	}
 }
 
-/** Goal 4: each choice is one accessibility item that speaks its math. */
-function checkChoiceRows(screen, elements) {
+/** Goal 4: each choice is one accessibility item that speaks its math. The
+ * speech engine loads after the first render, so this waits up to 20 s for
+ * the rows to settle before it fails. */
+async function checkChoiceRows(screen, ready) {
+	const deadline = Date.now() + 20_000;
+	for (;;) {
+		const elements = await waitFor(screen, ready);
+		const { rows, problems } = rowProblems(elements);
+		if (!problems.length) {
+			log(`${screen}: ${rows.length} choice rows, one item each: ${rows.map((row) => JSON.stringify(label(row))).join(", ")}`);
+			return rows;
+		}
+		if (Date.now() > deadline) fail(screen, `quiz choice rows:\n  - ${problems.join("\n  - ")}`);
+		await sleep(1500);
+	}
+}
+
+function rowProblems(elements) {
 	const rows = elements.filter(isChoice);
 	const problems = [];
 	if (rows.length !== CHOICES.length) {
@@ -189,9 +205,7 @@ function checkChoiceRows(screen, elements) {
 		const matches = rows.filter((row) => choice.spoken.test(label(row)));
 		if (matches.length !== 1) problems.push(`choice ${JSON.stringify(choice.label)} matches ${matches.length} rows, expected exactly 1`);
 	}
-	if (problems.length) fail(screen, `quiz choice rows:\n  - ${problems.join("\n  - ")}`);
-	log(`${screen}: ${rows.length} choice rows, one item each: ${rows.map((row) => JSON.stringify(label(row))).join(", ")}`);
-	return rows;
+	return { rows, problems };
 }
 
 // ── the web app on the same server ───────────────────────────────────────────
@@ -361,12 +375,12 @@ async function phone() {
 	const waiting = (elements) => inSession(QUIZ.title)(elements) && elements.filter(isChoice).length > 0;
 	for (const { mode } of MODES) {
 		await setPhoneMode(mode);
-		checkChoiceRows("quiz-waiting", await waitFor("quiz-waiting", waiting));
+		await checkChoiceRows("quiz-waiting", waiting);
 		await phonePages("quiz-waiting", mode, waiting, { dock: true });
 	}
 
 	// Answer through the dock: pick the two math choices, then submit.
-	const rows = checkChoiceRows("quiz-waiting", await waitFor("quiz-waiting", waiting));
+	const rows = await checkChoiceRows("quiz-waiting", waiting);
 	for (const choice of CHOICES.filter((c) => c.answer)) {
 		await tap("quiz-waiting", (el) => isChoice(el) && choice.spoken.test(label(el)));
 	}
