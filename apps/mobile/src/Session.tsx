@@ -13,7 +13,8 @@ import { Transcript } from "./Transcript";
 import { Button, Label, Notice } from "./ui";
 import { fonts, radius, space, useTheme } from "./theme";
 import { revealOffset } from "./reveal";
-import { openSettle } from "./open-settle";
+import { followsBottom, openSettle } from "./open-settle";
+import { MathLoading } from "./Markdown";
 import { checkNeedsReveal, livePlan, PHASE_LABEL, sessionPhase, skipAnswer, skipParked } from "./lesson";
 import { PlanScreen } from "./PlanScreen";
 import { useJobs } from "./use-jobs";
@@ -53,9 +54,11 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const started = useRef(false);
   const scroller = useRef<ComponentRef<typeof ScrollView>>(null);
   const nearBottom = useRef(true);
+  const userScrolling = useRef(false);
   // On open the transcript stays hidden until its first layout settles at the bottom.
   const [opened, setOpened] = useState(false);
   const settling = useRef<ReturnType<typeof openSettle> | null>(null);
+  const settleStarted = useRef(false);
   const messages = record?.messages ?? EMPTY;
   const problem = activeProblemOf(messages);
   const question = pendingQuestionOf(messages);
@@ -86,17 +89,27 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const jobs = useJobs(api, id, active && lessonView, jobsRef, jobsSettled, connectionFault);
 
   const loaded = !!record;
-  useEffect(() => {
-    if (!loaded || opened) return;
-    const settler = openSettle(() => {
-      scroller.current?.scrollToEnd({ animated: false });
-      nearBottom.current = true;
-      setOpened(true);
-    });
-    settling.current = settler;
-    return () => { settler.cancel(); settling.current = null; };
-  }, [loaded, opened]);
   const hidden = loaded && !opened;
+  const mathLoading = useRef(0);
+  const trackMath = useCallback((delta: 1 | -1) => {
+    mathLoading.current += delta;
+    if (mathLoading.current === 0) settling.current?.changed();
+  }, []);
+  useEffect(() => () => settling.current?.cancel(), []);
+  // The settle starts at the transcript's first real layout, not when the
+  // record arrives: a long session can take longer to lay out than the quiet wait.
+  function laidOut() {
+    if (!settleStarted.current) {
+      settleStarted.current = true;
+      settling.current = openSettle(() => {
+        settling.current = null;
+        scroller.current?.scrollToEnd({ animated: false });
+        nearBottom.current = true;
+        setOpened(true);
+      }, { loading: () => mathLoading.current > 0 });
+    }
+    pin();
+  }
   // Content growth, or a shorter viewport when the question dock below grows,
   // keeps the transcript at the bottom while opening or already there.
   function pin() {
@@ -186,6 +199,7 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   // Browser handoff lives in the top bar's menu until the phone handles these flows itself.
   const close = () => setMenuOpen(false);
   return (
+    <MathLoading.Provider value={trackMath}>
     <View style={{ flex: 1 }}>
       <View style={[s.bar, { zIndex: 2 }]} onLayout={({ nativeEvent }) => setBarHeight(nativeEvent.layout.height)}>
         <Button variant="ghost" label="Sessions" onPress={back} style={{ width: 36, paddingHorizontal: 0 }}>
@@ -207,8 +221,11 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
       <ScrollView ref={scroller} style={{ flex: 1, opacity: hidden ? 0 : 1 }} contentContainerStyle={[s.section, { gap: space.lg }]}
         pointerEvents={hidden ? "none" : "auto"} accessibilityElementsHidden={hidden} importantForAccessibility={hidden ? "no-hide-descendants" : "auto"}
         keyboardShouldPersistTaps="handled" scrollEventThrottle={100} onLayout={pin} onContentSizeChange={pin}
+        onScrollBeginDrag={() => { userScrolling.current = true; }} onScrollEndDrag={() => { userScrolling.current = false; }}
+        onMomentumScrollBegin={() => { userScrolling.current = true; }} onMomentumScrollEnd={() => { userScrolling.current = false; }}
         onScroll={({ nativeEvent: { contentOffset, layoutMeasurement, contentSize } }) => {
-          if (!settling.current) nearBottom.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 100;
+          if (settling.current) return;
+          nearBottom.current = followsBottom(nearBottom.current, contentSize.height - contentOffset.y - layoutMeasurement.height, userScrolling.current);
         }}>
         {session.loading && <Text style={s.muted}>Loading session…</Text>}
         <Transcript settled={settledView} tail={session.tail} api={api} chatId={id} jobs={jobs} liveHelpers={lessonView} openPlan={() => setPlanOpen(true)} />
@@ -228,6 +245,9 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
         )}
         {record && pendingPlugin && <Text style={s.muted}>Use the browser to complete this interaction. Open it from the … menu above.</Text>}
         <Notice>{browserError}</Notice>
+        {/* Pinned to the content's bottom edge, so it moves whenever anything above it grows:
+            the open settle's layout signal. Absolute, so it adds no gap. */}
+        {loaded && <View pointerEvents="none" onLayout={laidOut} style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 0 }} />}
       </ScrollView>
       {question && !pendingPlugin && (
         <View style={{ paddingHorizontal: space.md, paddingBottom: space.md, maxHeight: "55%" }}>
@@ -291,5 +311,6 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
         </View>
       )}
     </View>
+    </MathLoading.Provider>
   );
 }
