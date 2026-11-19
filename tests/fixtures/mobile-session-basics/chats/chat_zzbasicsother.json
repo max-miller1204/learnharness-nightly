@@ -1,0 +1,44 @@
+{
+	"id": "chat_zzbasicsother",
+	"title": "Squares kept elsewhere",
+	"createdAt": "2026-11-19T10:10:00.000Z",
+	"updatedAt": "2026-11-19T10:12:00.000Z",
+	"messages": [
+		{
+			"role": "user",
+			"content": "Teach me squares",
+			"id": "u_zzbasicsother",
+			"timestamp": 1795083000000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "zz-prove-it: two squared is four."
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 100,
+				"output": 40,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 140,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "stop",
+			"id": "a_zzbasicsother",
+			"timestamp": 1795083060000
+		}
+	],
+	"version": 2
+}

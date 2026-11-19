@@ -2,7 +2,7 @@
 
 /**
  * The hand-rolled single-canvas graph renderer (decided 2026-09-13 after
- * the research pass — docs/research/graph-rendering.md, Option B).
+ * the research pass, Option B).
  *
  * Replaces sigma.js. Why: sigma gave us WebGL node/edge rendering,
  * picking, and a camera, but our cluster regions had to live on foreign

@@ -1,6 +1,6 @@
 # PR previews
 
-Status: approved by the owner on 2026-11-17. Roadmap item 12 ([fork-roadmap.md](../fork-roadmap.md#12-preview-builds-of-prs)).
+Status: approved by the owner on 2026-11-17. Roadmap item 12.
 
 Goal: try a PR on your own server before merging it, without touching your real install, its data or its updates.
 

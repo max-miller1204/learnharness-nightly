@@ -1,0 +1,44 @@
+{
+	"id": "chat_zzbasicsdelete",
+	"title": "Square roots to delete",
+	"createdAt": "2026-11-19T10:00:00.000Z",
+	"updatedAt": "2026-11-19T10:02:00.000Z",
+	"messages": [
+		{
+			"role": "user",
+			"content": "Teach me square roots",
+			"id": "u_zzbasicsdelete",
+			"timestamp": 1795082400000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "zz-prove-it: the positive square root of 4 is 2, because 2 squared is 4."
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 100,
+				"output": 40,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 140,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "stop",
+			"id": "a_zzbasicsdelete",
+			"timestamp": 1795082460000
+		}
+	],
+	"version": 2
+}

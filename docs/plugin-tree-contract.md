@@ -1,6 +1,6 @@
 # Shared tree presentation — plugin API v1
 
-Current API v1 contract. Exact public types are in `src/core/plugin-tree.ts`, with
+API v1 contract. Exact public types are in `src/core/plugin-tree.ts`, with
 `mountTree` in `src/core/plugin-ui.ts`. Use documentation and type-only SDK declarations
 matching the target app, not private runtime imports.
 

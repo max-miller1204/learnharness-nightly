@@ -14,7 +14,7 @@ import { annotationPlacementProblem } from "./annotation-svg.ts";
 import { getHeadless, type HeadlessApi } from "./headless.ts";
 
 /**
- * The visual-maker sub-agent (vision §2.5): authors ONE precise SVG from a
+ * The visual-maker sub-agent: authors ONE precise SVG from a
  * brief, renders it to a PNG with the same rasterizer the transcript
  * will use, LOOKS at the
  * result, and iterates until correct — a direct port of the vault POC's

@@ -10,7 +10,7 @@ building or exercising it: plugins are trusted local code, not sandboxed extensi
 | Start here | Role | What to learn |
 | --- | --- | --- |
 | [Hello plugin](../examples/plugins/hello-plugin/README.md) | Minimal starter; no build | Frontend activation, a view, explicit action placements, a host button/dialog and per-mount cleanup |
-| [UI Showcase](../plugins/ui-showcase/README.md) | Runnable Community developer gallery | All 15 public UI methods, controlled values, family-local Reset and overlay ownership |
+| [UI Showcase](../plugins/ui-showcase/README.md) | Runnable Community developer gallery | All public UI methods, controlled values, family-local Reset and overlay ownership |
 | [Flashcards](../plugins/flashcards/README.md) | Core source reference | A complete feature: knowledge/document input, durable worker outcomes, plugin-owned storage, tree, review surfaces and settings |
 | [Coding questions](../plugins/coding-questions/README.md) | Core source reference | Teaching questions and repeated practice submissions, controlled editors, processing observations and saved-result rendering |
 | [Drawing Pad](../plugins/drawing-pad/README.md) | Core source reference | Session-context actions, shortcuts, surfaces, learner-submission image attachment and acknowledgment-aware draft consumption |
@@ -24,7 +24,7 @@ of replacing these primary examples.
 
 ## Core references are not Community packages
 
-The four IDs **`flashcards`**, **`coding-questions`**, **`drawing-pad`** and
+The IDs **`flashcards`**, **`coding-questions`**, **`drawing-pad`** and
 **`rich-code-blocks`** are reserved for app-shipped Core plugins, even when a Core
 package is disabled, broken or missing. Their sources are included for study and
 adaptation, not installation as Community duplicates. Enable the app-supplied features
@@ -108,7 +108,7 @@ and copies required assets/notices. Build cleanup refuses symlinked `dist/` and
 misplaced `dist/data/` and preserves sibling `data/`. It does not start/build the host,
 install/enable a plugin, call a model or update Core code. For a newly identified
 Community fork or UI Showcase, follow the [Community installation guide](plugin-authoring.md#package-and-installation);
-do not install the four reserved-ID references.
+do not install the reserved-ID references.
 
 ## Reading routes
 
@@ -227,10 +227,10 @@ transparent appearance and the distinction between static drawing and simulation
 Rendering makes no model request. TeX Worker bounds and SVG sanitization are local
 feature safeguards, not a sandbox for arbitrary plugin JavaScript.
 
-### UI Showcase: all 15 UI methods
+### UI Showcase: all UI methods
 
 The [README gallery map](../plugins/ui-showcase/README.md#gallery-map) groups all methods
-into 12 families. Start in [`src/gallery.ts`](../plugins/ui-showcase/src/gallery.ts):
+into families. Start in [`src/gallery.ts`](../plugins/ui-showcase/src/gallery.ts):
 
 | Area | Methods |
 | --- | --- |

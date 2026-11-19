@@ -18,19 +18,17 @@ Upstream often lands a reworked version of a PR you already merged here, so conf
 
 ## CI and the `Check` gate
 
-`.github/workflows/ci.yml` runs on every PR and every push to `main` (design: [specs/ci-foundation.md](specs/ci-foundation.md)). A first `Changes` job reads the PR's diff and skips jobs it can't affect: a docs-only PR runs only lint, and a tests-only PR skips the three standalone builds. Pushes to `main` always run everything. The last job, **`Check`**, passes only when every other job passed or was skipped for that reason.
+`.github/workflows/ci.yml` runs on every PR and every push to `main` (design: [specs/ci-foundation.md](specs/ci-foundation.md)). A first `Changes` job reads the PR's diff and skips jobs it can't affect: a docs-only PR runs only lint, and a tests-only PR skips the standalone builds. Pushes to `main` always run everything. The last job, **`Check`**, passes only when every other job passed or was skipped for that reason.
 
-`main` requires `Check`: a PR merges only when its `Check` is green, and **direct pushes to `main` must now pass `Check` too.** Push to a branch and open a PR instead. A new push to a PR cancels its older CI run.
+`main` requires `Check`: a PR merges only when its `Check` is green, and **direct pushes to `main` must pass `Check` too.** Push to a branch and open a PR instead. A new push to a PR cancels its older CI run.
 
 Repository admins can bypass the required `Check` (GitHub's default; the rule doesn't enforce it for admins).
 
-When GitHub cancels a job because no hosted runner picked it up (the macOS arm64 queue under capacity constraints), `.github/workflows/ci-runner-retry.yml` re-runs the run's failed jobs and `Check` on its own, at most 3 times per run (whether it chains past the first re-run is unproven until a real case; see the spec). Real failures and cancels by a newer push or a person are left alone (design: [specs/ci-runner-retry.md](specs/ci-runner-retry.md)).
+When GitHub cancels a job because no hosted runner picked it up (the macOS arm64 queue under capacity constraints), `.github/workflows/ci-runner-retry.yml` re-runs the run's failed jobs and `Check` on its own, at most 3 times per run. Real failures and cancels by a newer push or a person are left alone (design: [specs/ci-runner-retry.md](specs/ci-runner-retry.md)).
 
 The nightly starts only after CI passes on a push to `main`, and builds that exact commit.
 
 `.github/workflows/pr-agent.yml` runs [PR-Agent](https://github.com/The-PR-Agent/pr-agent) on every PR: an AI review and code suggestions as comments, on open and on each push. It's advisory and never blocks a merge. People with write access can also comment `/review`, `/improve`, `/describe` or `/ask ...` on a PR. It uses the `OPENROUTER_API_KEY` secret and the model in the `OPENROUTER_MODEL` repository variable (a bare OpenRouter ID such as `anthropic/claude-haiku-5.5`, which is also the default when the variable is unset). It runs with low reasoning effort.
-
-PR-Agent is turned off for now (disabled in GitHub Actions). It stays off until the approved [PR-Agent through LiteLLM](specs/pr-agent-litellm.md) spec is built, which replaces this setup.
 
 ## PR previews
 
@@ -59,7 +57,7 @@ Apart from that link, importing pings no one upstream: the author is written as 
 
 ## Picking upstream issues
 
-Upstream issues aren't mirrored on their own any more: you pick the ones worth working on (design: [specs/upstream-handpicked.md](specs/upstream-handpicked.md), first version [specs/upstream-issue-mirror.md](specs/upstream-issue-mirror.md)). Run **Actions → Mirror upstream issues** with the upstream issue number, and it copies that issue into the fork **once**:
+Upstream issues aren't mirrored on their own: you pick the ones worth working on (design: [specs/upstream-handpicked.md](specs/upstream-handpicked.md), first version [specs/upstream-issue-mirror.md](specs/upstream-issue-mirror.md)). Run **Actions → Mirror upstream issues** with the upstream issue number, and it copies that issue into the fork **once**:
 
 - A mirror is a fork issue "[upstream issue N] <title>" labeled `upstream`, plus upstream's own labels that exist here. Its body links the upstream issue by URL (a "mentioned this" entry upstream), credits the author and quotes the original issue and the comments it had at copy time. Later upstream edits and comments aren't copied.
 - A daily run (06:47 UTC) creates nothing. It keeps `upstream-closed` on each mirror while its upstream issue is closed, and removes it if upstream reopens it. The job never opens or closes fork issues.
@@ -90,7 +88,7 @@ To create it (once, as the repository owner):
    gh secret set FORK_BOT_PRIVATE_KEY --env fork-bot -R max-miller1204/learnharness-nightly < path/to/key.pem
    ```
 
-**The key is main-only.** `fork-bot` is an environment whose deployment branch rule allows `main` only (Settings → Environments; design: [specs/simplify-upstream-intake.md](specs/simplify-upstream-intake.md)). The four jobs that mint the token (upstream sync, import, issue mirror, Dependabot auto-merge) use it with `deployment: false`, so they leave no deployment records. Any other branch's workflows can't read the key, including upstream branches the bot pushes. So these workflows can't be test-run from a branch: dispatched from one, the job is refused the environment. Never store the App values as repository secrets again; every branch can read those.
+**The key is main-only.** `fork-bot` is an environment whose deployment branch rule allows `main` only (Settings → Environments; design: [specs/simplify-upstream-intake.md](specs/simplify-upstream-intake.md)). The jobs that mint the token (upstream sync, import, issue mirror, Dependabot auto-merge) use it with `deployment: false`, so they leave no deployment records. Any other branch's workflows can't read the key, including upstream branches the bot pushes. So these workflows can't be test-run from a branch: dispatched from one, the job is refused the environment. Never store the App values as repository secrets again; every branch can read those.
 
 The workflows fail with a clear message when either secret is missing. To replace a lost or leaked key, generate a new one on the App's page, store it the same way and delete the old key there. A future workflow that needs more access gets it by adding the permission on the App's page and approving the change on the installation.
 
@@ -99,7 +97,7 @@ The workflows fail with a clear message when either secret is missing. To replac
 Dependabot keeps npm (the root and every `plugins/*` package) and GitHub Actions current (design: [specs/dependency-updates.md](specs/dependency-updates.md); config: `.github/dependabot.yml`). Every Monday it opens:
 
 - **One minor/patch PR per ecosystem** with everything that has a minor or patch update (`npm-minor-patch`, `actions-minor-patch`).
-- **One PR per major**, across all directories (`npm-major`, `actions-major`). The first weeks' backlog trickles in five open PRs at a time.
+- **One PR per major**, across all directories (`npm-major`, `actions-major`). A backlog trickles in five open PRs at a time.
 - **A `pi` PR** (npm only) for `@earendil-works/*` (Pi) and `typebox`, kept out of the minor/patch batch.
 
 Security fixes don't wait for Monday. They arrive as one grouped PR per ecosystem as soon as an advisory needs one.
@@ -108,15 +106,15 @@ Security fixes don't wait for Monday. They arrive as one grouped PR per ecosyste
 |---|---|
 | Minor/patch batch, or a security PR whose biggest change is minor or patch | Auto-merges (squash) when `Check` is green. `.github/workflows/dependabot-auto-merge.yml` (on `pull_request_target`, so it always runs `main`'s copy) queues it with the fork bot App token, so the merge runs CI and the nightly on `main`. |
 | A major, or a security PR that needs a major | Waits for an agent: one review round and a `prove-learnharness` run, then `gh pr merge <N> --auto --squash`. |
-| `pi`, or any PR touching Pi or typebox | Arrives red by design. The four SDK plugins' lockfiles pin Pi and typebox through their generated `.sdk/package.json`. An agent runs `npm install` at the root, then `npm run sdk && npm install` in each SDK plugin, adapts code to Pi's changes, pushes to the Dependabot branch, and then treats it like a major. |
+| `pi`, or any PR touching Pi or typebox | Arrives red by design. The SDK plugins' lockfiles pin Pi and typebox through their generated `.sdk/package.json`. An agent runs `npm install` at the root, then `npm run sdk && npm install` in each SDK plugin, adapts code to Pi's changes, pushes to the Dependabot branch, and then treats it like a major. |
 
-Dependabot reads the SDK plugins through their committed `.sdk/package.json` (only that file is committed; the rest of `.sdk/` stays generated). `Lint` fails when one is missing or differs from what `npm run sdk` writes. This is interim until the plugin API is a versioned package.
+Dependabot reads the SDK plugins through their committed `.sdk/package.json` (only that file is committed; the rest of `.sdk/` stays generated). `Lint` fails when one is missing or differs from what `npm run sdk` writes.
 
-Dependabot rebases its own PRs when `main` moves, including after a Sync PR merge, unless someone else has pushed to the branch. In that case comment `@dependabot recreate`. If the Sync PR conflicts in `package-lock.json` after a Dependabot merge, keep upstream's `package.json` intent and regenerate the lockfile with `npm install` instead of merging it by hand. An upstream Pi or typebox bump also needs the four `.sdk/package.json` files and the plugin lockfiles regenerated in the Sync PR.
+Dependabot rebases its own PRs when `main` moves, including after a Sync PR merge, unless someone else has pushed to the branch. In that case comment `@dependabot recreate`. If the Sync PR conflicts in `package-lock.json` after a Dependabot merge, keep upstream's `package.json` intent and regenerate the lockfile with `npm install` instead of merging it by hand. An upstream Pi or typebox bump also needs the `.sdk/package.json` files and the plugin lockfiles regenerated in the Sync PR.
 
 **Security overrides.** When an alert's patched version is outside what the parent package allows, an `overrides` entry in the root `package.json` forces it (the older `"katex": "$katex"` entry is not one of these). Each stays only until its removal condition holds:
 
-- `"minimatch@>=7.0.0 <11.0.1": "^11.0.1"`: alert GHSA-g3hv-75wg-m249 (globParts DoS, fixed only in 11.0.1). electron-builder's `app-builder-lib` allows minimatch `^10.2.5` and its `@electron/universal` `^9.0.3`. The version selector applies where a dependent's declared minimatch range intersects the vulnerable range, so today only those two move to 11. The 3.x and 5.x copies (eslint, `@eslint/config-array`, `@eslint/eslintrc`, eslint-plugin-import, glob 7, `@electron/asar`, dir-compare, filelist) aren't vulnerable and stay as they are. A future dependency declaring a wide range such as `*` would also be forced to 11. Dev and build only: nothing ships in the app, server or asar. Remove it once electron-builder's tree allows minimatch 11 (without it, `npm ls minimatch` shows no copy in `>=7.0.0 <11.0.1`).
+- `"minimatch@>=7.0.0 <11.0.1": "^11.0.1"`: alert GHSA-g3hv-75wg-m249 (globParts DoS, fixed only in 11.0.1). electron-builder's `app-builder-lib` allows minimatch `^10.2.5` and its `@electron/universal` `^9.0.3`. The version selector applies where a dependent's declared minimatch range intersects the vulnerable range, so only those two move to 11. The 3.x and 5.x copies (eslint, `@eslint/config-array`, `@eslint/eslintrc`, eslint-plugin-import, glob 7, `@electron/asar`, dir-compare, filelist) aren't vulnerable and stay as they are. A future dependency declaring a wide range such as `*` would also be forced to 11. Dev and build only: nothing ships in the app, server or asar. Remove it once electron-builder's tree allows minimatch 11 (without it, `npm ls minimatch` shows no copy in `>=7.0.0 <11.0.1`).
 
 Dependabot can't update the `docker://` PR-Agent image in `pr-agent.yml`; bump it by hand when wanted. PR-Agent skips Dependabot PRs.
 

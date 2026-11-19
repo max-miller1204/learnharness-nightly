@@ -38,7 +38,7 @@ The release workflow also checks providers from the **packaged** payload under h
 
 The nightly desktop workflow also runs `node scripts/smoke-server.mjs --standalone <payload> --runtime <app binary>` on the packaged app. It boots that server with the app's own executable, blocks imports from outside the payload and requires signed-in `/` and `/chat/new` to return 2xx. On Windows it first installs the NSIS package silently and smokes the installed copy, because the installer turns Next's linked packages into plain copies.
 
-`smoke-image-runtime.mjs` separately checks synthetic Photon in-process/worker resizing in standalone output. It accepts `--standalone <dir>` and `--runtime <binary>`; it is **not currently invoked by CI/release workflows**.
+`smoke-image-runtime.mjs` separately checks synthetic Photon in-process/worker resizing in standalone output. It accepts `--standalone <dir>` and `--runtime <binary>`.
 
 ### Local packages
 
@@ -62,7 +62,7 @@ For this fork, use the [nightly release workflow and artifact-only rehearsal](sp
 [Desktop release](../.github/workflows/release.yml) has two modes:
 
 - **Manual dispatch:** unsigned rehearsal installers retained as workflow artifacts for seven days. No signing secrets, release creation, or publication. macOS notarization is skipped; these are not production installers.
-- **Matching `v<package.json version>` tag:** gates, one shared draft-preparation job, three OS packaging/upload jobs, then read-only draft verification. Published/ambiguous existing releases fail preparation; same-ref runs serialize rather than cancelling uploads. macOS must sign/notarize. **The workflow never publishes the draft.**
+- **Matching `v<package.json version>` tag:** gates, one shared draft-preparation job, per-OS packaging/upload jobs, then read-only draft verification. Published/ambiguous existing releases fail preparation; same-ref runs serialize rather than cancelling uploads. macOS must sign/notarize. **The workflow never publishes the draft.**
 
 ### Draft verification
 
@@ -101,7 +101,7 @@ The workflow maps the certificate to `CSC_LINK`/`CSC_KEY_PASSWORD`; signing cred
 
 1. Agree scope/version and complete relevant gates and human functional acceptance. Use manual dispatch if rehearsal installers are useful; unsigned rehearsal does not prove macOS signing.
 2. Update package/lockfile versions, check the intended source on main, and push the authorized matching tag. Verify signing secrets before production macOS packaging.
-3. Wait for **all OS jobs and Verify draft release**. Inspect the single draft's tag, notes, 11 assets, and feeds. Diagnose failures before retrying. Re-upload replaces same-named assets; stale extras still fail. Deleting assets/releases is a mutation, not verification.
+3. Wait for **all OS jobs and Verify draft release**. Inspect the single draft's tag, notes, assets, and feeds. Diagnose failures before retrying. Re-upload replaces same-named assets; stale extras still fail. Deleting assets/releases is a mutation, not verification.
 4. If editing draft metadata, include canonical **`tag_name: "v<version>"` in every metadata PATCH**, even for title/body changes; omission has reset tags before. Re-read tag, draft status, and assets afterward. A tag correction does not authorize deleting/recreating a release.
 5. The owner checks the packaged build as needed and explicitly publishes the complete draft. Confirm public installers/feeds and website links; use a prior installed version for real update-path checks.
 

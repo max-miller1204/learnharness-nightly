@@ -13,7 +13,7 @@ import { NextRequest } from "next/server";
 import ts from "typescript";
 import { proxy } from "../proxy.ts";
 import { mintToken } from "./helpers/auth-data-dir.ts";
-import { CLIENT_PROTOCOL_VERSION, hasCapability, LESSON_VIEW_ROUTES, PROTOCOL_HEADER, PROTOCOL_ROUTES, protocolMismatch, SERVER_INFO_PATH } from "../src/client-protocol/index.ts";
+import { CLIENT_PROTOCOL_VERSION, hasCapability, LESSON_VIEW_ROUTES, PROTOCOL_HEADER, PROTOCOL_ROUTES, protocolMismatch, SERVER_INFO_PATH, SESSION_BASICS_ROUTES } from "../src/client-protocol/index.ts";
 import { serverInfo } from "../src/server/server-info.ts";
 import { GET as serverInfoRoute } from "../app/.well-known/learnharness/server/route.ts";
 
@@ -34,13 +34,14 @@ import { GET as serverInfoRoute } from "../app/.well-known/learnharness/server/r
 const RECORDED = {
 	protocolVersion: 1,
 	fingerprint: {
-		"src/client-protocol/index.ts": "776654debdeb8a50",
+		"src/client-protocol/index.ts": "83c9e95bc738019a",
 		"src/core/attachments.ts": "a2fda90879239dc8",
 		"src/core/contracts/chat.ts": "937c52917f863b25",
 		"src/core/contracts/graph.ts": "b84d4803bd0c4acc",
 		"src/core/contracts/jobs.ts": "d5a740982ab0196d",
 		"src/core/contracts/plan.ts": "feebc7e5e0e6e8cf",
 		"src/core/events.ts": "9024567ad9c36c27",
+		"src/core/graph-deletion.ts": "59de10b1c230d10a",
 		"src/core/input-events.ts": "bfc9d2408879952e",
 		"src/core/native-messages.ts": "7f195795c9eda09e",
 		"src/core/phases.ts": "c8f5be717bf1ff30",
@@ -141,7 +142,7 @@ describe("server info", () => {
 		assert.equal(info.version, "0.6.1-nightly.1");
 		assert.equal(info.protocolVersion, 1);
 		assert.ok(info.name.length > 0);
-		assert.deepEqual(info.capabilities, ["attachment-uploads-v1", "attachment-folders-v1", "practice-controls-v1", "browser-handoff-v1", "lesson-view-v1"]);
+		assert.deepEqual(info.capabilities, ["attachment-uploads-v1", "attachment-folders-v1", "practice-controls-v1", "browser-handoff-v1", "lesson-view-v1", "session-basics-v1"]);
 		assert.deepEqual(info.auth, {
 			required: true,
 			bootstrapMethods: ["one-time-token"],
@@ -205,6 +206,22 @@ describe("version check in proxy.ts", () => {
 		}
 	});
 
+	it("lets a paired phone rename, delete and export, with or without a foreign Origin", () => {
+		const token = mintToken();
+		for (const [path, method] of [
+			[SESSION_BASICS_ROUTES.rename("chat_123"), "PUT"],
+			[SESSION_BASICS_ROUTES.remove("chat_123", "preserve-graph"), "DELETE"],
+			[SESSION_BASICS_ROUTES.remove("chat_123", "delete-nodes"), "DELETE"],
+			[SESSION_BASICS_ROUTES.markdown("chat_123"), "GET"],
+		] as const) {
+			const request = (headers: Record<string, string>) => new NextRequest(origin + path, { method, headers });
+			assert.equal(proxy(request({ [PROTOCOL_HEADER]: "1" })).status, 401);
+			assert.equal(proxy(request({ [PROTOCOL_HEADER]: "2" })).status, 426);
+			assert(passes(proxy(request({ [PROTOCOL_HEADER]: "1", authorization: `Bearer ${token}` }))), `${method} ${path}`);
+			assert(passes(proxy(request({ [PROTOCOL_HEADER]: "1", authorization: `Bearer ${token}`, origin: "https://elsewhere.example" }))), `${method} ${path} with Origin`);
+		}
+	});
+
 	it("reads the query version only on the protocol streams, with the header taking precedence", () => {
 		assert(passes(proxy(new NextRequest(`${origin}/api/health?protocol=2`))));
 		assert.equal(proxy(new NextRequest(`${origin}/api/chats?protocol=2`)).status, 401);
@@ -243,6 +260,9 @@ describe("client helpers", () => {
 		assert.equal(LESSON_VIEW_ROUTES.jobs("a b&c"), "/api/jobs?chatId=a%20b%26c");
 		assert.equal(LESSON_VIEW_ROUTES.dismiss("c1"), "/api/chats/c1/dismiss");
 		assert.equal(PROTOCOL_ROUTES.chat("a b"), "/api/chats/a%20b");
+		assert.equal(SESSION_BASICS_ROUTES.rename("a b"), "/api/chats/a%20b");
+		assert.equal(SESSION_BASICS_ROUTES.remove("a b", "delete-nodes"), "/api/chats/a%20b?mode=delete-nodes");
+		assert.equal(SESSION_BASICS_ROUTES.markdown("a/b"), "/api/chats/a%2Fb/markdown");
 		assert.equal(PROTOCOL_ROUTES.turnStream("c1"), "/api/chats/c1/stream");
 		assert.equal(PROTOCOL_ROUTES.image("c1", "f".repeat(64)), `/api/chats/c1/images/${"f".repeat(64)}`);
 	});

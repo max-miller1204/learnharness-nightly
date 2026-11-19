@@ -1,7 +1,7 @@
 # Themes
 
 **Settings → Appearance → Theme** sets the app's UI palette.
-LearnHarness ships eleven presets: Default (the original dark palette), Catppuccin
+LearnHarness ships these presets: Default (the original dark palette), Catppuccin
 Latte, Frappé, Macchiato and Mocha, Rosé Pine and Rosé Pine Dawn, Gruvbox Dark, Ivory, Pastel, and NvChad Onedark.
 Each theme declares whether it is dark or light. The native window background
 follows the effective background, including your override; native control symbols
@@ -48,7 +48,7 @@ shape:
 }
 ```
 
-All twelve colors are required, as `#rgb` or `#rrggbb` hex. `mode` is `"dark"` or
+Every color is required, as `#rgb` or `#rrggbb` hex. `mode` is `"dark"` or
 `"light"`. A file with a missing or invalid key is refused, and the error names
 the key.
 

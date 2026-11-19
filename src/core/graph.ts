@@ -1,6 +1,6 @@
 /**
  * The knowledge graph: merger (the deterministic final stage of the
- * extraction pipeline — vision §1 construction) + derivation (reads).
+ * extraction pipeline) + derivation (reads).
  *
  * The extraction pipeline is the SOLE graph writer, tree-blind and post-hoc
  * (2026-09-27 cleanup — clear separation of work):

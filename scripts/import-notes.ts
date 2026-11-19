@@ -1,6 +1,6 @@
 /**
- * Import raw notes files through the format-agnostic front door (vision §1,
- * 2026-09-13) — every *.md / *.txt file in a directory becomes one
+ * Import raw notes files through the format-agnostic front door
+ * (2026-09-13): every *.md / *.txt file in a directory becomes one
  * extraction run (extractor → auditor → merger) over its raw text. Run
  * from this worktree only — data never crosses trees:
  *
