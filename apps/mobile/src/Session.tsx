@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject, type ComponentRef } from "react";
-import { Alert, Keyboard, Linking, Pressable, ScrollView, Text, TextInput, View, type NativeScrollEvent } from "react-native";
+import { Alert, FlatList, Keyboard, Linking, Pressable, ScrollView, Text, TextInput, View, type NativeScrollEvent } from "react-native";
 import {
   BROWSER_HANDOFF_ROUTES, BROWSER_HANDOFF_V1, LESSON_VIEW_V1, PRACTICE_CONTROLS_V1, hasCapability,
   type LhMessage, type PairingTokenResponse, type ServerInfo,
@@ -9,12 +9,11 @@ import { projectView } from "../../../src/core/view.ts";
 import { browserDestination, type MobileApi } from "./protocol";
 import { errorText, useSession } from "./use-session";
 import { BuiltinQuestion } from "./BuiltinQuestion";
-import { Transcript } from "./Transcript";
+import { useTranscriptItems, type TranscriptItem } from "./Transcript";
 import { Button, Label, Notice } from "./ui";
 import { fonts, radius, space, useTheme } from "./theme";
 import { revealOffset } from "./reveal";
-import { atBottom, followsBottom, openSettle, pendingCounter } from "./open-settle";
-import { MathLoading } from "./Markdown";
+import { followsBottom } from "./follow-bottom";
 import { checkNeedsReveal, livePlan, PHASE_LABEL, sessionPhase, skipAnswer, skipParked } from "./lesson";
 import { PlanScreen } from "./PlanScreen";
 import { useJobs } from "./use-jobs";
@@ -34,6 +33,10 @@ function MenuItem({ label, onPress, close, disabled = false }: { label: string; 
   );
 }
 
+/** Large enough that the list never unmounts a message. */
+const KEEP_MOUNTED = 1000;
+const Gap = () => <View style={{ height: space.lg }} />;
+
 export function Session({ api, info, id, initialText, sendInitialText, active, reloadRef, jobsRef, back, connectionFault }: {
   api: MobileApi; info: ServerInfo; id: string; initialText?: string; sendInitialText?: boolean; active: boolean;
   reloadRef: RefObject<((reconnect?: boolean) => void) | null>; jobsRef: RefObject<(() => void) | null>;
@@ -52,16 +55,14 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const dockState = useRef({ offset: 0, viewport: 0 });
   const browserScope = useRef<AbortController | null>(null);
   const started = useRef(false);
-  const scroller = useRef<ComponentRef<typeof ScrollView>>(null);
-  const nearBottom = useRef(true);
+  // The transcript is an inverted list: it starts at the latest message, and older
+  // messages growing above (math views loading) can't move the bottom.
+  const list = useRef<FlatList<TranscriptItem>>(null);
+  const following = useRef(true);
+  // While not following, the list holds the message in view in place as new ones arrive.
+  const [holding, setHolding] = useState(false);
   const userScrolling = useRef(false);
-  const lastOffset = useRef(0);
-  // The transcript's size as the phone last reported it, so the open reveal can check it is at the bottom.
-  const measured = useRef({ content: 0, viewport: 0 });
-  // On open the transcript stays hidden until its first layout settles at the bottom.
-  const [opened, setOpened] = useState(false);
-  const settling = useRef<ReturnType<typeof openSettle> | null>(null);
-  const settleStarted = useRef(false);
+  const lastDistance = useRef(0);
   const messages = record?.messages ?? EMPTY;
   const problem = activeProblemOf(messages);
   const question = pendingQuestionOf(messages);
@@ -90,53 +91,22 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const { refresh, submit } = session;
   const jobsSettled = useCallback(() => refresh(), [refresh]);
   const jobs = useJobs(api, id, active && lessonView, jobsRef, jobsSettled, connectionFault);
+  const items = useTranscriptItems({ settled: settledView, tail: session.tail, api, chatId: id, jobs, liveHelpers: lessonView, openPlan: () => setPlanOpen(true) });
+  const newestFirst = useMemo(() => [...items].reverse(), [items]);
 
-  const loaded = !!record;
-  const hidden = loaded && !opened;
-  // Math views still loading; the last one finishing restarts the quiet wait.
-  const [math] = useState(() => pendingCounter(() => settling.current?.changed()));
-  useEffect(() => () => settling.current?.cancel(), []);
-  // The settle starts at the transcript's first real layout, not when the
-  // record arrives: a long session can take longer to lay out than the quiet wait.
-  function laidOut() {
-    if (!settleStarted.current) {
-      settleStarted.current = true;
-      // Reveal only once the phone reports the view at the bottom: a jump to the end
-      // can land after the reveal, or against a height that is about to change.
-      // The stored position can be stale (a dropped event), and a jump to where the view
-      // already is reports nothing, so step back a point first: both moves report.
-      const ready = () => {
-        if (atBottom({ ...measured.current, offset: lastOffset.current })) return true;
-        scroller.current?.scrollTo({ y: Math.max(0, lastOffset.current - 1), animated: false });
-        scroller.current?.scrollToEnd({ animated: false });
-        return false;
-      };
-      settling.current = openSettle(() => {
-        settling.current = null;
-        nearBottom.current = true;
-        // At the cap the view may not be at the bottom yet: jump, let a frame apply it, then show.
-        scroller.current?.scrollToEnd({ animated: false });
-        requestAnimationFrame(() => setOpened(true));
-      }, { loading: () => math.count > 0, ready });
-    }
-    pin();
+  // An inverted list's offset is the distance from the bottom.
+  function scrolled({ contentOffset }: NativeScrollEvent, dragging: boolean) {
+    const distance = contentOffset.y;
+    const next = followsBottom(following.current, { distance, previousDistance: lastDistance.current, dragging });
+    lastDistance.current = distance;
+    if (next === following.current) return;
+    following.current = next;
+    setHolding(!next);
   }
-  // Content growth, or a shorter viewport when the question dock below grows,
-  // keeps the transcript at the bottom while opening or already there.
-  function scrolled({ contentOffset, layoutMeasurement, contentSize }: NativeScrollEvent, dragging: boolean) {
-    const previousOffset = lastOffset.current;
-    lastOffset.current = contentOffset.y;
-    measured.current = { content: contentSize.height, viewport: layoutMeasurement.height };
-    if (settling.current) {
-      settling.current.changed();
-      return;
-    }
-    const distance = contentSize.height - contentOffset.y - layoutMeasurement.height;
-    nearBottom.current = followsBottom(nearBottom.current, { distance, offset: contentOffset.y, previousOffset, dragging });
-  }
+  // Following but a little above the bottom (within the threshold): new content, or a
+  // shorter view when the question dock below grows, brings the bottom back.
   function pin() {
-    if (settling.current || nearBottom.current) scroller.current?.scrollToEnd({ animated: false });
-    settling.current?.changed();
+    if (following.current && lastDistance.current > 0) list.current?.scrollToOffset({ offset: 0, animated: false });
   }
 
   useEffect(() => {
@@ -217,11 +187,30 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
     ]);
   }
 
+  const statusRows = [
+    session.loading && <Text key="loading" style={s.muted}>Loading session…</Text>,
+    busy && <Text key="busy" accessibilityLiveRegion="polite" style={s.muted}>Reply in progress…</Text>,
+    record?.compacting && <Text key="compacting" style={s.muted}>Updating session context…</Text>,
+    !!session.refreshError && <Notice key="refresh-error" boxed>{session.refreshError}</Notice>,
+    !!session.refreshError && <View key="reconnect" style={s.row}><Button onPress={() => refresh(true)}>Reconnect</Button></View>,
+    !!session.writeError && <Notice key="write-error" boxed>{session.writeError}</Notice>,
+    !!failure && <Notice key="failure" boxed>{failure}</Notice>,
+    failure && !busy && !pendingPlugin && (
+      <View key="retry" style={s.row}><Button disabled={blocked} onPress={() => void submit({ type: "retry" })}>Retry reply</Button></View>
+    ),
+    malformed && !question && !pendingPlugin && (
+      <View key="retry-question" style={s.row}><Button disabled={blocked || busy} onPress={() => void submit({
+        type: "retry-question", messageId: malformed.messageId, contentIndex: malformed.contentIndex, toolCallId: malformed.toolCallId,
+      })}>Retry question</Button></View>
+    ),
+    record && pendingPlugin && <Text key="plugin" style={s.muted}>Use the browser to complete this interaction. Open it from the … menu above.</Text>,
+    !!browserError && <Notice key="browser-error">{browserError}</Notice>,
+  ].filter(Boolean);
+
   const thinkingLabel = problem ? "Your thinking" : "Message";
   // Browser handoff lives in the top bar's menu until the phone handles these flows itself.
   const close = () => setMenuOpen(false);
   return (
-    <MathLoading.Provider value={math.begin}>
     <View style={{ flex: 1 }}>
       <View style={[s.bar, { zIndex: 2 }]} onLayout={({ nativeEvent }) => setBarHeight(nativeEvent.layout.height)}>
         <Button variant="ghost" label="Sessions" onPress={back} style={{ width: 36, paddingHorizontal: 0 }}>
@@ -235,42 +224,21 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
           <Text style={[s.ui, { fontSize: 16 }]}>…</Text>
         </Button>}
       </View>
-      {hidden && (
-        <View pointerEvents="none" style={[s.section, { position: "absolute", top: barHeight, left: 0, right: 0 }]}>
-          <Text style={s.muted}>Loading session…</Text>
-        </View>
-      )}
-      <ScrollView ref={scroller} style={{ flex: 1, opacity: hidden ? 0 : 1 }} contentContainerStyle={[s.section, { gap: space.lg }]}
-        pointerEvents={hidden ? "none" : "auto"} accessibilityElementsHidden={hidden} importantForAccessibility={hidden ? "no-hide-descendants" : "auto"}
-        keyboardShouldPersistTaps="handled" scrollEventThrottle={hidden ? 0 : 100} onLayout={({ nativeEvent }) => { measured.current.viewport = nativeEvent.layout.height; pin(); }}
-        onContentSizeChange={(_width, height) => { measured.current.content = height; pin(); }}
+      <FlatList ref={list} inverted data={newestFirst} keyExtractor={({ key }) => key} renderItem={({ item }) => item.node}
+        style={{ flex: 1 }} contentContainerStyle={[s.section, { flexGrow: 1, justifyContent: "flex-end" }]}
+        ItemSeparatorComponent={Gap} ListHeaderComponent={statusRows.length > 0 ? (
+          // The list's header sits at its bottom: status lines under the latest message.
+          <View style={{ gap: space.lg, paddingTop: items.length > 0 ? space.lg : 0 }}>{statusRows}</View>
+        ) : undefined}
+        // Every message stays mounted, as in a plain scroll view: a math view that remounts reloads and changes height.
+        windowSize={KEEP_MOUNTED} removeClippedSubviews={false}
+        maintainVisibleContentPosition={holding ? { minIndexForVisible: 0 } : undefined}
+        keyboardShouldPersistTaps="handled" scrollEventThrottle={100} onLayout={pin} onContentSizeChange={pin}
         onScrollBeginDrag={() => { userScrolling.current = true; }} onMomentumScrollBegin={() => { userScrolling.current = true; }}
         // The last scroll event of a fling can be dropped, so the ends check again.
         onScrollEndDrag={({ nativeEvent }) => { scrolled(nativeEvent, true); userScrolling.current = false; }}
         onMomentumScrollEnd={({ nativeEvent }) => { scrolled(nativeEvent, true); userScrolling.current = false; }}
-        onScroll={({ nativeEvent }) => scrolled(nativeEvent, userScrolling.current)}>
-        {session.loading && <Text style={s.muted}>Loading session…</Text>}
-        <Transcript settled={settledView} tail={session.tail} api={api} chatId={id} jobs={jobs} liveHelpers={lessonView} openPlan={() => setPlanOpen(true)} />
-        {busy && <Text accessibilityLiveRegion="polite" style={s.muted}>Reply in progress…</Text>}
-        {record?.compacting && <Text style={s.muted}>Updating session context…</Text>}
-        <Notice boxed>{session.refreshError}</Notice>
-        {!!session.refreshError && <View style={s.row}><Button onPress={() => refresh(true)}>Reconnect</Button></View>}
-        <Notice boxed>{session.writeError}</Notice>
-        <Notice boxed>{failure}</Notice>
-        {failure && !busy && !pendingPlugin && (
-          <View style={s.row}><Button disabled={blocked} onPress={() => void submit({ type: "retry" })}>Retry reply</Button></View>
-        )}
-        {malformed && !question && !pendingPlugin && (
-          <View style={s.row}><Button disabled={blocked || busy} onPress={() => void submit({
-            type: "retry-question", messageId: malformed.messageId, contentIndex: malformed.contentIndex, toolCallId: malformed.toolCallId,
-          })}>Retry question</Button></View>
-        )}
-        {record && pendingPlugin && <Text style={s.muted}>Use the browser to complete this interaction. Open it from the … menu above.</Text>}
-        <Notice>{browserError}</Notice>
-        {/* Pinned to the content's bottom edge, so it moves whenever anything above it grows:
-            the open settle's layout signal. Absolute, so it adds no gap. */}
-        {loaded && <View pointerEvents="none" onLayout={laidOut} style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 0 }} />}
-      </ScrollView>
+        onScroll={({ nativeEvent }) => scrolled(nativeEvent, userScrolling.current)} />
       {question && !pendingPlugin && (
         <View style={{ paddingHorizontal: space.md, paddingBottom: space.md, maxHeight: "55%" }}>
           <View style={[s.dock, { flexShrink: 1, overflow: "hidden" }]}>
@@ -333,6 +301,5 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
         </View>
       )}
     </View>
-    </MathLoading.Provider>
   );
 }

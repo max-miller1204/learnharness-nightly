@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { Alert, Linking, useWindowDimensions } from "react-native";
 import { WebView } from "react-native-webview";
 import { httpsLink, parseMarkdown, proseCss, renderMarkdown } from "./render-markdown";
@@ -16,11 +16,6 @@ export function confirmExternalLink(value: string) {
   ]);
 }
 
-/** A math view calls this when it mounts, and the function it returns once it
- *  has reported its height (or failed or gone away), so opening a session can
- *  wait for them (open-settle.ts pendingCounter). */
-export const MathLoading = createContext<(() => () => void) | null>(null);
-
 /** `hidden` keeps screen readers out of the text, for a label its parent already reads (a quiz choice row). */
 export function Markdown({ text, small, hidden }: { text: string; small?: boolean; hidden?: boolean }) {
   const parsed = useMemo(() => parseMarkdown(text), [text]);
@@ -34,15 +29,6 @@ function MathMarkdown({ parsed, small, hidden }: { parsed: ReturnType<typeof par
   const { fontScale } = useWindowDimensions();
   const [height, setHeight] = useState(26);
   const [failed, setFailed] = useState(false);
-  const begin = useContext(MathLoading);
-  const done = useRef<(() => void) | null>(null);
-  const reported = () => done.current?.();
-  useEffect(() => {
-    if (!begin) return;
-    const end = begin();
-    done.current = end;
-    return () => { end(); done.current = null; };
-  }, [begin]);
   const font = proseCss(small, fontScale);
   const source = useMemo(() => ({
     html: `<!doctype html><html><head>
@@ -90,14 +76,10 @@ function MathMarkdown({ parsed, small, hidden }: { parsed: ReturnType<typeof par
       {...(hidden ? { importantForAccessibility: "no-hide-descendants" as const, accessibilityElementsHidden: true, focusable: false } : {})}
       scrollEnabled={false} allowsLinkPreview={false} allowFileAccess={false} setSupportMultipleWindows={false} domStorageEnabled={false}
       style={{ backgroundColor: "transparent", height }} containerStyle={{ flex: 0, height }}
-      onError={() => { setFailed(true); reported(); }} onRenderProcessGone={() => { setFailed(true); reported(); }}
-      onMessage={({ nativeEvent }) => {
-        // A height, which may be 0 for an empty block, or a tapped link.
-        if (/^\d+$/.test(nativeEvent.data)) {
-          const measured = Number(nativeEvent.data);
-          if (measured > 0) setHeight(measured + 2);
-          reported();
-        } else confirmExternalLink(nativeEvent.data);
+      onError={() => setFailed(true)} onMessage={({ nativeEvent }) => {
+        const measured = Number(nativeEvent.data);
+        if (Number.isFinite(measured) && measured > 0) setHeight(measured + 2);
+        else confirmExternalLink(nativeEvent.data);
       }} />
   );
 }

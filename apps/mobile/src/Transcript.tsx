@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactElement } from "react";
 import { Image, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { PROTOCOL_ROUTES, type ImageSnapshot, type JobRecord, type LhMessage } from "../../../src/client-protocol/index.ts";
 import type { PlanBlockData } from "../../../src/core/contracts/chat.ts";
@@ -133,36 +133,44 @@ function Part({ part, context }: { part: LhViewPart; context: PartContext }) {
   return helper ? <DispatchCard kind={helper.kind} job={helper.job} /> : null;
 }
 
-export function Transcript({ settled, tail, api, chatId, jobs, liveHelpers, openPlan }: {
+/** One transcript row of the session's list: a settled or a live message. */
+export interface TranscriptItem { key: string; node: ReactElement }
+
+/** The transcript's rows, oldest first. */
+export function useTranscriptItems({ settled, tail, api, chatId, jobs, liveHelpers, openPlan }: {
   settled: LhViewMessage[]; tail: LhMessage[]; api: MobileApi; chatId: string;
   jobs: readonly JobRecord[]; liveHelpers: boolean; openPlan: () => void;
-}) {
+}): TranscriptItem[] {
   const { s } = useTheme();
   const live = useMemo(() => projectView(tail), [tail]);
   const seam = useMemo(() => teachSeam(settled), [settled]);
   const context = { api, chatId, jobs, liveHelpers, openPlan };
-  return (
-    <>
-      {settled.map((message) => {
-        if (isSubagentSteer(message)) return <SteerCard key={message.id} message={message} />;
-        if (message.parts.some(({ type }) => type === "data-probe-handoff")) return <SeamDivider key={message.id} label="Planning" />;
-        const teachAt = seam?.messageId === message.id ? seam.stepIndex : null;
-        const parts = message.parts.map((part, index) => index === teachAt && part.type === "step-start"
-          ? <SeamDivider key={part.id ?? index} label="Teaching" />
-          : <Part key={part.id ?? index} part={part} context={context} />);
-        // The learner's words sit in the web's band: card fill, left rail, YOU label.
-        if (message.role === "user" && message.parts.some(({ type }) => type === "text")) {
-          return <View key={message.id} style={s.band}><Label>You</Label>{parts}</View>;
-        }
-        return (
-          <View key={message.id} style={{ gap: space.sm }}>
+  return [
+    ...settled.map((message): TranscriptItem => {
+      if (isSubagentSteer(message)) return { key: message.id, node: <SteerCard message={message} /> };
+      if (message.parts.some(({ type }) => type === "data-probe-handoff")) return { key: message.id, node: <SeamDivider label="Planning" /> };
+      const teachAt = seam?.messageId === message.id ? seam.stepIndex : null;
+      const parts = message.parts.map((part, index) => index === teachAt && part.type === "step-start"
+        ? <SeamDivider key={part.id ?? index} label="Teaching" />
+        : <Part key={part.id ?? index} part={part} context={context} />);
+      // The learner's words sit in the web's band: card fill, left rail, YOU label.
+      if (message.role === "user" && message.parts.some(({ type }) => type === "text")) {
+        return { key: message.id, node: <View style={s.band}><Label>You</Label>{parts}</View> };
+      }
+      return {
+        key: message.id,
+        node: (
+          <View style={{ gap: space.sm }}>
             {teachAt === -1 && <SeamDivider label="Teaching" />}
             {parts}
           </View>
-        );
-      })}
-      {live.map((message, messageIndex) => (
-        <View key={message.id} style={{ gap: space.sm }}>
+        ),
+      };
+    }),
+    ...live.map((message, messageIndex): TranscriptItem => ({
+      key: message.id,
+      node: (
+        <View style={{ gap: space.sm }}>
           {message.parts.map((part, index) => {
             if (part.type === "reasoning") {
               const last = messageIndex === live.length - 1 && index === message.parts.length - 1;
@@ -171,7 +179,7 @@ export function Transcript({ settled, tail, api, chatId, jobs, liveHelpers, open
             return part.type === "text" && !!part.text ? <Text key={part.id ?? index} selectable style={s.prose}>{part.text}</Text> : null;
           })}
         </View>
-      ))}
-    </>
-  );
+      ),
+    })),
+  ];
 }
