@@ -57,18 +57,27 @@ export function autoReloadVersion(state: UpdateState | null, pageVersion: string
 	return state?.runningVersion && pageIsStale(state, pageVersion) && isNewerVersion(state.runningVersion, pageVersion) ? state.runningVersion : null;
 }
 
-export const AUTO_RELOAD_KEY = "lh-auto-reloaded-to";
+export const AUTO_RELOAD_KEY = "lh-auto-reloaded-versions";
+/** How many versions a tab remembers; the oldest drops off past this. */
+export const AUTO_RELOAD_MEMORY = 50;
 
-/** At most one automatic reload per server version per tab, kept in
- *  sessionStorage so it survives the reload: a page whose code still doesn't
- *  match afterwards (a stale cache) keeps the button instead of looping.
- *  No usable storage means no automatic reload, only the button. */
+/** At most one automatic reload per server version per tab: every version
+ *  the tab reloaded for is kept in sessionStorage (a JSON list) so it
+ *  survives the reload. A page whose code still doesn't match afterwards (a
+ *  stale cache) keeps the button instead of looping, also when the server
+ *  goes back and forth between versions. No usable storage means no
+ *  automatic reload, only the button. */
 export function claimAutoReload(version: string): boolean {
 	try {
 		const storage = window.sessionStorage;
-		if (!storage || storage.getItem(AUTO_RELOAD_KEY) === version) return false;
-		storage.setItem(AUTO_RELOAD_KEY, version);
-		return storage.getItem(AUTO_RELOAD_KEY) === version;
+		if (!storage) return false;
+		let claimed: unknown;
+		try { claimed = JSON.parse(storage.getItem(AUTO_RELOAD_KEY) ?? "[]"); } catch { claimed = []; }
+		const versions = Array.isArray(claimed) ? claimed.filter((item): item is string => typeof item === "string") : [];
+		if (versions.includes(version)) return false;
+		const next = JSON.stringify([...versions, version].slice(-AUTO_RELOAD_MEMORY));
+		storage.setItem(AUTO_RELOAD_KEY, next);
+		return storage.getItem(AUTO_RELOAD_KEY) === next;
 	} catch {
 		return false;
 	}

@@ -324,6 +324,28 @@ describe("General update rows", () => {
 		assert.equal(reloads, 2);
 	});
 
+	it("a stale tab never reloads twice for a version, even when the server goes back and forth (.73, .74, .73)", async () => {
+		const b = bridge(state({ status: "up-to-date", revision: 1, runningVersion: "0.6.1-nightly.20261118.73" }));
+		let reloads = 0;
+		const host = await mount(<SidebarUpdatePill pageVersion="0.6.1-nightly.20261118.72" reload={() => { reloads++; }} />);
+		assert.equal(reloads, 1, ".73: reloads");
+		await b.push(state({ status: "up-to-date", revision: 2, runningVersion: "0.6.1-nightly.20261118.74" }));
+		assert.equal(reloads, 2, ".74: reloads");
+		await b.push(state({ status: "up-to-date", revision: 3, runningVersion: "0.6.1-nightly.20261118.73" }));
+		assert.equal(reloads, 2, ".73 again: no second automatic reload");
+		await b.push(state({ status: "up-to-date", revision: 4, runningVersion: "0.6.1-nightly.20261118.74" }));
+		assert.equal(reloads, 2, ".74 again: none either");
+		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "reload", "the button stays");
+		assert.deepEqual(JSON.parse(tabStorage.get("lh-auto-reloaded-versions")!), ["0.6.1-nightly.20261118.73", "0.6.1-nightly.20261118.74"]);
+	});
+
+	it("a page without an exact build version never reloads by itself", async () => {
+		bridge(state({ status: "up-to-date", revision: 1, runningVersion: "0.6.1-nightly.20261118.65" }));
+		let reloads = 0;
+		await mount(<SidebarUpdatePill pageVersion="" reload={() => { reloads++; }} />);
+		assert.equal(reloads, 0);
+	});
+
 	it("without usable sessionStorage it never reloads by itself, only on a click", async () => {
 		Object.defineProperty(dom.window, "sessionStorage", { configurable: true, get() { throw new Error("blocked"); } });
 		bridge(state({ status: "up-to-date", revision: 1, runningVersion: "0.6.1-nightly.20261118.65" }));
