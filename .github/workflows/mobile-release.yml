@@ -2,11 +2,12 @@ name: Mobile release
 run-name: Mobile release (${{ inputs.mode || github.event_name }})
 
 # The only place phone builds and OTA updates come from: never a laptop.
-# A merge publishes an OTA when the newest TestFlight build has the same
-# runtime (the native fingerprint), and otherwise starts one build on Expo's
-# servers that is sent to TestFlight. Monday refreshes a build before
-# TestFlight's 90-day expiry. .github/scripts/mobile-release.cjs holds the
-# rules; see docs/specs/mobile-auto-updates.md. Modeled on T3 Code's
+# A merge publishes an OTA when the newest Apple-processed TestFlight build has
+# the same runtime (the native fingerprint), and otherwise fails asking for a
+# build. Builds start only from the Run workflow build button. Monday fails as
+# a reminder when that build nears TestFlight's 90-day expiry.
+# .github/scripts/mobile-release.cjs holds the rules; see
+# docs/specs/mobile-auto-updates.md. Modeled on T3 Code's
 # .github/workflows/mobile-eas-production.yml.
 on:
   push:
@@ -35,14 +36,13 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 # GitHub keeps one pending run per group and cancels the older pending one.
-# Each kind of run gets its own group, so a pending run is replaced only by a
-# newer run of the same kind (a newer push contains the older one's commits).
-# The "Wait for older runs" step serializes runs of different kinds.
+# Runs that publish OTAs (pushes and the update button) share a group, so they
+# publish one at a time and a pending one is replaced only by a newer commit.
+# Other kinds get their own groups and never cancel each other.
 concurrency:
-  group: mobile-release-${{ github.event_name }}-${{ inputs.mode }}
+  group: mobile-release-${{ (github.event_name == 'push' || inputs.mode == 'update') && 'ota' || format('{0}-{1}', github.event_name, inputs.mode) }}
   cancel-in-progress: false
 
 jobs:
@@ -68,25 +68,6 @@ jobs:
       - name: Refuse other refs and a missing token
         run: node ../../.github/scripts/mobile-release.cjs preflight
 
-      # Runs that can build or publish go one at a time, in the order they
-      # started (a re-run keeps its old ID but starts later). check only reads.
-      - name: Wait for older runs
-        if: inputs.mode != 'check'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          started="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .run_started_at)"
-          while :; do
-            older="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/mobile-release.yml/runs?per_page=100" \
-              --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID and .status != \"completed\"
-                and (.run_started_at < \"$started\" or (.run_started_at == \"$started\" and .id < $GITHUB_RUN_ID))
-                and (.display_title | endswith(\"(check)\") | not))] | length")"
-            if [ "$older" -eq 0 ]; then break; fi
-            echo "Waiting for $older older mobile release run(s)."
-            sleep 20
-          done
-
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -95,20 +76,28 @@ jobs:
       # eas-cli is an exact devDependency, so it installs from the lockfile.
       - run: npm ci
 
-      # Everything up to the decision only reads. The runtime comes from the
-      # same expo-updates resolution eas build and eas update use.
-      - name: Runtime, config and Expo history
+      # Everything up to the decision only reads. The runtime is resolved as
+      # eas update resolves it: expo-updates runtimeversion:resolve with the
+      # production environment's EAS variables loaded. Apple's processing state
+      # comes from App Store Connect with the existing key.
+      - name: Runtime, config, Expo and Apple records
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           set -euo pipefail
           npx expo config --type public --json > "$RUNNER_TEMP/expo-config.json"
           node ../../.github/scripts/mobile-release.cjs check-config "$RUNNER_TEMP/expo-config.json" eas.json
-          npx expo-updates runtimeversion:resolve --platform ios > "$RUNNER_TEMP/runtime.json"
+          npx eas env:exec production 'npx expo-updates runtimeversion:resolve --platform ios' --non-interactive > "$RUNNER_TEMP/runtime.json"
           node ../../.github/scripts/mobile-release.cjs fetch "$RUNNER_TEMP/runtime.json" "$RUNNER_TEMP/state.json"
 
       - name: Decide
         id: decide
         run: |
           set -euo pipefail
+          MAIN_HEAD="$(git ls-remote origin refs/heads/main | cut -f1)"
+          export MAIN_HEAD
           node ../../.github/scripts/mobile-release.cjs decide "$RUNNER_TEMP/runtime.json" "$RUNNER_TEMP/state.json" | tee -a "$GITHUB_OUTPUT"
 
       - name: Check
@@ -125,6 +114,7 @@ jobs:
             echo
             echo "- Runtime for main: \`$RUNTIME\`"
             jq -r '.builds[0] as $b | "- Newest build: " + (if $b == null then "none" else "\($b.appBuildVersion) (\($b.id)), build \($b.status), TestFlight upload \([$b.submissions[] | select(.platform == "IOS") | .status] | join(", ") | if . == "" then "none" else . end), runtime `\($b.runtime.version)`, matches main: \($b.runtime.version == env.RUNTIME), \($b.completedAt // $b.createdAt)" end)' "$state"
+            jq -r '[.builds[] | select(has("apple"))][0] as $b | "- Newest build Expo uploaded: " + (if $b == null then "none" else "\($b.appBuildVersion) (\($b.id)), Apple \($b.apple.processingState // "not listed yet"), uploaded \($b.apple.uploadedDate // "unknown"), expired \($b.apple.expired // false)" end)' "$state"
             jq -r '(.builds[0].runtime.version) as $r | .latestUpdate as $u | "- Newest update: " + (if $u == null then "none" else "group \($u.group), runtime `\($u.runtime.version)`, matches the newest build: \($u.runtime.version == $r), commit \($u.gitCommitHash), \($u.createdAt), \($u.message)" end)' "$state"
             if [ -n "$group" ]; then
               echo

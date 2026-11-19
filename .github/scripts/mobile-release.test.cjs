@@ -9,145 +9,141 @@ const { attempt, buildMessage, checkConfig, countExpoModules, decide, isOlderTha
 const F = "a".repeat(40);
 const G = "b".repeat(40);
 const X = "c".repeat(40);
+const SHA = "1".repeat(40);
 const NOW = Date.parse("2026-11-19T12:00:00Z");
 const daysAgo = (days) => new Date(NOW - days * 24 * 60 * 60 * 1000).toISOString();
 
-/** A beta build as fetchState returns it. Finished builds default to a finished TestFlight upload. */
-function build(id, status, runtime, { submission = status === "FINISHED" ? "FINISHED" : undefined, requested, days = 1 } = {}) {
+/**
+ * A beta build as fetchState returns it. A finished build defaults to a
+ * finished upload that Apple processed as VALID.
+ */
+function build(id, status, runtime, { submission = status === "FINISHED" ? "FINISHED" : undefined, apple = "VALID", expired = false, requested, days = 1 } = {}) {
 	return {
 		id,
 		status,
-		message: requested ? buildMessage("123456789abc", requested) : null,
+		appBuildVersion: id,
+		message: requested ? buildMessage(SHA, requested) : null,
 		createdAt: daysAgo(days),
 		completedAt: daysAgo(days),
 		runtime: runtime ? { version: runtime } : null,
 		submissions: submission ? [{ platform: "IOS", status: submission, completedAt: daysAgo(days) }] : [],
+		apple: submission === "FINISHED" && apple ? { processingState: apple, expired, uploadedDate: daysAgo(days) } : null,
 	};
 }
-const run = (overrides) => decide({ event: "push", ref: "refs/heads/main", tokenPresent: true, runtime: G, expoModules: 24, builds: [build("old", "FINISHED", F)], now: NOW, ...overrides });
+const run = (overrides) =>
+	decide({ event: "push", ref: "refs/heads/main", tokenPresent: true, sha: SHA, mainHead: SHA, runtime: F, expoModules: 24, builds: [build("1", "FINISHED", F)], now: NOW, ...overrides });
+const button = (mode, overrides) => run({ event: "workflow_dispatch", mode, ...overrides });
 
-test("a JS-only merge publishes an OTA when the newest TestFlight build has the runtime", () => {
-	assert.equal(run({ runtime: F }).action, "update");
+test("a merge publishes an OTA when the newest Apple-processed build has the runtime", () => {
+	assert.equal(run({}).action, "update");
+	assert.equal(button("update", {}).action, "update");
 });
 
-test("a new runtime with no build starts exactly one build", () => {
-	assert.equal(run({}).action, "build");
-});
-
-test("a build in progress for the runtime publishes and builds nothing", () => {
-	for (const status of ["NEW", "IN_QUEUE", "IN_PROGRESS"]) {
-		assert.equal(run({ builds: [build("new", status, G), build("old", "FINISHED", F)] }).action, "none", status);
-	}
-});
-
-test("an errored or canceled build for the runtime fails the run without a build", () => {
-	for (const status of ["ERRORED", "CANCELED"]) {
-		const decision = run({ builds: [build("new", status, G), build("old", "FINISHED", F)] });
-		assert.equal(decision.action, "fail", status);
+test("a push never builds: a new runtime fails loudly and asks for the build button", () => {
+	for (const builds of [[build("1", "FINISHED", G)], []]) {
+		const decision = run({ builds });
+		assert.equal(decision.action, "fail");
 		assert.match(decision.reason, /mode build/);
 	}
+	assert.match(run({ builds: [build("1", "FINISHED", G)] }).reason, /needs a new TestFlight build/);
 });
 
-test("a finished build counts only once its TestFlight upload finished", () => {
-	assert.equal(attempt(build("x", "FINISHED", F)).state, "shipped");
-	for (const submission of ["AWAITING_BUILD", "IN_QUEUE", "IN_PROGRESS"]) {
-		assert.equal(attempt(build("x", "FINISHED", F, { submission })).state, "active", submission);
-		// An upload still running is not on TestFlight: nothing to publish yet, and no second build.
-		assert.equal(run({ runtime: F, builds: [build("x", "FINISHED", F, { submission })] }).action, "none", submission);
-	}
-	for (const submission of ["ERRORED", "CANCELED", null]) {
-		const builds = [build("x", "FINISHED", G, { submission }), build("old", "FINISHED", F)];
-		assert.equal(attempt(builds[0]).state, "failed", String(submission));
-		assert.equal(run({ builds }).action, "fail", String(submission));
-		assert.equal(run({ runtime: G, builds }).action, "fail", String(submission));
-	}
-	// A build whose upload failed never counts as the newest TestFlight build.
-	assert.equal(run({ runtime: G, builds: [build("x", "FINISHED", G, { submission: "ERRORED" }), build("old", "FINISHED", F)] }).action, "fail");
-});
-
-test("attempts match on the requested runtime even when Expo recorded another", () => {
+test("a push never builds and ignores builds that are running or failed", () => {
 	for (const status of ["IN_PROGRESS", "ERRORED", "CANCELED"]) {
-		const decision = run({ builds: [build("new", status, null, { requested: G }), build("old", "FINISHED", F)] });
-		assert.notEqual(decision.action, "build", status);
+		assert.equal(run({ builds: [build("2", status, G), build("1", "FINISHED", F)] }).action, "update", status);
+		assert.equal(run({ runtime: G, builds: [build("2", status, G), build("1", "FINISHED", F)] }).action, "fail", status);
 	}
 });
 
-test("any active beta build blocks an automatic build", () => {
-	assert.equal(run({ builds: [build("other", "IN_PROGRESS", X), build("old", "FINISHED", F)] }).action, "none");
-	assert.equal(run({ event: "schedule", builds: [build("other", "IN_QUEUE", X), build("old", "FINISHED", F, { days: 80 })] }).action, "none");
-});
-
-test("a finished build whose recorded runtime differs from the requested one fails without a build", () => {
-	const mismatched = build("new", "FINISHED", X, { requested: G });
-	for (const event of ["push", "schedule"]) {
-		const decision = run({ event, builds: [mismatched, build("old", "FINISHED", F)] });
-		assert.equal(decision.action, "fail", event);
-		assert.match(decision.reason, /recorded runtime/);
+test("only a build Apple finished processing as VALID counts", () => {
+	const processing = run({ builds: [build("2", "FINISHED", F, { apple: "PROCESSING" }), build("1", "FINISHED", F)] });
+	assert.equal(processing.action, "fail");
+	assert.match(processing.reason, /still processing at Apple/);
+	assert.match(run({ builds: [build("2", "FINISHED", F, { apple: null })] }).reason, /still processing at Apple/);
+	for (const state of ["INVALID", "FAILED"]) {
+		const decision = run({ builds: [build("2", "FINISHED", F, { apple: state }), build("1", "FINISHED", F)] });
+		assert.equal(decision.action, "fail", state);
+		assert.match(decision.reason, new RegExp(`Apple marked .* ${state}`));
 	}
-	// It is found behind a newer finished build whose upload failed, and when its own upload failed.
-	assert.equal(run({ builds: [build("newer", "FINISHED", X, { submission: "ERRORED" }), mismatched] }).action, "fail");
-	assert.match(run({ builds: [build("new", "FINISHED", X, { requested: G, submission: "ERRORED" }), build("old", "FINISHED", F)] }).reason, /recorded runtime/);
-	// A later consistent TestFlight build supersedes it.
-	assert.equal(run({ runtime: F, builds: [build("fixed", "FINISHED", F, { requested: F }), mismatched] }).action, "update");
 });
 
-test("an OTA goes only to the newest TestFlight build, and only before it expires", () => {
-	// After a native change G and a revert back to F, phones run G: F needs a new build.
-	assert.equal(run({ runtime: F, builds: [build("g", "FINISHED", G), build("f", "FINISHED", F, { days: 10 })] }).action, "build");
-	assert.equal(run({ runtime: F, builds: [build("f", "FINISHED", F, { days: 89 })] }).action, "update");
-	assert.equal(run({ runtime: F, builds: [build("f", "FINISHED", F, { days: 90 })] }).action, "build");
+test("an upload Expo has not finished does not count", () => {
+	for (const submission of ["AWAITING_BUILD", "IN_PROGRESS", "ERRORED", "CANCELED", null]) {
+		assert.equal(attempt(build("2", "FINISHED", G, { submission })).state === "uploaded", false, String(submission));
+		assert.equal(run({ builds: [build("2", "FINISHED", G, { submission }), build("1", "FINISHED", F)] }).action, "update", String(submission));
+	}
+});
+
+test("an expired build has its own failure reason", () => {
+	for (const options of [{ days: 90 }, { days: 10, expired: true }]) {
+		const decision = run({ builds: [build("1", "FINISHED", F, options)] });
+		assert.equal(decision.action, "fail");
+		assert.match(decision.reason, /expired on TestFlight/);
+	}
+	assert.equal(run({ builds: [build("1", "FINISHED", F, { days: 89 })] }).action, "update");
+});
+
+test("after a native change and a revert, the old build does not get the OTA", () => {
+	assert.equal(run({ builds: [build("2", "FINISHED", G), build("1", "FINISHED", F, { days: 10 })] }).action, "fail");
+});
+
+test("a build whose recorded runtime differs from the requested one is reported", () => {
+	assert.match(run({ builds: [build("2", "FINISHED", X, { requested: F })] }).reason, /recorded runtime .* Stop and report/);
+	assert.equal(run({ builds: [build("2", "FINISHED", F, { requested: F })] }).action, "update");
 });
 
 test("an older commit never publishes after a newer OTA for the same runtime", () => {
-	assert.equal(run({ runtime: F, stale: true }).action, "none");
-	assert.equal(run({ event: "workflow_dispatch", mode: "update", runtime: F, stale: true }).action, "fail");
+	assert.equal(run({ isStale: () => true }).action, "none");
+	assert.equal(button("update", { isStale: () => true }).action, "fail");
+});
+
+test("staleness is worked out only on the OTA path", () => {
+	const isStale = () => assert.fail("isStale called");
+	button("build", { isStale });
+	button("check", { isStale });
+	run({ event: "schedule", isStale });
+	run({ runtime: G, isStale });
 });
 
 test("a runtime that hashes no Expo native modules publishes nothing", () => {
-	assert.equal(run({ runtime: F, expoModules: 0 }).action, "fail");
-	assert.equal(run({ event: "workflow_dispatch", mode: "update", runtime: F, expoModules: 0 }).action, "fail");
+	assert.equal(run({ expoModules: 0 }).action, "fail");
+	assert.equal(button("update", { expoModules: 0 }).action, "fail");
 });
 
-test("Monday refreshes a build 76 or more days old and leaves 75 days alone", () => {
-	const at = (days) => run({ event: "schedule", builds: [build("old", "FINISHED", F, { days })] });
+test("Monday never builds: it fails as a reminder at 76 days and stays quiet at 75", () => {
+	const at = (days) => run({ event: "schedule", builds: [build("1", "FINISHED", F, { days })] });
 	assert.equal(at(75).action, "none");
 	assert.equal(at(75.9).action, "none");
-	assert.equal(at(76).action, "build");
-	assert.equal(at(82).action, "build");
+	assert.equal(at(76).action, "fail");
+	assert.match(at(76).reason, /76 days old .* mode build/);
+	assert.match(at(91).reason, /expired on TestFlight/);
+	assert.equal(run({ event: "schedule", builds: [] }).action, "fail");
 });
 
-test("Monday ages the newest build on TestFlight, not the newest finished one", () => {
-	const old = build("old", "FINISHED", F, { days: 80 });
-	assert.equal(run({ event: "schedule", builds: [build("new", "FINISHED", F, { submission: "ERRORED", days: 2 }), old] }).action, "fail");
-	assert.equal(run({ event: "schedule", builds: [build("new", "FINISHED", F, { submission: "CANCELED", days: 2 }), old] }).action, "fail");
-	assert.equal(run({ event: "schedule", builds: [build("new", "FINISHED", F, { submission: "IN_PROGRESS", days: 0 }), old] }).action, "none");
+test("Monday ignores an unrelated failed build and waits while one runs or processes", () => {
+	const old = build("1", "FINISHED", F, { days: 10 });
+	assert.equal(run({ event: "schedule", builds: [build("2", "ERRORED", G), old] }).action, "none");
+	assert.equal(run({ event: "schedule", builds: [build("2", "FINISHED", G, { submission: "CANCELED" }), old] }).action, "none");
+	assert.equal(run({ event: "schedule", builds: [build("2", "IN_PROGRESS", G), build("1", "FINISHED", F, { days: 80 })] }).action, "none");
+	assert.equal(run({ event: "schedule", builds: [build("2", "FINISHED", G, { apple: "PROCESSING" }), build("1", "FINISHED", F, { days: 80 })] }).action, "none");
 });
 
-test("Monday does nothing while a build runs and fails after an errored build", () => {
-	const finished = build("old", "FINISHED", F, { days: 80 });
-	assert.equal(run({ event: "schedule", builds: [build("new", "IN_PROGRESS", F), finished] }).action, "none");
-	assert.equal(run({ event: "schedule", builds: [build("new", "ERRORED", F), finished] }).action, "fail");
-	assert.equal(run({ event: "schedule", builds: [] }).action, "build");
-});
-
-test("the build button always builds, even with a finished, errored or mismatched build", () => {
-	for (const builds of [[build("x", "FINISHED", G)], [build("x", "ERRORED", G)], [build("x", "FINISHED", X, { requested: G })]]) {
-		assert.equal(run({ event: "workflow_dispatch", mode: "build", builds }).action, "build");
+test("the build button builds only from main's head and while no build runs", () => {
+	assert.equal(button("build", { builds: [build("1", "FINISHED", F), build("0", "ERRORED", G)] }).action, "build");
+	const old = button("build", { mainHead: "2".repeat(40) });
+	assert.equal(old.action, "fail");
+	assert.match(old.reason, /main is at/);
+	for (const status of ["NEW", "IN_QUEUE", "IN_PROGRESS"]) {
+		assert.equal(button("build", { builds: [build("2", status, G), build("1", "FINISHED", F)] }).action, "fail", status);
 	}
-});
-
-test("the update button publishes only for the newest TestFlight build's runtime", () => {
-	assert.equal(run({ event: "workflow_dispatch", mode: "update", runtime: F }).action, "update");
-	assert.equal(run({ event: "workflow_dispatch", mode: "update" }).action, "fail");
-	assert.equal(run({ event: "workflow_dispatch", mode: "update", builds: [build("new", "IN_PROGRESS", G)] }).action, "fail");
+	assert.equal(button("build", { builds: [build("2", "FINISHED", G, { submission: "IN_PROGRESS" })] }).action, "fail");
 });
 
 test("the check button only reads, and flags a newest build that failed or was cancelled", () => {
-	const check = (builds) => run({ event: "workflow_dispatch", mode: "check", builds });
-	assert.equal(check([build("old", "FINISHED", F)]).action, "check");
-	assert.equal(check([build("old", "FINISHED", F)]).problem, undefined);
-	for (const newest of [build("new", "CANCELED", G), build("new", "FINISHED", G, { submission: "CANCELED" })]) {
-		const decision = check([newest, build("old", "FINISHED", F)]);
+	assert.equal(button("check", {}).action, "check");
+	assert.equal(button("check", {}).problem, undefined);
+	for (const newest of [build("2", "CANCELED", G), build("2", "FINISHED", G, { submission: "CANCELED" })]) {
+		const decision = button("check", { builds: [newest, build("1", "FINISHED", F)] });
 		assert.equal(decision.action, "check");
 		assert.match(decision.problem, /failed/);
 	}
@@ -155,8 +151,8 @@ test("the check button only reads, and flags a newest build that failed or was c
 
 test("refs other than main and a missing token fail before anything else", () => {
 	for (const mode of ["build", "update", "check"]) {
-		assert.equal(run({ event: "workflow_dispatch", mode, ref: "refs/heads/feature" }).action, "fail", mode);
-		assert.equal(run({ event: "workflow_dispatch", mode, tokenPresent: false }).action, "fail", mode);
+		assert.equal(button(mode, { ref: "refs/heads/feature" }).action, "fail", mode);
+		assert.equal(button(mode, { tokenPresent: false }).action, "fail", mode);
 	}
 	assert.match(run({ ref: "refs/tags/v1" }).reason, /only on main/);
 	assert.match(run({ tokenPresent: false }).reason, /EXPO_TOKEN/);
@@ -187,7 +183,7 @@ test("checkConfig accepts the committed config and names each missing field", ()
 	]);
 });
 
-test("isOlderThan is true only for a strict ancestor", () => {
+test("isOlderThan is true only for a strict ancestor, and a missing commit is not newer", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mobile-release-git-"));
 	const git = (...args) => execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...args], { encoding: "utf8" }).trim();
 	git("init", "-q");
@@ -202,7 +198,7 @@ test("isOlderThan is true only for a strict ancestor", () => {
 		assert.equal(isOlderThan(b, a), false);
 		assert.equal(isOlderThan(b, b), false);
 		assert.equal(isOlderThan(b, undefined), false);
-		assert.throws(() => isOlderThan(b, X), /Could not compare/);
+		assert.equal(isOlderThan(b, X), false);
 	} finally {
 		process.chdir(cwd);
 		fs.rmSync(dir, { recursive: true });
@@ -214,8 +210,8 @@ test("the decide command reads CLI output with leading notices and prints step o
 	const runtimeFile = path.join(dir, "runtime.json");
 	const stateFile = path.join(dir, "state.json");
 	fs.writeFileSync(runtimeFile, `A notice\n${JSON.stringify({ runtimeVersion: F, fingerprintSources: [{ reasons: ["expoAutolinkingIos"] }] })}`);
-	fs.writeFileSync(stateFile, JSON.stringify({ builds: [build("old", "FINISHED", F)], latestUpdate: null, latestUpdateForRuntime: null }));
-	const env = { ...process.env, GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", GITHUB_SHA: "0123456789abcdef", EXPO_TOKEN: "x" };
+	fs.writeFileSync(stateFile, JSON.stringify({ builds: [build("1", "FINISHED", F)], latestUpdate: null, latestUpdateForRuntime: { gitCommitHash: X } }));
+	const env = { ...process.env, GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", GITHUB_SHA: "0123456789abcdef", MAIN_HEAD: "0123456789abcdef", EXPO_TOKEN: "x" };
 	const script = path.join(__dirname, "mobile-release.cjs");
 	const output = execFileSync(process.execPath, [script, "decide", runtimeFile, stateFile], { env, encoding: "utf8" });
 	assert.match(output, /^action=update$/m);

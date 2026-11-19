@@ -1,6 +1,8 @@
 # Mobile auto updates
 
-Approved by the owner on 2026-11-19. The phone app gets over-the-air (OTA) updates from `expo-updates`, and a GitHub workflow publishes them when main changes phone or shared client code. A new TestFlight build is made only when the app's native fingerprint changes, or when the newest build gets close to TestFlight's 90-day expiry. Reference: T3 Code at [pingdotgg/t3code `c4dc9ed`](https://github.com/pingdotgg/t3code/tree/c4dc9ed55b35267a40857aa27525c520bf913342) (2026-11-18), the "whatever T3 does" rule.
+Approved by the owner on 2026-11-19. The phone app gets over-the-air (OTA) updates from `expo-updates`, and a GitHub workflow publishes them when main changes phone or shared client code. A new TestFlight build is needed only when the app's native fingerprint changes, or when the newest build gets close to TestFlight's 90-day expiry. The workflow then fails loudly and the owner presses its build button.
+
+**Owner decision, 2026-11-19 (PR #275 review round 2):** the workflow never starts a build on its own. Pushes and the Monday check only publish OTAs or fail with a clear message. Builds start only when the owner presses Run workflow with mode `build` on main. This replaced automatic builds per fingerprint, whose retry and serialization rules kept producing bugs. Reference: T3 Code at [pingdotgg/t3code `c4dc9ed`](https://github.com/pingdotgg/t3code/tree/c4dc9ed55b35267a40857aa27525c520bf913342) (2026-11-18), the "whatever T3 does" rule.
 
 ## 1. Starting point
 
@@ -29,17 +31,17 @@ Approved by the owner on 2026-11-19. The phone app gets over-the-air (OTA) updat
 1. The owner creates a limited Expo access token (Limit access, team `max-miller1204s-team`, role Developer) and adds it as the `EXPO_TOKEN` repository secret. Secrets never go in chat or git.
 2. Find the app's App Store Connect Apple ID (`ascAppId`). It is not secret.
 3. Re-probe, from CI using the button's `check` mode or a one-off run, and stop and report if any fails: Expo holds valid iOS distribution credentials for `com.maxmiller.learnharness.nightly`, the limited token can list builds and updates for the project, and the last finished iOS builds and their fingerprints are readable.
-4. The first real build is itself the probe for the fingerprint and the submit key (After deploy A1). If its embedded fingerprint differs from the CI-computed one, or the upload is refused, stop and report.
+4. The first real build, started with the `build` button, is itself the probe for the fingerprint and the submit key (After deploy A1). If its embedded fingerprint differs from the CI-computed one, or the upload is refused, stop and report.
 
 ## 2. Goals and non-goals
 
 **Goals**
 
-1. A merge to main that changes phone or shared client code publishes an OTA on channel `production` for iOS, when a finished TestFlight build with the same fingerprint exists. Without one, nothing is published.
+1. A merge to main that changes phone or shared client code publishes an OTA on channel `production` for iOS, when the newest TestFlight build is processed by Apple as valid, has the same runtime (fingerprint) and is under 90 days old. Otherwise nothing is published and the run fails with a clear message, such as "This change needs a new TestFlight build".
 2. The owner's iPhone, on that build, runs the update after opening the app twice. The first launch downloads it and the next launch uses it.
-3. A merge that changes the iOS fingerprint automatically starts one build on Expo's servers with the `beta` profile and sends it to TestFlight. No one presses anything.
-4. Every Monday, if the newest finished `beta` iOS build is 76 or more whole days old and none is in progress, the workflow builds and sends a fresh one from main.
-5. A GitHub **Run workflow** button offers `build` (retry or force a build), `update` (publish an OTA now) and `check` (read-only: print the newest build, the newest update, their fingerprints and the update's launch records).
+3. The `build` button starts one build on Expo's servers with the `beta` profile and sends it to TestFlight. Nothing else starts a build.
+4. Every Monday, if the newest usable TestFlight build is 76 or more whole days old and no build is in progress, the run fails as a reminder to press `build`.
+5. A GitHub **Run workflow** button offers `build` (the only way to start a build), `update` (publish an OTA now) and `check` (read-only: print the newest build, the newest update, their fingerprints and the update's launch records).
 6. The mobile README's release section describes this flow and no longer says every update needs a fresh store build.
 
 **Non-goals**
@@ -61,11 +63,12 @@ Approved by the owner on 2026-11-19. The phone app gets over-the-air (OTA) updat
 | Invariant | Enforced or detected | Kind |
 | --- | --- | --- |
 | Only this workflow, running on main, starts phone builds or publishes phone updates. | The workflow never runs on `pull_request`. The button refuses refs other than main. The README rule. | Machine (trigger and ref check); README rule human |
-| An OTA is published only for a fingerprint that has a finished TestFlight build. | The workflow's build-or-update decision | Machine |
+| An OTA is published only to the runtime of the newest TestFlight build that Apple processed as valid and that is under 90 days old, resolved before publishing as `eas update` resolves it and checked again after. | The workflow's decision and publish steps | Machine |
+| An older commit never publishes over a newer OTA for the same runtime. | Decision logic, from Expo's update records | Machine |
 | No OTA is published when the fingerprint hashes no Expo native modules (T3 `:292-313`). | Workflow step before publishing | Machine |
-| At most one automatic build attempt per fingerprint. An errored build fails the run and is not retried automatically. | Decision logic, from Expo's build records | Machine |
-| A finished build whose recorded fingerprint differs from the CI-computed fingerprint for its own commit fails the run, and nothing is built. | Decision logic | Machine |
-| Runs are serialized in merge order and never cancel each other (T3 `:77-82`). | Workflow concurrency group | Machine |
+| Only the `build` button starts a build, only from main's current head and only while no `beta` build is running. | Decision logic, from Expo's build records | Machine |
+| When the newest TestFlight build recorded a different fingerprint than CI requested for its commit, the run fails with a stop-and-report message. | Decision logic | Machine |
+| OTA runs (pushes and the `update` button) publish one at a time; runs of other kinds never cancel them (T3 `:77-82`). | Workflow concurrency groups | Machine |
 | A missing `EXPO_TOKEN` fails the run (unlike T3, which skips quietly). | First workflow step | Machine |
 | The updates URL, the `fingerprint` runtime policy and the `production` channel on the `beta` profile stay set. | Pre-merge config check (Proof P2) | Machine |
 
@@ -84,20 +87,18 @@ If either credential leaks, the owner deletes and remakes it. Renewing the yearl
 **Entrypoints**
 
 - **Push to main** that touches `apps/mobile/**`, `src/client-protocol/**`, `src/core/**`, `build/icon.png`, `public/fonts/cmunbx.ttf` or the workflow file. The decision for a run:
-  - JS-only merge, finished build with fingerprint F: publish an OTA for F.
-  - New fingerprint G with no build: start one build for G and don't wait for it. OTAs for G resume on the first merge after it finishes, so changes merged during the build arrive with that next merge (T3 `:412-416`).
-  - A build for G is in progress: publish nothing and start no build.
-  - A build for G errored: fail the run, start no build, and retry with the button.
-  - The build quota is used up: the build request fails, so the run fails. A later merge or the button tries again, and Expo refuses at no charge until the 1st of the month.
-- **Monday schedule.** It reads the newest finished `beta` iOS build. If that build is 76 or more days old and none is in progress, it builds and submits from main HEAD. At exactly 75 days it does nothing. The weekly step keeps every build under 83 days old. GitHub pauses schedules on a public repo after 60 days with no repo activity. This is a known gap the owner accepted.
-- **Button (`workflow_dispatch`).** Modes `build`, `update` and `check`. It refuses any ref but main. `build` always builds, even for a fingerprint that already has a build or errored. `update` publishes only under the same fingerprint rule. `check` changes nothing.
-- **Single owners of irreversible effects.** The decision step owns starting a build: a TestFlight upload, a burned build number and a quota build. The publish step owns writing to the `production` channel. Expo's remote auto-increment owns build numbers.
+  - The newest TestFlight build has runtime F, is valid at Apple and is under 90 days old, and the merge has runtime F: publish an OTA for F.
+  - Any other case (a new runtime G, no build yet, the newest build still processing, rejected or expired): publish nothing and fail with a message saying what to press. A push never builds.
+  - Once a pressed build for G is valid at Apple, the next merge publishes for G. Changes merged while it built are already in that build.
+- **Monday schedule.** It reads the newest TestFlight build Expo uploaded and Apple's record for it. If no build is in progress and that build is 76 or more whole days old, expired, rejected or missing, the run fails as a reminder to press `build`. At 75 days it does nothing. It never builds. GitHub pauses schedules on a public repo after 60 days with no repo activity. This is a known gap the owner accepted.
+- **Button (`workflow_dispatch`).** Modes `build`, `update` and `check`. It refuses any ref but main. `build` builds from main HEAD, even for a fingerprint that already has a build or errored. It refuses when the run's commit is not main's current head or when a `beta` build is running. When Expo's build quota is used up, the build request fails and Expo refuses at no charge until the 1st of the month. `update` publishes only under the push rule. `check` changes nothing.
+- **Single owners of irreversible effects.** The `build` button owns starting a build: a TestFlight upload, a burned build number and a quota build. The publish step owns writing to the `production` channel. Expo's remote auto-increment owns build numbers.
 
 **Ordering and cutover**
 
 1. The owner adds `EXPO_TOKEN`. The Apple secrets already exist.
 2. The PR merges with `expo-updates`, the runtime policy, the channel, the iOS submit profile, the workflow and the doc changes. If it merges without the token, the first run fails loudly and nothing is published.
-3. Adding `expo-updates` changes the fingerprint, so the first run starts a build and sends it to TestFlight. The current TestFlight build has updates off and never receives an OTA.
+3. Adding `expo-updates` changes the fingerprint, so the first push run fails asking for a build. The owner presses Run workflow with mode `build`. The current TestFlight build has updates off and never receives an OTA.
 4. The owner installs the new build from TestFlight once.
 5. The next phone change arrives as an OTA.
 
@@ -114,7 +115,7 @@ Halt and report when: a first-task probe fails; Expo has no valid iOS credential
 - `apps/mobile/README.md`: "Every beta update uses fresh store builds." and the hand-run release commands. Replace them with the CI flow, the button, and "never build from a laptop".
 - `apps/mobile/README.md`: the day-75 proposal "pending approval" is now decided as the Monday refresh.
 - `docs/specs/mobile-beta.md:11`: "Push notifications and OTA updates are outside beta 1." Point OTA to this spec.
-- `docs/specs/mobile-beta.md:27`: "Beta updates are fresh signed binaries." Replace it with OTA plus fingerprint builds.
+- `docs/specs/mobile-beta.md:27`: "Beta updates are fresh signed binaries." Replace it with OTA plus builds pressed for native changes.
 
 **Promote on merge:** add to the mobile README's release section, as a lasting rule: phone builds and updates come only from the mobile release workflow on main, never a laptop. The project has no invariant IDs or ADR folder, so the README holds it.
 
@@ -124,14 +125,14 @@ Halt and report when: a first-task probe fails; Expo has no valid iOS credential
 
 | # | Proves | Surface | Check | Runs | Pass signal |
 | --- | --- | --- | --- | --- | --- |
-| P1 | Goals 1, 3, 4 and the build invariants | The workflow's build-or-update decision | Unit tests over fixture build lists: JS-only gives update; new fingerprint gives one build; in progress gives nothing; errored fails with no build; a mismatched finished build fails with no build; 76 days gives a refresh build; 75 days gives nothing; `build` mode forces; a non-main ref is refused; a missing token fails. | PR CI (`node --test .github/scripts/*.test.cjs` in Lint) | Every case gives its stated result |
+| P1 | Goals 1, 3, 4 and the invariants | The workflow's decision | Unit tests over fixture build lists: a matching, Apple-valid, unexpired newest build gives update; a new runtime, a build still processing, rejected or expired, or no build fails with no build; expiry has its own reason; a stale commit publishes nothing; a mismatched build fails with a stop-and-report reason; Monday fails at 76 days and does nothing at 75; `build` builds only from main's head with no build running; a non-main ref is refused; a missing token fails. | PR CI (`node --test .github/scripts/*.test.cjs` in Lint) | Every case gives its stated result |
 | P2 | Config invariant | `npx expo config --type public --json` and `eas.json` | `updates.enabled` is true, the URL is `u.expo.dev/5e837ebd-…`, `runtimeVersion.policy` is `fingerprint`, the `beta` build has `channel: production`, and the `beta` submit has iOS `ascAppId` and the key fields. | PR CI, Mobile job | All present |
 | P3 | Fingerprint guard | An offline fingerprint of `apps/mobile` | It hashes at least one Expo native module source for iOS. | PR CI, Mobile job | Count is above 0 |
 | P4 | Nothing else broke | The existing Mobile job | Install, deps check, lint, typecheck, tests, iOS and Android exports | PR CI | Required `Check` green |
 
 **After deploy** (owner decision; it stops after A2 passes once):
 
-- **A1. Bootstrap build.** The first main run starts one iOS build for the new fingerprint F. It finishes and its submission to TestFlight succeeds. `check` shows the build's recorded fingerprint equals F (`fingerprint:compare`). The build appears in the owner's TestFlight app. If it doesn't appear on its own, stop and report: TestFlight group distribution is a setup step outside this spec.
+- **A1. Bootstrap build.** The first main run fails asking for a build, and the owner presses Run workflow with mode `build`. That starts one iOS build for the new fingerprint F. It finishes and its submission to TestFlight succeeds. `check` shows the build's recorded fingerprint equals F and Apple's state is VALID. The build appears in the owner's TestFlight app. If it doesn't appear on its own, stop and report: TestFlight group distribution is a setup step outside this spec.
 - **A2. First OTA reaches the iPhone.** After the owner installs that build, the next merged phone change produces a run whose summary says it published an OTA for F. `check` shows that update group's runtime version equals the newest build's. After the owner opens the app twice, `update:insights` for that group shows at least one iOS launch and zero crashes. Anything else fails.
 
 Every check in the table must pass to merge. Pass means every step shows its stated result. Anything else fails the step, and no check may skip silently.
