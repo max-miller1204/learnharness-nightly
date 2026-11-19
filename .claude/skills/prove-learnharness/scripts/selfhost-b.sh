@@ -127,7 +127,6 @@ HDIR=$PROVE_CACHE/head-archives/$HKEY
 mkdir -p "$PROVE_CACHE/head-archives"
 B_CACHED=$HDIR/learnharness-$VB-$ARCH.tar.gz
 C_CACHED=$HDIR/learnharness-$VC-$ARCH.tar.gz
-t_pack=$(date +%s.%N)
 (
 	flock 9
 	if [ -f "$HDIR/.prove-done" ]; then
@@ -149,7 +148,6 @@ t_pack=$(date +%s.%N)
 ) 9>"$HDIR.lock" || die "packing B or C failed (see $SH/pack.log)"
 exec 3>&-   # head build lock released: the cached files no longer depend on .next/standalone
 [ -f "$C_CACHED" ] && [ -f "$B_CACHED" ] || die "the B/C archive cache $HDIR is incomplete"
-record_time "$RUN" "selfhost B: archives B and C ($(grep -q "reusing cached B and C archives $HKEY" "$SH/pack.log" && echo "cache hit" || echo "packed"))" "$t_pack"
 # Prune old pairs that no run holds right now, plus leftovers of interrupted
 # packs (*.tmp). Lock files stay: another run may be waiting on one.
 # shellcheck disable=SC2012

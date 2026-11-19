@@ -24,10 +24,8 @@ ensure_deps() { # <dir> <log>
 }
 
 next_build() { # <dir> <version> <log> <slot fd> <side>
-	local dir=$1 version=$2 log=$3 fd=$4 side=$5 try twait
-	twait=$(date +%s.%N)
+	local dir=$1 version=$2 log=$3 fd=$4 side=$5 try
 	acquire_build_slot "$fd" || { say "[$side] no machine build slot free within ${BUILD_SLOT_WAIT_S}s (MACHINE_BUILD_SLOTS=$MACHINE_BUILD_SLOTS)"; return 1; }
-	record_time "$RUN" "$side build: wait for a machine build slot (got $BUILD_SLOT of $MACHINE_BUILD_SLOTS)" "$twait"
 	# The slot is held by this fd for the build and released when it closes.
 	next_build_slotted "$dir" "$version" "$log"
 	local code=$?
@@ -61,10 +59,8 @@ build_head() {
 	exec 8>"$lock"
 	flock 8
 	want="$(worktree_hash) $version"
-	local tstart; tstart=$(date +%s.%N)
 	if [ "$REUSE_HEAD_BUILD" = 1 ] && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$want" ]; then
 		say "[head] reusing build for tree $(cut -d' ' -f1 "$stamp")"
-		record_time "$RUN" "head build (reused, tree unchanged)" "$tstart"
 	else
 		local t0=$SECONDS saved
 		ensure_deps "$REPO" "$log"
@@ -82,12 +78,11 @@ build_head() {
 			say "[head] set the repo's data/ aside during the build (back after: $aside)"
 		fi
 		restore_data() { if [ -e "$aside" ]; then if [ -e "$REPO/data" ]; then say "[head] WARNING: $REPO/data reappeared during the build; the original is kept at $aside"; else mv "$aside" "$REPO/data"; fi; fi; }
-		next_build "$REPO" "$version" "$log" 5 head || { restore_data; cp "$saved" "$REPO/next-env.d.ts"; rm -f "$saved"; record_time "$RUN" "head build (FAILED)" "$tstart" 1; tail -40 "$log" >&2; die "head build failed (log: $log)"; }
+		next_build "$REPO" "$version" "$log" 5 head || { restore_data; cp "$saved" "$REPO/next-env.d.ts"; rm -f "$saved"; tail -40 "$log" >&2; die "head build failed (log: $log)"; }
 		restore_data
 		cp "$saved" "$REPO/next-env.d.ts"; rm -f "$saved"
 		printf '%s\n' "$want" >"$stamp"
 		say "[head] built in $((SECONDS - t0))s"
-		record_time "$RUN" "head build$(grep -q SecurityFatalError "$log" && echo ' (incl. Next security-notice retry)')" "$tstart"
 	fi
 	exec 8>&-
 	echo "head $REPO"
@@ -99,13 +94,11 @@ build_base() {
 	sha=$(base_sha)
 	dir=$PROVE_CACHE/base/$sha
 	mkdir -p "$PROVE_CACHE/base"
-	local tstart; tstart=$(date +%s.%N)
 	exec 9>"$PROVE_CACHE/base/$sha.lock"
 	flock 9
 	if [ -f "$dir/.prove-done" ]; then
 		say "[base] reusing cached build of ${sha:0:12}"
 		touch "$dir/.prove-done"
-		record_time "$RUN" "base build (cache hit ${sha:0:12}, incl. lock wait)" "$tstart"
 	else
 		local t0=$SECONDS
 		rm -rf "$dir"
@@ -123,10 +116,9 @@ build_base() {
 		fi
 		ensure_deps "$dir" "$log" || { rm -rf "$dir"; die "base npm ci failed (log: $log)"; }
 		say "[base] building ${sha:0:12} as $version"
-		next_build "$dir" "$version" "$log" 4 base || { record_time "$RUN" "base build (FAILED, cold ${sha:0:12})" "$tstart" 1; tail -40 "$log" >&2; rm -rf "$dir"; die "base build failed (log: $log)"; }
+		next_build "$dir" "$version" "$log" 4 base || { tail -40 "$log" >&2; rm -rf "$dir"; die "base build failed (log: $log)"; }
 		echo "$sha $version" >"$dir/.prove-done"
 		say "[base] built in $((SECONDS - t0))s"
-		record_time "$RUN" "base build (cold ${sha:0:12}, incl. npm ci$(grep -q SecurityFatalError "$log" && echo ', Next security-notice retry'))" "$tstart"
 	fi
 	exec 9>&-
 	# Keep the newest $BASE_CACHE_KEEP builds; never the one just used, and

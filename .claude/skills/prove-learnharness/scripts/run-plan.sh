@@ -3,13 +3,13 @@
 #
 # Runs the whole plan scope.mjs prints, in one go, so a checker spends its
 # turns on the evidence instead of typing commands:
-#   - a new run folder, then each planned step in order, each timed;
+#   - a new run folder, then each planned step in order;
 #   - a failing setup step (build, start, health, electron launch) stops the
 #     run as BLOCKED; a failing check (a drive, a compare, selfhost) is
 #     evidence and the plan carries on;
 #   - cleanup (stop.sh) always runs, even after a BLOCKED step or Ctrl-C;
-#   - prints a summary: each check's result line, failing steps, the timing
-#     table, and the run folder. Prints the run folder alone on the last line.
+#   - prints a summary: each check's result line, failing steps, and the run
+#     folder. Prints the run folder alone on the last line.
 # Exit: 0 every check passed (still not a verdict: read the evidence),
 # 1 a check failed, or the change itself failed to build, start or launch
 # (BROKEN: back to the builder), 2 BLOCKED (base or environment failed,
@@ -53,8 +53,7 @@ CLEANED=0
 cleanup() {
 	[ "$CLEANED" = 1 ] && return
 	CLEANED=1
-	scripts/timed.sh "$RUN" "cleanup" scripts/stop.sh "$RUN" >>"$RUN/run-plan.log" 2>&1
-	node scripts/timings.mjs "$RUN" >"$RUN/timings.md"
+	scripts/stop.sh "$RUN" >>"$RUN/run-plan.log" 2>&1
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
@@ -66,9 +65,9 @@ head_failed=""
 for step in "${STEPS[@]}"; do
 	case "$step" in
 		'RUN=$(scripts/new-run.sh'*) continue ;;                          # done above
-		*'"scope" node scripts/scope.mjs'*)                                # same scope args as this run
-			scripts/timed.sh "$RUN" "scope" node scripts/scope.mjs "$@" >"$RUN/scope.txt" 2>&1; continue ;;
-		*'scripts/stop.sh'*|*'scripts/timings.mjs'*) continue ;;           # cleanup() does both
+		'node scripts/scope.mjs'*)                                         # same scope args as this run
+			node scripts/scope.mjs "$@" >"$RUN/scope.txt" 2>&1; continue ;;
+		*'scripts/stop.sh'*) continue ;;                                   # cleanup() does it
 		'#'*) blocked="${step#\# }"; break ;;                              # a PLANNED surface: BLOCKED
 	esac
 	# A plan line chains commands with "; " (no planned command contains one);
@@ -109,8 +108,6 @@ cleanup
 	for p in "${failed_parts[@]}"; do echo "failed: $p"; done
 	[ -n "$head_failed" ] && echo "BROKEN: $head_failed (see run-plan.log and build-head.log or app.log)"
 	[ -n "$blocked" ] && echo "BLOCKED: $blocked (see run-plan.log)"
-	echo
-	cat "$RUN/timings.md"
 } | tee "$RUN/summary.txt" >&2
 echo "$RUN"
 [ -n "$head_failed" ] && exit 1
