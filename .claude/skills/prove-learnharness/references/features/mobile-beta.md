@@ -48,4 +48,12 @@ Use a server with `attachment-uploads-v1` and the fake model's teach scenario. G
 - **Saved and missing.** Delete a claimed file's bytes on the disposable server and reopen: the chip shows "File unavailable. Attach it again to use it."
 - **iOS.** On the TestFlight build, check the two permission texts, that a HEIC library photo uploads as `.jpg` JPEG, and that no microphone prompt or Info.plist string exists.
 
+## Session basics (mobile parity area 4)
+
+Follow [the session basics spec](../../../../../docs/specs/mobile-session-basics.md). Before starting each disposable server, copy the [graph-traces fixture](../../../../../tests/fixtures/mobile-session-basics/) into its data folder: `chats/*.json` into `DATA_DIR/chats/` and `graph/nodes.jsonl` into `DATA_DIR/graph/`. "Square roots to delete" contributed two nodes. "Square of two" is shared with "Squares kept elsewhere"; "Positive square root" is its own. Use a fresh copy for each delete mode. Unchecked, both nodes stay. Checked, "Positive square root" goes and "Square of two" stays with only the other session's provenance. Check `DATA_DIR/graph/nodes.jsonl` and the browser's graph after each.
+
+- On a server without `session-basics-v1` (the pinned `bfb1e5d`), a long press opens no menu and TalkBack lists no row actions. Search and the switch still work.
+- The same query in the phone and the web sidebar gives the same rows in the same order. Opening a result with one tap works while the keyboard is up. The query is still there after Back, and gone after Servers and another server.
+- Compare the exported file (`adb shell run-as <package> ls cache/session-exports`, or save it from the share sheet) byte for byte with the browser's download of the same session.
+
 Record each observation, the device screenshot or recording, and the saved server or browser evidence in the run receipt. Keep codes and bearers out of receipts. Mark missing steps as blocked or unproven.

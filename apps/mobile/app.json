@@ -28,7 +28,8 @@
         "photosPermission": "Allow LearnHarness Nightly to access your photos so you can send them to your sessions.",
         "microphonePermission": false
       }],
-      "expo-secure-store"
+      "expo-secure-store",
+      ["expo-splash-screen", { "backgroundColor": "#faf9f5", "dark": { "backgroundColor": "#141414" } }]
     ],
     "extra": { "eas": { "projectId": "5e837ebd-6337-4a8b-9cfa-3d181424fe40" } },
     "owner": "max-miller1204s-team"
