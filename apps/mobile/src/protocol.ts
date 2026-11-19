@@ -49,7 +49,7 @@ type Transport = (url: string, init: {
   signal: AbortSignal;
   credentials: "omit";
   redirect: "error";
-}) => Promise<Pick<Response, "ok" | "status" | "headers" | "json" | "text" | "body">>;
+}) => Promise<Pick<Response, "ok" | "status" | "headers" | "json" | "text" | "body" | "arrayBuffer">>;
 
 export function apiClient(transport: Transport, address: string, bearer?: string) {
   const origin = httpsOrigin(address);
@@ -66,11 +66,11 @@ export function apiClient(transport: Transport, address: string, bearer?: string
     return { [PROTOCOL_HEADER]: String(CLIENT_PROTOCOL_VERSION), ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) };
   }
 
-  async function request(path: string, options: { signal: AbortSignal; body?: string; contentType?: string; stream?: boolean; method?: "DELETE"; dated?: boolean }) {
+  async function request(path: string, options: { signal: AbortSignal; body?: string; contentType?: string; stream?: boolean; method?: "DELETE" | "PUT"; dated?: boolean; file?: boolean }) {
     const href = route(path);
     const headers: Record<string, string> = {
       ...credentialHeaders(),
-      Accept: options.stream ? "text/event-stream" : "application/json",
+      Accept: options.stream ? "text/event-stream" : options.file ? "*/*" : "application/json",
     };
     if (options.body !== undefined) headers["Content-Type"] = options.contentType ?? "application/json";
 
@@ -106,6 +106,7 @@ export function apiClient(transport: Transport, address: string, bearer?: string
           response.status, error?.code);
       }
       if (options.stream) return response.body;
+      if (options.file) return { bytes: new Uint8Array(await response.arrayBuffer()), disposition: response.headers.get("content-disposition") };
       if (response.headers.get("content-type")?.includes("text/event-stream")) {
         // A sibling built-in question can keep the turn from starting.
         await response.body?.cancel();
@@ -134,6 +135,13 @@ export function apiClient(transport: Transport, address: string, bearer?: string
     /** The body with the response's Date header. */
     postDated<T>(path: string, body: object, signal: AbortSignal): Promise<{ body: T; date: string | null }> {
       return request(path, { body: JSON.stringify(body), signal, dated: true }) as Promise<{ body: T; date: string | null }>;
+    },
+    put<T>(path: string, body: object, signal: AbortSignal): Promise<T> {
+      return request(path, { body: JSON.stringify(body), signal, method: "PUT" }) as Promise<T>;
+    },
+    /** A file's exact bytes with its Content-Disposition header. */
+    download(path: string, signal: AbortSignal): Promise<{ bytes: Uint8Array; disposition: string | null }> {
+      return request(path, { signal, file: true }) as Promise<{ bytes: Uint8Array; disposition: string | null }>;
     },
     async remove(path: string, signal: AbortSignal): Promise<void> {
       await request(path, { signal, method: "DELETE" });

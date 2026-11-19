@@ -213,8 +213,10 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
           files={savedFiles} unavailableFiles={unavailableFiles} />
         {busy && <Text accessibilityLiveRegion="polite" style={s.muted}>Reply in progress…</Text>}
         {record?.compacting && <Text style={s.muted}>Updating session context…</Text>}
-        <Notice boxed>{session.refreshError}</Notice>
-        {!!session.refreshError && <View style={s.row}><Button onPress={() => refresh(true)}>Reconnect</Button></View>}
+        <Notice boxed>{session.deleted ? "This session was deleted." : session.refreshError}</Notice>
+        {!!session.refreshError && <View style={s.row}>{session.deleted
+          ? <Button onPress={back}>Back to sessions</Button>
+          : <Button onPress={() => refresh(true)}>Reconnect</Button>}</View>}
         <Notice boxed>{session.writeError}</Notice>
         <Notice boxed>{failure}</Notice>
         {failure && !busy && !pendingPlugin && (

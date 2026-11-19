@@ -29,9 +29,10 @@ import type { AttachmentReference } from "../core/attachments.ts";
 import type { GraphContextPick, LhMessage } from "../core/native-messages.ts";
 import type { SessionPricing } from "../core/prices.ts";
 import type { JobKind, JobRecord, JobStatus } from "../core/contracts/jobs.ts";
+import type { ChatDeleteMode, ChatDeletionStats } from "../core/graph-deletion.ts";
 import type { QuestionAnswerData } from "../core/question-core.ts";
 
-export type { AttachmentReference, ChatInput, ChatKind, ChatListItem, ChatRecord, GraphContextPick, ImageSnapshot, JobKind, JobRecord, JobStatus, LhMessage, QuestionAnswerData, ServerEvents, ServerEventType, SessionCoverage, SessionPricing };
+export type { AttachmentReference, ChatDeleteMode, ChatDeletionStats, ChatInput, ChatKind, ChatListItem, ChatRecord, GraphContextPick, ImageSnapshot, JobKind, JobRecord, JobStatus, LhMessage, QuestionAnswerData, ServerEvents, ServerEventType, SessionCoverage, SessionPricing };
 
 // ─── Version ────────────────────────────────────────────────────────────────
 
@@ -344,3 +345,37 @@ export interface QuestionDismissRequest {
 
 /** 200 when saved, 202 when parked for the active turn's settlement. */
 export type QuestionDismissResponse = { ok: true; parked?: true };
+
+/** Optional protocol 1 extension: rename, delete and export a session from
+ * the session list (docs/specs/mobile-session-basics.md). The routes are the
+ * web sidebar's own, unchanged. */
+export const SESSION_BASICS_V1 = "session-basics-v1";
+
+export const SESSION_BASICS_ROUTES = {
+	/** PUT RenameSessionRequest -> RenameSessionResponse. 400 for a blank title,
+	 * 404 for an unknown session. A rename never reorders the list. */
+	rename: (chatId: string) => `/api/chats/${segment(chatId)}`,
+	/** DELETE -> DeleteSessionResponse. 404 unknown, 409 `turn_in_flight` or
+	 * `jobs_running`, 503 `extraction_winding_down`: the `error` is written for
+	 * the user. Removes the record for good. */
+	remove: (chatId: string, mode: ChatDeleteMode) => `/api/chats/${segment(chatId)}?mode=${mode}`,
+	/** GET -> the session as `text/markdown`, named by Content-Disposition. 404 unknown. */
+	markdown: (chatId: string) => `/api/chats/${segment(chatId)}/markdown`,
+} as const;
+
+export interface RenameSessionRequest {
+	title: string;
+}
+
+/** The server's trimmed title. */
+export interface RenameSessionResponse {
+	title: string;
+}
+
+export interface DeleteSessionResponse {
+	ok: true;
+	mode: ChatDeleteMode;
+	stats: ChatDeletionStats;
+	jobsRemoved: number;
+	graphRevision: number;
+}
