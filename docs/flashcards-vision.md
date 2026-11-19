@@ -76,7 +76,7 @@ Generation receives the selected propositions, their immediate reasoning-chain n
 
 First generation assigns a proposition to its birth-source deck. Repeated generation adds useful missing cues in place; it does not create a new deck, move the proposition, or change its existing memberships.
 
-Repeated generation preserves manual edits, existing cards, review history, and the proposition's schedule. It adds useful missing cards rather than replacing what is already there. The exact creation timing of initially needed source decks, including zero-card results and failed chunks, remains an implementation-plan decision.
+Repeated generation preserves manual edits, existing cards, review history, and the proposition's schedule. It adds useful missing cards rather than replacing what is already there.
 
 Generation follows LearnHarness's current **cheap model slot** unless the learner has explicitly configured a plugin-specific model/thinking override. Clearing the override returns to following the slot. The slot is resolved when generation starts, not copied permanently into plugin settings. An unavailable or unconfigured model produces an explicit error, not a silent fallback.
 
@@ -90,7 +90,7 @@ Version one allows **one active generation batch at a time**, with independent c
 
 Successful chunks are accepted independently and their cards become available without waiting for the whole batch. A failure in another chunk does not discard accepted work. Cancellation stops further additions without removing cards already accepted, and a batch with failures is visibly partial rather than reported as successful.
 
-Exact packing, limits, and retry behavior still require an implementation plan. The vision does not imply unlimited parallelism, a competing plugin-local admission system, or automatic replay of interrupted work.
+The vision does not imply unlimited parallelism, a competing plugin-local admission system, or automatic replay of interrupted work.
 
 ## Review: one cue, one proposition-level schedule
 
