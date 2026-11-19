@@ -663,11 +663,14 @@ async function pinUpdate() {
 /** Make sure exactly `target` is downloaded (electron-updater checks its SHA-512). */
 async function downloadPinnedUpdate(target) {
 	if (!autoUpdater || installing) throw new Error("The updater is busy or unavailable.");
-	if (updateState.status === "downloaded" && updateState.version === target) return;
-	const downloaded = new Promise((resolve) => autoUpdater.once("update-downloaded", (info) => resolve(info?.version)));
-	await autoUpdater.downloadUpdate();
-	const version = await Promise.race([downloaded, new Promise((resolve) => setTimeout(() => resolve(updateState.version), 1000))]);
-	if (version !== target || updateState.status !== "downloaded" || updateState.version !== target) throw new Error(`Downloaded ${version}, not the pinned ${target}.`);
+	// A download of an older offer already under way finishes first; then fetch the pinned one.
+	for (let attempt = 0; attempt < 2; attempt++) {
+		if (updateState.status === "downloaded" && updateState.version === target) return;
+		const downloaded = new Promise((resolve) => autoUpdater.once("update-downloaded", (info) => resolve(info?.version)));
+		await autoUpdater.downloadUpdate();
+		await Promise.race([downloaded, new Promise((resolve) => setTimeout(resolve, 1000))]);
+	}
+	if (updateState.status !== "downloaded" || updateState.version !== target) throw new Error(`Downloaded ${updateState.version}, not the pinned ${target}.`);
 }
 
 /** Quit and install exactly `target`, with no re-check. */
@@ -698,8 +701,8 @@ function updateEverythingDeps(list) {
 		},
 		selection: () => list.current(),
 		// No protocol header: the server may come back speaking a newer one.
-		request: (origin, pathname, { token, method = "GET", body } = {}) => requestServer(origin, pathname, {
-			token, method, protocol: false,
+		request: (origin, pathname, { token, method = "GET", body, timeoutMs } = {}) => requestServer(origin, pathname, {
+			token, method, protocol: false, ...(timeoutMs && { timeoutMs }),
 			...(body && { body: JSON.stringify(body), headers: { "content-type": "application/json" } }),
 		}),
 		confirm: ask,

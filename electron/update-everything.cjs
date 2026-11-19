@@ -74,7 +74,7 @@ async function readJSON(response) {
  *   updater.downloadPinned(v)  make sure exactly v is downloaded (throws otherwise)
  *   updater.installPinned(v)   quit and install exactly v (never a newer one)
  *   selection()                { origin, token } of the open remote window, or null
- *   request(origin, path, { token, method, body }) a fetch to that exact origin
+ *   request(origin, path, { token, method, body, timeoutMs }) a fetch to that exact origin
  *   confirm({ message, detail, buttons, signal }) -> button index (native dialog)
  *   tell({ message, detail })  a native notice with one OK button
  *   progress(text)             cover the server's page with the ghost dashboard line
@@ -98,12 +98,15 @@ function createUpdateEverything(deps) {
 		};
 	}
 
-	async function serverUpdates(origin, token) {
+	/** While `restarting`, an unreadable answer (the HTTPS proxy's 502 while the
+	 *  server is down) means "not back yet": null instead of a failure. */
+	async function serverUpdates(origin, token, { restarting = false } = {}) {
 		const response = await deps.request(origin, "/api/updates", { token });
 		if (response.status === 401) throw new RunProblem("This desktop is no longer paired with the server.", { server: true, kind: "pair" });
 		const body = response.ok ? await readJSON(response) : null;
-		if (!body || typeof body.runningVersion !== "string") throw new RunProblem("Couldn’t read the server’s version. Try again.", { server: true });
-		return body;
+		if (body && typeof body.runningVersion === "string") return body;
+		if (restarting) return null;
+		throw new RunProblem("Couldn’t read the server’s version. Try again.", { server: true });
 	}
 
 	async function runningCount(origin, token) {
@@ -121,7 +124,8 @@ function createUpdateEverything(deps) {
 		deps.progress(`Updating ${label} to ${target}… This can take a few minutes.`);
 		let response;
 		try {
-			response = await deps.request(origin, INSTALL_VERSION_PATH, { token, method: "POST", body: { version: target } });
+			// The server answers once it has downloaded and checked the version: allow as long as the wait.
+			response = await deps.request(origin, INSTALL_VERSION_PATH, { token, method: "POST", body: { version: target }, timeoutMs: HANDOFF_TIMEOUT_MS });
 		} catch {
 			throw new RunProblem(`Couldn’t reach ${label}. Nothing was changed.`, { server: true });
 		}
@@ -135,7 +139,8 @@ function createUpdateEverything(deps) {
 			try {
 				const health = await deps.request(origin, "/api/health", {});
 				const healthy = health.ok && (await readJSON(health))?.version === target;
-				const state = await serverUpdates(origin, token);
+				const state = await serverUpdates(origin, token, { restarting: true });
+				if (!state) throw new Error("not back yet");
 				if (healthy && state.runningVersion === target && state.committed === true) return;
 				if (state.instance === before && state.status === "error") {
 					throw new RunProblem(`${label} couldn’t start the update: ${state.message ?? "the launcher refused it."} Your app wasn’t changed.`, { server: true });
@@ -164,18 +169,18 @@ function createUpdateEverything(deps) {
 			target = null;
 		}
 		if (!target || !isNewerVersion(target, deps.appVersion)) {
-			deps.tell({ message: "LearnHarness is up to date.", detail: "No newer version of this app was found." });
+			await deps.tell({ message: "LearnHarness is up to date.", detail: "No newer version of this app was found." });
 			return;
 		}
 		let server;
 		try {
 			server = await serverUpdates(selection.origin, selection.token);
 		} catch (error) {
-			deps.tell({ message: "Couldn’t update everything.", detail: error.message });
+			await deps.tell({ message: "Couldn’t update everything.", detail: error.message });
 			return;
 		}
 		if (isNewerVersion(server.runningVersion, target)) {
-			deps.tell({ message: "Couldn’t update everything.", detail: `${label} runs ${server.runningVersion}, newer than this app’s update (${target}). Check for updates again.` });
+			await deps.tell({ message: "Couldn’t update everything.", detail: `${label} runs ${server.runningVersion}, newer than this app’s update (${target}). Check for updates again.` });
 			return;
 		}
 		const serverBehind = compareVersions(server.runningVersion, target) < 0;
@@ -186,13 +191,17 @@ function createUpdateEverything(deps) {
 		if (choice !== 0) return;
 
 		run = { target, step: "downloading" };
+		let serverDone = false;
 		try {
 			try {
 				await deps.updater.downloadPinned(target);
 			} catch {
 				throw new RunProblem("Couldn’t download the app update. Nothing was changed.");
 			}
-			if (serverBehind) await updateServer(selection, label, target);
+			if (serverBehind) {
+				await updateServer(selection, label, target);
+				serverDone = true;
+			}
 			run.step = "restarting";
 			const countdown = (deps.timeoutSignal ?? AbortSignal.timeout)(RESTART_DELAY_MS);
 			const later = await deps.confirm({
@@ -210,9 +219,15 @@ function createUpdateEverything(deps) {
 			deps.updater.installPinned(target);
 		} catch (error) {
 			run = null;
+			if (serverDone) {
+				// The server is already on the target: uncover its new page and say what is left.
+				deps.reconnect(selection.origin);
+				await deps.tell({ message: "Couldn’t finish updating this app.", detail: `${label} is on ${target}. Use Update everything to try again.` });
+				return;
+			}
 			const problem = error instanceof RunProblem ? error : new RunProblem("Update everything stopped. Nothing was changed.");
 			if (problem.server) deps.fail(selection.origin, { kind: problem.kind, message: problem.message });
-			else deps.tell({ message: "Couldn’t update everything.", detail: problem.message });
+			else await deps.tell({ message: "Couldn’t update everything.", detail: problem.message });
 		}
 	}
 

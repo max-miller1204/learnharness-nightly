@@ -37,7 +37,7 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 	const remote = {
 		running: server, committed: true, instance: "old", status: "up-to-date", notice: null as unknown, message: null as string | null,
 		health: server as string | null, installReply: null as Reply | null, onInstall: () => {}, items: [{ kind: "turn" }, { kind: "job" }],
-		down: false, tick: undefined as (() => void) | undefined,
+		down: false, proxy502: false, installFails: false, tick: undefined as (() => void) | undefined,
 	};
 	let finished: () => void = () => {};
 	const done = new Promise<void>((resolve) => { finished = resolve; });
@@ -49,7 +49,7 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 			download: () => log.push("download"),
 			pin: async () => { log.push("pin"); return offered; },
 			downloadPinned: async (v: string) => { if (downloadFails) throw new Error("sha512 checksum mismatch"); log.push(`download ${v}`); },
-			installPinned: (v: string) => { log.push(`install ${v}`); finished(); },
+			installPinned: (v: string) => { if (remote.installFails) throw new Error("not ready"); log.push(`install ${v}`); finished(); },
 		},
 		selection: () => ({ origin: ORIGIN, token: "bearer" }),
 		request: async (origin: string, pathname: string, options: { token?: string; method?: string; body?: unknown }) => {
@@ -62,6 +62,8 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 				return Response.json(reply.body, { status: reply.status ?? 200 });
 			}
 			if (remote.down) throw new Error("ECONNREFUSED");
+			// Tailscale Serve (or any HTTPS proxy) answers 502 while the server is down.
+			if (remote.proxy502) return new Response("Bad Gateway", { status: 502 });
 			if (pathname === "/api/health") return Response.json({ ok: true, version: remote.health });
 			if (pathname === "/api/updates/running") return Response.json({ items: remote.items });
 			return Response.json({ runningVersion: remote.running, committed: remote.committed, instance: remote.instance, status: remote.status, notice: remote.notice, message: remote.message });
@@ -72,7 +74,7 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 			if (answer === "wait") return await new Promise<number>((resolve) => prompt.signal!.addEventListener("abort", () => resolve(1)));
 			return answer;
 		},
-		tell: (notice: { message: string; detail: string }) => { notices.push(notice); finished(); },
+		tell: async (notice: { message: string; detail: string }) => { notices.push(notice); finished(); },
 		progress: (text: string) => progress.push(text),
 		fail: (origin: string, problem: { kind: string; message: string }) => { failures.push(problem.message); kinds.push(problem.kind); finished(); },
 		reconnect: (origin: string) => { log.push(`reconnect ${origin}`); finished(); },
@@ -96,9 +98,10 @@ test("the happy path: pin, confirm, download, server to exactly X, wait for the 
 	const f = fixture();
 	let polls = 0;
 	f.remote.onInstall = () => {
-		f.remote.down = true;
+		f.remote.proxy502 = true;
 		f.remote.tick = () => {
 			polls++;
+			if (polls === 1) { f.remote.proxy502 = false; f.remote.down = true; }
 			if (polls === 2) { f.remote.down = false; f.remote.running = V72; f.remote.health = V72; f.remote.instance = "trial"; f.remote.committed = false; }
 			if (polls === 4) f.remote.committed = true;
 		};
@@ -110,7 +113,8 @@ test("the happy path: pin, confirm, download, server to exactly X, wait for the 
 	await f.done;
 	assert.deepEqual(f.log, ["pin", `download ${V72}`, `install ${V72}`], "downloaded before the server was asked, installed only the pinned version");
 	const install = f.requests.find((request) => request.path === "/api/updates/install-version")!;
-	assert.deepEqual(install, { path: "/api/updates/install-version", token: "bearer", method: "POST", body: { version: V72 } });
+	assert.deepEqual(install, { path: "/api/updates/install-version", token: "bearer", method: "POST", body: { version: V72 }, timeoutMs: HANDOFF_TIMEOUT_MS }, "the server answers after downloading: no 15 s cut-off");
+	assert.deepEqual(f.failures, [], "the proxy's 502 and a refused connection both mean: not back yet");
 	const askedAt = f.requests.indexOf(install);
 	assert.ok(f.requests.slice(askedAt).some((request) => request.path === "/api/health"), "health is checked");
 	assert.ok(polls >= 4, "a healthy trial is not enough: it waits for the launcher's commit");
@@ -236,6 +240,36 @@ test("status reports the run, and a second click while the dialog is open is ign
 	assert.equal(f.ue.running(), false);
 	f.ue.check();
 	assert.deepEqual(f.log.slice(-1), ["check"]);
+});
+
+test("a failure after the server is done uncovers its new page and says what is left", async () => {
+	const f = fixture();
+	f.remote.installFails = true;
+	f.remote.onInstall = () => { f.remote.running = V72; f.remote.health = V72; f.remote.instance = "new"; };
+	await f.ue.install();
+	await f.done;
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.ok(f.log.includes(`reconnect ${ORIGIN}`), "the ghost cover goes away");
+	assert.deepEqual(f.notices.at(-1), { message: "Couldn’t finish updating this app.", detail: `max-desktop is on ${V72}. Use Update everything to try again.` });
+	assert.deepEqual(f.failures, []);
+});
+
+test("a notice keeps the page's install() waiting, so a page can't stack dialogs", async () => {
+	let close: () => void = () => {};
+	const f = fixture({ offered: null });
+	const ue = createUpdateEverything({
+		appVersion: V71,
+		updater: { state: () => ({ status: "up-to-date", version: null }), check() {}, download() {}, pin: async () => null },
+		selection: () => ({ origin: ORIGIN, token: "bearer" }),
+		tell: (notice: { message: string; detail: string }) => { f.notices.push(notice); return new Promise<void>((resolve) => { close = resolve; }); },
+	});
+	const first = ue.install();
+	await new Promise((resolve) => setImmediate(resolve));
+	await ue.install();
+	assert.equal(f.notices.length, 1, "a second call while the notice is open does nothing");
+	close();
+	await first;
+	assert.equal(f.notices[0]!.message, "LearnHarness is up to date.");
 });
 
 test("the relaunch reopens that server once and says so when the app didn't change", () => {
