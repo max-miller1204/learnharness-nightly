@@ -1,6 +1,6 @@
 # Fork roadmap
 
-Future work for `max-miller1204/learnharness-nightly` that was considered while planning the self-hosted nightly server and deliberately **not built yet**. Each entry is a starting spec, not a commitment.
+Future work for `max-miller1204/learnharness-nightly` that was considered while planning the self-hosted nightly server and deliberately **not built**. Each entry is a starting spec, not a commitment. An entry's number is a stable ID from the planning conversation (not a priority), so references to an item never change.
 
 How to read an entry:
 
@@ -17,124 +17,7 @@ Baseline the entries build on (the self-hosting plan):
 
 One structural rule carries over to every entry: **the launcher stays a separate process from the server.** It's what recovers from a broken version, so recovery logic must never depend on the server working.
 
-## Index
-
-Rows are in build order. **Order** is the planned sequence, after the self-hosting plan is built. **#** is a stable ID from the planning conversation (not a priority), so references to an item never change when the order does.
-
-| Order | # | Item | Group | Depends on | Touches core |
-|---|---|---|---|---|---|
-| 1 | 20 | Gemini CLI and Codex CLI providers (both parked) | Providers | none | Moderate (new provider folders, Settings rows) |
-| Done | 12 | Preview builds of PRs | Review workflow | none | No |
-| 3 | 6 | Login and pairing | Access + security | none | Yes |
-| 4 | 1 | Electron desktop nightlies | Desktop + distribution | none | Small (`electron/main.cjs`) |
-| Later | 2 | Removing Electron | Desktop + distribution | none | Yes (deletions) |
-| Done | 3 | macOS self-hosting | Desktop + distribution | none | No |
-| Later | 4 | Docker image | Desktop + distribution | none | No |
-| Later | 5 | LAN mode | Access + security | 6 | Small |
-| Done | 7 | Updates like T3 Code, plus What's new | Ops + polish | none | Medium (`self-update.ts`, desktop updater, sidebar) |
-| Later | 8 | Chromium on demand | Ops + polish | none | No |
-| Later | 10 | Side-by-side installs | Desktop + distribution | 11 | No |
-| Later | 11 | Stable channel | Desktop + distribution | none | Small (update UI channel picker) |
-| Later | 14 | Keep the machine awake during agent work | Ops + polish | none | Small |
-| Later | 15 | Resource limits for agent processes | Ops + polish | none | Yes |
-| Later | 17 | Failure and conflict notifications | Ops + polish | none | Small |
-| Later | 18 | Signed releases | Access + security | none | Small (`release.ts`) |
-| Later | 19 | Scheduled and off-machine backups | Ops + polish | none | No |
-| Later | 21 | Client protocol and server info | Clients + remote access | 6 | Yes |
-| Later | 22 | Mobile app (Expo) | Clients + remote access | 6, 21 | Small |
-| Later | 23 | Desktop server list (choose a backend) | Clients + remote access | 6, 21 | Moderate (`electron/`) |
-| Later | 24 | Remote-safe attachments | Clients + remote access | 6 | Yes |
-| Later | 25 | Office and data formats | Files + ingestion | none | Yes |
-| Later | 26 | More file types in Extract files | Files + ingestion | 25 | Yes |
-| Later | 27 | @-mentions for files and folders | Files + ingestion | none (remote use: 24) | Yes |
-| Later | 28 | Offering fork fixes upstream | Review workflow | none | No |
-| Later | 29 | Versioned plugin API package | Plugins | none | Small (build and release scripts, plugin manifests) |
-
-"Later" items have no order yet; they're listed by ID. Item 16 (in-app update status) moved into the self-hosting plan itself.
-
-Why this order: 20 was agreed as next. 12 helps with reviewing upstream work, the main job of this fork. 6 unlocks 5 and any remote access beyond Tailscale. 1 is the largest single project.
-
-Items 21 to 24 come from comparing LearnHarness with T3 Code and OpenBot (`nightly-labs/openbot`): in both, the server is the product and every app (desktop, web, phone) is a client that connects to a server you choose. All four need login and pairing (6) first. If they're built, the suggested order among them is 21, 22, 24, 23.
-
-Items 25 to 27 cover the owner's ingestion workflow (PDFs, code, spreadsheets and more) and file mentions in the composer. They don't depend on remote access, except that @-mentions from a phone only reach files the server can see.
-
----
-
-## Providers
-
-### 20. Gemini CLI and Codex CLI providers
-
-**Status.** Gemini CLI: **parked** after the 2026-11-17 spike. The CLI no longer accepts personal Google sign-in (it points users to Antigravity), so it can't reach Gemini subscriptions. See [docs/specs/gemini-cli-provider.md](specs/gemini-cli-provider.md).
-
-Codex CLI: **parked, not built** (2026-11-17). A spike ([record](specs/codex-cli-provider.md)) showed the Codex CLI can run with its tools off, but only with about 25 flags plus a rewrite of Codex's internal model catalog, a debug command for model discovery, and no live typing. That is much more upkeep than the Claude Code provider. The models it would have added were already offered to the ChatGPT sign-in and silently dropped by `refreshChatGPTModels`. [ChatGPT account models](specs/chatgpt-account-models.md) fixes that instead.
-
-**Why.** Reach models that LearnHarness can't use today, the same way Claude Code is used now: as an external CLI that LearnHarness drives as a model.
-- **Gemini CLI:** Google/Gemini subscriptions aren't reachable any other way. Today Gemini is API-key only.
-- **Codex CLI:** the ChatGPT sign-in only shows part of OpenAI's lineup. Per the owner it offers the models from the ChatGPT chat product, not the newer Codex models (the owner sees only one new model there). The Codex CLI uses Codex's own login and routing and exposes its full model list.
-
-**Decided.**
-- **Scope is small on purpose:** add these two CLIs, each built **exactly like the Claude Code provider**. No new agent architecture, no ACP layer, no builder-job agents, no multi-provider framework. Keep changes to the core small.
-- Each CLI is a **model**, not an agent: its own tools turned off, LearnHarness's tools only, LearnHarness keeps the agent loop and the transcript.
-- Rejected for now: Grok CLI and GitHub Copilot CLI (they duplicate the existing Grok and Copilot sign-ins), Cursor CLI, OpenCode, Kiro, Antigravity, and letting a CLI run as a full agent.
-- Built **after** the self-hosting plan.
-
-**Facts.**
-- The template is `src/agent/claude-code/` (`binary.ts`, `installation.ts`, `launch.ts`, `stream.ts`, `cli-events.ts`, `tool-bridge.ts`, `transcript.ts`, `reuse-context.ts`, `context-window.ts`, `live-processes.ts`, `provider.ts`, `constants.ts`), plus `src/core/contracts/claude-code.ts` (provider ID and minimum version), `app/api/claude-code/route.ts` (status), the `tests/claude-code-*.test.ts` suites and `docs/claude-code.md`.
-- How Claude Code is run (`docs/claude-code.md`): no shell, an empty temporary folder per child, built-in tools, hooks, slash commands, session saving and `CLAUDE.md` loading all turned off. LearnHarness's tools go through a token-protected loopback MCP bridge, and a tool call only runs if an authenticated MCP request matches the streamed call. It's an app-wide opt-in under **Settings → Providers → External CLI**, off by default, with a minimum-version check.
-- Why the ChatGPT sign-in hides models: `refreshChatGPTModels` in `src/agent/chatgpt-bridge.ts` keeps an account model **only if** it's also in Pi's `openai` catalog with the Responses API. Models the account offers that aren't in that catalog are dropped without notice. Pi has a separate `openai-codex` provider (mentioned in `src/core/auth-keys.ts`), so Codex-only models may be filtered out here. Not yet confirmed.
-- T3 Code (MIT) has a Codex driver to learn from: `apps/server/src/provider/CodexProvider.ts`, `CodexInstallation.ts`, `CodexManagedRuntime.ts` and `CodexChatGptModels.ts` in `pingdotgg/t3code`. Code copied from it must keep T3's MIT notice. LearnHarness is AGPL-3.0-only.
-
-**Proposed design (not approved).**
-- Two sibling folders, `src/agent/gemini-cli/` and `src/agent/codex-cli/`, mirroring `claude-code/` file by file: discovery, version gate, launch with tools off, stream parsing into LearnHarness events, the MCP tool bridge, cancellation and child cleanup.
-- Move code into a shared helper only where the three are truly identical (likely the MCP bridge and child-process cleanup), and only if that keeps the Claude Code tests passing unchanged. Otherwise accept some duplication to keep the change small.
-- Matching contracts (`src/core/contracts/gemini-cli.ts`, `codex-cli.ts`), status routes (`app/api/gemini-cli`, `app/api/codex-cli`), and two more rows under **Settings → Providers → External CLI**, each off by default.
-- Docs `docs/gemini-cli.md` and `docs/codex-cli.md`, written like `docs/claude-code.md`.
-
-**Open questions.** Each must be checked against the real CLI before building:
-- Can **all** built-in tools be turned off (shell, file edits, web search, and for Codex its sandboxed commands), leaving only MCP tools? If a CLI can't guarantee that, it doesn't qualify.
-- Does it have a headless mode that streams structured events (text, tool calls, usage) good enough for LearnHarness's stream and cost meter?
-- Can it be pointed at a per-turn MCP server from the command line or an inline config, without touching the user's own config files?
-- Can it be stopped from loading its own instruction files (Gemini's `GEMINI.md`, Codex's `AGENTS.md`), the way `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` does for Claude?
-- Which model IDs does each list, and how are they discovered (a command, a config, or a fixed list)?
-- Minimum versions to require.
-- Related, smaller fix to look at separately: should the ChatGPT sign-in also accept models from Pi's `openai-codex` catalog, or show which account models it dropped?
-
-**Build outline.** (1) Spike each CLI against the open questions and write down the exact flags. (2) Codex CLI provider plus tests (stream fixtures, opt-in, status route, Settings row). (3) Gemini CLI provider the same way. (4) Docs. (5) Check that both work in the self-hosted install (found on the service's PATH, login done under the same OS user).
-
-**Touches core.** Moderate: two new provider folders, contracts, routes, Settings rows and the model catalog. Existing Claude Code behavior stays unchanged.
-
----
-
 ## Desktop + distribution
-
-### 1. Electron desktop nightlies
-
-**Why.** A native app on Mac, Windows and Linux that tracks fork `main`, for when a browser tab on the self-hosted server isn't enough.
-
-**Decided.** Not part of the self-hosting work. The owner has an Apple Developer Program membership, so signed and notarized Mac builds are possible. Owner decisions (2026-11-17): Mac arm64 signed and notarized, Windows unsigned, Linux AppImage; Mac checks run over the linked MacBook.
-
-**Facts.**
-- `electron-builder.yml` hard-codes `appId: com.learnharness.LearnHarness`, `productName: LearnHarness`, `mac.notarize: true`, and `publish` to `provider: github`, `owner: amosblomqvist`, `repo: learnharness`, `releaseType: draft`.
-- The inherited `.github/workflows/release.yml` uses secrets `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID`, and already overrides config on the command line (`-c.mac.notarize=false`). The self-hosting plan disables this workflow in the fork.
-- `electron/main.cjs` sets `app.setName(PRODUCT_NAME)` from a hard-coded `"LearnHarness"`, so every build uses the same data folder (`~/.config/LearnHarness` on Linux). It checks for updates every 24 hours with electron-updater, and `LH_UPDATE_FEED` can point it at a generic feed.
-- T3 Code signs with a Developer ID certificate (`CSC_LINK`, `CSC_KEY_PASSWORD`) and notarizes with an App Store Connect API key (`APPLE_API_KEY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`). It uses **deferred notarization**: it submits to Apple, keeps building the other platforms, and waits only in a final "Await notarization" step. Notarization is an automated scan, usually minutes. The upstream notes saw about 2 hours.
-
-**Proposed design (not approved).**
-- A `desktop-nightly.yml` workflow runs after the server nightly and attaches desktop assets to the **same** `v<version>-nightly.<date>.<run>` prerelease. Matrix: `macos-26` arm64 (signed and notarized), `windows-2025` x64 (unsigned), `ubuntu-24.04` x64 (AppImage and deb, unsigned).
-- Point the update feed at the fork: edit the `publish` block in `electron-builder.yml` (owner `max-miller1204`, repo `learnharness-nightly`, `releaseType: prerelease`).
-- Give the nightly its own identity so it installs beside an upstream stable app: `appId: com.learnharness.LearnHarness.Nightly`, `productName: LearnHarness Nightly`, and change `PRODUCT_NAME` in `electron/main.cjs` (or read it from `package.json`) so its data lives in its own folder.
-- Notarize with the App Store Connect API key, using T3-style deferred waiting.
-- Reuse the existing gates from `release.yml`: `smoke-provider-runtime.mjs --standalone/--runtime` and `smoke-demo-runtime.mjs --browser`.
-
-**Open questions.**
-- Does electron-updater accept prerelease versions from a GitHub prerelease feed with the current `main.cjs` settings (`allowPrerelease` and channel detection from a `-nightly` version)? Verify first.
-- Should Windows be signed (T3 uses Azure Trusted Signing)? Unsigned shows a SmartScreen warning.
-- Mac x64 as well, or arm64 only?
-- Should the desktop app and the self-hosted server share one data folder on a machine that runs both?
-
-**Build outline.** Create the Developer ID Application certificate and an App Store Connect API key, then add the five secrets. Make the identity and feed edits. Write `desktop-nightly.yml` with deferred notarization. Test-install all three. Check that auto-update moves from one nightly to the next.
-
-**Touches core.** Small: `electron-builder.yml` and one constant in `electron/main.cjs`.
 
 ### 2. Removing Electron
 
@@ -144,25 +27,9 @@ Codex CLI: **parked, not built** (2026-11-17). A spike ([record](specs/codex-cli
 
 **Proposed design (not approved).** Delete `electron/`, `electron-builder.yml`, `release.yml`, the `desktop:*` npm scripts and the desktop docs. Remove desktop-only branches in `src/` (`src/server/desktop-access.ts` desktop-secret path, the Electron transport in `useUpdateState`, subscription bridges that assume Electron main). In Sync PRs, upstream edits to deleted files show up as "you deleted it, they changed it" conflicts. Resolve those by keeping them deleted, or mark the paths `merge=ours` in `.gitattributes`.
 
-**Open questions.** Is item 1 ever wanted? Is `merge=ours` acceptable, given it hides upstream's desktop changes?
+**Open questions.** Is `merge=ours` acceptable, given it hides upstream's desktop changes?
 
 **Touches core.** Yes (deletions plus removing desktop branches).
-
-### 3. macOS self-hosting
-
-**Status.** **Built** (2026-11-17): a launchd agent running the `lh` shim, a `darwin-arm64` nightly build on `macos-26`, Apple silicon only, no signing for the server archive. See [docs/specs/macos-selfhost.md](specs/macos-selfhost.md), which settles the open questions below. The rest of this entry is the original proposal.
-
-**Why.** Run the self-hosted server on a Mac (for example a Mac mini at home).
-
-**Decided.** The first release is Linux x64 and arm64 only.
-
-**Proposed design (not approved).** Add `darwin-arm64` to the nightly matrix (`macos-26` runner, bundled Node for darwin). Add a launchd backend in `selfhost/src/service.ts`: a `~/Library/LaunchAgents/com.learnharness.server.plist` with `KeepAlive` and `RunAtLoad`, chosen by platform behind one interface (`install`, `start`, `stop`, `restart`, `status`, `logs`).
-
-**Open questions.** Sign the `node` binary and native modules? Test Gatekeeper with archives extracted by `curl`. Intel Mac too? Add Homebrew paths for `claude` and Chrome to PATH?
-
-**Build outline.** Add the matrix entry and the launchd backend, make `install.sh` accept Darwin, add Mac Chrome paths, and run the end-to-end test from the self-hosting plan on a Mac.
-
-**Touches core.** No.
 
 ### 4. Docker image
 
@@ -170,9 +37,9 @@ Codex CLI: **parked, not built** (2026-11-17). A spike ([record](specs/codex-cli
 
 **Decided.** Dropped as the main path because a container can't use the host's `claude` program, its login or the host's Chromium. A Docker attempt was built and then reverted.
 
-**Proposed design (not approved).** Build the image **from the same nightly tarball**: `FROM debian:bookworm-slim`, copy in `node/` and `server/`, add `chromium`, data on a `/data` volume. Push `ghcr.io/max-miller1204/learnharness-nightly:nightly` and `:<version>` for amd64 and arm64. Document that API-key and subscription providers work but CLI providers (Claude Code, and item 20's Gemini and Codex CLIs) don't, unless installed in the image.
+**Proposed design (not approved).** Build the image **from the same nightly tarball**: `FROM debian:bookworm-slim`, copy in `node/` and `server/`, add `chromium`, data on a `/data` volume. Push `ghcr.io/max-miller1204/learnharness-nightly:nightly` and `:<version>` for amd64 and arm64. Document that API-key and subscription providers work but CLI providers (Claude Code) don't, unless installed in the image.
 
-**Open questions.** Should the container run `lh __service` (rollback, backups) or `server.js` directly and leave updates to the container platform? How should it be protected, given there's no login until item 6?
+**Open questions.** Should the container run `lh __service` (rollback, backups) or `server.js` directly and leave updates to the container platform? How should it be protected?
 
 **Touches core.** No.
 
@@ -204,42 +71,21 @@ Codex CLI: **parked, not built** (2026-11-17). A spike ([record](specs/codex-cli
 
 ## Access + security
 
-### 6. Login and pairing
-
-**Status.** **Built** (2026-11-17), T3 Code's model: one-time pairing links and QR codes from `lh pair`, `lh up`, server startup and Settings → Devices; 30 day sessions as an `HttpOnly` cookie or a bearer token; no localhost bypass. See [docs/specs/login-pairing.md](specs/login-pairing.md), which settles the open questions below. The rest of this entry is the original proposal.
-
-**Why.** LearnHarness has no login: anyone who can reach the port can read every chat, change saved keys and start agent turns (`docs/development.md`). That's fine today because the server binds 127.0.0.1 and remote access goes through Tailscale. A login is required before LAN mode (item 5) or any public tunnel.
-
-**Decided.** No login in the first release.
-
-**Proposed design (not approved).** Build it **into the app**, copying T3's pairing model:
-- An auth check in `proxy.ts`, next to the existing `apiRequestRefusal`, covering pages, API, server-sent events and the streamed documents route (which enforces the policy itself today).
-- `lh pair` (or a Settings button on an already-paired device) creates a one-time code and QR code. Opening `/pair#token=…` trades it for a long-lived, `HttpOnly`, `SameSite=Strict` session cookie for that device.
-- Settings → Devices lists paired devices and revokes them. `lh devices` does the same from the terminal.
-- Requests from 127.0.0.1 with the launcher's token (for `lh status` and the health check) bypass pairing.
-- Alternative if in-app proves awkward: a proxy inside the launcher in front of the server.
-
-**Open questions.** Trust Tailscale identity (skip pairing on the tailnet) or always pair? Session lifetime? Rate limiting and lockout? How does this interact with the desktop app's per-launch secret mode (keep both paths)? Non-browser clients (the desktop server list in 23, a native phone app) can't rely on a cookie: should pairing also issue a bearer token for them?
-
-**Build outline.** Session store in `userdata/`, the `proxy.ts` gate and its tests (including SSE and the documents route), the pairing page, the devices UI, then the `lh` commands. Then unblock item 5, any tunnel, and items 21 to 24.
-
-**Touches core.** Yes (`proxy.ts`, a new auth module, Settings UI).
-
 ### 5. LAN mode
 
 **Why.** Reach the server from phones and laptops on home Wi-Fi without Tailscale.
 
 **Decided.** Left out of `lh up` because with no login, anyone on the network gets full access.
 
-**Proposed design (not approved).** `lh up --lan` binds `0.0.0.0` (allowed only once item 6 is on) and prints the machine's LAN URLs. The app already accepts IP-address Host headers. Optional: an mDNS name such as `learnharness.local`, which then goes into `LH_ALLOWED_HOSTS`.
+**Proposed design (not approved).** `lh up --lan` binds `0.0.0.0` and prints the machine's LAN URLs. The app accepts IP-address Host headers. Optional: an mDNS name such as `learnharness.local`, which then goes into `LH_ALLOWED_HOSTS`.
 
 **Open questions.** Is plain HTTP on the LAN acceptable (the session cookie would travel unencrypted), or is a locally trusted certificate needed?
 
-**Touches core.** Small. **Blocked on item 6.**
+**Touches core.** Small.
 
 ### 18. Signed releases
 
-**Why.** Today `release.ts` checks each download's SHA-256 against `latest.json`, but both come from the same GitHub release. Anyone who can change the release can change both.
+**Why.** `release.ts` checks each download's SHA-256 against `latest.json`, but both come from the same GitHub release. Anyone who can change the release can change both.
 
 **Decided.** The first release uses SHA-256 only.
 
@@ -255,125 +101,11 @@ Key rotation would ship a new public key inside a release signed by the old one.
 
 ---
 
-## Clients + remote access
-
-How the two reference products work, so the entries below can point at them:
-
-- **T3 Code** (MIT, `pingdotgg/t3code`): the same `t3` server runs on a desktop, a VPS or anywhere else. The desktop app, a web client and a phone app connect to a server. Pairing codes are the lock, T3 Connect is a hosted relay for remote access, and `t3 environment link` connects machines.
-- **OpenBot** (`nightly-labs/openbot`, PolyForm Noncommercial: read for ideas, don't copy code): the same server runs inside the desktop app, on its managed servers, or on your own Linux box (`docs/self-hosted-server.md`). Every server signs in to your OpenBot account and shows up in a server list in the desktop, iPhone and web apps. Clients and servers speak a frozen, versioned protocol with optional capabilities (for example `storage-v1`); a client hides a feature its server doesn't advertise.
-
-What LearnHarness already has toward this: a standalone, versioned, self-updating server; a UI the server ships itself (so UI and server versions always match); `/api/health`; the `/api/events` channel; and the launcher protocol as a working example of frozen, versioned messages. A relay or account service (T3 Connect, OpenBot accounts) and a native phone app are deliberately not listed: they're hosted infrastructure or app-store work to consider only after these.
-
-### 21. Client protocol and server info
-
-**Status.** **Built** (2026-11-17), T3 Code's model: a public server-info route (`/.well-known/learnharness/server`), an exact protocol version match (a mismatched client gets `426`), the protocol 1 routes for the phone app's core chat flow, and a typed contract in `src/client-protocol/`. See [docs/specs/client-protocol.md](specs/client-protocol.md), which settles the open questions below. The rest of this entry is the original proposal.
-
-**Why.** Today the API is internal Next.js routes that change freely. That's fine while the server ships its own UI, but any client released separately (a native phone app, a desktop app pointed at a remote server) lags behind the server and needs a contract it can rely on.
-
-**Decided.** Exact protocol version match between client and server, like T3 (chosen over a version range).
-
-**Proposed design (not approved).**
-- A server-info endpoint (or an extended `/api/health`) reporting the server version, a client protocol version and a list of capabilities, OpenBot-style: for example `attachments-upload-v1` (24) or `pairing-v1` (6).
-- Freeze the routes a separate client uses behind versioned paths (for example `/api/v1/...`). The rule is the launcher protocol's: never change a frozen shape, add a new capability instead.
-- Clients check capabilities and hide what the server lacks, instead of failing.
-
-**Open questions.** Which routes need freezing first (chats, turn stream, events, settings)? Version by path, by header, or only by capability? How long does a server keep supporting old protocol versions?
-
-**Build outline.** Server-info endpoint and tests, a frozen-shape fixture test per v1 route (like `selfhost/tests` does for the handshake), then a capability check helper for clients.
-
-**Touches core.** Yes (new routes, plus discipline on existing ones).
-
-### 22. Mobile app (Expo)
-
-**Why.** The cheapest way onto a phone: the server already serves the UI, and phones can open it today over Tailscale. Making it installable gives a home-screen app with no app store and automatic updates with the server.
-
-**Decided.** A native Expo app, not a PWA (owner decision 2026-11-17, replacing "web app first"). Beta builds through EAS to TestFlight and the Play internal track; tested on an Android emulator on the Linux box, iOS checked by the owner on their phone. One server at a time, opening a server the owner chooses as the default, like item 23.
-
-**Proposed design (not approved).**
-- A web app manifest and icons, plus a service worker that caches only the app shell (never chats or learning data, which stay server-side).
-- Check and fix the layouts used on a phone: sessions, the composer, practice and the graph.
-- Pair the phone with item 6 (scan the QR code from `lh pair`).
-
-**Open questions.** Which screens matter most on a phone? Is offline reading wanted at all? Push notifications (iOS supports them only for installed web apps, and they need a push service)? Does the graph view work on a small touch screen?
-
-**Build outline.** Manifest and service worker, a mobile layout pass with screenshots at phone width, then pairing on a real phone over Tailscale.
-
-**Touches core.** Small (manifest, service worker, responsive CSS).
-
-### 23. Desktop server list (choose a backend)
-
-**Why.** Let the desktop app use either its own built-in server or a remote one (your self-hosted box), the way T3 and OpenBot let you pick a server.
-
-**Approved (2026-11-18).** The first slice adds the desktop server list, direct HTTPS pairing, native switching, an explicit default, shell recovery, and the app-owned ChatGPT callback. Each window uses one backend. The second slice adds coordinated server and desktop updates for macOS, Windows NSIS, and Linux AppImage. [Desktop server list spec](specs/desktop-server-list.md)
-
-### 24. Remote-safe attachments
-
-**Why.** Today the desktop paperclip inserts a file or folder **path**, and the agent reads the original in place on the server machine (`docs/getting-started.md`: "This is not an upload"). That only works when the client and the server are the same machine; browsers can't attach local files to a session at all.
-
-**Decided.** The owner approved two PRs. PR 1 adds individual uploads in paired browsers on opening and later idle-chat sends. PR 2 starts from merged PR 1 and adds remote folders with browsable layout. The [approved remote-safe attachments spec](specs/remote-safe-attachments.md) records the behavior, limits, recovery rules, and pinned T3 references. Live server paths remain in place.
-
-**Touches core.** Yes (new routes, composer, attachment handling).
-
 ## Files + ingestion
-
-Where things stand, so the entries below start from facts:
-
-- **In a session**, files reach the teacher as paths: the desktop paperclip or drag-and-drop inserts them, a browser can only paste them, and they render as path chips (`components/path-input.tsx`, `components/path-input-dom.ts`). The agent then reads on demand:
-  - `read` (`src/agent/tools/read.ts`): any text file, including code, in 2,000-line / 50 KB slices; jpg, png, gif, webp and bmp come back as images the model sees. Every other file is decoded as UTF-8 text, so Office files come out as garbage.
-  - `ls`, `find` and `grep` work across folders, so a whole code repository is usable.
-  - PDFs go to a background pdf-reader agent (`src/agent/subagents/pdf-reader.ts`) that triages, extracts and looks at rendered pages.
-  - Limits: reads run as the server's user. A sensitive-path guard blocks known credential locations (`src/agent/tools/fs-shared.ts`), and an optional folder boundary restricts reads to chosen folders (`src/agent/tools/file-access.ts`).
-- **Into the knowledge graph**, the graph's **Extract files** accepts only `txt`, `md`, `markdown`, `rst`, `org`, `adoc`, `tex` and `pdf` (`IMPORT_EXTENSION_NAMES` in `lib/notes-import-limits.ts`).
-
-### 25. Office and data formats
-
-**Why.** A lot of study material is spreadsheets, Word documents and slide decks. Today the agent can't read any of them.
-
-**Decided.** Nothing yet.
-
-**Proposed design (not approved).**
-- Convert to text the agent can read, behind the existing tools rather than as new ones where possible:
-  - **Excel and CSV:** a "list the sheets first" step (names, sizes, header rows), like the PDF triage, then reading a sheet or a cell range as a Markdown table. Large sheets are read in ranges, like `read`'s line slices.
-  - **Word (docx):** convert to Markdown, keeping headings, lists and tables.
-  - **PowerPoint (pptx):** slide-by-slide text and speaker notes, and optionally rendered slide images for the model to look at, like PDF pages.
-  - **Jupyter notebooks (ipynb):** cells in order, with outputs summarized.
-- Two possible routes, to compare before choosing:
-  1. JavaScript converter libraries in the server (candidates such as exceljs or SheetJS for spreadsheets and mammoth for Word; check licenses and maintenance before picking).
-  2. Headless LibreOffice on the server converting documents and slides to PDF, then reusing the PDF pipeline. This keeps the visual layout but needs LibreOffice installed (`lh up` could detect it like Chrome).
-- `read` recognizes these formats by extension and file signature and routes them to the converter instead of decoding them as text.
-
-**Open questions.** Which formats matter most? How should formulas, charts and images inside documents be handled? What size limits? Should conversions be cached?
-
-**Build outline.** Pick the route with a small spike on real files, add format detection to `read`, add the spreadsheet triage-and-range tool, add Word and PowerPoint conversion, then tests with fixture files of each type.
-
-**Touches core.** Yes (`read`, a new converter module, possibly a new tool).
-
-### 26. More file types in Extract files
-
-**Why.** Extract files turns sources into knowledge-graph propositions, but code, spreadsheets and Office documents are turned away.
-
-**Decided.**
-- The document converter keeps one 192 MB heap limit on every runtime (owner, 2026-11-17). Electron builds V8 with pointer compression and Node doesn't, so the same limit holds about twice as much data in the desktop app. Notebooks made of millions of tiny JSON values can therefore fail to convert on the self-hosted server (`lh`, Node) yet convert in the desktop app. Measured on a 15 MiB notebook of 5.2 million empty cells: parsing it needs about 320 MB of heap on Node 26 (over the limit, so it fails) and 160 MB on Electron 44 (under it). Real notebooks and all XML formats stay far below the limit on both, and T3 Code behaves the same way. Accepted as is.
-
-**Carried over from item 25** (PR #9, to do with this item, since the import route will use the same converter in `src/agent/documents/`):
-- Log converter crashes. The converter child's stderr is ignored, callers show only the generic message ("Could not convert X to text." for crashes), and `read` drops the error detail, so a broken install (for example a package missing from a packaged build) leaves nothing in the server log. Keep the last few KB of stderr and log it for `failed` and `timeout` results.
-- Memory per conversion. A converter that reaches its 192 MB heap limit peaks around 0.5 GB of total memory, about 1 GB with two at once. Decide whether two parallel conversions (T3's number) stay right.
-- Two cases the spec leaves open: a workbook with no sheets shows an empty index (`Sheets: ]`), and an old Office file over 16 MiB named `.docx` gets the too-large message rather than the password-protected one.
-
-**Proposed design (not approved).**
-- Office and notebook files: convert with item 25's converters, then extract like any text source.
-- Code: accept source files (and folders of them, honoring `.gitignore`), with an extraction prompt aimed at concepts, APIs and design decisions rather than line-by-line content.
-- Spreadsheets: extract from the sheet's structure and any explanatory text, not from every cell.
-
-**Open questions.** What should the graph get from code or a spreadsheet: concepts, definitions, how a system works? Per file, or per folder or project? How big a code folder is reasonable? Does every type need its own extraction prompt?
-
-**Build outline.** Decide the target output per type with the owner, extend `IMPORT_EXTENSION_NAMES` and the import route, add per-type extraction prompts, then test on a real repository and a real spreadsheet.
-
-**Touches core.** Yes (import route, extraction prompts).
 
 ### 27. @-mentions for files and folders
 
-**Why.** Attaching a file today means the paperclip, drag-and-drop, or typing a full path, and browsers can only do the last. Typing `@` to pick a file is faster everywhere.
+**Why.** Typing `@` to pick a file is faster than the paperclip, drag-and-drop, or typing a full path.
 
 **Decided.** Nothing yet.
 
@@ -384,7 +116,7 @@ Where things stand, so the entries below start from facts:
 **Proposed design (not approved).**
 - A server search endpoint over the folders you allow (the optional folder boundary, or a list of "places" in Settings), with the sensitive-path guard applied, `.gitignore`-style ignores, and result limits.
 - In the composer, `@` opens a menu of matching files and folders; picking one inserts the existing path chip, so nothing downstream changes.
-- Because the search runs on the server, browsers and phones can mention server files without typing paths. Files that exist only on the client still need item 24's uploads.
+- Because the search runs on the server, browsers and phones can mention server files without typing paths. Files that exist only on the client need uploading.
 
 **Open questions.** Which folders are searchable by default (home folder, chosen places, recent paths)? How should folders show versus files? Should results rank recently used paths first? Should `@` also mention other things, such as sessions or graph sources?
 
@@ -395,10 +127,6 @@ Where things stand, so the entries below start from facts:
 ---
 
 ## Review workflow
-
-### 12. Preview builds of PRs
-
-**Done.** Your PRs build a preview on every push, anyone else's when you add the `preview` label (removed once published). Each is a `preview-pr-<N>` prerelease outside the nightly feed, and `lh preview <N>` runs it in the foreground beside your server with fresh, empty data, deleting it on Ctrl+C. Previews of closed PRs are deleted. Switching the real install to a PR build (`lh use pr-<N>`, pinning) was left out. Spec: [specs/pr-previews.md](specs/pr-previews.md).
 
 ### 28. Offering fork fixes upstream
 
@@ -413,10 +141,6 @@ Where things stand, so the entries below start from facts:
 ---
 
 ## Ops + polish
-
-### 7. Updates like T3 Code, plus What's new
-
-**Done.** Reworked by the user from "Update deadline" into T3 Code's model: download in the background (server) or on click (desktop), install only when the user confirms, a sidebar update button with release notes, a one-time What's new popup, and AI release notes at nightly time. The idle-apply rule, and with it the deadline question, is gone. Spec: [specs/t3-style-updates.md](specs/t3-style-updates.md).
 
 ### 8. Chromium on demand
 
@@ -450,7 +174,7 @@ Where things stand, so the entries below start from facts:
 
 **Proposed design (not approved).**
 - Unit-level: `MemoryHigh`, `MemoryMax`, `CPUWeight` and `OOMPolicy=continue` on `learnharness.service`, set from `config.json`.
-- Per-agent, in the app: spawn each CLI child through `systemd-run --user --scope --slice=app-learnharness-agents.slice -p MemoryHigh=… -p OOMScoreAdjust=…` (where the claude-code launch code starts the process today). That keeps the server alive when a CLI child blows up. Applies to Claude Code and item 20's CLIs alike.
+- Per-agent, in the app: spawn each CLI child through `systemd-run --user --scope --slice=app-learnharness-agents.slice -p MemoryHigh=… -p OOMScoreAdjust=…` (where the claude-code launch code starts the process). That keeps the server alive when a CLI child blows up. Applies to every CLI provider alike.
 
 **Open questions.** Memory budget per agent? What happens when systemd isn't available (desktop, dev): plain spawn?
 
@@ -472,7 +196,7 @@ Where things stand, so the entries below start from facts:
 
 ### 19. Scheduled and off-machine backups
 
-**Why.** Today snapshots only happen before an update switch, and they sit on the same disk as the data.
+**Why.** Snapshots only happen before an update switch, and they sit on the same disk as the data.
 
 **Decided.** First release: a full copy before each switch, 3 kept.
 
@@ -490,11 +214,11 @@ Items about the plugin system and the people who write plugins.
 
 ### 29. Versioned plugin API package
 
-**Why.** Outside plugin authors have no published plugin API to depend on. The four SDK plugins depend on `"learnharness-plugin-api": "file:.sdk"`, a folder generated by `npm run sdk`, and since PR #13 each commits its generated `.sdk/package.json` so Dependabot can read it (interim, see [docs/specs/dependency-updates.md](specs/dependency-updates.md)). That file declares the root's Pi versions exactly (and typebox's range) as peer dependencies, so a root-only Pi bump breaks the plugins' `npm ci` and Dependabot's `pi` PR arrives red until an agent finishes it.
+**Why.** Outside plugin authors have no published plugin API to depend on. The four SDK plugins depend on `"learnharness-plugin-api": "file:.sdk"`, a folder generated by `npm run sdk`, and each commits its generated `.sdk/package.json` so Dependabot can read it (see [docs/specs/dependency-updates.md](specs/dependency-updates.md)). That file declares the root's Pi versions exactly (and typebox's range) as peer dependencies, so a root-only Pi bump breaks the plugins' `npm ci` and Dependabot's `pi` PR arrives red until an agent finishes it.
 
 **Decided.** Publish the plugin API (`learnharness-plugin-api`) as a versioned package for outside plugin authors. Approved by the owner as a future item. It replaces the committed `plugins/*/.sdk/package.json` files, and lets plugins accept a Pi peer range so Dependabot's `pi` PR can go green on its own.
 
-**Proposed design (not approved).** None yet.
+**Proposed design (not approved).** None.
 
 **Open questions.** All of the design: registry and package name/scope, versioning and compatibility policy, how the generated types are built and released, which Pi range plugins accept, and what happens to `.sdk/` and `npm run sdk`.
 
