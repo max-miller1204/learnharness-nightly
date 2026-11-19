@@ -10,6 +10,7 @@ import {
 import { parseQuestionInput } from "../../../src/core/tool-parts.ts";
 import type { ChatInput } from "../../../src/client-protocol/index.ts";
 import { Markdown } from "./Markdown";
+import { ChoiceRow } from "./ChoiceRow";
 import { Button, Field, Label } from "./ui";
 import { alpha, confidenceColors, fonts, radius, space, useTheme } from "./theme";
 
@@ -51,30 +52,6 @@ function ConfidenceRail({ value, disabled, onChange }: { value: number; disabled
       </View>
       <Text style={[s.ui, { width: 40, textAlign: "right", fontVariant: ["tabular-nums"] }]}>{`${value}%`}</Text>
     </View>
-  );
-}
-
-/** The web dock's option row: a radio dot or check box, then the label. */
-function Option({ label, multi, selected, disabled, onPress }: {
-  label: string; multi: boolean; selected: boolean; disabled: boolean; onPress: () => void;
-}) {
-  const { c, s } = useTheme();
-  return (
-    <Pressable accessibilityRole="button" accessibilityState={{ disabled, selected }} disabled={disabled} onPress={onPress}
-      style={({ pressed }) => ({
-        flexDirection: "row", alignItems: "flex-start", gap: space.md, paddingHorizontal: space.md, paddingVertical: space.sm,
-        borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: selected ? c.primary : c.border,
-        backgroundColor: selected || pressed ? c.hover : "transparent", opacity: disabled ? 0.5 : 1,
-      })}>
-      <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{
-        marginTop: 3, width: 16, height: 16, alignItems: "center", justifyContent: "center", borderWidth: 1,
-        borderRadius: multi ? radius.sm : 8, borderColor: selected ? c.primary : c.rail, backgroundColor: selected ? c.primary : "transparent",
-      }}>
-        {selected && (multi ? <Text style={{ color: c.onPrimary, fontSize: 12, lineHeight: 14 }}>✓</Text>
-          : <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: c.onPrimary }} />)}
-      </View>
-      <Text style={[s.prose, { flex: 1, fontSize: 14, lineHeight: 20 }]}>{label}</Text>
-    </Pressable>
   );
 }
 
@@ -184,12 +161,12 @@ export function BuiltinQuestion({ question, disabled, submit, reveal, openAtStar
       ) : (
         <View style={{ gap: space.sm }}>
           {data.options.map((option, index) => (
-            <Option key={index} label={option.label} multi={multi} selected={selection.selected.has(index)} disabled={disabled}
+            <ChoiceRow key={index} label={option.label} multi={multi} selected={selection.selected.has(index)} disabled={disabled}
               onPress={() => setSelection((value) => toggleOption(mode, value, index))} />
           ))}
           {data.kind === "ask" && (
             <>
-              <Option label="Other" multi={multi} selected={selection.otherSelected} disabled={disabled}
+              <ChoiceRow label="Other" math={false} multi={multi} selected={selection.otherSelected} disabled={disabled}
                 onPress={() => setSelection((value) => toggleOther(mode, value))} />
               {selection.otherSelected && <Field label="Other answer" value={other} onChangeText={setOther} editable={!disabled} />}
             </>
