@@ -19,22 +19,31 @@ function request(names: string[]) {
 	return new Request("http://localhost/api/graph/import", { method: "POST", body: form });
 }
 
-it("route keeps three-worker batching, request positions and mixed per-file outcomes/config details", async () => {
+// The timeout only guards a hang: slow.md never finishes if the route stops running files side by side.
+it("route keeps three-worker batching, request positions and mixed per-file outcomes/config details", { timeout: 30_000 }, async () => {
 	let active = 0;
 	let peak = 0;
 	const outcomeOf: Record<string, NotesImportError["outcome"]> = { "failed.md": "failed", "partial.md": "partial", "aborted.md": "aborted", "busy.md": "busy" };
+	const names = ["slow.md", "same.md", "same.md", "failed.md", "partial.md", "aborted.md", "busy.md", "models.md", "key.md", "unknown.md"];
+	// slow.md (request 0) finishes only after every other file, not after a fixed delay: the
+	// route's synchronous fsync'd store writes between files can outlast any delay on a slow CI disk.
+	let othersSettled = 0;
+	let releaseSlow!: () => void;
+	const slowReleased = new Promise<void>((resolve) => { releaseSlow = resolve; });
 	extraction.importNotes = async ({ filePath }) => {
 		active++; peak = Math.max(peak, active);
 		try {
-			await new Promise((resolve) => setTimeout(resolve, filePath === "slow.md" ? 25 : 1));
+			await (filePath === "slow.md" ? slowReleased : new Promise((resolve) => setTimeout(resolve, 1)));
 			if (filePath === "models.md") throw new ModelsNotConfiguredError(["cheap"]);
 			if (filePath === "key.md") throw new ProviderKeyMissingError("openai", ["cheap"]);
 			if (filePath in outcomeOf) throw new NotesImportError(outcomeOf[filePath]!, { nodes: 2, chains: 1 }, `synthetic ${filePath}`);
 			if (filePath === "unknown.md") throw new Error("synthetic unknown error");
 			return { nodes: 0, chains: 0 };
-		} finally { active--; }
+		} finally {
+			active--;
+			if (filePath !== "slow.md" && ++othersSettled === names.length - 1) releaseSlow();
+		}
 	};
-	const names = ["slow.md", "same.md", "same.md", "failed.md", "partial.md", "aborted.md", "busy.md", "models.md", "key.md", "unknown.md"];
 	const response = await POST(request(names));
 	assert.equal(response.status, 200);
 	const { results } = await response.json();
