@@ -38,7 +38,7 @@ The release workflow also checks providers from the **packaged** payload under h
 
 The nightly desktop workflow also runs `node scripts/smoke-server.mjs --standalone <payload> --runtime <app binary>` on the packaged app. It boots that server with the app's own executable, blocks imports from outside the payload and requires signed-in `/` and `/chat/new` to return 2xx. On Windows it first installs the NSIS package silently and smokes the installed copy, because the installer turns Next's linked packages into plain copies.
 
-`smoke-image-runtime.mjs` separately checks synthetic Photon in-process/worker resizing in standalone output. It accepts `--standalone <dir>` and `--runtime <binary>`; it is **not currently invoked by CI/release workflows**.
+`smoke-image-runtime.mjs` separately checks synthetic Photon in-process/worker resizing in standalone output. It accepts `--standalone <dir>` and `--runtime <binary>`; it is **not invoked by CI/release workflows**.
 
 ### Local packages
 

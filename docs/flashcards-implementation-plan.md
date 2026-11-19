@@ -1,6 +1,6 @@
 # Flashcards: native-first implementation
 
-**Authorized:** Begin implementation. Keep it simple; no Anki export/import, dependencies, assets, conversion or compatibility work in v1. The earlier exhaustive draft is superseded.
+Keep it simple; no Anki export/import, dependencies, assets, conversion or compatibility work in v1.
 
 ## Small package, existing host services
 
@@ -16,11 +16,11 @@ Source lives in `plugins/flashcards/`, with its own build manifest/lockfile. Bui
 
 Validate backend inputs; retain failed edit drafts. Grade only revealed, current review tickets; make accepted ratings and model-task dispatch idempotent. Keep cancellation/application markers with the same local snapshot. Reconcile accepted results after restart without making a new model call. Use explicit errors instead of silent context truncation, fallback models or data reset.
 
-Use deterministic FSRS intervals initially (reference fuzz-off default). Local study days initially start at 04:00; intraday steps use actual elapsed minutes. Published equations remain reference-tested; local queue/calendar behavior is an adapter, not a claim of identical Anki scheduling.
+Use deterministic FSRS intervals (reference fuzz-off default). Local study days initially start at 04:00; intraday steps use actual elapsed minutes. Published equations remain reference-tested; local queue/calendar behavior is an adapter, not a claim of identical Anki scheduling.
 
 ## Infrastructure learning
 
-This plugin is a reference consumer of the still-evolving API. Report concrete excessive plumbing, awkward workarounds or missing capabilities to the human instead of hiding them behind a custom framework.
+This plugin is a reference consumer of the API. Report concrete excessive plumbing, awkward workarounds or missing capabilities to the human instead of hiding them behind a custom framework.
 
 Known limitation: the public graph reader exposes source titles/paths but not imported-source display-name overrides used by the host picker. Initial deck labels can use those public titles/basenames and remain editable. No private-store workaround.
 

@@ -1,6 +1,6 @@
 # Flashcards: product vision
 
-**Status:** Native-first implementation authorized by the human. Keep v1 simple: one self-contained plugin package/local store, generation, library, and spaced review. No Anki integration. The plugin is also a reference consumer for improving the still-evolving host API: report awkward, hacky or disproportionate integration work rather than building a workaround.
+Keep v1 simple: one self-contained plugin package/local store, generation, library, and spaced review. No Anki integration. The plugin is also a reference consumer for improving the host API: report awkward, hacky or disproportionate integration work rather than building a workaround.
 
 ## Why this belongs in LearnHarness
 
@@ -104,7 +104,7 @@ The interaction is intentionally familiar and simple:
 
 There is no thinking field, typed answer requirement, or agent evaluation in this first version. This is a deliberate narrower interaction than LearnHarness's teaching and adaptive practice sessions.
 
-New introductions are paced by an adjustable **per-deck** daily limit, initially **20 previously unreviewed propositions per deck per day**. This supersedes the earlier plugin-wide introduction limit. Due reviews are uncapped, including learning/relearning repetitions. The introduction count is per proposition, not per cue or presentation; it does not limit card generation, library browsing, or learning elsewhere in LearnHarness. A shared proposition is introduced only once globally, and that first introduction counts against **every deck containing it**, regardless of which deck was used for the review. It does not become new again when encountered through another deck. Only the deck being studied controls admission of a new proposition. A full or zero allowance in another containing deck does not block that introduction, but the introduction still counts there; a deck's count may therefore exceed its limit because of reviews through other decks.
+New introductions are paced by an adjustable **per-deck** daily limit, initially **20 previously unreviewed propositions per deck per day**. Due reviews are uncapped, including learning/relearning repetitions. The introduction count is per proposition, not per cue or presentation; it does not limit card generation, library browsing, or learning elsewhere in LearnHarness. A shared proposition is introduced only once globally, and that first introduction counts against **every deck containing it**, regardless of which deck was used for the review. It does not become new again when encountered through another deck. Only the deck being studied controls admission of a new proposition. A full or zero allowance in another containing deck does not block that introduction, but the introduction still counts there; a deck's count may therefore exceed its limit because of reviews through other decks.
 
 Normal review handles existing obligations before new introductions: ready learning/relearning steps first, then due reviews, then new propositions up to the applicable deck limit. A large overdue backlog therefore takes priority over new material.
 
@@ -114,7 +114,7 @@ There are no subdecks or parent-deck limits in version one. Adding nested organi
 
 Scheduling uses **FSRS**, with one scheduling state per **proposition**, not per cue. The rating updates that proposition's schedule. This avoids treating each new cue as an entirely separate fact with its own independent review obligation.
 
-The chosen algorithm reference is **FSRS-6**, pinned to the published `ts-fsrs@5.2.3` implementation. The scheduler will be implemented without a runtime scheduler dependency, retaining the reference's MIT attribution. Version one uses published default parameters; personalized parameter optimization is deferred. Review history is retained independently of that decision.
+The chosen algorithm reference is **FSRS-6**, pinned to the published `ts-fsrs@5.2.3` implementation. The scheduler is implemented without a runtime scheduler dependency, retaining the reference's MIT attribution. Version one uses published default parameters; personalized parameter optimization is deferred. Review history is retained independently of that decision.
 
 Desired retention is one plugin-wide setting, initially **90%**, rather than a separate target or preset for each topic. Higher targets trade more frequent reviews for higher expected retention.
 
@@ -157,18 +157,6 @@ The human removed all Anki integration from v1. There is no export/import UI, pa
 The learner can select knowledge they care about, generate genuinely different fact-retrieval cues without managing prompts, and maintain those cues in a familiar hierarchy. They can return for a straightforward spaced-review session without a model call at every answer. Their work remains native to LearnHarness, without an integration dependency on another application.
 
 The success criterion is useful availability of known facts—not card count, duplicated paraphrases, or a mastery label inferred from the graph. The plugin should spend the learner's effort on attempted recall and keep everything around that interaction as bare-bones as possible.
-
-## Implementation notes
-
-The human authorized beginning implementation rather than further exhaustive planning. Use a simple native implementation; bring consequential new ambiguities or genuine infrastructure friction back to the human as they arise. The earlier detailed draft is not blanket approval for its proposed machinery. The following historical checklist is context, not a prerequisite to more planning:
-
-- **Scheduling policy:** retention/step-setting bounds and change behavior; interval randomization and day-boundary behavior; ordering within due/new queues; membership changes after an introduction and whole-library/multi-deck review.
-- **Generation contract:** exact prompt and result schema; token estimation and packing; output/repair budgets and task limits.
-- **Batch lifecycle:** retries, interrupted work, detailed progress/cancellation interactions, and the creation timing of initially needed source decks. Shared request admission is provided by the host, not a separate plugin concurrency setting.
-- **Product UI:** concrete plugin-owned deck/library/review layouts and controls; custom-deck naming/deletion and membership-editing controls; card editing/deletion; archive restoration; and progress/error presentation. Use the verified shared Markdown renderer for card content.
-- **Delivery:** plugin source/build/distribution location and the coherent implementation and verification plan.
-
-Resolving these must preserve the distinctions that motivate the plugin: understanding versus availability, propositions versus cues, scheduling versus cue choice, objective knowledge versus learner evidence, and product functionality versus unnecessary integration machinery.
 
 ## Conceptual foundations
 
