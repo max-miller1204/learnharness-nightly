@@ -793,8 +793,27 @@ export function recoverStaleJobs(): void {
 	}
 }
 
-/** The /api/jobs entry: job list for the client poll (+ lazy recovery). */
+/** Full job records for one chat (+ lazy recovery). The /api/jobs route
+ *  trims them with jobStatusOnly; the activity feed and other callers keep
+ *  the full records. */
 export function listJobs(chatId: string): JobRecord[] {
 	if (process.env.NODE_ENV !== "test") recoverStaleJobs();
 	return stores.jobStore.listJobs(chatId);
+}
+
+/** The /api/jobs wire projection (docs/specs/jobs-payload.md): status only.
+ *  It never carries `result`, `input`, `usage`, `delivery` or `plugin.input`;
+ *  finished results reach clients through the saved transcript's steer
+ *  marker. Only optional fields are left out, so it is still a JobRecord and
+ *  the protocol format is unchanged. `error` stays whole: the refusal cards
+ *  read its start. */
+export function jobStatusOnly(job: JobRecord): JobRecord {
+	const { id, kind, chatId, toolCallId, status, activity, createdAt, updatedAt, error, plugin } = job;
+	const view: JobRecord = { id, kind, chatId, toolCallId, status, activity, createdAt, updatedAt };
+	if (error !== undefined) view.error = error;
+	if (plugin) {
+		const { input: _input, ...pluginStatus } = plugin;
+		view.plugin = pluginStatus;
+	}
+	return view;
 }
