@@ -53,7 +53,7 @@ function bridge(initial = state(), snapshot = Promise.resolve(initial)) {
 		getUpdateState: () => { calls.get++; return snapshot; },
 		onUpdateStatus: cb => { listeners.add(cb); return () => { listeners.delete(cb); }; },
 		checkForUpdates: async () => { calls.check++; if (checkFailure) throw checkFailure; },
-		installUpdate: () => { calls.install++; },
+		installUpdate: async () => { calls.install++; return true; },
 		downloadUpdate: async () => { calls.download++; },
 		onOpenSettings: cb => { onOpen = cb; return () => { onOpen = null; }; },
 	};
@@ -423,6 +423,27 @@ describe("General update rows", () => {
 		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "downloading");
 		assert.ok(q(host, "update-pill") === before, "not remounted");
 		assert.ok(document.activeElement === before);
+	});
+
+	it("an install the app turns down (an Update everything run owns the updater), or a bridge without installUpdate, is Install again", async () => {
+		const b = bridge(state({ status: "downloaded", version: "0.3.8", revision: 1 }));
+		window.lh!.installUpdate = async () => { b.calls.install++; return false; };
+		const host = await mount(<SidebarUpdatePill />);
+		const confirm = async (root: ParentNode) => {
+			await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+			await click(q(root, "update-pill"));
+			await click(q(document, "install-update-confirm"));
+			await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		};
+		await confirm(host);
+		assert.equal(b.calls.install, 1);
+		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "install", "main ignored it: no Restarting");
+		assert.equal(q(host, "update-pill")!.getAttribute("aria-disabled"), null);
+		for (const { root, host: old } of roots.splice(0)) { await act(async () => { root.unmount(); }); old.remove(); }
+		delete window.lh!.installUpdate;
+		const bare = await mount(<SidebarUpdatePill />);
+		await confirm(bare);
+		assert.equal(q(bare, "update-pill")!.getAttribute("data-action"), "install");
 	});
 
 	it("an install the desktop bridge throws on never rejects; the button is Install again", async () => {

@@ -97,7 +97,8 @@ declare global {
 			getUpdateState?: () => Promise<UpdateState>;
 			/** Explicit manual check also downloads and stages available updates. */
 			checkForUpdates?: () => Promise<void>;
-			installUpdate?: () => void;
+			/** Resolves whether main took the install (false while Update everything owns the updater). */
+			installUpdate?: () => Promise<boolean>;
 			/** Download the "available" update (downloads happen only on click). */
 			downloadUpdate?: () => Promise<void>;
 			onOpenSettings?: (cb: (section: string) => void) => () => void;

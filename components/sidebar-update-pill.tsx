@@ -207,9 +207,9 @@ export const continuesCheckSpin = (checking: boolean, reducedMotion: boolean) =>
 
 const CLOSE_DELAY_MS = 150;
 
-/** Keyboard focus only (components/ui/tooltip.tsx does the same); a DOM without :focus-visible says no. */
+/** Keyboard focus only, as components/ui/tooltip.tsx checks it (a DOM without :focus-visible counts as yes). */
 function focusVisible(element: Element): boolean {
-	try { return element.matches(":focus-visible"); } catch { return false; }
+	try { return element.matches(":focus-visible"); } catch { return true; }
 }
 
 function useReducedMotion(): boolean {

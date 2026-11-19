@@ -22,7 +22,8 @@
  *   {status, version, revision, releaseNotes, omittedReleaseCount} on
  *   updater events; downloadUpdate downloads the offered version (downloads
  *   happen only on click); installUpdate asks main to re-check, kill the
- *   server and quit-and-install (after the renderer's confirm dialog).
+ *   server and quit-and-install (after the renderer's confirm dialog), and
+ *   resolves whether main took it (false while Update everything owns it).
  *   getUpdateState retrieves the snapshot for a late subscriber;
  *   checkForUpdates requests a manual check (even with automatic checks
  *   OFF). docs/specs/t3-style-updates.md.
@@ -100,7 +101,7 @@ if (globalThis.location?.protocol !== "file:") {
 			ipcRenderer.on("lh:update-status", listener);
 			return () => ipcRenderer.removeListener("lh:update-status", listener);
 		},
-		installUpdate: () => ipcRenderer.send("lh:update-install"),
+		installUpdate: () => ipcRenderer.invoke("lh:update-install"),
 		downloadUpdate: () => ipcRenderer.invoke("lh:update:download"),
 		getUpdateState: () => ipcRenderer.invoke("lh:update:get"),
 		checkForUpdates: () => ipcRenderer.invoke("lh:update:check"),

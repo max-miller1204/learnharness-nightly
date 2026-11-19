@@ -146,12 +146,14 @@ export function useUpdateState() {
 	}, [accept]);
 
 	/** Apply now. Callers confirm first (InstallUpdateDialog). Resolves false when the request
-	 *  failed (the sidebar control then shows its normal button again), never rejects. */
+	 *  failed or the app turned it down (the sidebar control then shows its normal button again),
+	 *  never rejects. */
 	const install = useCallback(async (): Promise<boolean> => {
 		try {
 			const lh = localDesktopBridge();
-			if (lh) lh.installUpdate?.();
-			else accept(await fetchWebState("/api/updates/install", "POST"));
+			// The app can turn it down (an Update everything run owns the updater): only its yes counts.
+			if (lh) return (await lh.installUpdate?.()) === true;
+			accept(await fetchWebState("/api/updates/install", "POST"));
 			return true;
 		} catch {
 			setFailed(true);
