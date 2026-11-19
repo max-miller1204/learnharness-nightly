@@ -51,6 +51,7 @@ const RECORDED = {
 		"src/core/question-core.ts": "9ad92ef81c8b7f99",
 		"@earendil-works/pi-agent-core": "1.5.2",
 		"@earendil-works/pi-ai": "1.5.2",
+		"@earendil-works/pi-schema": "1.5.2",
 	} as Record<string, string>,
 };
 
