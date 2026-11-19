@@ -24,7 +24,7 @@ function fixture({ state = { status: "available", version: V72 } as State, offer
 	const log: string[] = [];
 	const dialogs: Array<{ title?: string; message: string; detail?: string; buttons: string[] }> = [];
 	const current = { ...state };
-	const flags = { running, checkFails: false, downloadFails: false, inFlight: null as string | null, offered };
+	const flags = { running, checkFails: false, downloadFails: false, inFlight: null as string | null, offered, pinnedFeed: null as string | null };
 	const updater = Object.assign(new EventEmitter(), {
 		checkForUpdates: async () => {
 			log.push("check");
@@ -56,6 +56,7 @@ function fixture({ state = { status: "available", version: V72 } as State, offer
 		download: () => log.push("menu download"),
 		install: async () => { log.push("menu install"); },
 		running: () => flags.running,
+		pinFeed: (version: string | null) => { log.push(`pin feed ${version}`); flags.pinnedFeed = version; if (version) flags.offered = version; },
 		log: () => {},
 		wait: async () => {},
 	});
@@ -98,6 +99,24 @@ test("a failed pinned download over an older ready one offers the pinned version
 	assert.equal(f.updater.listenerCount("update-downloaded"), 0, "the listener goes on failure too");
 	await assert.rejects(f.actions.downloadPinned(V73));
 	assert.equal(f.log.filter((line) => line.startsWith("offer")).length, 1, "a plain failure (nothing older ready) changes nothing");
+});
+
+test("downloadExact pins the feed to the version for the retry, then unpins it", async () => {
+	const f = fixture({ state: { status: "idle", version: null }, offered: V73 });
+	await f.actions.downloadExact(V72);
+	assert.deepEqual(f.log, [`pin feed ${V72}`, "check", `notes ${V72}`, `download ${V72}`, "pin feed null"], "V72, though the feed's newest is V73");
+	assert.deepEqual(f.current, { status: "downloaded", version: V72 });
+
+	const wrong = fixture({ offered: V73 });
+	const actions = wrong.actions;
+	wrong.flags.offered = V73;
+	// A feed that ignores the pin (the LH_UPDATE_FEED test override) offers another version: refuse.
+	const original = wrong.updater.checkForUpdates;
+	wrong.updater.checkForUpdates = async () => ({ updateInfo: { version: V73 } });
+	await assert.rejects(actions.downloadExact(V72), /offered .*20261118\.73, not .*20261118\.72/);
+	assert.equal(wrong.flags.pinnedFeed, null, "unpinned on failure too");
+	assert.equal(wrong.log.some((line) => line.startsWith("download")), false);
+	wrong.updater.checkForUpdates = original;
 });
 
 test("installPinned installs only the ready pinned version", () => {

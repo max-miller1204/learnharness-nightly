@@ -24,6 +24,8 @@ const isNewerVersion = (a, b) => typeof a === "string" && typeof b === "string" 
 const HANDOFF_TIMEOUT_MS = 32 * 60 * 1000;
 const RESTART_DELAY_MS = 5_000;
 const POLL_MS = 2_000;
+// Polls in a row where the route answers 5xx but the server shows no attempt: then it's the route, not a restart.
+const ROUTE_ERROR_LIMIT = 3;
 const SAVED_RESULT_MAX_AGE_MS = 10 * 60 * 1000;
 const INSTALL_VERSION_PATH = "/api/updates/install-version";
 
@@ -72,12 +74,13 @@ async function readJSON(response) {
  *   updater.download()         download the offered version
  *   updater.pin()              re-check the feed; resolves the newest offered version or null
  *   updater.downloadPinned(v)  make sure exactly v is downloaded (throws otherwise)
+ *   updater.downloadExact(v)   the app-only retry: check for exactly v (not the newest), download it
  *   updater.installPinned(v)   quit and install exactly v (never a newer one)
  *   selection()                { origin, token } of the open remote window, or null
  *   request(origin, path, { token, method, body, timeoutMs }) a fetch to that exact origin
  *   confirm({ message, detail, buttons, signal }) -> button index (native dialog)
  *   tell({ message, detail })  a native notice with one OK button
- *   progress(text)             cover the server's page with the ghost dashboard line
+ *   progress(origin, text)     cover that server's page with the ghost dashboard line
  *   fail(origin, { kind, message }) show the server window with Retry (or Pair again)
  *   reconnect(origin)          reopen the server's page (after Later)
  *   saveResult(record) / takeResult()  userData file for the next launch
@@ -126,8 +129,15 @@ function createUpdateEverything(deps) {
 	async function updateServer(selection, label, target, before) {
 		const { origin, token } = selection;
 		run.step = "updating";
-		deps.progress(`Updating ${label} to ${target}… This can take a few minutes.`);
+		deps.progress(origin, `Updating ${label} to ${target}… This can take a few minutes.`);
 		let asked = false;
+		// The id of the server's attempt this run's request started (or joined):
+		// only its `pinned.error` is this run's failure, never one left from earlier.
+		let attempt = null;
+		// A 5xx from the route itself, while the server answers GET /api/updates as
+		// the same process with no attempt for the target, is the route failing.
+		let routeError = null;
+		let routeErrors = 0;
 		const ask = async () => {
 			let response;
 			try {
@@ -135,12 +145,15 @@ function createUpdateEverything(deps) {
 			} catch {
 				return; // No answer: maybe started. Poll, and ask again.
 			}
-			if (response.status >= 500) return; // The proxy while the server restarts.
+			if (response.status >= 500) { routeError = response.status; return; } // Maybe the proxy while the server restarts.
+			routeError = null;
 			const body = await readJSON(response);
 			if (response.status === 404) throw new RunProblem(`${label} runs a LearnHarness without Update everything. Update it from its own Settings first.`, { server: true });
 			if (response.status === 401) throw new RunProblem("This desktop is no longer paired with the server.", { server: true, kind: "pair" });
 			if (!response.ok) throw new RunProblem(`${label} can’t update: ${typeof body?.error === "string" ? body.error : `HTTP ${response.status}`} Nothing was changed.`, { server: true });
 			asked = true;
+			const pinned = body?.pinned;
+			if (pinned?.version === target && pinned.error === null && typeof pinned.id === "string") attempt = pinned.id;
 		};
 		const deadline = deps.now() + HANDOFF_TIMEOUT_MS;
 		while (deps.now() < deadline) {
@@ -151,8 +164,15 @@ function createUpdateEverything(deps) {
 				const state = await serverUpdates(origin, token, { restarting: true });
 				if (!state) throw new Error("not back yet");
 				if (healthy && state.runningVersion === target && state.committed === true) return;
-				if (state.pinned?.version === target && typeof state.pinned.error === "string") {
+				if (attempt && state.pinned?.id === attempt && typeof state.pinned.error === "string") {
 					throw new RunProblem(`${label} couldn’t start the update: ${state.pinned.error} Your app wasn’t changed.`, { server: true });
+				}
+				const started = state.pinned?.version === target && !state.pinned.error;
+				if (routeError && state.instance === before && !started) {
+					routeErrors += 1;
+					if (routeErrors >= ROUTE_ERROR_LIMIT) throw new RunProblem(`${label} can’t update: HTTP ${routeError}. Nothing was changed.`, { server: true });
+				} else {
+					routeErrors = 0;
 				}
 				if (state.instance !== before && state.runningVersion !== target && state.notice?.kind === "rolled-back" && state.notice.version === target) {
 					throw new RunProblem(`${label} couldn’t start ${target} and went back to ${state.runningVersion}. Your app wasn’t changed.`, { server: true });
@@ -166,6 +186,34 @@ function createUpdateEverything(deps) {
 		throw new RunProblem(asked
 			? `${label} wasn’t back after ${HANDOFF_TIMEOUT_MS / 60_000} minutes. Your app wasn’t changed.`
 			: `Couldn’t reach ${label} for ${HANDOFF_TIMEOUT_MS / 60_000} minutes. Your app wasn’t changed.`, { server: true });
+	}
+
+	/** PR 2 item 4: the server committed `target` but this app didn't install it.
+	 *  Offer an explicit app-only retry of exactly that version, even when the
+	 *  feed has moved on (a newer version means a new Update everything). */
+	async function offerRetry(retry) {
+		if (run || asking || !retry || typeof retry.target !== "string") return;
+		asking = true;
+		let choice;
+		try {
+			choice = await deps.confirm({
+				type: "warning",
+				message: "The app update didn’t finish.",
+				detail: `LearnHarness is still on ${deps.appVersion} and ${serverLabel(retry.updated ?? retry.server)} is on ${retry.target}. Install LearnHarness ${retry.target} again? Only this app restarts.`,
+				buttons: ["Try Again", "Later"],
+			});
+		} finally { asking = false; }
+		if (choice !== 0) return;
+		run = { target: retry.target, step: "downloading" };
+		try {
+			await deps.updater.downloadExact(retry.target);
+			run.step = "restarting";
+			deps.saveResult({ savedAt: deps.now(), server: deps.selection()?.origin ?? retry.server, updated: retry.updated ?? retry.server, from: deps.appVersion, target: retry.target });
+			deps.updater.installPinned(retry.target);
+		} catch {
+			run = null;
+			await deps.tell({ message: "Couldn’t install the app update.", detail: `LearnHarness is still on ${deps.appVersion}. Try again from the app menu’s Check for Updates… or Update everything.` });
+		}
 	}
 
 	/** `answered` resolves the page's install() once the confirmation is decided (or skipped). */
@@ -232,9 +280,9 @@ function createUpdateEverything(deps) {
 		} catch (error) {
 			run = null;
 			if (serverDone) {
-				// The server is already on the target: uncover its new page and say what is left.
+				// The server is already on the target: uncover its new page and offer the app-only retry.
 				deps.reconnect(selection.origin);
-				await deps.tell({ message: "Couldn’t finish updating this app.", detail: `${label} is on ${target}. Use Update everything to try again.` });
+				await offerRetry({ target, server: selection.origin, updated: selection.origin });
 				return;
 			}
 			const problem = error instanceof RunProblem ? error : new RunProblem("Update everything stopped. Nothing was changed.");
@@ -262,7 +310,8 @@ function createUpdateEverything(deps) {
 			void start(answered).catch(() => {}).finally(answered);
 			try { await decided; } finally { asking = false; }
 		},
-		/** The relaunch after an install: the server to reopen once, and a notice if the app didn't change. */
+		offerRetry,
+		/** The relaunch after an install: the server to reopen once, and the pinned retry to offer if the app didn't change. */
 		takeLaunch() {
 			let saved = null;
 			try { saved = deps.takeResult(); } catch { return null; }
@@ -271,10 +320,7 @@ function createUpdateEverything(deps) {
 			const applied = deps.appVersion === saved.target;
 			return {
 				server: saved.server,
-				notice: applied ? null : {
-					message: "The app update didn’t finish.",
-					detail: `LearnHarness is still on ${deps.appVersion} and ${serverLabel(typeof saved.updated === "string" ? saved.updated : saved.server)} is on ${saved.target}. Use Update everything to try again.`,
-				},
+				retry: applied ? null : { target: saved.target, server: saved.server, updated: typeof saved.updated === "string" ? saved.updated : saved.server },
 			};
 		},
 	};

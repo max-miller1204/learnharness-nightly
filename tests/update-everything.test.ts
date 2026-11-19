@@ -37,7 +37,7 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 	const remote = {
 		running: server, committed: true, instance: "old", status: "up-to-date", notice: null as unknown, message: null as string | null,
 		health: server as string | null, installReply: null as Reply | null, onInstall: () => {}, items: [{ kind: "turn" }, { kind: "job" }],
-		down: false, proxy502: false, installFails: false, tick: undefined as (() => void) | undefined,
+		down: false, proxy502: false, installFails: 0, attempts: 0, tick: undefined as (() => void) | undefined,
 		pinned: null as unknown, selected: ORIGIN,
 		// POSTs that get no answer: the transport gives up after its 15 s timeout (requestServer's),
 		// and `startsAnyway` says whether the server got it before the answer was lost.
@@ -53,7 +53,12 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 			download: () => log.push("download"),
 			pin: async () => { log.push("pin"); return offered; },
 			downloadPinned: async (v: string) => { if (downloadFails) throw new Error("sha512 checksum mismatch"); log.push(`download ${v}`); },
-			installPinned: (v: string) => { if (remote.installFails) throw new Error("not ready"); log.push(`install ${v}`); finished(); },
+			// The app-only retry: exactly v, whatever the feed's newest is.
+			downloadExact: async (v: string) => { log.push(`exact ${v}`); },
+			installPinned: (v: string) => {
+				if (remote.installFails > 0) { remote.installFails--; log.push(`install ${v} failed`); throw new Error("Could not locate update bundle"); }
+				log.push(`install ${v}`); finished();
+			},
 		},
 		selection: () => ({ origin: remote.selected, token: "bearer" }),
 		request: async (origin: string, pathname: string, options: { token?: string; method?: string; body?: unknown }) => {
@@ -66,7 +71,12 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 					clock += 15_000;
 					throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
 				}
-				const reply = remote.installReply ?? { status: 202, body: { instance: remote.instance, runningVersion: remote.running } };
+				if (!remote.installReply) {
+					// As the server does: a fresh attempt id unless one for this version is going on.
+					const pinned = remote.pinned as { version: string; error: string | null } | null;
+					if (!pinned || pinned.error || pinned.version !== V72) remote.pinned = { version: V72, error: null, id: `attempt-${++remote.attempts}` };
+				}
+				const reply = remote.installReply ?? { status: 202, body: { instance: remote.instance, runningVersion: remote.running, pinned: remote.pinned } };
 				if (reply instanceof Error) throw reply;
 				remote.onInstall();
 				remote.onInstall = () => {}; // asking again is harmless, as on the server
@@ -86,7 +96,7 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 			return answer;
 		},
 		tell: async (notice: { message: string; detail: string }) => { notices.push(notice); finished(); },
-		progress: (text: string) => progress.push(text),
+		progress: (origin: string, text: string) => { assert.equal(origin, ORIGIN, "the run covers only its own server"); progress.push(text); },
 		fail: (origin: string, problem: { kind: string; message: string }) => { failures.push(problem.message); kinds.push(problem.kind); finished(); },
 		reconnect: (origin: string) => { log.push(`reconnect ${origin}`); finished(); },
 		saveResult: (record: unknown) => { results.push(record); stored = record; },
@@ -256,10 +266,7 @@ test("after a switch to another server the relaunch reopens the open one, and th
 	assert.equal((f.results[0] as { server: string }).server, B);
 	assert.equal((f.results[0] as { updated: string }).updated, ORIGIN);
 	const relaunch = createUpdateEverything({ appVersion: V71, takeResult: () => f.results[0], now: () => (f.results[0] as { savedAt: number }).savedAt, updater: { state: () => ({}) } });
-	assert.deepEqual(relaunch.takeLaunch(), { server: B, notice: {
-		message: "The app update didn’t finish.",
-		detail: `LearnHarness is still on ${V71} and max-desktop is on ${V72}. Use Update everything to try again.`,
-	} });
+	assert.deepEqual(relaunch.takeLaunch(), { server: B, retry: { target: V72, server: B, updated: ORIGIN } });
 });
 
 test("a launcher rejection, a rollback and the 32-minute limit fail the server step", async () => {
@@ -268,7 +275,7 @@ test("a launcher rejection, a rollback and the 32-minute limit fail the server s
 		// An older error state alone is not this run's failure; `pinned` is.
 		rejected.remote.status = "error";
 		rejected.remote.message = "Couldn’t check for updates.";
-		rejected.remote.tick = () => { rejected.remote.pinned = { version: V72, error: "Not enough disk space to back up your data." }; };
+		rejected.remote.tick = () => { rejected.remote.pinned = { ...(rejected.remote.pinned as object), error: "Not enough disk space to back up your data." }; };
 	};
 	await rejected.ue.install();
 	await rejected.done;
@@ -309,16 +316,65 @@ test("status reports the run, and a second click while the dialog is open is ign
 	assert.deepEqual(f.log.slice(-1), ["check"]);
 });
 
-test("a failure after the server is done uncovers its new page and says what is left", async () => {
+const until = async (condition: () => boolean) => {
+	// The countdown's own (shortened) timer is real, so wait in short real steps.
+	for (let i = 0; i < 500 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 1));
+	assert.ok(condition(), "timed out waiting");
+};
+
+test("an app install that fails after the server committed offers the app-only retry of the pinned version", async () => {
+	const f = fixture({ answers: [0, "wait", 0] });
+	f.remote.installFails = 2;
+	f.remote.onInstall = () => { f.remote.running = V72; f.remote.health = V72; f.remote.instance = "new"; };
+	await f.ue.install();
+	await until(() => f.notices.length > 0);
+	assert.ok(f.log.includes(`reconnect ${ORIGIN}`), "the ghost cover goes away");
+	const retry = f.prompts.at(-1)!;
+	assert.equal(retry.message, "The app update didn’t finish.");
+	assert.equal(retry.detail, `LearnHarness is still on ${V71} and max-desktop is on ${V72}. Install LearnHarness ${V72} again? Only this app restarts.`);
+	assert.deepEqual(retry.buttons, ["Try Again", "Later"]);
+	assert.deepEqual(f.log, ["pin", `download ${V72}`, `install ${V72} failed`, `reconnect ${ORIGIN}`, `exact ${V72}`, `install ${V72} failed`]);
+	assert.equal(f.notices.at(-1)!.message, "Couldn’t install the app update.");
+	assert.equal(f.requests.filter((request) => request.path === "/api/updates/install-version").length, 1, "the retry never touches the server");
+	assert.deepEqual(f.failures, []);
+});
+
+test("after a relaunch the retry installs the pinned version, even once the feed has moved on", async () => {
+	const saved = { savedAt: 1_000_000 - 1000, server: ORIGIN, updated: ORIGIN, from: V71, target: V72 };
+	const f = fixture({ saved, offered: V73, answers: [0] });
+	const launch = f.ue.takeLaunch()!;
+	assert.deepEqual(launch, { server: ORIGIN, retry: { target: V72, server: ORIGIN, updated: ORIGIN } });
+	await f.ue.offerRetry(launch.retry);
+	await f.done;
+	assert.deepEqual(f.log, [`exact ${V72}`, `install ${V72}`], "V72, not the feed's newer V73, and no new pin");
+	assert.equal(f.requests.length, 0, "no server request at all");
+	assert.equal((f.results[0] as { target: string }).target, V72, "saved again, so another failure offers the retry again");
+
+	const later = fixture({ saved, answers: [1] });
+	await later.ue.offerRetry(later.ue.takeLaunch()!.retry);
+	assert.deepEqual(later.log, [], "Later changes nothing");
+	assert.equal(later.ue.running(), false);
+});
+
+test("a pinned error left from an earlier attempt is not this run's", async () => {
 	const f = fixture();
-	f.remote.installFails = true;
+	f.remote.pinned = { version: V72, error: "offline", id: "earlier" };
+	f.remote.postTimeouts = 1;
+	f.remote.startsAnyway = false;
 	f.remote.onInstall = () => { f.remote.running = V72; f.remote.health = V72; f.remote.instance = "new"; };
 	await f.ue.install();
 	await f.done;
-	await new Promise((resolve) => setImmediate(resolve));
-	assert.ok(f.log.includes(`reconnect ${ORIGIN}`), "the ghost cover goes away");
-	assert.deepEqual(f.notices.at(-1), { message: "Couldn’t finish updating this app.", detail: `max-desktop is on ${V72}. Use Update everything to try again.` });
-	assert.deepEqual(f.failures, []);
+	assert.deepEqual(f.failures, [], "the first poll sees the old error before any request arrived");
+	assert.equal(f.log.at(-1), `install ${V72}`);
+});
+
+test("a route that keeps answering 5xx while the server answers as itself stops with that reason", async () => {
+	const f = fixture();
+	f.remote.installReply = { status: 500, body: {} };
+	await f.ue.install();
+	await f.done;
+	assert.equal(f.failures[0], "max-desktop can’t update: HTTP 500. Nothing was changed.");
+	assert.ok(f.requests.filter((request) => request.path === "/api/updates/install-version").length <= 3, "not 32 minutes of retries");
 });
 
 test("a notice keeps the page's install() waiting, so a page can't stack dialogs", async () => {
@@ -339,18 +395,15 @@ test("a notice keeps the page's install() waiting, so a page can't stack dialogs
 	assert.equal(f.notices[0]!.message, "LearnHarness is up to date.");
 });
 
-test("the relaunch reopens that server once and says so when the app didn't change", () => {
+test("the relaunch reopens that server once and offers the retry when the app didn't change", () => {
 	const recent = { savedAt: 1_000_000 - 1000, server: ORIGIN, from: V71, target: V72 };
 	const same = fixture({ saved: recent });
-	assert.deepEqual(same.ue.takeLaunch(), { server: ORIGIN, notice: {
-		message: "The app update didn’t finish.",
-		detail: `LearnHarness is still on ${V71} and max-desktop is on ${V72}. Use Update everything to try again.`,
-	} });
+	assert.deepEqual(same.ue.takeLaunch(), { server: ORIGIN, retry: { target: V72, server: ORIGIN, updated: ORIGIN } });
 	assert.equal(same.ue.takeLaunch(), null, "read once");
 	const old = fixture({ saved: { ...recent, savedAt: 1_000_000 - SAVED_RESULT_MAX_AGE_MS - 1 } });
 	assert.equal(old.ue.takeLaunch(), null, "a stale record is ignored, as in T3");
 	const applied = createUpdateEverything({ appVersion: V72, takeResult: () => recent, now: () => 1_000_000, updater: { state: () => ({}) } });
-	assert.deepEqual(applied.takeLaunch(), { server: ORIGIN, notice: null });
+	assert.deepEqual(applied.takeLaunch(), { server: ORIGIN, retry: null });
 });
 
 test("the bridge answers only the remote window's main frame at its origin, with no arguments", async () => {

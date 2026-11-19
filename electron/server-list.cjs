@@ -352,8 +352,9 @@ async function createServerList({
 		current() {
 			return window && !window.isDestroyed() && active?.token ? { win: window, origin: active.server, token: active.token } : null;
 		},
-		coverForUpdate(text) {
-			if (!window || window.isDestroyed() || !active?.token) return;
+		/** Only the run's own server: after a switch, another server's page stays uncovered. */
+		coverForUpdate(origin, text) {
+			if (!window || window.isDestroyed() || !active?.token || active.server !== origin) return;
 			updating?.cover.reveal();
 			const cover = coverWindow(window, { WebContentsView, session, mode: themeMode(), status: text });
 			cover.focus();

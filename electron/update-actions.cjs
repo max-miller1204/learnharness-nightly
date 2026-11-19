@@ -19,6 +19,7 @@
  *   download()           the menu's Download (downloadUpdateNow)
  *   install()            the menu's Restart (installUpdateNow, which re-checks)
  *   running()            an Update everything run (or its confirmation) is going
+ *   pinFeed(version)     make the feed offer exactly `version` (null: the newest again)
  *   log(line), wait(ms)
  */
 function createUpdateActions(deps) {
@@ -58,6 +59,23 @@ function createUpdateActions(deps) {
 			}
 		}
 		if (!ready()) throw new Error(`Downloaded ${deps.state().version}, not the pinned ${target}.`);
+	}
+
+	/** The app-only retry of a pinned version that didn't install: check the
+	 *  feed for exactly `target` (not the newest), then download it. */
+	async function downloadExact(target) {
+		const updater = deps.updater();
+		if (!updater) throw new Error("The updater is unavailable.");
+		deps.pinFeed(target);
+		try {
+			const result = await updater.checkForUpdates();
+			const offered = result?.updateInfo?.version;
+			if (offered !== target) throw new Error(`The feed offered ${offered ?? "nothing"}, not ${target}.`);
+			deps.adoptNotes(result.updateInfo);
+			await downloadPinned(target);
+		} finally {
+			deps.pinFeed(null);
+		}
 	}
 
 	/** Quit and install exactly `target`, with no re-check. */
@@ -111,7 +129,7 @@ function createUpdateActions(deps) {
 		}
 	}
 
-	return { pin, downloadPinned, installPinned, checkNatively };
+	return { pin, downloadPinned, downloadExact, installPinned, checkNatively };
 }
 
 module.exports = { createUpdateActions };

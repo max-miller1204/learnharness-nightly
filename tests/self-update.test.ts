@@ -291,25 +291,58 @@ describe("self-hosted updater", () => {
 		u.start();
 		const started = u.startInstallVersion(NEXT);
 		assert.equal(started.refused, null, "the route can answer before the download");
-		assert.deepEqual(u.state().pinned, { version: NEXT, error: null });
+		const id = u.state().pinned!.id;
+		assert.deepEqual(u.state().pinned, { version: NEXT, error: null, id });
 		assert.equal(u.startInstallVersion(NEXT).refused, null, "the same request again is harmless");
+		assert.equal(u.state().pinned!.id, id, "and joins the same attempt");
 		assert.match(u.startInstallVersion(NEWER).refused ?? "", /already starting/);
 		await settle();
 		release();
 		assert.equal(await started.done, null);
 		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }]);
 		f.toParent({ type: "update-rejected", reason: "Not enough disk space" });
-		assert.deepEqual(u.state().pinned, { version: NEXT, error: "Not enough disk space" }, "the launcher's refusal reaches the desktop");
+		assert.deepEqual(u.state().pinned, { version: NEXT, error: "Not enough disk space", id }, "the launcher's refusal reaches the desktop");
 		assert.equal(publicUpdateState(u.state()).pinned?.error, "The update failed.", "no details without a session");
 
 		const g = fake();
 		g.flags.fetchFails = true;
 		const v = createSelfUpdater(g.deps);
 		assert.equal(await pin(v, NEXT), "offline");
-		assert.deepEqual(v.state().pinned, { version: NEXT, error: "offline" });
+		const failedId = v.state().pinned!.id;
+		assert.deepEqual(v.state().pinned, { version: NEXT, error: "offline", id: failedId });
 		g.flags.fetchFails = false;
 		assert.equal(await pin(v, NEXT), null, "after a failure the same request retries");
-		assert.deepEqual(v.state().pinned, { version: NEXT, error: null });
+		assert.equal(v.state().pinned!.error, null);
+		assert.notEqual(v.state().pinned!.id, failedId, "as a new attempt, so the old error can't be read as its result");
+	});
+
+	it("a stale pinned error is never this attempt's: joining a switch already under way starts a fresh attempt, and a plain Install's refusal stays out of it", async () => {
+		const f = fake();
+		f.flags.auto = false;
+		f.flags.fetchFails = true;
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		assert.equal(await pin(u, NEXT), "offline");
+		const stale = u.state().pinned!.id;
+		// The server's own Install then switches to NEXT; a desktop run joins it.
+		f.flags.fetchFails = false;
+		await u.install();
+		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }]);
+		assert.equal(u.startInstallVersion(NEXT).refused, null);
+		assert.equal(u.state().pinned!.error, null);
+		assert.notEqual(u.state().pinned!.id, stale);
+
+		const g = fake();
+		g.flags.auto = false;
+		g.flags.fetchFails = true;
+		const v = createSelfUpdater(g.deps);
+		v.start();
+		assert.equal(await pin(v, NEXT), "offline");
+		const left = v.state().pinned;
+		g.flags.fetchFails = false;
+		await v.install();
+		g.toParent({ type: "update-rejected", reason: "Not enough disk space" });
+		assert.deepEqual(v.state().pinned, left, "a plain Install's refusal isn't written into an old attempt");
 	});
 
 	it("is committed unless it is a trial the launcher hasn't committed yet", async () => {

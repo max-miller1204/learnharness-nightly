@@ -14,7 +14,8 @@ Roadmap item 23 PR 2 (answer key: [docs/specs/desktop-server-list.md](../../../.
 - `failures`: refused (409), old server (404), rollback, 32-minute timeout, failed app download; the app stays on its version.
 - `later`: Later reopens the updated server; the next click only restarts the app.
 - `relaunch`: the app reopens the same server once (not the default), and says so when the app update didn't apply.
-- `menu`: app menu Check for Updates… while connected: T3's native dialogs.
+- `menu`: app menu Check for Updates… while connected: T3's native dialogs (on macOS only the message and detail show: Electron ignores `title` there, as for T3).
+- `retry`: an app install refused after the server committed X: the notice offers Try Again, an app-only install of exactly X even after a newer version is published (no server request).
 
 ## Driving it (ThinkPad slot, by hand: no script yet)
 
@@ -26,7 +27,7 @@ Preconditions: [update-rollback.md](update-rollback.md) step 2 tier B install, a
 4. Pair the AppImage (fresh profile, `LH_UPDATE_FEED` at the desktop feed serving `V2`) with `lh pair`, connect, and read `window.lh` through CDP on the server page (`Object.keys(window.lh)`, `Object.keys(window.lh.desktopUpdate)`).
 5. Drive the button, Settings rows, Cancel, then Update everything. Publish `V3` to both feeds after confirming: the server must still go to `V2`. Poll `/api/health`, `GET /api/updates` (`committed`) and `service-state.json`; record when health first answers `V2` and when `committed` turns true; the app must not restart between them. Screenshot the ghost line "Updating <server> to V2…".
 6. Failures, one fresh run each: an archive for `V2` with `server.js` replaced by `process.exit(3)` (rollback), the unit stopped (timeout: shorten nothing, record the 32-minute message, or check it in `tests/update-everything.test.ts`), a pre-PR server (404), a broken desktop feed (download failure: the server's `/api/updates` never sees a request).
-7. Later, then the button again (only the app restarts). Restart: the app relaunches onto the same server even with another saved default; with the AppImage replaced back by `V1` before relaunch, the "didn't finish" notice shows once.
+7. Later, then the button again (only the app restarts). Restart: the app relaunches onto the same server even with another saved default; with the AppImage replaced back by `V1` before relaunch, the "didn't finish" notice shows once with Try Again and Later. Publish `V3` first, then Try Again: the app downloads and installs `V2` (not `V3`), with no server request (on a Mac, make Squirrel refuse the first ZIP with a wrong bundle identity to get there).
 8. Menu: with the server page open and with it closed (problem screen), Check for Updates…: each T3 dialog.
 
 ## Gotchas

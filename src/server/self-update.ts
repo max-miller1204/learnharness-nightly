@@ -66,8 +66,9 @@ export interface SelfUpdateState {
 	/** False while this server is the launcher's trial, until the launcher commits it. A trial
 	 *  answers /api/health before that, so Update everything waits for this (roadmap item 23). */
 	committed: boolean;
-	/** The exact version Update everything asked this server for, and why it failed (null while it goes on). */
-	pinned: { version: string; error: string | null } | null;
+	/** The exact version Update everything asked this server for, why it failed (null while it
+	 *  goes on), and the attempt's id: the desktop trusts only the error of the attempt it started. */
+	pinned: { version: string; error: string | null; id: string } | null;
 	/** Detail for the Settings row (errors, rejections, progress). */
 	message: string | null;
 	/** A rolled-back switch until dismissed. */
@@ -118,6 +119,8 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 	let commitCheckTimer: unknown;
 	let checking: Promise<void> | undefined;
 	let requested = false;
+	// The `pinned` attempt whose request-update the launcher is answering, if any.
+	let pinnedRequest: string | null = null;
 	let started = false;
 
 	const set = (next: Partial<SelfUpdateState>) => {
@@ -204,7 +207,10 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			set({ message: state.version ? `Installing version ${state.version}…` : "Installing the update…" });
 		} else if (message.type === "update-rejected") {
 			requested = false;
-			set({ status: "error", message: message.reason, ...(state.pinned ? { pinned: { version: state.pinned.version, error: message.reason } } : {}) });
+			// Only the attempt that asked the launcher, never a plain Install's refusal.
+			const ours = state.pinned && pinnedRequest === state.pinned.id;
+			pinnedRequest = null;
+			set({ status: "error", message: message.reason, ...(ours && state.pinned ? { pinned: { ...state.pinned, error: message.reason } } : {}) });
 		} else if (message.type === "committed") {
 			set({ committed: true, status: "up-to-date", version: null, message: `Updated to version ${deps.currentVersion}.`, releaseNotes: [], omittedReleaseCount: 0 });
 			// A trial skips the startup check; once it is the active server it checks like any other
@@ -250,7 +256,16 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			const answer = (refused: string | null) => ({ refused, done: Promise.resolve(refused) });
 			if (!deps.enabled) return answer("This server isn't run by the lh launcher, so it can't update itself.");
 			if (!isExactVersion(target)) return answer("The requested target is not an exact version.");
-			if (requested) return answer(state.version === target ? null : "Another update is already starting.");
+			if (requested) {
+				if (state.version !== target) return answer("Another update is already starting.");
+				// Already switching to it (maybe from the server's own Install): this request joins a fresh attempt.
+				if (state.pinned?.version !== target || state.pinned.error) {
+					const id = globalThis.crypto.randomUUID();
+					pinnedRequest = id;
+					set({ pinned: { version: target, error: null, id } });
+				}
+				return answer(null);
+			}
 			if (state.pinned && !state.pinned.error) return answer(state.pinned.version === target ? null : "Another update is already starting.");
 			if (!isExactVersion(deps.currentVersion)) return answer("This server's version is unknown.");
 			const order = compareVersions(target, deps.currentVersion);
@@ -258,9 +273,10 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			if (order < 0) return answer(`This server already runs ${deps.currentVersion}, newer than ${target}.`);
 			const bad = deps.readState()?.badVersions ?? [];
 			if (bad.includes(target)) return answer(`Version ${target} failed to start on this server earlier.`);
-			set({ pinned: { version: target, error: null } });
+			const id = globalThis.crypto.randomUUID();
+			set({ pinned: { version: target, error: null, id } });
 			const failed = (message: string) => {
-				set({ status: "error", message, pinned: { version: target, error: message } });
+				set({ status: "error", message, pinned: { version: target, error: message, id } });
 				return message;
 			};
 			const run = async (): Promise<string | null> => {
@@ -275,6 +291,7 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 					return failed(error instanceof Error ? error.message : String(error));
 				}
 				if (requested) return state.version === target ? null : failed("Another update is already starting.");
+				pinnedRequest = id;
 				requestUpdate(target);
 				return requested ? null : failed(state.message ?? "Couldn't reach the launcher.");
 			};
@@ -424,7 +441,7 @@ export function publicUpdateState(state: SelfUpdateState): SelfUpdateState {
 	return {
 		...state,
 		message: state.status === "error" ? null : state.message,
-		pinned: state.pinned ? { version: state.pinned.version, error: state.pinned.error ? "The update failed." : null } : null,
+		pinned: state.pinned ? { ...state.pinned, error: state.pinned.error ? "The update failed." : null } : null,
 		notice: state.notice ? { ...state.notice, text: `Update to version ${state.notice.version} failed to start and was rolled back.` } : null,
 	};
 }

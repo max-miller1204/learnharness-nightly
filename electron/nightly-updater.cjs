@@ -28,8 +28,12 @@ class NightlyProvider extends GenericProvider {
 	}
 
 	async getLatestVersion() {
-		const url = newUrlFromBase("nightly/latest.json", this.releaseRoot, true);
-		const pointer = JSON.parse(await this.httpRequest(url, { "Cache-Control": "no-cache" }));
+		// An app-only retry of Update everything's pinned version reads that exact
+		// release, never the moving pointer (electron/update-actions.cjs downloadExact).
+		const pinned = NightlyProvider.pinned;
+		const pointer = pinned
+			? { version: pinned, tag: `v${pinned}`, notes: [] }
+			: JSON.parse(await this.httpRequest(newUrlFromBase("nightly/latest.json", this.releaseRoot, true), { "Cache-Control": "no-cache" }));
 		const { version, tag, notes, publishedAt } = pointer ?? {};
 		if (tag !== `v${version}`) throw new Error("Nightly pointer tag and version disagree");
 		const provider = this.providerFor(version);
@@ -70,5 +74,8 @@ class NightlyProvider extends GenericProvider {
 		];
 	}
 }
+
+/** While set, every check offers exactly this nightly (see getLatestVersion). */
+NightlyProvider.pinned = null;
 
 module.exports = { NightlyProvider };

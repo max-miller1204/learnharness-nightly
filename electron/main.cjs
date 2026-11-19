@@ -675,6 +675,7 @@ const updateActions = createUpdateActions({
 	download: () => downloadUpdateNow(),
 	install: () => installUpdateNow(),
 	running: () => updateEverything?.running() ?? false,
+	pinFeed: (version) => { require("./nightly-updater.cjs").NightlyProvider.pinned = version; },
 	log,
 });
 
@@ -695,6 +696,7 @@ function updateEverythingDeps(list) {
 			download: downloadUpdateNow,
 			pin: updateActions.pin,
 			downloadPinned: updateActions.downloadPinned,
+			downloadExact: updateActions.downloadExact,
 			installPinned: updateActions.installPinned,
 		},
 		selection: () => list.current(),
@@ -705,7 +707,7 @@ function updateEverythingDeps(list) {
 		}),
 		confirm: ask,
 		tell: ({ message, detail }) => ask({ type: "info", message, detail, buttons: ["OK"] }),
-		progress: (text) => list.coverForUpdate(text),
+		progress: (origin, text) => list.coverForUpdate(origin, text),
 		fail: (origin, problem) => list.endUpdate(origin, problem),
 		reconnect: (origin) => list.endUpdate(origin, null),
 		saveResult: (record) => fs.writeFileSync(UPDATE_EVERYTHING_RESULT(), JSON.stringify(record), { mode: 0o600 }),
@@ -1054,7 +1056,8 @@ async function main() {
 		registerDesktopUpdateIPC(ipcMain, { current: () => serverList.current(), updateEverything });
 		const relaunch = updateEverything.takeLaunch();
 		await serverList.launch({ server: relaunch?.server });
-		if (relaunch?.notice) void dialog.showMessageBox({ type: "warning", buttons: ["OK"], ...relaunch.notice });
+		// The app update didn't apply: offer the app-only retry of that same version.
+		if (relaunch?.retry) void updateEverything.offerRetry(relaunch.retry);
 	}
 	app.on("activate", () => {
 		if (BrowserWindow.getAllWindows().length === 0) reopenWindow();

@@ -1106,7 +1106,10 @@ test("Update everything: the relaunch reopens its server once, and a covered res
 	assert.equal(current.token, "beta-secret");
 	assert.equal(current.win, win);
 
-	controller.coverForUpdate("Updating two to 0.6.1-nightly.20261118.72… This can take a few minutes.");
+	// A run for another server never covers this one (a switch before the cover went up).
+	controller.coverForUpdate(alpha, "Updating one…");
+	assert.equal(win.contentView.children.length, 0);
+	controller.coverForUpdate(beta, "Updating two to 0.6.1-nightly.20261118.72… This can take a few minutes.");
 	const cover = win.contentView.children.at(-1)!;
 	await cover.webContents.loadFile("x");
 	assert.ok(cover.options.webPreferences, "the ghost dashboard lies over the page");
@@ -1126,7 +1129,7 @@ test("Update everything: the relaunch reopens its server once, and a covered res
 	// Later: the covered page is replaced by a fresh load of the updated server.
 	await controller.launch({ server: beta });
 	const again = controller.current()!.win as TestWindow;
-	controller.coverForUpdate("Updating two…");
+	controller.coverForUpdate(beta, "Updating two…");
 	const reopened = TestWindow.all.length;
 	await controller.endUpdate(beta, null);
 	assert.equal(again.destroyed, true);
@@ -1137,7 +1140,7 @@ test("Update everything: the relaunch reopens its server once, and a covered res
 	assert.equal(TestWindow.all.length, quiet, "without a cover, Later leaves the open page alone");
 
 	// A switch to another server mid-run: the run's end leaves that server's window alone.
-	controller.coverForUpdate("Updating two…");
+	controller.coverForUpdate(beta, "Updating two…");
 	await controller.launch({ server: alpha });
 	const other = controller.current()!.win as TestWindow;
 	assert.equal(controller.current()!.origin, alpha);
