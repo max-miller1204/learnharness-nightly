@@ -43,7 +43,7 @@ Only the owner can do these, in this order. Secrets never go in chat or git: whe
 
 **B. Tailscale trusts GitHub's identity** (admin console → Trust credentials; do this after A, because the tag must exist).
 1. Credential → OpenID Connect → Issuer: GitHub.
-2. Subject: `repo:max-miller1204/learnharness-nightly:environment:pr-agent` (only jobs in the main-only `pr-agent` environment match).
+2. Subject: `repo:max-miller1204@196500602/learnharness-nightly@1460330797:environment:pr-agent` (only jobs in the main-only `pr-agent` environment match). The repository was created after 2026-07-15, so GitHub issues its immutable subject format, with the owner and repository IDs after `@`; the prefix comes from `gh api repos/{owner}/{repo}/actions/oidc/customization/sub` (`use_immutable_subject: true`, checked 2026-11-19).
 3. Scope: Auth Keys, write. Tag: `tag:ci`.
 4. Generate. Copy the Client ID and the Audience. Neither is a secret; the builder stores them in the `pr-agent` environment.
 
@@ -59,7 +59,7 @@ The builder does the rest itself: LiteLLM + Postgres on `<server>`, Tailscale Se
 
 **Goals**
 1. A LiteLLM proxy runs on `<server>` all the time, reachable only on `<tailnet>`. It serves the owner's OpenRouter models (a new key used only by LiteLLM), `gpt-6.2-sol` on the owner's ChatGPT login, and a Claude Code pass-through route.
-2. PR-Agent reviews imported upstream PRs automatically, and any other PR only when the owner adds the `ai-review` label, once per label.
+2. PR-Agent reviews imported upstream PRs automatically. Any other PR gets a review only when the owner adds the `ai-review` label (once per label) or an OWNER, MEMBER or COLLABORATOR comments a command such as `/review`.
 3. PR-Agent's model calls go to `gpt-6.2-sol` at medium reasoning through LiteLLM, over a temporary tailnet node that can reach nothing but LiteLLM.
 
 **Non-goals**
@@ -124,9 +124,10 @@ LiteLLM admin UI checklist (confirmed): revocation by rotating the admin key; re
 1. Owner console steps (First task). No `tag:ci` node joins before the access rules are in place.
 2. LiteLLM + Postgres up on `<server>`, ChatGPT signed in, keys created, Tailscale Serve publishing LiteLLM.
 3. The `pr-agent` environment and its secrets, the Actions policy, the `ai-review` label.
-4. Proof checks 1 to 6, now that what they test exists.
+4. Proof checks 1 to 4 and 6, now that what they test exist.
 5. The PR (workflow, docs, this spec).
-6. Merge, enable the workflow, proof checks 7 to 10. Because `pull_request_target` only ever runs `main`'s copy, these can only run after merge. Rollback: `gh workflow disable PR-Agent`, fix in a follow-up PR.
+6. Merge, then proof check 5 with the workflow still off: a job can use the main-only `pr-agent` environment only from `main`, so check 5 can't run earlier. The workflow stays off until check 5 passes.
+7. Enable the workflow, proof checks 7 to 10. Because `pull_request_target` only ever runs `main`'s copy, these can only run after merge. Rollback: `gh workflow disable PR-Agent`, fix in a follow-up PR.
 
 **Defaults the owner accepted**
 1. Imports run automatically only on opened, reopened and ready_for_review.
@@ -158,13 +159,13 @@ LiteLLM admin UI checklist (confirmed): revocation by rotating the admin key; re
 | 2 | PR-Agent's key is limited | LiteLLM API | Same key asks for an OpenRouter model and an admin endpoint | owner device | Both refused |
 | 3 | OpenRouter and Claude Code routes work, and nothing was switched | LiteLLM API; `claude -p` | One OpenRouter request; one `claude -p` run with temporary env pointing at LiteLLM | `<server>` | Both answer; Claude Code's settings files unchanged (diff before/after) |
 | 4 | Survives a restart; memory fits | `<server>` | Restart the containers; measure memory | `<server>` | Back without manual steps; at least 3 GB available |
-| 5 | `tag:ci` reaches only LiteLLM | a real `tag:ci` node from the `pr-agent` environment | Probe LiteLLM's port, the other services on `<server>` (including SSH), and `<owner devices>`; separately, owner devices still reach the other services on `<server>` | GitHub Actions | Only LiteLLM connects; owner access unchanged |
+| 5 | `tag:ci` reaches only LiteLLM | a real `tag:ci` node from the `pr-agent` environment | Probe LiteLLM's port, the other services on `<server>` (including SSH), and `<owner devices>`; separately, owner devices still reach the other services on `<server>` | GitHub Actions, right after merge with the workflow still off (the environment is main-only) | Only LiteLLM connects; owner access unchanged |
 | 6 | Policy covers both files | GitHub API | List Actions policies | GitHub | `pr-agent.yml` and `pr-preview-approval.yml` both allowed |
 | 7 | Imports run automatically | a real import (upstream #757 is open) | Run Import upstream PR | GitHub | Review and suggestions posted; log shows the tailnet LiteLLM URL and `gpt-6.2-sol` |
 | 8 | Owner PRs and the Sync PR skip; comments work | an owner test PR; the next Sync PR update | Open the PR, then comment `/review` | GitHub | PR open: skipped; comment: one run; Sync PR: skipped |
 | 9 | The stranger path | a fork PR from the test account | Open it; owner adds `ai-review`; test account pushes; test account comments `/review` | GitHub | Skipped; one run and the label removed; skipped; skipped |
 | 10 | Fails red | `/review` with LiteLLM stopped | Stop LiteLLM, comment, restart | GitHub + `<server>` | Red with a reason naming the proxy; nothing else posted |
 
-Checks 1 to 6 pass before merge, after the environment and the Actions policy exist (Ordering step 3); 7 to 10 pass right after merge, or the workflow is disabled again (rollback).
+Checks 1 to 4 and 6 pass before merge, after the environment and the Actions policy exist (Ordering step 3). Check 5 passes right after merge, before the workflow is enabled (it stays off until then). Checks 7 to 10 pass right after that, or the workflow is disabled again (rollback).
 
 Not applicable: data migration, app code, project invariants list or ADRs (the repository has none; decisions live here and in `docs/fork-workflow.md`).
