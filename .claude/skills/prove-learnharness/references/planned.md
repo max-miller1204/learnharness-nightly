@@ -1,6 +1,6 @@
 # Planned surfaces (extension points)
 
-Not built yet. A diff that reaches one of these is BLOCKED for that surface until `/prove-it` adds its section to SKILL.md (Scope map row, Answer keys row, a surface section, scripts, a recipe). Keep these notes current as the specs land in `docs/specs/`.
+Not built yet. A diff that reaches one of these is BLOCKED for that surface until `/create-prove-it` adds its section to SKILL.md (Scope map row, Answer keys row, a surface section, scripts, a recipe). Keep these notes current as the specs land in `docs/specs/`.
 
 ## Client protocol
 
