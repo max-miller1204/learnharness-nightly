@@ -741,22 +741,22 @@ async function waitForIdle(chatId: string): Promise<void> {
 const SWEEP_THROTTLE_MS = 30_000;
 
 /**
- * Lazy sweep (called through listJobs off the /api/jobs and /api/activity
- * reads, throttled), LIVENESS-GATED
- * (accuracy wave, 2026-09-19): a "running" record without a live loop
- * registration (subagents/aborts.ts) is an orphan of a process death —
- * re-deliver its stored result (idempotently) or re-spawn the loop, at
- * once (the old 15-minute age heuristic waited on ghosts AND re-ran
- * hung-but-alive loops beside themselves — the figure-maker incident,
- * 2026-09-18). A record WITH a live registration is provably executing
- * in THIS process — never touched, however old: a hung first model call
+ * The stale-job recovery sweep: at most once per SWEEP_THROTTLE_MS, it walks
+ * every chat's jobs and recovers the ones a process death left behind. Its
+ * production callers are the /api/jobs and /api/activity reads, through
+ * listJobs, which skips it under NODE_ENV=test; tests call it directly.
+ *
+ * LIVENESS-GATED (accuracy wave, 2026-09-19): a "running" record without a
+ * live loop registration (subagents/aborts.ts) is an orphan of a process
+ * death. The sweep re-delivers its stored result (idempotently) or re-spawns
+ * the loop, at once. (The old 15-minute age heuristic waited on ghosts AND
+ * re-ran hung-but-alive loops beside themselves: the figure-maker incident,
+ * 2026-09-18.) A record WITH a live registration is provably executing in
+ * THIS process and is never touched, however old: a hung first model call
  * stays honestly running until END kills it. Terminal workers with known
  * pending delivery are restored independently; old terminal records without
  * delivery metadata are never inferred to owe a delivery.
  */
-/** Re-run a job's sub-agent loop: exposed for the sweep's tests. Its
- *  production callers are the /api/jobs and /api/activity reads, through
- *  listJobs, which skips it under NODE_ENV=test. */
 export function recoverStaleJobs(): void {
 	const s = state();
 	const now = Date.now();
@@ -796,8 +796,8 @@ export function recoverStaleJobs(): void {
 }
 
 /** Full job records for one chat (+ lazy recovery). The /api/jobs route
- *  trims them with jobStatusOnly; the activity feed and other callers keep
- *  the full records. */
+ *  trims them with jobStatusOnly; the activity feed, its only other caller,
+ *  keeps the full records. */
 export function listJobs(chatId: string): JobRecord[] {
 	if (process.env.NODE_ENV !== "test") recoverStaleJobs();
 	return stores.jobStore.listJobs(chatId);
