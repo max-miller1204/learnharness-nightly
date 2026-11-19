@@ -5,8 +5,7 @@
 // Node 22 tsx loads some shared files through the CommonJS resolver.
 // The speech engine's Node-only module is swapped for the phone's, as metro.config.js
 // does, so the tests run the engine the way the phone does. Native modules resolve to the
-// stand-ins in tests/mocks, so components render into a tree (fonts load as stubs in
-// shared-modules-hooks.mjs).
+// stand-ins in tests/mocks, so components render into a tree.
 import Module, { createRequire, register } from "node:module";
 import path from "node:path";
 import { appAnchor, fromShared, isBare, MOCKED, mockFile } from "./shared-modules-hooks.mjs";
@@ -19,6 +18,8 @@ const speechExternal = createRequire(appAnchor).resolve("speech-rule-engine/js/c
 const speechShim = path.join(path.dirname(appAnchor), "src/sre-system-external.js");
 const speechAnchor = moduleAt(speechExternal);
 const mocks = Object.fromEntries(MOCKED.map((name) => [name, mockFile(name)]));
+// Font files load as stubs. On Node 22 a CommonJS require never reaches the load hook.
+Module._extensions[".ttf"] = (module) => { module.exports = 1; };
 const resolveFilename = Module._resolveFilename;
 Module._resolveFilename = function (request, parent, ...rest) {
   if (mocks[request]) return mocks[request];
