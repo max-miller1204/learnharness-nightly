@@ -189,7 +189,7 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 
 ### Planned surfaces
 
-The Expo mobile app (Android emulator on this machine) has no scripts yet, and neither do `/api/v<N>` paths. A diff that reaches them is BLOCKED for that surface until `/create-prove-it` builds its section. The client protocol itself (server info, the version header, the protocol 1 routes) is driven with the API: [client-protocol recipe](references/features/client-protocol.md). Extension points: [references/planned.md](references/planned.md).
+The Expo mobile app on Android (the emulator on this machine) has no scripts, and neither do `/api/v<N>` paths. Its iOS surface is the CI `iPhone` job (`.github/workflows/ci.yml`, `scripts/iphone-check/`), whose screenshots the [mobile beta recipe](references/features/mobile-beta.md#iphone-in-ci) judges. A diff that reaches them is BLOCKED for that surface until `/create-prove-it` builds its section. The client protocol itself (server info, the version header, the protocol 1 routes) is driven with the API: [client-protocol recipe](references/features/client-protocol.md). Extension points: [references/planned.md](references/planned.md).
 
 ### Varies by and deliberate
 

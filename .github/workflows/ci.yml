@@ -261,7 +261,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo xcode-select -s /Applications/Xcode_27.1.app
-          xcodebuild -version | grep -qx 'Xcode 27.1' || { xcodebuild -version; echo "::error::Xcode 27.1 is not on this image"; exit 1; }
+          version=$(xcodebuild -version | head -n 1)
+          [ "$version" = "Xcode 27.1" ] || { echo "::error::Xcode 27.1 is not on this image ($version)"; exit 1; }
           runtime=$(xcrun simctl list runtimes -j | jq -r '[.runtimes[] | select(.isAvailable and .platform == "iOS"
             and (.version | startswith("27.")) and any(.supportedDeviceTypes[]; .name == "iPhone 17"))]
             | sort_by(.version | split(".") | map(tonumber)) | last | .identifier // empty')
