@@ -159,7 +159,8 @@ class TestWindow extends EventEmitter {
 		mainFrame: { url: "" },
 		isDestroyed: () => this.destroyed,
 		focus() {},
-		executeJavaScript: async () => {
+		executeJavaScript: async (script?: string) => {
+			if (script && !script.startsWith("new Promise")) { this.scripts.push(script); return undefined; }
 			await TestWindow.frameGate;
 			this.steps.push("frame");
 			return true;
@@ -169,6 +170,8 @@ class TestWindow extends EventEmitter {
 		reload: () => { this.reloads++; },
 	});
 	reloads = 0;
+	/** Scripts run in the page other than the first-frame probe. */
+	scripts: string[] = [];
 	constructor(options: { backgroundColor?: string; webPreferences?: { preload?: string; session?: TestSession } } = {}) {
 		super();
 		this.options = options;
@@ -1135,11 +1138,27 @@ test("Update everything: the relaunch reopens its server once, and a covered res
 	controller.coverForUpdate(beta, "Updating two…");
 	assert.equal(again.contentView.children.length, 1);
 	const reopened = TestWindow.all.length;
-	await controller.endUpdate(beta, null);
+	await controller.endUpdate(beta, null, { version: "0.6.1-nightly.20261118.72" });
 	assert.equal(again.destroyed, false, "never zero windows");
 	assert.equal(TestWindow.all.length, reopened, "no replacement window");
 	assert.equal(again.contentView.children.length, 0, "the cover is gone");
-	assert.equal(again.reloads, 1, "the updated server's page loads in it");
+	assert.equal(again.reloads, 1, "the updated server's page loads in it, once");
+	assert.equal(again.scripts.length, 1, "after claiming that version in the page's once-per-version memory (#264)");
+	assert.match(again.scripts[0]!, /lh-auto-reloaded-versions/);
+	assert.match(again.scripts[0]!, /0\.6\.1-nightly\.20261118\.72/);
+
+	// The page already reloaded itself under the cover (#264): Later adds no second reload.
+	controller.coverForUpdate(beta, "Updating two…");
+	again.webContents.emit("did-navigate", {}, `${beta}/`, 200);
+	await controller.endUpdate(beta, null, { version: "0.6.1-nightly.20261118.72" });
+	assert.equal(again.reloads, 1, "still one reload");
+	assert.equal(again.scripts.length, 1);
+	assert.equal(again.contentView.children.length, 0);
+	// A failed load under the cover (the proxy's 502) is not a reload of the new version.
+	controller.coverForUpdate(beta, "Updating two…");
+	again.webContents.emit("did-navigate", {}, `${beta}/`, 502);
+	await controller.endUpdate(beta, null, { version: "0.6.1-nightly.20261118.72" });
+	assert.equal(again.reloads, 2);
 	assert.equal(controller.current()?.win, again);
 	assert.equal(controller.current()?.origin, beta);
 	const rechecked = calls.length;

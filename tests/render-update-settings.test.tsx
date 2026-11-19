@@ -12,7 +12,8 @@ import { installModalDom } from "./modal-dom.ts";
 import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
 import { UpdateSettings, updateStatusText, MANUAL_UPDATE_HINT, AUTO_UPDATE_HINT, type UpdateState } from "../components/settings/update-settings.tsx";
-import { hasUnsentMessage, SidebarUpdatePill } from "../components/sidebar-update-pill.tsx";
+import { AUTO_RELOAD_KEY, AUTO_RELOAD_MEMORY, claimAutoReload, hasUnsentMessage, SidebarUpdatePill } from "../components/sidebar-update-pill.tsx";
+import { createRequire } from "node:module";
 import { ServerEventsProvider } from "../components/server-events.tsx";
 import { ReleaseNoteSections } from "../components/release-notes-view.tsx";
 import WhatsNewDialog, { WhatsNewBody } from "../components/whats-new-dialog.tsx";
@@ -511,6 +512,16 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		await settle();
 		assert.equal(reloads, 1, "the run doesn't hold the page back");
 		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "reload", "reload outranks the run's everything state");
+	});
+
+	it("Later's claim in the page is the same once-per-version memory, so the page doesn't reload itself on top", async () => {
+		const shell = createRequire(import.meta.url)("../electron/server-list.cjs");
+		assert.equal(shell.AUTO_RELOAD_KEY, AUTO_RELOAD_KEY);
+		assert.equal(shell.AUTO_RELOAD_MEMORY, AUTO_RELOAD_MEMORY);
+		// Run the script main injects before Later's reload, then ask the page's own rule.
+		new Function("sessionStorage", shell.claimReloadScript(V72))(window.sessionStorage);
+		assert.equal(claimAutoReload(V72), false, "already reloaded for V72: no second reload");
+		assert.equal(claimAutoReload("0.6.1-nightly.20261118.73"), true, "a later version still reloads by itself");
 	});
 
 	it("Settings shows Server and This app rows; the app row is T3's About button", async () => {

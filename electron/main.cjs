@@ -709,7 +709,7 @@ function updateEverythingDeps(list) {
 		tell: ({ message, detail }) => ask({ type: "info", message, detail, buttons: ["OK"] }),
 		progress: (origin, text) => list.coverForUpdate(origin, text),
 		fail: (origin, problem) => list.endUpdate(origin, problem),
-		reconnect: (origin) => list.endUpdate(origin, null),
+		reconnect: (origin, version) => list.endUpdate(origin, null, { version }),
 		saveResult: (record) => fs.writeFileSync(UPDATE_EVERYTHING_RESULT(), JSON.stringify(record), { mode: 0o600 }),
 		takeResult: () => {
 			let raw;
@@ -1057,7 +1057,7 @@ async function main() {
 		const relaunch = updateEverything.takeLaunch();
 		await serverList.launch({ server: relaunch?.server });
 		// The app update didn't apply: offer the app-only retry of that same version.
-		if (relaunch?.retry) void updateEverything.offerRetry(relaunch.retry);
+		void updateEverything.afterLaunch(relaunch);
 	}
 	app.on("activate", () => {
 		if (BrowserWindow.getAllWindows().length === 0) reopenWindow();

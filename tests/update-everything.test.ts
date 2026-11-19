@@ -98,7 +98,7 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 		tell: async (notice: { message: string; detail: string }) => { notices.push(notice); finished(); },
 		progress: (origin: string, text: string) => { assert.equal(origin, ORIGIN, "the run covers only its own server"); progress.push(text); },
 		fail: (origin: string, problem: { kind: string; message: string }) => { failures.push(problem.message); kinds.push(problem.kind); finished(); },
-		reconnect: (origin: string) => { log.push(`reconnect ${origin}`); finished(); },
+		reconnect: (origin: string, version: string) => { assert.equal(version, V72, "Later shows the version the server is now on"); log.push(`reconnect ${origin}`); finished(); },
 		saveResult: (record: unknown) => { results.push(record); stored = record; },
 		takeResult: () => { const value = stored; stored = null; return value; },
 		now: () => clock,
@@ -349,7 +349,23 @@ test("after a relaunch the retry installs the pinned version, even once the feed
 	await f.done;
 	assert.deepEqual(f.log, [`exact ${V72}`, `install ${V72}`], "V72, not the feed's newer V73, and no new pin");
 	assert.equal(f.requests.length, 0, "no server request at all");
-	assert.equal((f.results[0] as { target: string }).target, V72, "saved again, so another failure offers the retry again");
+	assert.deepEqual(f.results[0], { savedAt: 1_000_000, server: ORIGIN, updated: ORIGIN, from: V71, target: V72, retried: true }, "marked as a Try Again");
+
+	// That install fails too (Squirrel.Mac, NSIS or the AppImage reopening the old app):
+	// the next launch reports it instead of offering Try Again again.
+	const relaunched = fixture({ saved: f.results[0], answers: [0] });
+	const next = relaunched.ue.takeLaunch()!;
+	assert.deepEqual(next, { server: ORIGIN, retry: null, retryFailed: { target: V72, server: ORIGIN, updated: ORIGIN } });
+	await relaunched.ue.afterLaunch(next);
+	assert.equal(relaunched.prompts.length, 0, "no second Try Again");
+	assert.deepEqual(relaunched.notices, [{ message: "Couldn’t install the app update.", detail: `LearnHarness is still on ${V71} and max-desktop is on ${V72}. Use Update everything to try again.` }]);
+	assert.deepEqual(relaunched.log, []);
+	assert.equal(relaunched.ue.takeLaunch(), null, "and the offer is gone");
+
+	// A first-time miss still offers it, through the same launch hook.
+	const first = fixture({ saved, answers: [1] });
+	await first.ue.afterLaunch(first.ue.takeLaunch());
+	assert.equal(first.prompts[0]!.message, "The app update didn’t finish.");
 
 	const later = fixture({ saved, answers: [1] });
 	await later.ue.offerRetry(later.ue.takeLaunch()!.retry);

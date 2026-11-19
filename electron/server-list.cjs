@@ -4,13 +4,28 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { randomUUID } = require("node:crypto");
 const { openServerList } = require("./server-list-store.cjs");
-const { ServerProblem, parseOrigin, withScheme, normalizeCode, parsePairLink, checkDescriptor, checkSession, pairServer } = require("./remote-server.cjs");
+const { ServerProblem, atOrigin, parseOrigin, withScheme, normalizeCode, parsePairLink, checkDescriptor, checkSession, pairServer } = require("./remote-server.cjs");
 const { remoteChatGPTSignIn } = require("./remote-chatgpt.cjs");
 const { createRemoteWindow } = require("./remote-window.cjs");
 const { BACKGROUND, hostLabel, paintFirst, tracePaint, opaqueWhenPainted, coverWindow } = require("./skeleton.cjs");
 const { trace, traceWindow } = require("./first-frame.cjs");
 
 const SHELL = path.join(__dirname, "server-list.html");
+// The page's own once-per-version automatic reload (components/sidebar-update-pill.tsx, #264):
+// sessionStorage key and how many versions it keeps. Later claims the version it reloads for.
+const AUTO_RELOAD_KEY = "lh-auto-reloaded-versions";
+const AUTO_RELOAD_MEMORY = 50;
+const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[a-z]+\.\d{8}\.\d+)?$/;
+
+/** Run in the server's page: mark `version` as already reloaded for, as claimAutoReload does. */
+function claimReloadScript(version) {
+	return `(() => { try {
+		const key = ${JSON.stringify(AUTO_RELOAD_KEY)}, version = ${JSON.stringify(version)};
+		let seen; try { seen = JSON.parse(sessionStorage.getItem(key) ?? "[]"); } catch { seen = []; }
+		const versions = Array.isArray(seen) ? seen.filter((item) => typeof item === "string") : [];
+		if (!versions.includes(version)) sessionStorage.setItem(key, JSON.stringify([...versions, version].slice(-${AUTO_RELOAD_MEMORY})));
+	} catch {} })()`;
+}
 const CHANNEL = "lh:server-list";
 const CHANGED = "lh:server-list:changed";
 // The shell carries only the theme mode in its query.
@@ -89,7 +104,10 @@ async function createServerList({
 	}
 	function destroyContent() {
 		// A switch away from the covered window ends its cover: rechecks resume for the next one.
-		if (updating && updating.win === window) updating = null;
+		if (updating && updating.win === window) {
+			updating.stop();
+			updating = null;
+		}
 		login?.abort();
 		login = null;
 		active = null;
@@ -355,17 +373,25 @@ async function createServerList({
 		/** Only the run's own server: after a switch, another server's page stays uncovered. */
 		coverForUpdate(origin, text) {
 			if (!window || window.isDestroyed() || !active?.token || active.server !== origin) return;
-			updating?.cover.reveal();
-			const cover = coverWindow(window, { WebContentsView, session, mode: themeMode(), status: text });
+			if (updating) { updating.stop(); updating.cover.reveal(); }
+			const win = window;
+			const cover = coverWindow(win, { WebContentsView, session, mode: themeMode(), status: text });
 			cover.focus();
-			updating = { win: window, cover };
+			// The page under the cover reloads itself once the server is back on the new
+			// version (#264). The cover blocks every input, so a page load now is that reload.
+			const state = { win, cover, reloaded: false };
+			const loaded = (_event, url, code) => { if (code >= 200 && code < 400 && atOrigin(url, origin)) state.reloaded = true; };
+			win.webContents.on("did-navigate", loaded);
+			state.stop = () => { if (!win.isDestroyed()) win.webContents.removeListener("did-navigate", loaded); };
+			updating = state;
 		},
 		/** The run ended without a restart: show its problem in the list (kind "retry" or "pair"),
-		 *  or reopen the server's new page after Later. */
-		endUpdate(origin, problem) {
+		 *  or show the server's new page after Later. `version` is the one the server is now on. */
+		async endUpdate(origin, problem, { version } = {}) {
 			// Only the covered window of the server the run moved: after a switch, the
 			// current window belongs to another server and stays.
 			const covered = updating && updating.win === window && !window.isDestroyed() ? updating : null;
+			updating?.stop();
 			updating = null;
 			if (problem) {
 				fail(origin, new ServerProblem(problem.kind, problem.message));
@@ -376,10 +402,17 @@ async function createServerList({
 			// Later (or the app install failing after the server committed): keep this window and
 			// load the updated server's page in it. A reconnect would destroy the only window first,
 			// and Windows and Linux quit when the last one closes (window-all-closed).
+			// The page loads the new version exactly once: if it already reloaded itself under
+			// the cover, nothing more; otherwise reload it here, after claiming that version in
+			// its own once-per-version memory so it doesn't reload itself again on top.
 			if (covered) {
 				covered.cover.reveal();
-				covered.win.webContents.reload();
 				covered.win.focus();
+				if (covered.reloaded) return;
+				if (typeof version === "string" && EXACT_VERSION.test(version)) {
+					await covered.win.webContents.executeJavaScript(claimReloadScript(version)).catch(() => {});
+				}
+				if (!covered.win.isDestroyed()) covered.win.webContents.reload();
 			}
 		},
 		reopen() {
@@ -400,4 +433,4 @@ async function createServerList({
 	};
 }
 
-module.exports = { createServerList };
+module.exports = { createServerList, AUTO_RELOAD_KEY, AUTO_RELOAD_MEMORY, claimReloadScript };

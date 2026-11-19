@@ -82,7 +82,7 @@ async function readJSON(response) {
  *   tell({ message, detail })  a native notice with one OK button
  *   progress(origin, text)     cover that server's page with the ghost dashboard line
  *   fail(origin, { kind, message }) show the server window with Retry (or Pair again)
- *   reconnect(origin)          uncover the server's page and reload it in the same window (after Later)
+ *   reconnect(origin, version) uncover the server's page and show `version` in the same window, loaded once (after Later)
  *   saveResult(record) / takeResult()  userData file for the next launch
  *   now(), sleep(ms), timeoutSignal(ms) (defaults to AbortSignal.timeout)
  */
@@ -213,14 +213,20 @@ function createUpdateEverything(deps) {
 		try {
 			await deps.updater.downloadExact(retry.target);
 			run.step = "restarting";
-			deps.saveResult({ savedAt: deps.now(), server: deps.selection()?.origin ?? retry.server, updated: retry.updated ?? retry.server, from: deps.appVersion, target: retry.target });
+			// `retried`: if this install fails too (seen only after the relaunch, on every platform),
+			// the next launch says so instead of offering Try Again again.
+			deps.saveResult({ savedAt: deps.now(), server: deps.selection()?.origin ?? retry.server, updated: retry.updated ?? retry.server, from: deps.appVersion, target: retry.target, retried: true });
 			deps.updater.installPinned(retry.target);
 		} catch {
 			run = null;
 			forgetResult(); // offered once: a relaunch doesn't offer it again
-			// Owner wording, 2026-11-19: point to Update everything (the menu installs the newest app version, not X).
-			await deps.tell({ message: "Couldn’t install the app update.", detail: `LearnHarness is still on ${deps.appVersion} and ${serverLabel(retry.updated ?? retry.server)} is on ${retry.target}. Use Update everything to try again.` });
+			await retryFailed(retry);
 		}
+	}
+
+	/** Owner wording, 2026-11-19: point to Update everything (the menu installs the newest app version, not X). */
+	function retryFailed(retry) {
+		return deps.tell({ message: "Couldn’t install the app update.", detail: `LearnHarness is still on ${deps.appVersion} and ${serverLabel(retry.updated ?? retry.server)} is on ${retry.target}. Use Update everything to try again.` });
 	}
 
 	/** `answered` resolves the page's install() once the confirmation is decided (or skipped). */
@@ -278,7 +284,7 @@ function createUpdateEverything(deps) {
 			});
 			if (later === 1 && !countdown.aborted) {
 				run = null;
-				if (serverBehind) deps.reconnect(selection.origin);
+				if (serverBehind) deps.reconnect(selection.origin, target);
 				return;
 			}
 			// Reopen the server that is open now (the user may have switched); `updated` is the one the run moved.
@@ -290,7 +296,7 @@ function createUpdateEverything(deps) {
 			if (saved) forgetResult(); // installPinned threw after saveResult: this session offers the retry itself
 			if (serverDone) {
 				// The server is already on the target: uncover its new page and offer the app-only retry.
-				deps.reconnect(selection.origin);
+				deps.reconnect(selection.origin, target);
 				await offerRetry({ target, server: selection.origin, updated: selection.origin });
 				return;
 			}
@@ -320,16 +326,24 @@ function createUpdateEverything(deps) {
 			try { await decided; } finally { asking = false; }
 		},
 		offerRetry,
-		/** The relaunch after an install: the server to reopen once, and the pinned retry to offer if the app didn't change. */
+		/** After the launch: offer the pinned retry, or say that Try Again itself didn't install. */
+		async afterLaunch(launch) {
+			if (launch?.retry) return offerRetry(launch.retry);
+			if (launch?.retryFailed) return retryFailed(launch.retryFailed);
+		},
+		/** The relaunch after an install: the server to reopen once, and the pinned retry to offer
+		 *  (or, after a failed Try Again, the failure to report) if the app didn't change. */
 		takeLaunch() {
 			let saved = null;
 			try { saved = deps.takeResult(); } catch { return null; }
 			if (!saved || typeof saved.server !== "string" || typeof saved.target !== "string" || typeof saved.savedAt !== "number") return null;
 			if (deps.now() - saved.savedAt > SAVED_RESULT_MAX_AGE_MS) return null;
 			const applied = deps.appVersion === saved.target;
+			const missed = applied ? null : { target: saved.target, server: saved.server, updated: typeof saved.updated === "string" ? saved.updated : saved.server };
 			return {
 				server: saved.server,
-				retry: applied ? null : { target: saved.target, server: saved.server, updated: typeof saved.updated === "string" ? saved.updated : saved.server },
+				retry: saved.retried === true ? null : missed,
+				...(saved.retried === true ? { retryFailed: missed } : {}),
 			};
 		},
 	};
