@@ -4,6 +4,7 @@
     "beta": {
       "distribution": "store",
       "autoIncrement": true,
+      "channel": "production",
       "android": { "buildType": "app-bundle" }
     },
     "android-proof": {
@@ -13,6 +14,12 @@
   },
   "submit": {
     "beta": {
+      "ios": {
+        "ascAppId": "6836418241",
+        "ascApiKeyPath": "$ASC_API_KEY_PATH",
+        "ascApiKeyIssuerId": "$ASC_API_KEY_ISSUER_ID",
+        "ascApiKeyId": "$ASC_API_KEY_ID"
+      },
       "android": { "track": "internal" }
     }
   }
