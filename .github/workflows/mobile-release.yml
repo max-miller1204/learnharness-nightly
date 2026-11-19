@@ -50,6 +50,8 @@ concurrency:
 jobs:
   release:
     name: Mobile release (${{ inputs.mode || github.event_name }})
+    # A fork with Actions turned on never runs this. mobile-release.test.cjs checks it.
+    if: github.repository == 'max-miller1204/learnharness-nightly'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     # Only main may use this environment, so other branches never get EXPO_TOKEN.

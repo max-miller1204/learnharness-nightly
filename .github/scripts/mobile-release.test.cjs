@@ -165,6 +165,20 @@ test("an expired build still marked processing reports expiry", () => {
 	assert.match(run({ builds: [build("1", "FINISHED", F, { apple: "PROCESSING", days: 91 })] }).reason, /expired on TestFlight/);
 });
 
+test("Monday stops and reports when the newest valid build recorded another runtime than requested", () => {
+	const decision = run({ event: "schedule", builds: [build("2", "FINISHED", X, { requested: G, days: 12 })] });
+	assert.equal(decision.action, "fail");
+	assert.match(decision.reason, /recorded runtime .* Stop and report/);
+	assert.equal(run({ event: "schedule", builds: [build("2", "FINISHED", G, { requested: G, days: 12 })] }).action, "none");
+});
+
+test("the release job runs only in this repository, never in a fork", () => {
+	const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "mobile-release.yml"), "utf8");
+	const jobs = workflow.slice(workflow.indexOf("\njobs:\n"));
+	assert.deepEqual([...jobs.matchAll(/^ {2}([\w-]+):$/gm)].map((match) => match[1]), ["release"]);
+	assert.match(jobs, /^ {2}release:\n(?: {4}.*\n)*? {4}if: github\.repository == 'max-miller1204\/learnharness-nightly'$/m);
+});
+
 test("only main runs share a concurrency group, so an off-main request displaces nothing", () => {
 	const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "mobile-release.yml"), "utf8");
 	const expression = workflow.match(/^ {2}group: \$\{\{ (.+) \}\}$/m)[1];

@@ -50,6 +50,12 @@ function usable(newest, now) {
 	return { ok: true, label, ageDays: Math.floor(ageMs / DAY_MS) };
 }
 
+/** A stop-and-report failure when a build recorded another runtime than CI requested for it. */
+function mismatch(build, label) {
+	if (!build.requested || build.recorded === build.requested) return null;
+	return { action: "fail", reason: `${label} recorded runtime ${build.recorded}, but CI requested ${build.requested} for its commit. OTAs would never match it. Stop and report.` };
+}
+
 /** Hashed sources that come from Expo native modules. Zero means autolinking failed. */
 function countExpoModules(sources, platform = "ios") {
 	const reason = `expoAutolinking${platform[0].toUpperCase()}${platform.slice(1)}`;
@@ -95,6 +101,8 @@ function decide({ event, mode, ref, tokenPresent, sha, mainHead, runtime, expoMo
 		const status = usable(newest, now);
 		if (status.kind === "processing") return { action: "fail", reason: `${status.reason} Phones keep the previous build until Apple finishes. If it stays stuck, ${PRESS_BUILD[0].toLowerCase()}${PRESS_BUILD.slice(1)}` };
 		if (!status.ok) return { action: "fail", reason: status.reason };
+		const wrong = mismatch(newest, status.label);
+		if (wrong) return wrong;
 		if (status.ageDays >= REMIND_AFTER_DAYS) return { action: "fail", reason: `${status.label} is ${status.ageDays} days old and expires at 90. ${PRESS_BUILD}` };
 		return { action: "none", reason: `${status.label} is ${status.ageDays} days old.` };
 	}
@@ -104,9 +112,8 @@ function decide({ event, mode, ref, tokenPresent, sha, mainHead, runtime, expoMo
 	if (expoModules === 0) return { action: "fail", reason: `Runtime ${runtime} hashes no Expo native modules, so it cannot be trusted.` };
 	const status = usable(newest, now);
 	if (!status.ok) return { action: "fail", reason: status.kind === "processing" ? `${status.reason} Publish this change with Run workflow, update, once Apple finishes.` : status.reason };
-	if (newest.requested && newest.recorded !== newest.requested) {
-		return { action: "fail", reason: `${status.label} recorded runtime ${newest.recorded}, but CI requested ${newest.requested} for its commit. OTAs would never match it. Stop and report.` };
-	}
+	const wrong = mismatch(newest, status.label);
+	if (wrong) return wrong;
 	if (newest.recorded !== runtime) {
 		return { action: "fail", reason: `This change needs a new TestFlight build: ${status.label} has runtime ${newest.recorded}, this commit needs ${runtime}. ${PRESS_BUILD}` };
 	}
