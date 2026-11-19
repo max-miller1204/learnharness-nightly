@@ -32,7 +32,7 @@ The owner's rule, in their words: "any doc that will easily go stale, please del
 3. Every `.md` under `docs/` except `docs/specs/`, plus the root `README.md` and `apps/mobile/README.md`, has no text that goes stale. That means status tables, done or later lists, counts, and "currently", "today", "for now", "not built yet" and "will be replaced when built" claims. When a sentence stays true without the time word, only the word goes. The owner's decisions, the owner's theory (`docs/teaching-methodology.md`) and how-to or contract text stay. Nothing new is written in its place.
 4. No code comment names a deleted doc. Each of those comments loses only the pointer and keeps its explanation. Comments that point at a spec are unchanged.
 5. `AGENTS.md` has two new lines outside the Next.js block. (a) Specs are files at `docs/specs/<topic>.md`; idea-to-spec publishes there. (b) Docs and code comments hold only what stays true: no status tables, done or later lists, counts, or currently, not yet or today claims. Specs are exempt.
-6. CI's lint job runs a small link check. It fails when a Markdown link in a tracked `.md` file, or a `docs/...` path named in a tracked non-Markdown file, points at a file that does not exist.
+6. (Removed from this change by the owner on 2026-11-19. A link check may come back as its own small PR.)
 7. The PR description lists every deleted file and section, each with a one-line reason naming the rule it falls under.
 
 **Non-goals**
@@ -44,7 +44,6 @@ The owner's rule, in their words: "any doc that will easily go stale, please del
 - Editing the prove-learnharness skill, including `references/planned.md`. It's left to `/maintain-prove-it`.
 - T3 Code's approach (no specs in the repo; work tracked in GitHub issues, `AGENTS.md:174-177` at T3 `3ce21458`). The owner chose files because issues would mix with mirrored upstream issues.
 - Fixing links in past PR descriptions or bot comments that point at deleted docs. They are already published, and git history keeps the text.
-- Checking `#anchor` targets in the link check. That keeps the script small.
 
 ## 3. Constraints
 
@@ -53,7 +52,6 @@ The owner's rule, in their words: "any doc that will easily go stale, please del
 | Invariant | Where it is enforced or detected | Kind |
 |---|---|---|
 | Spec files keep their content; only the three listed link lines change, plus the decision lines listed under Owner decisions during the build | the end-state script (Proof 3) on the PR diff | machine |
-| No Markdown link or `docs/` path in code points at a missing file | the link check in CI lint, from now on | machine |
 | Generated `docs/plugin-api/` matches its source | `tests/plugin-api-reference.test.ts` in CI | machine |
 | Nothing deleted was an owner decision or a spec's answer key that isn't kept elsewhere | fresh agent with the deletion list (Proof 6) | fresh agent |
 | Docs hold only what stays true | fresh agent with only the rule (Proof 5) once; afterwards the `AGENTS.md` line guides writers | fresh agent |
@@ -65,14 +63,13 @@ The owner's rule, in their words: "any doc that will easily go stale, please del
 - A built or parked roadmap entry has a "Decided" note or owner choice that its spec doesn't contain.
 - The rule would delete a whole file in `AUTHORING_DOCS`, or a file a test reads (`docs/development.md`).
 - A passage is both an owner decision and stale-prone, and the time word can't simply be dropped.
-- The link check finds a dead link inside `.claude/skills/prove-learnharness/` that this change didn't cause.
 - A probe in the First task contradicts this spec.
 
-**Left to the agent:** the link check's language and location (next to `.github/scripts/ci-changes.cjs` and its test is a fit), how it marks a test fixture to skip (needed for `tests/plugin-authoring-bundle.test.ts:67`), the exact wording of the two `AGENTS.md` lines, how a sentence reads once its time word goes, the commit split, and this spec's own file name.
+**Left to the agent:** the exact wording of the two `AGENTS.md` lines, how a sentence reads once its time word goes, the commit split, and this spec's own file name.
 
 **Defaults the owner accepted**
 
-1. The link check checks that files exist, not `#anchors`. It skips URLs, fenced code blocks and lines marked as test fixtures.
+1. (Removed with Goal 6: it described the link check.)
 2. The `AGENTS.md` lines go outside the Next.js block, which `next dev` rewrites.
 3. The parked specs (`codex-cli-provider.md`, `gemini-cli-provider.md`) stay as they are.
 4. "roadmap item N" mentions in comments wait for the follow-up PR. In specs they stay, because specs are exempt.
@@ -85,6 +82,9 @@ The owner's rule, in their words: "any doc that will easily go stale, please del
 3. `apps/mobile/README.md` loses its "Proposal for owner approval" paragraph (the unapproved TestFlight cadence), which the mobile auto-updates spec will decide. One line keeps the lasting fact that a TestFlight build stops opening 90 days after upload, with its source links.
 4. Item 27's "**Decided.** Nothing yet." is deleted: not a decision, a point-in-time placeholder. Every other Decided note stays word for word, except that items 2 and 28 only gain the name and spec link of the item they cite (item 1 and item 13).
 5. The data-compatibility rule from the deleted `docs/archive/release-0.3.md` (agreed 2026-10-06) moved to `AGENTS.md` as one line: on-disk user data acquires compatibility obligations, persistent-schema changes are migrations with tolerant reads, not free edits plus wipe-your-dev-data, and `data/jobs/` is scratch/transient with no obligation.
+6. Two more rules from the deleted archive move, word for word: "everything must work from the keyboard" (`docs/archive/release-0.3.md`) to `AGENTS.md` beside the user-data rule, and the plugin release proof ("Real packaged-browser proof through a disposable plugin and loopback mock provider/native turns"; "strict packaged-SDK consumer, isolated production build, packaged Electron/Chromium, privacy/tracing and production-byte audit", from `docs/archive/plugin-implementation-history.md`) to the Testing section of `docs/plugin-question-contract.md`.
+7. Everything else the verify step found in the deleted docs (the "built after the self-hosting plan" sequence, the giant DAG rejection, the localStorage and pi-ai bump reminders, rollout history) is superseded history and stays deleted.
+8. The link check (Goal 6, its default, invariant, stop-and-ask case and Proofs 1 and 2) is out of this change. Proof 3 checks Goal 4 instead.
 
 **Generated docs.** `docs/plugin-api/` is never hand-edited. After editing source comments, regenerate it with its script and commit the result.
 
@@ -94,13 +94,13 @@ The owner's rule, in their words: "any doc that will easily go stale, please del
 
 ## 4. Proof
 
-**Verifies on:** the PR's GitHub Actions CI (lint, typecheck, test), and a local checkout of the PR head for the scripts and fresh agents. Nothing needs setting up first, except the link check, which this PR adds.
+**Verifies on:** the PR's GitHub Actions CI (lint, typecheck, test), and a local checkout of the PR head for the scripts and fresh agents. Nothing needs setting up first.
 
 | # | Proves | Surface | Check | Where it runs | Pass signal |
 |---|---|---|---|---|---|
-| 1 | Goals 2, 4, 6: no dead links remain | CI lint job on the PR | the new link check over the PR head | GitHub Actions | the lint job passes, with the link check in its log |
-| 2 | Goal 6: the check really catches a dead link | the link check's own test | a fixture with a link to a missing file, and one with a missing `docs/` path in a comment | CI lint job (the same step that runs `ci-changes.test.cjs`) | both cases fail, and a clean fixture passes |
-| 3 | Goals 1, 2, 5 and the spec invariant | the repo tree and the PR diff | a script asserting: no Index table in `docs/fork-roadmap.md`, no heading for items 1, 3, 6, 7, 12, 20, 21 to 26, headings present for the 14 unbuilt items, `docs/archive/` absent, both `AGENTS.md` lines present after `END:nextjs-agent-rules`, `docs/flashcards-implementation-plan.md` absent, no "Proposal for owner approval" in `apps/mobile/README.md`, no "Nothing yet" Decided line in the roadmap, and `git diff origin/main -- docs/specs` (this spec aside) changing only the three listed link lines and the decision lines listed under Owner decisions during the build | local, on the PR head, output pasted in the PR | every assertion prints ok |
+| 1 | (Removed with Goal 6.) | | | | |
+| 2 | (Removed with Goal 6.) | | | | |
+| 3 | Goals 1, 2, 4, 5 and the spec invariant | the repo tree and the PR diff | a script asserting: no Index table in `docs/fork-roadmap.md`, no heading for items 1, 3, 6, 7, 12, 20, 21 to 26, headings present for the 14 unbuilt items, `docs/archive/` absent, `git grep docs/archive` outside `docs/specs/` finding only test fixture lines in `tests/plugin-authoring-bundle.test.ts` and `tests/desktop-payload.test.ts`, both `AGENTS.md` lines present after `END:nextjs-agent-rules`, `docs/flashcards-implementation-plan.md` absent, no "Proposal for owner approval" in `apps/mobile/README.md`, no "Nothing yet" Decided line in the roadmap, and `git diff origin/main -- docs/specs` (this spec aside) changing only the three listed link lines and the decision lines listed under Owner decisions during the build | local, on the PR head, output pasted in the PR | every assertion prints ok |
 | 4 | Generated docs and bundled docs still match | existing CI tests | `tests/plugin-api-reference.test.ts`, `tests/plugin-authoring-bundle.test.ts`, `tests/desktop-payload.test.ts`, `tests/plugin-setup.test.ts`, and the rest of the suite | GitHub Actions | the `Check` job is green |
 | 5 | Goal 3 | the docs as an agent reads them | a fresh agent that never saw this work gets only the rule from Goal 3 and the list of covered files, and reports any stale text left | local | zero findings, or each finding fixed and the agent re-run with zero |
 | 6 | Goals 1, 3, 7: nothing decided was lost | the PR description's deletion list and the diff | a fresh agent gets the deletion list, the diff and the rule "keep owner decisions and spec answer keys", and checks each deletion; for each removed roadmap entry it confirms the decisions exist in that item's spec | local | zero violations |

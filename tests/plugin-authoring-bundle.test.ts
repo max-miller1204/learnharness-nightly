@@ -64,13 +64,13 @@ function fixture(run: (root: string) => void) {
 		seedAuthoringReferenceFixture(root);
 		write("package.json", JSON.stringify({ version: "9.8.7" }));
 		write("scripts/install-plugin-local.mjs", fs.readFileSync(path.join(source, "scripts/install-plugin-local.mjs"), "utf8"));
-		write("docs/archive/plugin-implementation-history.md", "REPOSITORY_ONLY_HISTORY_SENTINEL"); // link-check-ignore: fixture path
+		write("docs/archive/plugin-implementation-history.md", "REPOSITORY_ONLY_HISTORY_SENTINEL");
 		write("LICENSE", fs.readFileSync(path.join(source, "LICENSE"), "utf8"));
 		for (const doc of AUTHORING_DOCS) write(`docs/${doc}`, fs.readFileSync(path.join(source, "docs", doc), "utf8"));
 		for (const file of ["SKILL.md", "README.md"]) write(`skills/learnharness-plugins/${file}`, fs.readFileSync(path.join(source, "skills/learnharness-plugins", file), "utf8"));
 		for (const id of AUTHORING_EXAMPLES) fs.cpSync(path.join(source, "examples/plugins", id), path.join(root, "examples/plugins", id), { recursive: true });
 		write("scripts/build-plugin-types.mjs", `import fs from 'node:fs';const p=process.argv[2];fs.mkdirSync(p,{recursive:true});fs.writeFileSync(p+'/package.json',JSON.stringify({name:'learnharness-plugin-api',version:'1.0.0'}));fs.writeFileSync(p+'/index.d.ts','export interface Example {}');`);
-		write("docs/not-authoring.md", "not bundled"); /* link-check-ignore: fixture path */ write("data/private.json", "AUTHORING_PRIVATE_SENTINEL_9b1f"); write("auth.json", "AUTHORING_PRIVATE_SENTINEL_9b1f");
+		write("docs/not-authoring.md", "not bundled"); write("data/private.json", "AUTHORING_PRIVATE_SENTINEL_9b1f"); write("auth.json", "AUTHORING_PRIVATE_SENTINEL_9b1f");
 		write("examples/plugins/unrelated/dist/manifest.json", "not bundled");
 		run(root);
 	} finally { fs.rmSync(root, { recursive: true, force: true }); }

@@ -60,7 +60,7 @@ test("the command line prints one gate per line for GITHUB_OUTPUT", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ci-changes-"));
 	try {
 		const list = path.join(dir, "paths");
-		fs.writeFileSync(list, "docs/a.md\ntests/jobs.test.ts\n"); // link-check-ignore: fixture path
+		fs.writeFileSync(list, "docs/a.md\ntests/jobs.test.ts\n");
 		const script = path.join(__dirname, "ci-changes.cjs");
 		const run = (...args) => execFileSync(process.execPath, [script, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
 		assert.equal(run("--paths", list), "typecheck=true\ntest=true\nselfhost=false\nstandalone=false\nmobile=false\n");
