@@ -213,6 +213,15 @@ jobs:
           cache-dependency-path: apps/mobile/package-lock.json
       - run: npm ci
       - run: npm run deps:check
+      # OTA config and the fingerprint guard. See docs/specs/mobile-auto-updates.md.
+      - name: Update config is complete
+        run: |
+          npx expo config --type public --json > "$RUNNER_TEMP/expo-config.json"
+          node ../../.github/scripts/mobile-release.cjs check-config "$RUNNER_TEMP/expo-config.json" eas.json
+      - name: The iOS fingerprint hashes Expo native modules
+        run: |
+          npx expo-updates fingerprint:generate --platform ios > "$RUNNER_TEMP/fingerprint.json"
+          node ../../.github/scripts/mobile-release.cjs expo-modules "$RUNNER_TEMP/fingerprint.json"
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test

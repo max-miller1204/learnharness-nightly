@@ -1,0 +1,160 @@
+name: Mobile release
+
+# The only place phone builds and OTA updates come from: never a laptop.
+# A merge publishes an OTA when a finished TestFlight build has the same native
+# fingerprint, and otherwise starts one build on Expo's servers that is sent to
+# TestFlight. Monday refreshes a build before TestFlight's 90-day expiry.
+# .github/scripts/mobile-release.cjs holds the rules; see
+# docs/specs/mobile-auto-updates.md. Modeled on T3 Code's
+# .github/workflows/mobile-eas-production.yml.
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/mobile/**
+      - src/client-protocol/**
+      - src/core/**
+      - build/icon.png
+      - public/fonts/cmunbx.ttf
+      - .github/workflows/mobile-release.yml
+      - .github/scripts/mobile-release.cjs
+  schedule:
+    - cron: "0 15 * * 1"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "check: read-only status. update: publish an OTA now. build: build and send to TestFlight."
+        required: true
+        type: choice
+        default: check
+        options:
+          - check
+          - update
+          - build
+
+permissions:
+  contents: read
+
+# OTAs publish in merge order and a run never cancels another (T3 :77-82).
+concurrency:
+  group: mobile-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Mobile release (${{ inputs.mode || github.event_name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      EAS_CLI: eas-cli@27.10.0
+      EXPO_NO_TELEMETRY: "1"
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      MODE: ${{ inputs.mode }}
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      # No sparse checkout: eas-cli archives the project with a shallow git
+      # clone of this checkout (T3 :137-140).
+      - uses: actions/checkout@v7
+      - name: Refuse other refs and a missing token
+        run: node ../../.github/scripts/mobile-release.cjs preflight
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - run: npm ci
+      - run: npm install --global "$EAS_CLI"
+
+      - name: Fingerprint and recent builds
+        run: |
+          set -euo pipefail
+          eas fingerprint:generate --platform ios --environment production --json --non-interactive > "$RUNNER_TEMP/fingerprint.json"
+          eas build:list --platform ios --build-profile beta --limit 50 --json --non-interactive > "$RUNNER_TEMP/builds.json"
+
+      - name: Decide
+        id: decide
+        run: |
+          set -euo pipefail
+          node ../../.github/scripts/mobile-release.cjs decide "$RUNNER_TEMP/fingerprint.json" "$RUNNER_TEMP/builds.json" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Check
+        if: steps.decide.outputs.action == 'check'
+        env:
+          FINGERPRINT: ${{ steps.decide.outputs.fingerprint }}
+        run: |
+          set -euo pipefail
+          newest_build="$(sed -n '/^\[/,$p' "$RUNNER_TEMP/builds.json" | jq '[.[] | select(.status == "FINISHED")][0] // null')"
+          eas update:list --all --platform ios --limit 1 --json --non-interactive > "$RUNNER_TEMP/updates.json"
+          newest_update="$(sed -n '/^{/,$p' "$RUNNER_TEMP/updates.json" | jq '.currentPage[0] // null')"
+          group="$(jq -r '.group // empty' <<<"$newest_update")"
+          {
+            echo "## Mobile release check"
+            echo
+            echo "- CI fingerprint for main: \`$FINGERPRINT\`"
+            jq -r '"- Newest finished build: " + (if . == null then "none" else "\(.appBuildVersion) (\(.id)), fingerprint `\(.fingerprint.hash)`, runtime `\(.runtime.version)`, finished \(.completedAt), matches CI: \(.fingerprint.hash == env.FINGERPRINT)" end)' <<<"$newest_build"
+            jq -r --argjson build "$newest_build" '"- Newest update: " + (if . == null then "none" else "group \(.group), runtime `\(.runtimeVersion)`, matches the newest build: \(.runtimeVersion == $build.runtime.version), \(.message)" end)' <<<"$newest_update"
+            if [ -n "$group" ]; then
+              echo
+              echo "### Launch records for that update group"
+              echo
+              echo '```'
+              eas update:insights "$group" --platform ios --non-interactive
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
+
+      - name: Write the App Store Connect key
+        if: steps.decide.outputs.action == 'build'
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s\n' "$APPLE_API_KEY" > "$RUNNER_TEMP/asc-api-key.p8"
+
+      # --no-wait: the build and its TestFlight upload run on Expo's servers.
+      # --freeze-credentials: a missing or expired certificate fails the build
+      # instead of being replaced here.
+      - name: Build and send to TestFlight
+        if: steps.decide.outputs.action == 'build'
+        env:
+          ASC_API_KEY_PATH: ${{ runner.temp }}/asc-api-key.p8
+          ASC_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ASC_API_KEY_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER }}
+          BUILD_MESSAGE: ${{ steps.decide.outputs.message }}
+          REASON: ${{ steps.decide.outputs.reason }}
+        run: |
+          set -euo pipefail
+          eas build --platform ios --profile beta --auto-submit --freeze-credentials --no-wait --non-interactive --message "$BUILD_MESSAGE"
+          echo ":building_construction: Started an iOS build and TestFlight upload: $REASON ($BUILD_MESSAGE)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the App Store Connect key
+        if: always()
+        working-directory: ${{ runner.temp }}
+        run: if [ -e "$RUNNER_TEMP/asc-api-key.p8" ]; then rm -- "$RUNNER_TEMP/asc-api-key.p8"; fi
+
+      - name: Publish the OTA
+        if: steps.decide.outputs.action == 'update'
+        env:
+          FINGERPRINT: ${{ steps.decide.outputs.fingerprint }}
+        run: |
+          set -euo pipefail
+          message="$(git log -1 --pretty=%s | head -c 120) ($(git rev-parse --short=9 HEAD))"
+          eas update --channel production --environment production --platform ios --message "$message" --non-interactive
+          echo ":white_check_mark: Published an OTA for fingerprint \`$FINGERPRINT\`: $message" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report
+        if: steps.decide.outputs.action == 'none' || steps.decide.outputs.action == 'fail'
+        env:
+          ACTION: ${{ steps.decide.outputs.action }}
+          REASON: ${{ steps.decide.outputs.reason }}
+        run: |
+          if [ "$ACTION" = fail ]; then
+            echo ":x: $REASON" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$REASON"
+            exit 1
+          fi
+          echo ":hourglass: Nothing to do: $REASON" >> "$GITHUB_STEP_SUMMARY"
