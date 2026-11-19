@@ -34,16 +34,19 @@ function attempt(build) {
 
 /**
  * Whether the newest build Expo uploaded is one phones can install: Apple
- * finished processing it as VALID and it has not expired.
+ * finished processing it as VALID, it has a known upload date and it has not
+ * expired.
  */
 function usable(newest, now) {
 	if (!newest) return { ok: false, kind: "none", reason: `No build has reached TestFlight. ${PRESS_BUILD}` };
 	const label = `TestFlight build ${newest.number} (${newest.id})`;
 	const apple = newest.apple;
-	if (!apple || apple.processingState === "PROCESSING") return { ok: false, kind: "processing", reason: `${label} is still processing at Apple.` };
-	if (apple.processingState !== "VALID") return { ok: false, kind: "invalid", reason: `Apple marked ${label} ${apple.processingState}. ${PRESS_BUILD}` };
+	if (!apple) return { ok: false, kind: "processing", reason: `${label} is still processing at Apple.` };
 	const ageMs = now - Date.parse(apple.uploadedDate);
 	if (apple.expired || ageMs >= TESTFLIGHT_DAYS * DAY_MS) return { ok: false, kind: "expired", reason: `${label} expired on TestFlight, so phones can no longer open it. ${PRESS_BUILD}` };
+	if (apple.processingState === "PROCESSING") return { ok: false, kind: "processing", reason: `${label} is still processing at Apple.` };
+	if (apple.processingState !== "VALID") return { ok: false, kind: "invalid", reason: `Apple marked ${label} ${apple.processingState}. ${PRESS_BUILD}` };
+	if (!Number.isFinite(ageMs)) return { ok: false, kind: "undated", reason: `This change needs a new TestFlight build: Apple lists no upload date for ${label}, so its age is unknown. ${PRESS_BUILD}` };
 	return { ok: true, label, ageDays: Math.floor(ageMs / DAY_MS) };
 }
 
@@ -88,8 +91,9 @@ function decide({ event, mode, ref, tokenPresent, sha, mainHead, runtime, expoMo
 
 	if (event === "schedule") {
 		if (active) return { action: "none", reason: `Beta build ${active.id} is in progress (${active.detail}).` };
+		// Remind whenever no usable build is under 76 days old, including one stuck processing.
 		const status = usable(newest, now);
-		if (status.kind === "processing") return { action: "none", reason: status.reason };
+		if (status.kind === "processing") return { action: "fail", reason: `${status.reason} Phones keep the previous build until Apple finishes. If it stays stuck, ${PRESS_BUILD[0].toLowerCase()}${PRESS_BUILD.slice(1)}` };
 		if (!status.ok) return { action: "fail", reason: status.reason };
 		if (status.ageDays >= REMIND_AFTER_DAYS) return { action: "fail", reason: `${status.label} is ${status.ageDays} days old and expires at 90. ${PRESS_BUILD}` };
 		return { action: "none", reason: `${status.label} is ${status.ageDays} days old.` };

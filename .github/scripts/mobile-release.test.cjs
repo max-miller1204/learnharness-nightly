@@ -17,7 +17,7 @@ const daysAgo = (days) => new Date(NOW - days * 24 * 60 * 60 * 1000).toISOString
  * A beta build as fetchState returns it. A finished build defaults to a
  * finished upload that Apple processed as VALID.
  */
-function build(id, status, runtime, { submission = status === "FINISHED" ? "FINISHED" : undefined, apple = "VALID", expired = false, requested, days = 1 } = {}) {
+function build(id, status, runtime, { submission = status === "FINISHED" ? "FINISHED" : undefined, apple = "VALID", expired = false, requested, days = 1, uploaded = daysAgo(days) } = {}) {
 	return {
 		id,
 		status,
@@ -27,8 +27,13 @@ function build(id, status, runtime, { submission = status === "FINISHED" ? "FINI
 		completedAt: daysAgo(days),
 		runtime: runtime ? { version: runtime } : null,
 		submissions: submission ? [{ platform: "IOS", status: submission, completedAt: daysAgo(days) }] : [],
-		apple: submission === "FINISHED" && apple ? { processingState: apple, expired, uploadedDate: daysAgo(days) } : null,
+		apple: submission === "FINISHED" && apple ? { processingState: apple, expired, uploadedDate: uploaded } : null,
 	};
+}
+/** The same build with Apple's upload date missing entirely. */
+function undated(b) {
+	delete b.apple.uploadedDate;
+	return b;
 }
 const run = (overrides) =>
 	decide({ event: "push", ref: "refs/heads/main", tokenPresent: true, sha: SHA, mainHead: SHA, runtime: F, expoModules: 24, builds: [build("1", "FINISHED", F)], now: NOW, ...overrides });
@@ -120,12 +125,63 @@ test("Monday never builds: it fails as a reminder at 76 days and stays quiet at 
 	assert.equal(run({ event: "schedule", builds: [] }).action, "fail");
 });
 
-test("Monday ignores an unrelated failed build and waits while one runs or processes", () => {
+test("Monday ignores an unrelated failed build and waits while a build runs at Expo", () => {
 	const old = build("1", "FINISHED", F, { days: 10 });
 	assert.equal(run({ event: "schedule", builds: [build("2", "ERRORED", G), old] }).action, "none");
 	assert.equal(run({ event: "schedule", builds: [build("2", "FINISHED", G, { submission: "CANCELED" }), old] }).action, "none");
 	assert.equal(run({ event: "schedule", builds: [build("2", "IN_PROGRESS", G), build("1", "FINISHED", F, { days: 80 })] }).action, "none");
-	assert.equal(run({ event: "schedule", builds: [build("2", "FINISHED", G, { apple: "PROCESSING" }), build("1", "FINISHED", F, { days: 80 })] }).action, "none");
+});
+
+test("Monday reminds when the newest build is stuck processing, expired, rejected, undated or missing", () => {
+	const monday = (builds) => run({ event: "schedule", builds });
+	for (const builds of [
+		[build("2", "FINISHED", G, { apple: "PROCESSING", days: 77 })],
+		[build("2", "FINISHED", G, { apple: "PROCESSING", days: 91 })],
+		[build("2", "FINISHED", G, { apple: "PROCESSING", expired: true, days: 10 })],
+		[build("2", "FINISHED", G, { apple: "PROCESSING", days: 1 }), build("1", "FINISHED", F, { days: 80 })],
+		[build("2", "FINISHED", G, { apple: null })],
+		[build("2", "FINISHED", G, { apple: "INVALID" })],
+		[undated(build("2", "FINISHED", G))],
+		[],
+	]) {
+		const decision = monday(builds);
+		assert.equal(decision.action, "fail", JSON.stringify(builds.map((b) => b.apple)));
+		assert.match(decision.reason, /mode build/);
+	}
+	assert.match(monday([build("2", "FINISHED", G, { apple: "PROCESSING", days: 91 })]).reason, /expired on TestFlight/);
+});
+
+test("a build with no known upload date is not usable, and a push asks for a build", () => {
+	const cases = { missing: () => undated(build("1", "FINISHED", F)), null: () => build("1", "FINISHED", F, { uploaded: null }), garbage: () => build("1", "FINISHED", F, { uploaded: "not a date" }) };
+	for (const [name, make] of Object.entries(cases)) {
+		const decision = run({ builds: [make()] });
+		assert.equal(decision.action, "fail", name);
+		assert.match(decision.reason, /needs a new TestFlight build/, name);
+		assert.equal(button("update", { builds: [make()] }).action, "fail", name);
+	}
+});
+
+test("an expired build still marked processing reports expiry", () => {
+	assert.match(run({ builds: [build("1", "FINISHED", F, { apple: "PROCESSING", days: 91 })] }).reason, /expired on TestFlight/);
+});
+
+test("only main runs share a concurrency group, so an off-main request displaces nothing", () => {
+	const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "mobile-release.yml"), "utf8");
+	const expression = workflow.match(/^ {2}group: \$\{\{ (.+) \}\}$/m)[1];
+	assert.doesNotMatch(expression, /[^!=]=[^=]|\b(?:contains|startsWith|endsWith|fromJSON|toJSON)\(/, "only format, ==, != , && and || are evaluated here");
+	const format = (template, ...values) => template.replace(/\{(\d+)\}/g, (_, index) => values[index]);
+	const evaluate = new Function("github", "inputs", "format", `return (${expression});`);
+	const group = (ref, event, mode = "", runId = "1") => evaluate({ ref, event_name: event, run_id: runId }, { mode }, format);
+	const main = "refs/heads/main";
+	assert.equal(group(main, "push"), group(main, "workflow_dispatch", "update"));
+	const others = [group(main, "workflow_dispatch", "check"), group(main, "workflow_dispatch", "build"), group(main, "schedule")];
+	assert.equal(new Set([group(main, "push"), ...others]).size, 4);
+	for (const mode of ["update", "build", "check"]) {
+		const offMain = group("refs/heads/feature", "workflow_dispatch", mode, "77");
+		assert.notEqual(offMain, group(main, "push"), mode);
+		assert.ok(!others.includes(offMain), mode);
+		assert.notEqual(offMain, group("refs/heads/feature", "workflow_dispatch", mode, "78"), mode);
+	}
 });
 
 test("the build button builds only from main's head and while no build runs", () => {

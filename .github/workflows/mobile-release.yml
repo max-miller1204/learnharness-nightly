@@ -38,11 +38,13 @@ permissions:
   contents: read
 
 # GitHub keeps one pending run per group and cancels the older pending one.
-# Runs that publish OTAs (pushes and the update button) share a group, so they
-# publish one at a time and a pending one is replaced only by a newer commit.
-# Other kinds get their own groups and never cancel each other.
+# Runs from main that publish OTAs (pushes and the update button) share a
+# group, so they publish one at a time and a pending one is replaced only by a
+# newer commit. Other kinds get their own groups and never cancel each other.
+# A run from any other ref gets a group of its own, so it can never displace a
+# main run before the environment refuses it. mobile-release.test.cjs checks this key.
 concurrency:
-  group: mobile-release-${{ (github.event_name == 'push' || inputs.mode == 'update') && 'ota' || format('{0}-{1}', github.event_name, inputs.mode) }}
+  group: ${{ github.ref != 'refs/heads/main' && format('mobile-release-refused-{0}', github.run_id) || (github.event_name == 'push' || inputs.mode == 'update') && 'mobile-release-ota' || format('mobile-release-{0}-{1}', github.event_name, inputs.mode) }}
   cancel-in-progress: false
 
 jobs:
