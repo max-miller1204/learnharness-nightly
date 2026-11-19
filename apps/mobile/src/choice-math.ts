@@ -7,14 +7,6 @@ import { liteAdaptor, type LiteAdaptor } from "mathjax-full/js/adaptors/liteAdap
 import { RegisterHTMLHandler } from "mathjax-full/js/handlers/html.js";
 import { AllPackages } from "mathjax-full/js/input/tex/AllPackages.js";
 import { TagsFactory } from "mathjax-full/js/input/tex/Tags.js";
-import { MapHandler } from "mathjax-full/js/input/tex/MapHandler.js";
-import { Macro } from "mathjax-full/js/input/tex/Symbol.js";
-import TexError from "mathjax-full/js/input/tex/TexError.js";
-import ParseUtil from "mathjax-full/js/input/tex/ParseUtil.js";
-import NodeUtil from "mathjax-full/js/input/tex/NodeUtil.js";
-import type TexParser from "mathjax-full/js/input/tex/TexParser.js";
-import type { CommandMap } from "mathjax-full/js/input/tex/SymbolMap.js";
-import { numeric } from "mathjax-full/js/util/Entities.js";
 import { STATE, type MathItem } from "mathjax-full/js/core/MathItem.js";
 import { SerializedMmlVisitor } from "mathjax-full/js/core/MmlTree/SerializedMmlVisitor.js";
 import type { MmlNode, TextNode } from "mathjax-full/js/core/MmlTree/MmlNode.js";
@@ -29,13 +21,15 @@ import { resolveTheme, shiftHex } from "../../../src/core/themes.ts";
  * an output that measures boxes; `action` adds event handlers, which the drawing can't
  * run. `noerrors` and `noundefined` would draw broken math instead of handing it back as
  * its source text. `require` and `autoload` load code and aren't bundled. Packages the
- * web's KaTeX doesn't have stay off to match it: `mhchem` here, and `physics` and
- * `setoptions`, which AllPackages leaves out (physics also redefines standard commands).
- * Every other package in MathJax's AllPackages is on. */
-export const EXCLUDED_PACKAGES = ["html", "bussproofs", "action", "noerrors", "noundefined", "mhchem"];
+ * web's KaTeX doesn't support at all stay off to match it: those listed after
+ * `noundefined`, and `physics` and `setoptions`, which AllPackages leaves out (physics also
+ * redefines standard commands). Every other package in MathJax's AllPackages is on. */
+export const EXCLUDED_PACKAGES = [
+  "html", "bussproofs", "action", "noerrors", "noundefined",
+  "mhchem", "bbox", "cases", "centernot", "colortbl", "empheq", "enclose", "upgreek", "unicode",
+];
 const PACKAGES = AllPackages.filter((name) => !EXCLUDED_PACKAGES.includes(name));
-/** Math that sets any of these (\mmlToken, \bbox[style], \unicode[font], \label, \eqref)
- * stays as text. */
+/** Math that sets any of these (\mmlToken, \label, \eqref) stays as text. */
 const UNTRUSTED_ATTRIBUTES = ["href", "style", "class", "id", "fontfamily"];
 const COLOR_ATTRIBUTES = ["mathcolor", "color", "mathbackground", "background"];
 /** gensymb's unit symbols, the only tokens MathJax gives its unit class. */
@@ -58,21 +52,6 @@ Object.assign(TagsFactory, {
 });
 /** How many tag classes MathJax holds; it never grows from drawing. */
 export const tagClassCount = () => tagClasses.size;
-
-// \unicode keeps a module-level cache of font choices, so one equation's \unicode[Arial]
-// would set the font of every later \unicode of that character, even after the first was
-// refused. Its font options are refused anyway, so it is replaced by one that takes none
-// and keeps no cache.
-(MapHandler.getMap("unicode") as CommandMap).add("unicode", new Macro("unicode", (parser: TexParser, command: unknown) => {
-  const name = command as string;
-  if (parser.GetBrackets(name)) throw new TexError("UnicodeFont", "\\unicode takes no font or size here");
-  const code = ParseUtil.trimSpaces(parser.GetArgument(name)).replace(/^0x/, "x");
-  if (!/^(x[0-9A-Fa-f]+|[0-9]+)$/.test(code)) throw new TexError("BadUnicode", "Argument to \\unicode must be a number");
-  const variant = parser.stack.env.font as string | undefined;
-  const node = parser.create("token", "mtext", variant ? { mathvariant: variant } : {}, numeric(code));
-  NodeUtil.setProperty(node, "unicode", true);
-  parser.Push(node);
-}));
 
 let adaptor: LiteAdaptor | undefined;
 let mathml: SerializedMmlVisitor | undefined;

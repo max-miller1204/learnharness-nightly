@@ -39,9 +39,16 @@ test("covers STEM packages: matrices, cancel, units, braket", () => {
 });
 
 test("standard commands mean what they mean on the web (no physics or mhchem package)", () => {
-  assert.deepEqual(EXCLUDED_PACKAGES, ["html", "bussproofs", "action", "noerrors", "noundefined", "mhchem"]);
-  // The web's KaTeX has no mhchem, so chemistry stays source there and here.
-  assert.deepEqual(splitLabel("Water is $\\ce{H2O}$"), asText("Water is $\\ce{H2O}$"));
+  assert.deepEqual(EXCLUDED_PACKAGES, [
+    "html", "bussproofs", "action", "noerrors", "noundefined",
+    "mhchem", "bbox", "cases", "centernot", "colortbl", "empheq", "enclose", "upgreek", "unicode",
+  ]);
+  // The web's KaTeX has none of these packages, so their commands stay source there and here.
+  for (const tex of ["\\ce{H2O}", "\\bbox[5px]{x}", "\\begin{numcases}{f(x)=} 1 & x \\end{numcases}", "\\centernot\\to",
+    "\\begin{array}{c}\\rowcolor{red} x\\end{array}", "\\begin{empheq}[left=\\{]{align}a\\end{empheq}", "\\enclose{circle}{x}",
+    "\\upalpha", "\\unicode{x263A}"]) {
+    assert.deepEqual(splitLabel(`Try $${tex}$`), asText(`Try $${tex}$`), tex);
+  }
   assert.equal(read("6 \\div 2"), "6 ÷ 2");
   assert.equal(read("\\braket{\\psi|\\phi}"), "⟨ ψ | ϕ ⟩");
   assert.equal(read("\\Re z"), "ℜ z");
@@ -132,12 +139,6 @@ test("a color that doesn't stand out in a theme is dropped there, not shown as s
   // An unknown color name is dropped in both.
   const unknown = colored("\\color{aliceblue}x");
   assert.ok(!keeps(unknown.dark) && !keeps(unknown.light));
-});
-
-test("a refused \\unicode font never reaches a later \\unicode", () => {
-  assert.deepEqual(splitLabel("$\\unicode[Arial]{x263A}$"), asText("$\\unicode[Arial]{x263A}$"));
-  assert.ok(drawTex("\\unicode{x263A}", false), "plain \\unicode still draws");
-  assert.ok(drawTex("\\unicode{x41}", false));
 });
 
 test("drawing never grows MathJax's tag registry", () => {
