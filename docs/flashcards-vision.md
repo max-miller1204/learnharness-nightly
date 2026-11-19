@@ -146,7 +146,7 @@ The plugin reads that knowledge and owns its cards, scheduling state, and review
 
 The relationship is also non-destructive. If a card's proposition ID can no longer be found in the graph, its cards move to an **Archive** section outside normal review. The plugin retains its own content, proposition snapshots, and history. Deleting graph data never silently deletes plugin-owned data.
 
-Deleting a reasoning chain alone does not archive cards when the proposition itself still exists. If an original source is deleted but the proposition survives through other provenance, preserve its existing deck memberships and retain the old source deck with its stored label. Do not automatically follow the graph's re-attributed birth source or reorganize custom collections. The live proposition remains eligible for review. Archive presentation and restoration details remain to be settled.
+Deleting a reasoning chain alone does not archive cards when the proposition itself still exists. If an original source is deleted but the proposition survives through other provenance, preserve its existing deck memberships and retain the old source deck with its stored label. Do not automatically follow the graph's re-attributed birth source or reorganize custom collections. The live proposition remains eligible for review.
 
 ## Deferred Anki integration
 

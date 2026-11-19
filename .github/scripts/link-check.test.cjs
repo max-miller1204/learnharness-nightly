@@ -77,6 +77,21 @@ test("a glob or template docs/ path is skipped, a plain one next to it is still 
 	assert.deepEqual(problems, [{ file: "src/app.ts", line: 2, target: "docs/gone.md" }]);
 });
 
+test("a link whose destination is on the next line is checked", () => {
+	const problems = checkFixture({ ...clean, "docs/guide.md": "See [dead link](\nmultiline-missing.md\n) and [live](\n../README.md\n).\n" });
+	assert.deepEqual(problems, [{ file: "docs/guide.md", line: 2, target: "multiline-missing.md" }]);
+});
+
+test("a fenced code block inside a blockquote is skipped", () => {
+	const problems = checkFixture({ ...clean, "docs/guide.md": "> ```md\n> [fenced](missing.md)\n> ```\n> [quoted](gone.md)\n" });
+	assert.deepEqual(problems, [{ file: "docs/guide.md", line: 4, target: "gone.md" }]);
+});
+
+test("bracket and question-mark glob docs/ paths are skipped", () => {
+	const problems = checkFixture({ ...clean, "src/app.ts": "// docs/a[12].md and docs/b?.md\n// docs/gone.md\n" });
+	assert.deepEqual(problems, [{ file: "src/app.ts", line: 2, target: "docs/gone.md" }]);
+});
+
 test("a file whose first line has the file marker is skipped", () => {
 	assert.deepEqual(checkFixture({ ...clean, "src/fixture.ts": "// link-check-ignore-file\nwrite(\"docs/missing.md\");\n" }), []);
 	assert.deepEqual(checkFixture({ ...clean, "src/fixture.ts": "\n// link-check-ignore-file\nwrite(\"docs/missing.md\");\n" }), [{ file: "src/fixture.ts", line: 3, target: "docs/missing.md" }]);

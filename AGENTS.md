@@ -12,3 +12,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 - Specs are files at `docs/specs/<topic>.md`, and idea-to-spec publishes there.
 - Docs and code comments hold only what stays true: no status tables, done or later lists, counts, or "currently", "not yet" or "today" claims. Specs are exempt.
+
+## User data
+
+- On-disk user data acquires compatibility obligations: persistent-schema changes are migrations with tolerant reads, not free edits plus wipe-your-dev-data. `data/jobs/` is scratch/transient, with no obligation.

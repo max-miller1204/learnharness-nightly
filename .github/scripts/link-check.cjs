@@ -11,6 +11,9 @@ const path = require("node:path");
 const IGNORE_MARKER = "link-check-ignore";
 const IGNORE_FILE_MARKER = "link-check-ignore-file";
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+const BLOCKQUOTE = /^(?: {0,3}> ?)+/;
+const OPEN_DESTINATION = /\]\(\s*$/;
+const NEXT_LINE_DESTINATION = /^\s*(<[^>\n]*>|[^\s)]+)/;
 const INLINE_LINK = /\]\(\s*(<[^>\n]*>|[^\s)]+(?:\([^\s)]*\)[^\s)]*)*)/g;
 const REFERENCE_DEFINITION = /^ {0,3}\[(?!\^)[^\]]+\]:\s*(<[^>\n]*>|\S+)/;
 const INLINE_CODE = /(`+)[^`][\s\S]*?\1/g;
@@ -20,8 +23,13 @@ const DOCS_PATH = /(?<![\w.\/@$-])docs\/[\w.\/@-]*/g;
 function markdownTargets(text) {
 	const targets = [];
 	let fence = null;
-	text.split("\n").forEach((line, index) => {
+	let open = false;
+	text.split("\n").forEach((quoted, index) => {
+		// Read a blockquote line as its quoted content, so fences inside quotes count.
+		const line = quoted.replace(BLOCKQUOTE, "");
 		const marker = FENCE.exec(line);
+		const wasOpen = open;
+		open = false;
 		if (fence) {
 			if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !line.slice(marker[0].length).trim()) fence = null;
 			return;
@@ -29,6 +37,10 @@ function markdownTargets(text) {
 		if (marker) { fence = marker[1]; return; }
 		if (line.includes(IGNORE_MARKER)) return;
 		const prose = line.replace(INLINE_CODE, match => " ".repeat(match.length));
+		// A link whose destination starts on the next line: "[text](" then "path".
+		const continued = wasOpen && NEXT_LINE_DESTINATION.exec(prose);
+		if (continued) targets.push({ line: index + 1, target: continued[1] });
+		open = OPEN_DESTINATION.test(prose);
 		for (const match of prose.matchAll(INLINE_LINK)) targets.push({ line: index + 1, target: match[1] });
 		const definition = REFERENCE_DEFINITION.exec(prose);
 		if (definition) targets.push({ line: index + 1, target: definition[1] });
@@ -42,8 +54,8 @@ function docsPathTargets(text) {
 	text.split("\n").forEach((line, index) => {
 		if (line.includes(IGNORE_MARKER)) return;
 		for (const match of line.matchAll(DOCS_PATH)) {
-			// A glob or template path (docs/plugin-*.md, docs/specs/${x}.md) names no single file.
-			if ("*{$".includes(line[match.index + match[0].length] ?? " ")) continue;
+			// A glob or template path (docs/plugin-*.md, docs/b?.md, docs/specs/${x}.md) names no single file.
+			if ("*{$[?".includes(line[match.index + match[0].length] ?? " ")) continue;
 			targets.push({ line: index + 1, target: "/" + match[0].replace(/[./-]+$/, "") });
 		}
 	});
