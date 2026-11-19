@@ -13,4 +13,5 @@ module.exports = {
   useColorScheme: () => "dark",
   useWindowDimensions: () => ({ width: 400, height: 800, scale: 2, fontScale: 1 }),
   Platform: { OS: "android", select: (choices) => choices.android ?? choices.default },
+  AccessibilityInfo: { announceForAccessibility: () => {} },
 };

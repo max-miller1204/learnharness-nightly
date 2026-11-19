@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { repairMathForDisplay } from "../../../src/core/math-delims.ts";
 import { buildAnswer, type QuestionData } from "../../../src/core/question-core.ts";
-import { drawTex, EXCLUDED_PACKAGES, hasMath, joinPieces, plainText, splitLabel, type LabelPiece } from "../src/choice-math.ts";
+import { drawTex, EXCLUDED_PACKAGES, hasMath, joinPieces, plainText, splitLabel, tagClassCount, type LabelPiece } from "../src/choice-math.ts";
 import { spokenLabel } from "../src/math-speech.ts";
 
 const LABEL = "No, $P\\to Q$ is blocked.";
@@ -14,16 +14,22 @@ test("draws inline math and keeps the text around it", () => {
   const pieces = splitLabel(LABEL);
   assert.deepEqual(kinds(pieces), ["text:No, ", "inline:P\\to Q", "text: is blocked."]);
   const math = pieces[1];
-  assert.ok(math?.kind === "math" && math.drawn.svg.startsWith("<svg") && math.drawn.width > 0 && math.drawn.height > 0);
+  assert.ok(math?.kind === "math" && math.drawn.svg.dark.startsWith("<svg") && math.drawn.width > 0 && math.drawn.height > 0);
   assert.equal(math.drawn.symbols, "P → Q");
 });
 
 test("block math follows the web's parser: mid-line $$ is inline, fences and \\[ are blocks", () => {
   assert.deepEqual(kinds(splitLabel("a \\(x\\) b $y$ c")), ["text:a ", "inline:x", "text: b ", "inline:y", "text: c"]);
   assert.deepEqual(kinds(splitLabel("a $$x^2$$ b")), ["text:a ", "inline:x^2", "text: b"]);
-  assert.deepEqual(kinds(splitLabel("a\n$$\nx^2\n$$\nb")), ["text:a\n", "block:x^2", "text:\nb"]);
-  assert.deepEqual(kinds(splitLabel("a\n$$$\nx^2\n$$$\nb")), ["text:a\n", "block:x^2", "text:\nb"]);
-  assert.deepEqual(kinds(splitLabel("a \\[y\\] c")), ["text:a ", "block:y", "text: c"]);
+  assert.deepEqual(kinds(splitLabel("a\n$$\nx^2\n$$\nb")), ["text:a", "block:x^2", "text:b"]);
+  assert.deepEqual(kinds(splitLabel("a\n$$$\nx^2\n$$$\nb")), ["text:a", "block:x^2", "text:b"]);
+  assert.deepEqual(kinds(splitLabel("a \\[y\\] c")), ["text:a", "block:y", "text:c"]);
+  // Indented legacy display math reads inline, as the web's transformMathDelimiters makes it.
+  assert.deepEqual(kinds(splitLabel("a\n  \\[x\\]\nb")), ["text:a\n  ", "inline:x", "text:\nb"]);
+});
+
+test("block math has no blank lines around it", () => {
+  assert.deepEqual(kinds(splitLabel("Area:\n$$\nx^2\n$$\nhere")), ["text:Area:", "block:x^2", "text:here"]);
 });
 
 test("covers STEM packages: chemistry, matrices, cancel, units, braket", () => {
@@ -58,15 +64,15 @@ test("nothing one equation defines reaches another", () => {
   assert.equal(read("P\\to Q"), "P → Q");
   assert.ok(drawTex("\\newcommand{\\mine}{m} \\mine", false));
   assert.equal(drawTex("\\mine", false), undefined);
-  assert.ok(drawTex("\\definecolor{mine}{rgb}{1,0,0} \\color{mine}{x}", false));
-  assert.equal(drawTex("\\color{mine}{x}", false), undefined);
+  assert.match(drawTex("\\definecolor{mine}{rgb}{1,0,0} \\color{mine}{x}", false)?.svg.dark ?? "", /fill="#FF0000"/i);
+  assert.doesNotMatch(drawTex("\\color{mine}{x}", false)?.svg.dark ?? "", /#FF0000/i, "an unknown color is dropped");
   assert.deepEqual(kinds(splitLabel("$\\def\\a{1}\\a$ and $\\a$")), ["inline:\\def\\a{1}\\a", "text: and $\\a$"]);
 });
 
 test("a label used twice draws once, with no multiply-defined error", () => {
   const drawn = drawTex("x \\label{a}", true);
   assert.ok(drawn);
-  assert.doesNotMatch(drawn.svg, /multiply|merror/i);
+  assert.doesNotMatch(drawn.svg.dark, /multiply|merror/i);
   assert.ok(drawTex("y \\label{a}", true), "a later equation may use the same label");
 });
 
@@ -74,7 +80,7 @@ test("excluded commands render as plain text: no link, no style or id hook, noth
   const untrusted = [
     "\\href{https://example.com}{x}", "\\style{color:red}{x}", "\\class{a}{x}", "\\cssId{a}{x}", "\\require{noerrors}",
     "\\mmlToken{mi}[href=\"https://example.com\"]{x}", "\\mmlToken{mi}[style=\"color:red\"]{x}", "\\mmlToken{mi}[id=\"a\"]{x}",
-    "\\mmlToken{mi}[class=\"a\"]{x}", "\\mmlToken{mi}[fontfamily=Arial]{x}", "\\unicode[Arial]{x263A}", "\\unicode[serif]{x263A}",
+    "\\mmlToken{mi}[class=\"a\"]{x}", "\\mmlToken{mi}[class=MathML-Unit]{x}", "\\mmlToken{mi}[fontfamily=Arial]{x}", "\\unicode[Arial]{x263A}", "\\unicode[serif]{x263A}",
     "\\bbox[border:1px solid]{x}", "x \\label{a} \\eqref{a}", "\\begin{prooftree}\\AxiomC{A}\\end{prooftree}",
     // MathJax gives a displayed tag an id and a full-width layout.
     "\\[x \\tag{1}\\]",
@@ -83,8 +89,8 @@ test("excluded commands render as plain text: no link, no style or id hook, noth
     const label = tex.startsWith("\\[") ? tex : `try $${tex}$ now`;
     assert.deepEqual(splitLabel(label), asText(label), tex);
   }
-  for (const tex of ["P\\to Q", "\\color{red}{x}", "\\boxed{x}", "\\text{日本}"]) {
-    const svg = drawTex(tex, true)?.svg;
+  for (const tex of ["P\\to Q", "\\color{red}{x}", "\\boxed{x}", "\\text{日本}", "\\degree", "\\mmlToken{mi}[class=MathML-Unit]{\u00B0}"]) {
+    const svg = drawTex(tex, true)?.svg.dark;
     assert.ok(svg, tex);
     assert.doesNotMatch(svg, /\s(href|style|class|id)=|<a[\s>]/, tex);
     // MathJax's own font for characters outside its font is the only family it names.
@@ -92,11 +98,52 @@ test("excluded commands render as plain text: no link, no style or id hook, noth
   }
 });
 
-test("colors too close to a row background, or unknown ones, stay as source text", () => {
-  for (const tex of ["\\color{white}x", "\\color{black}x", "\\color[rgb]{1,1,1}x", "\\color{aliceblue}x", "\\colorbox{white}{x}"]) {
+test("invisible colors stay as source text", () => {
+  for (const tex of ["\\color{transparent}x", "\\color{none}x", "\\mmlToken{mi}[mathcolor=\"transparent\"]{x}",
+    "\\mmlToken{mi}[mathbackground=\"none\"]{x}", "\\mmlToken{mi}[color=\"transparent\"]{x}"]) {
     assert.equal(drawTex(tex, false), undefined, tex);
   }
-  for (const tex of ["\\color{red}x", "\\color{blue}x", "\\color{RoyalBlue}x", "\\color{#d97706}x"]) assert.ok(drawTex(tex, false), tex);
+});
+
+test("a color that doesn't stand out in a theme is dropped there, not shown as source", () => {
+  const colored = (tex: string) => { const drawn = drawTex(tex, false); assert.ok(drawn, tex); return drawn.svg; };
+  const keeps = (svg: string) => /fill="(?!currentColor|none)/.test(svg);
+  // Readable in both themes.
+  for (const tex of ["\\color{red}x", "\\color{teal}x", "\\color{#e11d48}x"]) assert.ok(keeps(colored(tex).dark) && keeps(colored(tex).light), tex);
+  // Readable only on the light theme.
+  for (const tex of ["\\color{navy}x", "\\color{darkblue}x", "\\color{maroon}x", "\\color{blue}x", "\\color{black}x"]) {
+    const svg = colored(tex);
+    assert.ok(!keeps(svg.dark) && keeps(svg.light), tex);
+  }
+  // Readable only on the dark theme.
+  for (const tex of ["\\color{yellow}x", "\\color{white}x"]) {
+    const svg = colored(tex);
+    assert.ok(keeps(svg.dark) && !keeps(svg.light), tex);
+  }
+  // Text against the box drawn behind it: a solid block, or dark text on purple.
+  for (const tex of ["\\colorbox{red}{\\color{red}x}", "\\colorbox{purple}{\\color{black}x}"]) {
+    const svg = colored(tex);
+    assert.ok(!svg.dark.includes("<rect") && !svg.light.includes("<rect") && !keeps(svg.dark) && !keeps(svg.light), tex);
+  }
+  // Theme text on a purple box fails on Ivory (dark text) but not on the dark theme.
+  const purple = colored("\\colorbox{purple}{x}");
+  assert.ok(purple.dark.includes("<rect") && !purple.light.includes("<rect"));
+  // An unknown color name is dropped in both.
+  const unknown = colored("\\color{aliceblue}x");
+  assert.ok(!keeps(unknown.dark) && !keeps(unknown.light));
+});
+
+test("a refused \\unicode font never reaches a later \\unicode", () => {
+  assert.deepEqual(splitLabel("$\\unicode[Arial]{x263A}$"), asText("$\\unicode[Arial]{x263A}$"));
+  assert.ok(drawTex("\\unicode{x263A}", false), "plain \\unicode still draws");
+  assert.ok(drawTex("\\unicode{x41}", false));
+});
+
+test("drawing never grows MathJax's tag registry", () => {
+  drawTex("x", false);
+  const before = tagClassCount();
+  for (let index = 0; index < 50; index++) drawTex(`x_${index} \\label{a${index}}`, true);
+  assert.equal(tagClassCount(), before);
 });
 
 test("without speech, math reads as words that keep its structure", () => {
@@ -110,7 +157,20 @@ test("without speech, math reads as words that keep its structure", () => {
   assert.equal(read("\\sqrt[3]{x}"), "root 3 of x");
   assert.equal(read("\\sum_{i=1}^{n} i"), "∑ from i = 1 to n i");
   assert.equal(read("\\begin{pmatrix}1&2\\\\3&4\\end{pmatrix}"), "( 1, 2; 3, 4 )");
+  assert.equal(read("\\prescript{a}{b}{X}"), "pre-subscript b pre-superscript a X");
+  assert.equal(read("X_b^a"), "X subscript b superscript a");
   assert.notEqual(read("x^2"), read("x_2"));
+});
+
+test("math that fails to draw shows the label's own text, not the repaired one", () => {
+  const mangled = "Then $P\to Q \\frac{a}{b$ fails";
+  assert.deepEqual(splitLabel(mangled), asText(mangled));
+});
+
+test("words and math that touch are read with a space between them", () => {
+  assert.equal(spokenLabel(splitLabel("Area:\\[x^2\\]"), false), "Area: x superscript 2");
+  assert.equal(spokenLabel(splitLabel("the $n$th term, $x$."), false), "the n th term, x.");
+  assert.equal(spokenLabel(splitLabel("($x$)"), false), "(x)");
 });
 
 test("labels are repaired the way the web repairs them before math is read", () => {

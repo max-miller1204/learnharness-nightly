@@ -76,6 +76,22 @@ test("an answered card draws chosen math as one stop with no web view, and copie
   act(() => tree.unmount());
 });
 
+test("an answered card copies from the keyboard and the screen reader, as the screen shows it", async () => {
+  // JSON escaping turned "\to" into a tab and "o"; the card shows, and copies, the repaired label.
+  const tree = render(createElement(AnswerLine, { answer: { kind: "quiz", answers: [{ label: "No, $P\to Q$ is blocked.", value: "no", index: 1 }] } }));
+  const stop = tree.root.find((node) => is(node, "Pressable"));
+  const { clipboard } = await import("./mocks/expo-clipboard.cjs" as string) as { clipboard: { text: string } };
+  clipboard.text = "";
+  await act(async () => { stop.props.onPress(); });
+  assert.equal(clipboard.text, "No, $P\\to Q$ is blocked.", "Enter or Space presses it");
+  clipboard.text = "";
+  await act(async () => { stop.props.onAccessibilityAction({ nativeEvent: { actionName: "activate" } }); });
+  assert.equal(clipboard.text, "No, $P\\to Q$ is blocked.");
+  assert.equal(stop.props.focusable, true);
+  assert.deepEqual(stop.props.accessibilityActions.map(({ label }: { label: string }) => label), ["Copy", "Copy"]);
+  act(() => tree.unmount());
+});
+
 test("an answered card without math is selectable text, as before", () => {
   const tree = render(createElement(AnswerLine, { answer: { kind: "ask", answers: [{ label: "Yes", value: "yes", index: 1 }] } }));
   const text = tree.root.find((node) => is(node, "Text"));

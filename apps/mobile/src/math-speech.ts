@@ -54,8 +54,16 @@ export function spokenMath(drawn: DrawnMath, speech: boolean, say: (mathml: stri
   return drawn.symbols;
 }
 
-/** The label a screen reader reads: text as written, each equation through spokenMath. */
+/** The label a screen reader reads: text as written, each equation through spokenMath, with
+ * a space between words and math that touch ("Area:" and "x squared" read "Area: x squared"),
+ * except beside punctuation and brackets. */
 export function spokenLabel(pieces: LabelPiece[], speech: boolean, say?: (mathml: string) => string): string {
-  return pieces.map((piece) => piece.kind === "text" ? piece.text : spokenMath(piece.drawn, speech, say))
-    .join("").replace(/\s+/g, " ").trim();
+  let spoken = "";
+  pieces.forEach((piece, index) => {
+    const part = piece.kind === "text" ? piece.text : spokenMath(piece.drawn, speech, say);
+    const touchesMath = piece.kind === "math" || pieces[index - 1]?.kind === "math";
+    if (touchesMath && spoken && part && !/[\s([{]$/.test(spoken) && !/^[\s.,;:!?)\]}]/.test(part)) spoken += " ";
+    spoken += part;
+  });
+  return spoken.replace(/\s+/g, " ").trim();
 }

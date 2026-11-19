@@ -13,7 +13,7 @@ const escaped = (text: string, i: number) => {
 /** Preserve the legacy list-continuation policy: indented display math
  * degrades to inline rather than disrupting list structure. Literal code
  * indentation is already protected by the shared reader. */
-function indented(text: string, i: number): boolean {
+export function indented(text: string, i: number): boolean {
 	const prefix = text.slice(text.lastIndexOf("\n", i - 1) + 1, i);
 	return prefix.length > 0 && /^[ \t]+$/.test(prefix);
 }
