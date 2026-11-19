@@ -60,6 +60,25 @@ export function photoNames(assets: readonly { fileName?: string | null; mimeType
   });
 }
 
+/** Converts each photo on its own, so one the phone can't decode (Android
+ *  has no decoder for 12-bit HEIC) is skipped with a note naming it while the
+ *  rest still attach. Every original copy is released, converted or not. */
+export async function convertEach<T extends { uri: string; fileName?: string | null }>(assets: readonly T[],
+  convert: (asset: T) => Promise<string>, release: (uri: string) => void): Promise<{ converted: T[]; notice?: string }> {
+  const converted: T[] = [];
+  const failed: string[] = [];
+  for (const asset of assets) {
+    try {
+      converted.push({ ...asset, uri: await convert(asset) });
+    } catch {
+      failed.push(`${asset.fileName || "A photo"} couldn't be converted on this phone. Attach it from Files instead.`);
+    } finally {
+      try { release(asset.uri); } catch { /* The system clears its cache too. */ }
+    }
+  }
+  return { converted, ...(failed.length ? { notice: failed.join("\n") } : {}) };
+}
+
 /** The server's `expiresAt` on this phone's clock, from the response's Date
  * header. Date has one-second resolution: allow that second. */
 export function localDeadline(expiresAt: number, serverDate: string | null, now = Date.now()): number {

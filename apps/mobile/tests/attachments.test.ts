@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PROTOCOL_HEADER, PROTOCOL_ROUTES } from "../../../src/client-protocol/index.ts";
-import { AttachmentDraft, localDeadline, photoName, photoNames, type PickedFile, type PutFile } from "../src/attachments.ts";
+import { AttachmentDraft, convertEach, localDeadline, photoName, photoNames, type PickedFile, type PutFile } from "../src/attachments.ts";
 import { apiClient } from "../src/protocol.ts";
 
 const origin = "https://test.learnharness.example";
@@ -56,6 +56,28 @@ test("the iPhone library keeps real names, with an extension that matches the by
 test("a timestamped name follows the bytes, so a re-encoded WebP is a .jpg", () => {
   const date = new Date(2026, 10, 18, 9, 5, 7);
   assert.deepEqual(photoNames([{ fileName: "21.webp", mimeType: "image/jpeg" }], date, false), ["photo-20261118-090507.jpg"]);
+});
+
+test("one photo the phone can't convert is skipped with a note, and the rest still attach", async () => {
+  const picked = [
+    { uri: "file:///cache/ImagePicker/a.jpg", fileName: "18.jpg", mimeType: "image/jpeg" },
+    { uri: "file:///cache/ImagePicker/b.heic", fileName: "19.heic", mimeType: "image/heic" },
+    { uri: "file:///cache/ImagePicker/c.gif", fileName: "20.gif", mimeType: "image/gif" },
+    { uri: "file:///cache/ImagePicker/d.heic", fileName: null, mimeType: "image/heic" },
+  ];
+  const released: string[] = [];
+  // The 12-bit HEICs fail to decode, as on the Pixel 6a emulator.
+  const { converted, notice } = await convertEach(picked, async ({ uri }) => {
+    if (uri.endsWith(".heic")) throw new Error("Uri lacks 'file' scheme");
+    return uri.replace("ImagePicker", "ImageManipulator").replace(/\.\w+$/, ".jpg");
+  }, (uri) => { released.push(uri); });
+  assert.deepEqual(converted.map(({ uri, fileName }) => [uri, fileName]),
+    [["file:///cache/ImageManipulator/a.jpg", "18.jpg"], ["file:///cache/ImageManipulator/c.jpg", "20.gif"]]);
+  assert.equal(notice, "19.heic couldn't be converted on this phone. Attach it from Files instead.\n" +
+    "A photo couldn't be converted on this phone. Attach it from Files instead.");
+  assert.deepEqual(released, picked.map(({ uri }) => uri), "every original copy is deleted");
+  assert.deepEqual(await convertEach(picked.slice(0, 1), async () => "file:///cache/x.jpg", () => {}),
+    { converted: [{ ...picked[0], uri: "file:///cache/x.jpg" }] }, "no note when everything converts");
 });
 
 test("reads a grant deadline against the server's clock", () => {
