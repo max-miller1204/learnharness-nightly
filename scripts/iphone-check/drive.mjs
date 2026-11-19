@@ -319,14 +319,23 @@ async function main() {
 }
 
 async function phone() {
-	// AXe reads nothing until the booted simulator reports its displays.
-	const deadline = Date.now() + 120_000;
-	while (true) {
-		try { await axe(["displays"]); break; } catch (error) {
-			if (Date.now() > deadline) fail("simulator", `displays never became readable: ${error.stderr || error.message}`);
-			await sleep(2000);
+	// AXe reads nothing until the booted simulator has a screen. A headless
+	// one may never report it; Simulator.app on the same device gives it one.
+	const start = Date.now();
+	let opened = false;
+	for (;;) {
+		try { await describe(); break; } catch (error) {
+			const why = String(error.stderr || error.message).trim().split("\n")[0];
+			if (Date.now() - start > 180_000) fail("simulator", `the accessibility tree never became readable: ${why}`);
+			if (!opened && Date.now() - start > 30_000) {
+				log(`AXe can't read the screen yet (${why}); opening Simulator.app on ${UDID}`);
+				await run("open", ["-a", "Simulator", "--args", "-CurrentDeviceUDID", UDID]);
+				opened = true;
+			}
+			await sleep(3000);
 		}
 	}
+	log(`AXe reads the screen (${screenSize.width}x${screenSize.height} pt)${opened ? " with Simulator.app open" : ""}`);
 	await setPhoneMode("light");
 	const bundled = () => (readFileSync(METRO_LOG, "utf8").match(/iOS Bundled/g) ?? []).length;
 	const before = bundled();
