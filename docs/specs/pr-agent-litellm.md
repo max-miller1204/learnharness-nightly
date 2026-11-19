@@ -23,7 +23,7 @@ Placeholders: `<server>` is the always-on self-host machine, `<tailnet>` its Tai
 - LiteLLM releases: v1.108.11 (LTS line, 2026-11-17), v1.110.0 (2026-11-18). tailscale/github-action v4.4.0. PR-Agent image 0.50.0.
 
 **I could not verify:**
-- The tailnet access rules (need the admin console). If they are Tailscale's default allow-all, a CI node could reach T3 Code (which runs agents), LearnHarness and `<owner devices>`. Safe behavior: no `tag:ci` node joins until the rules below are in place.
+- The tailnet access rules (need the admin console). If they are Tailscale's default allow-all, a CI node could reach the other services on `<server>` (one of them runs agents) and `<owner devices>`. Safe behavior: no `tag:ci` node joins until the rules below are in place.
 - Whether the ChatGPT plan can call `gpt-6.2-sol`, and whether device-code login is enabled for the account.
 - Whether the `chatgpt/` route works on the 1.108 LTS line, whether the bridge passes `reasoning_effort` and accepts `temperature`, and whether the PR-Agent `docker://` container can reach a tailnet address.
 - Whether OpenAI's terms allow this use. The owner accepted that risk.
@@ -158,7 +158,7 @@ LiteLLM admin UI checklist (confirmed): revocation by rotating the admin key; re
 | 2 | PR-Agent's key is limited | LiteLLM API | Same key asks for an OpenRouter model and an admin endpoint | owner device | Both refused |
 | 3 | OpenRouter and Claude Code routes work, and nothing was switched | LiteLLM API; `claude -p` | One OpenRouter request; one `claude -p` run with temporary env pointing at LiteLLM | `<server>` | Both answer; Claude Code's settings files unchanged (diff before/after) |
 | 4 | Survives a restart; memory fits | `<server>` | Restart the containers; measure memory | `<server>` | Back without manual steps; at least 3 GB available |
-| 5 | `tag:ci` reaches only LiteLLM | a real `tag:ci` node from the `pr-agent` environment | Probe LiteLLM's port, T3 Code, LearnHarness, SSH, and `<owner devices>`; separately, owner devices still reach T3 Code and LearnHarness | GitHub Actions | Only LiteLLM connects; owner access unchanged |
+| 5 | `tag:ci` reaches only LiteLLM | a real `tag:ci` node from the `pr-agent` environment | Probe LiteLLM's port, the other services on `<server>` (including SSH), and `<owner devices>`; separately, owner devices still reach the other services on `<server>` | GitHub Actions | Only LiteLLM connects; owner access unchanged |
 | 6 | Policy covers both files | GitHub API | List Actions policies | GitHub | `pr-agent.yml` and `pr-preview-approval.yml` both allowed |
 | 7 | Imports run automatically | a real import (upstream #757 is open) | Run Import upstream PR | GitHub | Review and suggestions posted; log shows the tailnet LiteLLM URL and `gpt-6.2-sol` |
 | 8 | Owner PRs and the Sync PR skip; comments work | an owner test PR; the next Sync PR update | Open the PR, then comment `/review` | GitHub | PR open: skipped; comment: one run; Sync PR: skipped |
