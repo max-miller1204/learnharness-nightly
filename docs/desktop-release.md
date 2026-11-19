@@ -62,7 +62,7 @@ For this fork, use the [nightly release workflow and artifact-only rehearsal](sp
 [Desktop release](../.github/workflows/release.yml) has two modes:
 
 - **Manual dispatch:** unsigned rehearsal installers retained as workflow artifacts for seven days. No signing secrets, release creation, or publication. macOS notarization is skipped; these are not production installers.
-- **Matching `v<package.json version>` tag:** gates, one shared draft-preparation job, three OS packaging/upload jobs, then read-only draft verification. Published/ambiguous existing releases fail preparation; same-ref runs serialize rather than cancelling uploads. macOS must sign/notarize. **The workflow never publishes the draft.**
+- **Matching `v<package.json version>` tag:** gates, one shared draft-preparation job, per-OS packaging/upload jobs, then read-only draft verification. Published/ambiguous existing releases fail preparation; same-ref runs serialize rather than cancelling uploads. macOS must sign/notarize. **The workflow never publishes the draft.**
 
 ### Draft verification
 

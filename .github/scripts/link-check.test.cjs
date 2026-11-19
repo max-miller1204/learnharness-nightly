@@ -67,6 +67,16 @@ test("a missing docs/ path named in a code comment fails", () => {
 	assert.deepEqual(problems, [{ file: "src/app.ts", line: 1, target: "docs/archive/split.md" }]);
 });
 
+test("a footnote definition is not a link", () => {
+	assert.deepEqual(checkFixture({ ...clean, "docs/guide.md": "Text.[^1]\n\n[^1]: A footnote with words.\n" }), []);
+	assert.deepEqual(checkFixture({ ...clean, "docs/guide.md": "[^1]: A footnote.\n[ref]: gone.md\n" }), [{ file: "docs/guide.md", line: 2, target: "gone.md" }]);
+});
+
+test("a glob or template docs/ path is skipped, a plain one next to it is still checked", () => {
+	const problems = checkFixture({ ...clean, "src/app.ts": "// docs/plugin-*.md, docs/specs/${name}.md, docs/{a,b}.md\n// docs/gone.md\n" });
+	assert.deepEqual(problems, [{ file: "src/app.ts", line: 2, target: "docs/gone.md" }]);
+});
+
 test("a file whose first line has the file marker is skipped", () => {
 	assert.deepEqual(checkFixture({ ...clean, "src/fixture.ts": "// link-check-ignore-file\nwrite(\"docs/missing.md\");\n" }), []);
 	assert.deepEqual(checkFixture({ ...clean, "src/fixture.ts": "\n// link-check-ignore-file\nwrite(\"docs/missing.md\");\n" }), [{ file: "src/fixture.ts", line: 3, target: "docs/missing.md" }]);

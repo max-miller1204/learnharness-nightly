@@ -12,7 +12,7 @@ const IGNORE_MARKER = "link-check-ignore";
 const IGNORE_FILE_MARKER = "link-check-ignore-file";
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 const INLINE_LINK = /\]\(\s*(<[^>\n]*>|[^\s)]+(?:\([^\s)]*\)[^\s)]*)*)/g;
-const REFERENCE_DEFINITION = /^ {0,3}\[[^\]]+\]:\s*(<[^>\n]*>|\S+)/;
+const REFERENCE_DEFINITION = /^ {0,3}\[(?!\^)[^\]]+\]:\s*(<[^>\n]*>|\S+)/;
 const INLINE_CODE = /(`+)[^`][\s\S]*?\1/g;
 const DOCS_PATH = /(?<![\w.\/@$-])docs\/[\w.\/@-]*/g;
 
@@ -41,7 +41,11 @@ function docsPathTargets(text) {
 	const targets = [];
 	text.split("\n").forEach((line, index) => {
 		if (line.includes(IGNORE_MARKER)) return;
-		for (const match of line.matchAll(DOCS_PATH)) targets.push({ line: index + 1, target: "/" + match[0].replace(/[./-]+$/, "") });
+		for (const match of line.matchAll(DOCS_PATH)) {
+			// A glob or template path (docs/plugin-*.md, docs/specs/${x}.md) names no single file.
+			if ("*{$".includes(line[match.index + match[0].length] ?? " ")) continue;
+			targets.push({ line: index + 1, target: "/" + match[0].replace(/[./-]+$/, "") });
+		}
 	});
 	return targets;
 }

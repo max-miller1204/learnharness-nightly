@@ -83,7 +83,7 @@ The owner's rule, in their words: "any doc that will easily go stale, please del
 1. Three built or parked roadmap entries held an owner decision their spec lacked. Each moved into its spec as one line (added, or appended to an existing line): item 20's "Rejected for now" CLI list into `docs/specs/gemini-cli-provider.md`, item 1's "Mac checks run over the linked MacBook" into `docs/specs/electron-nightlies.md`, and item 26's 192 MB converter heap limit into `docs/specs/extract-more-types.md` (decision 10).
 2. `docs/flashcards-implementation-plan.md` is deleted: a plan for work that is already built. The two `docs/flashcards-vision.md` sentences that deferred details to an implementation plan go with it.
 3. `apps/mobile/README.md` loses its "Proposal for owner approval" paragraph (the unapproved TestFlight cadence), which the mobile auto-updates spec will decide. One line keeps the lasting fact that a TestFlight build stops opening 90 days after upload, with its source links.
-4. Item 27's "**Decided.** Nothing yet." is deleted: not a decision, a point-in-time placeholder. Every other Decided note stays word for word.
+4. Item 27's "**Decided.** Nothing yet." is deleted: not a decision, a point-in-time placeholder. Every other Decided note stays word for word, except that items 2 and 28 only gain the name and spec link of the item they cite (item 1 and item 13).
 
 **Generated docs.** `docs/plugin-api/` is never hand-edited. After editing source comments, regenerate it with its script and commit the result.
 

@@ -108,7 +108,7 @@ and copies required assets/notices. Build cleanup refuses symlinked `dist/` and
 misplaced `dist/data/` and preserves sibling `data/`. It does not start/build the host,
 install/enable a plugin, call a model or update Core code. For a newly identified
 Community fork or UI Showcase, follow the [Community installation guide](plugin-authoring.md#package-and-installation);
-do not install the four reserved-ID references.
+do not install the reserved-ID references.
 
 ## Reading routes
 
@@ -227,7 +227,7 @@ transparent appearance and the distinction between static drawing and simulation
 Rendering makes no model request. TeX Worker bounds and SVG sanitization are local
 feature safeguards, not a sandbox for arbitrary plugin JavaScript.
 
-### UI Showcase: all 15 UI methods
+### UI Showcase: all UI methods
 
 The [README gallery map](../plugins/ui-showcase/README.md#gallery-map) groups all methods
 into families. Start in [`src/gallery.ts`](../plugins/ui-showcase/src/gallery.ts):
