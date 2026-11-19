@@ -2,13 +2,15 @@
  * Opening a session waits out its first layout. Math blocks are web views
  * that grow as they load, so the transcript keeps getting taller for a
  * moment. Start this from the first real layout of the transcript. `settle`
- * runs once the content has not changed for `quietMs` and nothing is still
- * `loading` (math views that have not reported their height), or after
- * `maxMs` at the latest, so the screen can stay hidden while it pins to the
- * bottom and then appear already showing the latest message (the web's
- * instant initial scroll).
+ * runs once the content has not changed for `quietMs`, nothing is still
+ * `loading` (math views that have not reported their height) and the view is
+ * `ready` (the phone reports it at the bottom), or after `maxMs` at the
+ * latest, so the screen can stay hidden while it pins to the bottom and then
+ * appear already showing the latest message (the web's instant initial
+ * scroll). A view that is not ready yet is expected to call `changed` again,
+ * for example from the scroll event of another jump to the end.
  */
-export function openSettle(settle: () => void, { quietMs = 250, maxMs = 2000, loading = (): boolean => false } = {}) {
+export function openSettle(settle: () => void, { quietMs = 250, maxMs = 2000, loading = (): boolean => false, ready = (): boolean => true } = {}) {
   let done = false;
   let quiet: ReturnType<typeof setTimeout> | undefined;
   const stop = () => {
@@ -26,7 +28,7 @@ export function openSettle(settle: () => void, { quietMs = 250, maxMs = 2000, lo
   const changed = () => {
     if (done) return;
     clearTimeout(quiet);
-    quiet = setTimeout(() => { if (!loading()) finish(); }, quietMs);
+    quiet = setTimeout(() => { if (!loading() && ready()) finish(); }, quietMs);
   };
   changed();
   return { changed, cancel: stop };
@@ -52,6 +54,12 @@ export function pendingCounter(idle: () => void) {
       };
     },
   };
+}
+
+/** Whether the phone's last reported scroll position, content height and
+ *  visible height put the view at the bottom. Nothing measured yet is not. */
+export function atBottom({ content, offset, viewport }: { content: number; offset: number; viewport: number }, tolerance = 2) {
+  return content > 0 && viewport > 0 && content - offset - viewport <= tolerance;
 }
 
 /**

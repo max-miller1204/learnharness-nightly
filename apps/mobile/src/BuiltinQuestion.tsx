@@ -77,7 +77,7 @@ function Option({ label, multi, selected, disabled, onPress }: {
       {/* The math view would take the tap, so the whole row stays the button. */}
       {/* Screen readers read the row's label; the text or math view inside is not a stop of its own. */}
       <View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ flex: 1 }}>
-        <Markdown text={label} small />
+        <Markdown text={label} small hidden />
       </View>
     </Pressable>
   );

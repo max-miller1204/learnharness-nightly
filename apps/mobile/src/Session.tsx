@@ -13,7 +13,7 @@ import { Transcript } from "./Transcript";
 import { Button, Label, Notice } from "./ui";
 import { fonts, radius, space, useTheme } from "./theme";
 import { revealOffset } from "./reveal";
-import { followsBottom, openSettle, pendingCounter } from "./open-settle";
+import { atBottom, followsBottom, openSettle, pendingCounter } from "./open-settle";
 import { MathLoading } from "./Markdown";
 import { checkNeedsReveal, livePlan, PHASE_LABEL, sessionPhase, skipAnswer, skipParked } from "./lesson";
 import { PlanScreen } from "./PlanScreen";
@@ -56,6 +56,8 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const nearBottom = useRef(true);
   const userScrolling = useRef(false);
   const lastOffset = useRef(0);
+  // The transcript's size as the phone last reported it, so the open reveal can check it is at the bottom.
+  const measured = useRef({ content: 0, viewport: 0 });
   // On open the transcript stays hidden until its first layout settles at the bottom.
   const [opened, setOpened] = useState(false);
   const settling = useRef<ReturnType<typeof openSettle> | null>(null);
@@ -99,12 +101,19 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   function laidOut() {
     if (!settleStarted.current) {
       settleStarted.current = true;
+      // Reveal only once the phone reports the view at the bottom: a jump to the end
+      // can land after the reveal, or against a height that is about to change.
+      const ready = () => {
+        if (atBottom({ ...measured.current, offset: lastOffset.current })) return true;
+        scroller.current?.scrollToEnd({ animated: false });
+        return false;
+      };
       settling.current = openSettle(() => {
         settling.current = null;
         scroller.current?.scrollToEnd({ animated: false });
         nearBottom.current = true;
         setOpened(true);
-      }, { loading: () => math.count > 0 });
+      }, { loading: () => math.count > 0, ready });
     }
     pin();
   }
@@ -113,7 +122,11 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   function scrolled({ contentOffset, layoutMeasurement, contentSize }: NativeScrollEvent, dragging: boolean) {
     const previousOffset = lastOffset.current;
     lastOffset.current = contentOffset.y;
-    if (settling.current) return;
+    measured.current = { content: contentSize.height, viewport: layoutMeasurement.height };
+    if (settling.current) {
+      settling.current.changed();
+      return;
+    }
     const distance = contentSize.height - contentOffset.y - layoutMeasurement.height;
     nearBottom.current = followsBottom(nearBottom.current, { distance, offset: contentOffset.y, previousOffset, dragging });
   }
@@ -225,7 +238,8 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
       )}
       <ScrollView ref={scroller} style={{ flex: 1, opacity: hidden ? 0 : 1 }} contentContainerStyle={[s.section, { gap: space.lg }]}
         pointerEvents={hidden ? "none" : "auto"} accessibilityElementsHidden={hidden} importantForAccessibility={hidden ? "no-hide-descendants" : "auto"}
-        keyboardShouldPersistTaps="handled" scrollEventThrottle={100} onLayout={pin} onContentSizeChange={pin}
+        keyboardShouldPersistTaps="handled" scrollEventThrottle={100} onLayout={({ nativeEvent }) => { measured.current.viewport = nativeEvent.layout.height; pin(); }}
+        onContentSizeChange={(_width, height) => { measured.current.content = height; pin(); }}
         onScrollBeginDrag={() => { userScrolling.current = true; }} onMomentumScrollBegin={() => { userScrolling.current = true; }}
         // The last scroll event of a fling can be dropped, so the ends check again.
         onScrollEndDrag={({ nativeEvent }) => { scrolled(nativeEvent, true); userScrolling.current = false; }}

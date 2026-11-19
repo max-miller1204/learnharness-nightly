@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { followsBottom, openSettle, pendingCounter } from "../src/open-settle.ts";
+import { atBottom, followsBottom, openSettle, pendingCounter } from "../src/open-settle.ts";
 
 test("settles once the content stops growing", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -103,4 +103,35 @@ test("a view that goes away before reporting stops counting", () => {
   unmount();
   assert.equal(counter.count, 0);
   assert.equal(idle, 1);
+});
+
+test("waits until the view is at the bottom before settling", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let settled = 0;
+  let bottom = false;
+  const settler = openSettle(() => settled++, { quietMs: 250, maxMs: 2000, ready: () => bottom });
+  t.mock.timers.tick(500);
+  assert.equal(settled, 0); // quiet, but the jump to the end has not landed
+  bottom = true;
+  settler.changed(); // the scroll event of the jump arrived
+  t.mock.timers.tick(250);
+  assert.equal(settled, 1);
+});
+
+test("a view that never reaches the bottom still settles at the cap", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let settled = 0;
+  openSettle(() => settled++, { quietMs: 250, maxMs: 2000, ready: () => false });
+  t.mock.timers.tick(1999);
+  assert.equal(settled, 0);
+  t.mock.timers.tick(1);
+  assert.equal(settled, 1);
+});
+
+test("at the bottom means the reported position reaches the reported end", () => {
+  assert.equal(atBottom({ content: 5000, offset: 4200, viewport: 800 }), true);
+  assert.equal(atBottom({ content: 5000, offset: 4199, viewport: 800 }), true); // rounding
+  assert.equal(atBottom({ content: 5000, offset: 900, viewport: 800 }), false); // turn 10 of 64
+  assert.equal(atBottom({ content: 400, offset: 0, viewport: 800 }), true); // shorter than the screen
+  assert.equal(atBottom({ content: 0, offset: 0, viewport: 0 }), false); // nothing measured yet
 });

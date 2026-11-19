@@ -21,14 +21,15 @@ export function confirmExternalLink(value: string) {
  *  wait for them (open-settle.ts pendingCounter). */
 export const MathLoading = createContext<(() => () => void) | null>(null);
 
-export function Markdown({ text, small }: { text: string; small?: boolean }) {
+/** `hidden` keeps screen readers out of the text, for a label its parent already reads (a quiz choice row). */
+export function Markdown({ text, small, hidden }: { text: string; small?: boolean; hidden?: boolean }) {
   const parsed = useMemo(() => parseMarkdown(text), [text]);
   if (!parsed.tokens.length) return null;
   if (!parsed.hasMath) return <NativeMarkdown tokens={parsed.tokens} openLink={confirmExternalLink} small={small} />;
-  return <MathMarkdown parsed={parsed} small={small} />;
+  return <MathMarkdown parsed={parsed} small={small} hidden={hidden} />;
 }
 
-function MathMarkdown({ parsed, small }: { parsed: ReturnType<typeof parseMarkdown>; small?: boolean }) {
+function MathMarkdown({ parsed, small, hidden }: { parsed: ReturnType<typeof parseMarkdown>; small?: boolean; hidden?: boolean }) {
   const { c } = useTheme();
   const { fontScale } = useWindowDimensions();
   const [height, setHeight] = useState(26);
@@ -63,7 +64,7 @@ function MathMarkdown({ parsed, small }: { parsed: ReturnType<typeof parseMarkdo
         blockquote { margin-inline:0; padding-inline-start:12px; border-inline-start:3px solid ${c.rail}; }
         table { border-collapse:collapse; border:1px solid ${c.border}; }
         td,th { padding:4px 8px; border:1px solid ${c.border}; }
-      </style></head><body><div id="content">${renderMarkdown(parsed)}</div>
+      </style></head><body${hidden ? ' aria-hidden="true"' : ""}><div id="content">${renderMarkdown(parsed)}</div>
       <script nonce="lh-size">
         const content = document.getElementById('content');
         function resize() { ReactNativeWebView.postMessage(String(Math.ceil(content.getBoundingClientRect().height))); }
@@ -79,12 +80,14 @@ function MathMarkdown({ parsed, small }: { parsed: ReturnType<typeof parseMarkdo
         window.addEventListener('load', resize);
         new ResizeObserver(resize).observe(content);
       </script></body></html>`,
-  }), [c, font, parsed]);
+  }), [c, font, hidden, parsed]);
   if (failed) return <NativeMarkdown tokens={parsed.tokens} openLink={confirmExternalLink} small={small} />;
 
   // The local document reports its size and link taps. It cannot navigate or load external content.
   return (
     <WebView source={source} originWhitelist={["*"]} onShouldStartLoadWithRequest={(request) => request.url === "about:blank"}
+      // An Android web view is its own accessibility node; a parent that hides its children doesn't reach it.
+      {...(hidden ? { importantForAccessibility: "no-hide-descendants" as const, accessibilityElementsHidden: true, focusable: false } : {})}
       scrollEnabled={false} allowsLinkPreview={false} allowFileAccess={false} setSupportMultipleWindows={false} domStorageEnabled={false}
       style={{ backgroundColor: "transparent", height }} containerStyle={{ flex: 0, height }}
       onError={() => { setFailed(true); reported(); }} onRenderProcessGone={() => { setFailed(true); reported(); }}
