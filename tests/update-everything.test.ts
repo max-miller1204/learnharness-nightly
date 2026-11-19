@@ -38,6 +38,10 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 		running: server, committed: true, instance: "old", status: "up-to-date", notice: null as unknown, message: null as string | null,
 		health: server as string | null, installReply: null as Reply | null, onInstall: () => {}, items: [{ kind: "turn" }, { kind: "job" }],
 		down: false, proxy502: false, installFails: false, tick: undefined as (() => void) | undefined,
+		pinned: null as unknown, selected: ORIGIN,
+		// POSTs that get no answer: the transport gives up after its 15 s timeout (requestServer's),
+		// and `startsAnyway` says whether the server got it before the answer was lost.
+		postTimeouts: 0, startsAnyway: true,
 	};
 	let finished: () => void = () => {};
 	const done = new Promise<void>((resolve) => { finished = resolve; });
@@ -51,22 +55,29 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 			downloadPinned: async (v: string) => { if (downloadFails) throw new Error("sha512 checksum mismatch"); log.push(`download ${v}`); },
 			installPinned: (v: string) => { if (remote.installFails) throw new Error("not ready"); log.push(`install ${v}`); finished(); },
 		},
-		selection: () => ({ origin: ORIGIN, token: "bearer" }),
+		selection: () => ({ origin: remote.selected, token: "bearer" }),
 		request: async (origin: string, pathname: string, options: { token?: string; method?: string; body?: unknown }) => {
 			assert.equal(origin, ORIGIN, "only the selected server");
 			requests.push({ path: pathname, ...options });
 			if (pathname === "/api/updates/install-version") {
-				const reply = remote.installReply ?? { body: { instance: remote.instance, runningVersion: remote.running } };
+				if (remote.postTimeouts > 0) {
+					remote.postTimeouts--;
+					if (remote.startsAnyway) { remote.onInstall(); remote.onInstall = () => {}; }
+					clock += 15_000;
+					throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+				}
+				const reply = remote.installReply ?? { status: 202, body: { instance: remote.instance, runningVersion: remote.running } };
 				if (reply instanceof Error) throw reply;
 				remote.onInstall();
-				return Response.json(reply.body, { status: reply.status ?? 200 });
+				remote.onInstall = () => {}; // asking again is harmless, as on the server
+				return Response.json(reply.body, { status: reply.status ?? 202 });
 			}
 			if (remote.down) throw new Error("ECONNREFUSED");
 			// Tailscale Serve (or any HTTPS proxy) answers 502 while the server is down.
 			if (remote.proxy502) return new Response("Bad Gateway", { status: 502 });
 			if (pathname === "/api/health") return Response.json({ ok: true, version: remote.health });
 			if (pathname === "/api/updates/running") return Response.json({ items: remote.items });
-			return Response.json({ runningVersion: remote.running, committed: remote.committed, instance: remote.instance, status: remote.status, notice: remote.notice, message: remote.message });
+			return Response.json({ runningVersion: remote.running, committed: remote.committed, instance: remote.instance, status: remote.status, notice: remote.notice, message: remote.message, pinned: remote.pinned });
 		},
 		confirm: async (prompt: Prompt) => {
 			prompts.push(prompt);
@@ -113,7 +124,7 @@ test("the happy path: pin, confirm, download, server to exactly X, wait for the 
 	await f.done;
 	assert.deepEqual(f.log, ["pin", `download ${V72}`, `install ${V72}`], "downloaded before the server was asked, installed only the pinned version");
 	const install = f.requests.find((request) => request.path === "/api/updates/install-version")!;
-	assert.deepEqual(install, { path: "/api/updates/install-version", token: "bearer", method: "POST", body: { version: V72 }, timeoutMs: HANDOFF_TIMEOUT_MS }, "the server answers after downloading: no 15 s cut-off");
+	assert.deepEqual(install, { path: "/api/updates/install-version", token: "bearer", method: "POST", body: { version: V72 } }, "the server answers at once and stages in the background, so the transport's own timeout is enough");
 	assert.deepEqual(f.failures, [], "the proxy's 502 and a refused connection both mean: not back yet");
 	const askedAt = f.requests.indexOf(install);
 	assert.ok(f.requests.slice(askedAt).some((request) => request.path === "/api/health"), "health is checked");
@@ -123,7 +134,7 @@ test("the happy path: pin, confirm, download, server to exactly X, wait for the 
 	assert.equal(f.prompts[1]!.detail, "LearnHarness restarts in 5 seconds to finish updating.");
 	assert.deepEqual(f.prompts[1]!.buttons, ["Restart now", "Later"]);
 	assert.ok(f.prompts[1]!.signal, "the countdown closes the dialog by itself");
-	assert.deepEqual(f.results, [{ savedAt: (f.results[0] as { savedAt: number }).savedAt, server: ORIGIN, from: V71, target: V72 }], "saved before installing");
+	assert.deepEqual(f.results, [{ savedAt: (f.results[0] as { savedAt: number }).savedAt, server: ORIGIN, updated: ORIGIN, from: V71, target: V72 }], "saved before installing");
 });
 
 test("Cancel changes nothing, and install() returns once the dialog is answered", async () => {
@@ -188,7 +199,6 @@ test("refusals and old servers stop with a plain reason and leave the app alone"
 	for (const [reply, expected] of [
 		[{ status: 409, body: { error: "This server isn't run by the lh launcher, so it can't update itself." } }, /max-desktop can’t update: This server isn't run by the lh launcher/],
 		[{ status: 404, body: {} }, /without Update everything\. Update it from its own Settings first/],
-		[new Error("offline"), /Couldn’t reach max-desktop\. Nothing was changed\./],
 	] as const) {
 		const f = fixture();
 		f.remote.installReply = reply;
@@ -200,9 +210,66 @@ test("refusals and old servers stop with a plain reason and leave the app alone"
 	}
 });
 
+test("a request with no answer may have started: the app keeps following the server and never says nothing changed", async () => {
+	const f = fixture();
+	f.remote.postTimeouts = 2;
+	f.remote.onInstall = () => { f.remote.running = V72; f.remote.health = V72; f.remote.instance = "new"; };
+	await f.ue.install();
+	await f.done;
+	assert.deepEqual(f.failures, []);
+	assert.deepEqual(f.log, ["pin", `download ${V72}`, `install ${V72}`], "the server updated under a lost answer, and the run followed it");
+
+	const resent = fixture();
+	resent.remote.postTimeouts = 1;
+	resent.remote.startsAnyway = false;
+	resent.remote.onInstall = () => { resent.remote.running = V72; resent.remote.health = V72; resent.remote.instance = "new"; };
+	await resent.ue.install();
+	await resent.done;
+	assert.equal(resent.requests.filter((request) => request.path === "/api/updates/install-version").length, 2, "a request that never arrived is sent again on the next poll");
+	assert.equal(resent.log.at(-1), `install ${V72}`);
+
+	const lost = fixture();
+	lost.remote.postTimeouts = Number.POSITIVE_INFINITY;
+	lost.remote.startsAnyway = false;
+	await lost.ue.install();
+	await lost.done;
+	assert.equal(lost.failures[0], "Couldn’t reach max-desktop for 32 minutes. Your app wasn’t changed.");
+	assert.doesNotMatch(lost.failures[0]!, /Nothing was changed/, "the server may have got it");
+	assert.equal(lost.log.some((entry) => entry.startsWith("install")), false);
+
+	const proxy = fixture();
+	proxy.remote.installReply = { status: 502, body: {} };
+	proxy.remote.tick = () => { proxy.remote.installReply = null; };
+	proxy.remote.onInstall = () => { proxy.remote.running = V72; proxy.remote.health = V72; proxy.remote.instance = "new"; };
+	await proxy.ue.install();
+	await proxy.done;
+	assert.deepEqual(proxy.failures, [], "a 502 from the proxy is asked again, not a refusal");
+	assert.equal(proxy.log.at(-1), `install ${V72}`);
+});
+
+test("after a switch to another server the relaunch reopens the open one, and the notice names the updated one", async () => {
+	const B = "https://two.example.test";
+	const f = fixture({ answers: [0, "wait"] });
+	f.remote.onInstall = () => { f.remote.running = V72; f.remote.health = V72; f.remote.instance = "new"; f.remote.selected = B; };
+	await f.ue.install();
+	await f.done;
+	assert.equal((f.results[0] as { server: string }).server, B);
+	assert.equal((f.results[0] as { updated: string }).updated, ORIGIN);
+	const relaunch = createUpdateEverything({ appVersion: V71, takeResult: () => f.results[0], now: () => (f.results[0] as { savedAt: number }).savedAt, updater: { state: () => ({}) } });
+	assert.deepEqual(relaunch.takeLaunch(), { server: B, notice: {
+		message: "The app update didn’t finish.",
+		detail: `LearnHarness is still on ${V71} and max-desktop is on ${V72}. Use Update everything to try again.`,
+	} });
+});
+
 test("a launcher rejection, a rollback and the 32-minute limit fail the server step", async () => {
 	const rejected = fixture();
-	rejected.remote.onInstall = () => { rejected.remote.status = "error"; rejected.remote.message = "Not enough disk space to back up your data."; };
+	rejected.remote.onInstall = () => {
+		// An older error state alone is not this run's failure; `pinned` is.
+		rejected.remote.status = "error";
+		rejected.remote.message = "Couldn’t check for updates.";
+		rejected.remote.tick = () => { rejected.remote.pinned = { version: V72, error: "Not enough disk space to back up your data." }; };
+	};
 	await rejected.ue.install();
 	await rejected.done;
 	assert.equal(rejected.failures[0], "max-desktop couldn’t start the update: Not enough disk space to back up your data. Your app wasn’t changed.");

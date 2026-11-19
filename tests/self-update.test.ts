@@ -68,6 +68,11 @@ function fake(overrides: Partial<SelfUpdaterDeps> = {}) {
 }
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+/** The refusal, or how staging ended. */
+const pin = async (u: ReturnType<typeof createSelfUpdater>, version: string) => {
+	const started = u.startInstallVersion(version);
+	return started.refused ?? await started.done;
+};
 
 describe("self-hosted updater", () => {
 	it("is disabled and inert outside self-hosting", async () => {
@@ -224,46 +229,46 @@ describe("self-hosted updater", () => {
 		assert.deepEqual(off.flags.staged, [], "the toggle still gates it");
 	});
 
-	it("installVersion stages exactly the pinned version from its own release, never the newest", async () => {
+	it("startInstallVersion stages exactly the pinned version from its own release, never the newest", async () => {
 		const f = fake();
 		f.flags.auto = false;
 		f.flags.latest = NEWER;
 		const u = createSelfUpdater(f.deps);
 		u.start();
-		assert.equal(await u.installVersion(NEXT), null);
+		assert.equal(await pin(u, NEXT), null);
 		assert.deepEqual(f.flags.pinned, [NEXT], "read from v<NEXT>/latest.json, not the moving pointer");
 		assert.deepEqual(f.flags.staged, [NEXT]);
 		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }]);
-		assert.equal(await u.installVersion(NEXT), null, "a repeat of the same request is fine");
-		assert.match(await u.installVersion(NEWER) ?? "", /already starting/);
+		assert.equal(await pin(u, NEXT), null, "a repeat of the same request is fine");
+		assert.match(await pin(u, NEWER) ?? "", /already starting/);
 		await u.check();
 		assert.deepEqual(f.flags.staged, [NEXT], "no background check after the request");
 	});
 
-	it("installVersion refuses older, same-as-bad, malformed and non-launcher requests, and reports staging failures", async () => {
+	it("startInstallVersion refuses older, same-as-bad, malformed and non-launcher requests, and reports staging failures", async () => {
 		const f = fake();
 		const u = createSelfUpdater(f.deps);
-		assert.equal(await u.installVersion(CURRENT), null, "already on it: nothing to do");
-		assert.match(await u.installVersion(OLDER) ?? "", /already runs .* newer than/);
-		assert.match(await u.installVersion("latest") ?? "", /not an exact version/);
+		assert.equal(await pin(u, CURRENT), null, "already on it: nothing to do");
+		assert.match(await pin(u, OLDER) ?? "", /already runs .* newer than/);
+		assert.match(await pin(u, "latest") ?? "", /not an exact version/);
 		f.flags.state = { protocol: 1, activeVersion: CURRENT, badVersions: [NEXT] };
-		assert.match(await u.installVersion(NEXT) ?? "", /failed to start on this server earlier/);
+		assert.match(await pin(u, NEXT) ?? "", /failed to start on this server earlier/);
 		f.flags.state = undefined;
 		f.flags.fetchFails = true;
-		assert.equal(await u.installVersion(NEXT), "offline");
+		assert.equal(await pin(u, NEXT), "offline");
 		assert.equal(u.state().status, "error");
 		assert.deepEqual(f.sent, []);
 		const off = createSelfUpdater(fake({ enabled: false }).deps);
-		assert.match(await off.installVersion(NEXT) ?? "", /isn't run by the lh launcher/);
+		assert.match(await pin(off, NEXT) ?? "", /isn't run by the lh launcher/);
 	});
 
-	it("installVersion waits for a check in flight and holds the slot while staging", async () => {
+	it("startInstallVersion waits for a check in flight and holds the slot while staging", async () => {
 		const f = fake();
 		let release: () => void = () => {};
 		f.deps.stage = (fd) => new Promise<void>((resolve) => { release = () => { f.flags.staged.push(fd.version); resolve(); }; });
 		const u = createSelfUpdater(f.deps);
 		const checking = u.check();
-		const pinned = u.installVersion(NEXT);
+		const pinned = pin(u, NEXT);
 		await settle();
 		assert.equal(u.busy(), true);
 		release();
@@ -275,6 +280,36 @@ describe("self-hosted updater", () => {
 		await settle();
 		assert.equal(u.busy(), false);
 		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }]);
+	});
+
+	it("answers at once and follows the staging in `pinned`", async () => {
+		const f = fake();
+		f.flags.auto = false;
+		let release: () => void = () => {};
+		f.deps.stage = () => new Promise<void>((resolve) => { release = resolve; });
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		const started = u.startInstallVersion(NEXT);
+		assert.equal(started.refused, null, "the route can answer before the download");
+		assert.deepEqual(u.state().pinned, { version: NEXT, error: null });
+		assert.equal(u.startInstallVersion(NEXT).refused, null, "the same request again is harmless");
+		assert.match(u.startInstallVersion(NEWER).refused ?? "", /already starting/);
+		await settle();
+		release();
+		assert.equal(await started.done, null);
+		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }]);
+		f.toParent({ type: "update-rejected", reason: "Not enough disk space" });
+		assert.deepEqual(u.state().pinned, { version: NEXT, error: "Not enough disk space" }, "the launcher's refusal reaches the desktop");
+		assert.equal(publicUpdateState(u.state()).pinned?.error, "The update failed.", "no details without a session");
+
+		const g = fake();
+		g.flags.fetchFails = true;
+		const v = createSelfUpdater(g.deps);
+		assert.equal(await pin(v, NEXT), "offline");
+		assert.deepEqual(v.state().pinned, { version: NEXT, error: "offline" });
+		g.flags.fetchFails = false;
+		assert.equal(await pin(v, NEXT), null, "after a failure the same request retries");
+		assert.deepEqual(v.state().pinned, { version: NEXT, error: null });
 	});
 
 	it("is committed unless it is a trial the launcher hasn't committed yet", async () => {

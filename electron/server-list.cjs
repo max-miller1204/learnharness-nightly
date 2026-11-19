@@ -88,6 +88,8 @@ async function createServerList({
 		}
 	}
 	function destroyContent() {
+		// A switch away from the covered window ends its cover: rechecks resume for the next one.
+		if (updating && updating.win === window) updating = null;
 		login?.abort();
 		login = null;
 		active = null;
@@ -360,15 +362,17 @@ async function createServerList({
 		/** The run ended without a restart: show its problem in the list (kind "retry" or "pair"),
 		 *  or reopen the server's new page after Later. */
 		endUpdate(origin, problem) {
-			const covered = updating;
+			// Only the covered window of the server the run moved: after a switch, the
+			// current window belongs to another server and stays.
+			const covered = updating && updating.win === window && !window.isDestroyed() ? updating : null;
 			updating = null;
 			if (problem) {
 				fail(origin, new ServerProblem(problem.kind, problem.message));
-				destroyContent();
+				if (covered) destroyContent();
 				publish();
 				return;
 			}
-			if (covered && covered.win === window) return connect(origin, undefined, { quiet: true });
+			if (covered) return connect(origin, undefined, { quiet: true });
 		},
 		reopen() {
 			if (ghosting) {

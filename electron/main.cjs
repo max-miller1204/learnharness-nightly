@@ -35,6 +35,7 @@ const { setTraceSink } = require("./first-frame.cjs");
 const { createServerList } = require("./server-list.cjs");
 const { createUpdateEverything } = require("./update-everything.cjs");
 const { registerDesktopUpdateIPC } = require("./update-everything-ipc.cjs");
+const { createUpdateActions } = require("./update-actions.cjs");
 const { requestServer } = require("./remote-server.cjs");
 const { openWebSubscriptionBrowser } = require("./web-subscription-browser.cjs");
 const { randomBytes } = require("node:crypto");
@@ -572,7 +573,7 @@ function checkForUpdates({ manual = false } = {}) {
 
 /** Download the offered version (the user clicked Download). */
 function downloadUpdateNow() {
-	if (!autoUpdater || updateState.status !== "available") return;
+	if (!autoUpdater || updateState.status !== "available" || updateEverything?.running()) return;
 	reportUpdateStatus("downloading", updateState.version);
 	autoUpdater.downloadUpdate().catch((err) => {
 		log(`update download failed: ${err?.message ?? err}`);
@@ -586,7 +587,8 @@ const INSTALL_QUIT_GRACE_MS = 10 * 1000;
 
 /** The user confirmed Install: re-check, take a newer build if one appeared, then quit and install. */
 async function installUpdateNow() {
-	if (!autoUpdater || installing || updateState.status !== "downloaded") return;
+	// An Update everything run owns its pinned install (electron/update-everything.cjs).
+	if (!autoUpdater || installing || updateState.status !== "downloaded" || updateEverything?.running()) return;
 	installing = true;
 	const downloaded = updateState.version;
 	let offered = null;
@@ -650,35 +652,31 @@ function quitAndInstallNow() {
 /* ── Update everything (roadmap item 23 PR 2, electron/update-everything.cjs) ──
  * One pinned version for the whole run: never a newer one picked at install. */
 
-/** Re-check the feed; the newest offered version newer than this app, or null. */
-async function pinUpdate() {
-	if (!autoUpdater) return null;
-	const result = await autoUpdater.checkForUpdates();
-	const info = result?.updateInfo;
-	if (typeof info?.version !== "string" || releaseNotes.compareVersions(info.version, app.getVersion()) <= 0) return null;
-	adoptOfferedNotes(info);
-	return info.version;
-}
-
-/** Make sure exactly `target` is downloaded (electron-updater checks its SHA-512). */
-async function downloadPinnedUpdate(target) {
-	if (!autoUpdater || installing) throw new Error("The updater is busy or unavailable.");
-	// A download of an older offer already under way finishes first; then fetch the pinned one.
-	for (let attempt = 0; attempt < 2; attempt++) {
-		if (updateState.status === "downloaded" && updateState.version === target) return;
-		const downloaded = new Promise((resolve) => autoUpdater.once("update-downloaded", (info) => resolve(info?.version)));
-		await autoUpdater.downloadUpdate();
-		await Promise.race([downloaded, new Promise((resolve) => setTimeout(resolve, 1000))]);
-	}
-	if (updateState.status !== "downloaded" || updateState.version !== target) throw new Error(`Downloaded ${updateState.version}, not the pinned ${target}.`);
-}
-
-/** Quit and install exactly `target`, with no re-check. */
-function installPinnedUpdate(target) {
-	if (!autoUpdater || installing || updateState.status !== "downloaded" || updateState.version !== target) throw new Error(`Version ${target} isn't ready to install.`);
-	installing = true;
-	quitAndInstallNow();
-}
+// The run in progress, for the guards below (set once the server list exists).
+let updateEverything = null;
+const updateActions = createUpdateActions({
+	updater: () => autoUpdater,
+	state: () => updateState,
+	offerAgain: (version) => {
+		updateState = { ...updateState, status: "available" };
+		reportUpdateStatus("available", version);
+	},
+	report: (status) => reportUpdateStatus(status),
+	installing: () => installing,
+	startInstall: () => { installing = true; quitAndInstallNow(); },
+	adoptNotes: (info) => adoptOfferedNotes(info),
+	// Read when used: main.cjs loads before Electron's app is ready (and under test fakes).
+	get appVersion() { return app.getVersion(); },
+	compareVersions: releaseNotes.compareVersions,
+	show: (options) => {
+		const parent = BrowserWindow.getFocusedWindow();
+		return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
+	},
+	download: () => downloadUpdateNow(),
+	install: () => installUpdateNow(),
+	running: () => updateEverything?.running() ?? false,
+	log,
+});
 
 const UPDATE_EVERYTHING_RESULT = () => path.join(app.getPath("userData"), "update-everything.json");
 
@@ -695,9 +693,9 @@ function updateEverythingDeps(list) {
 			state: () => (autoUpdater ? updateState : { ...updateState, status: "disabled" }),
 			check: () => checkForUpdates({ manual: true }),
 			download: downloadUpdateNow,
-			pin: pinUpdate,
-			downloadPinned: downloadPinnedUpdate,
-			installPinned: installPinnedUpdate,
+			pin: updateActions.pin,
+			downloadPinned: updateActions.downloadPinned,
+			installPinned: updateActions.installPinned,
 		},
 		selection: () => list.current(),
 		// No protocol header: the server may come back speaking a newer one.
@@ -720,45 +718,6 @@ function updateEverythingDeps(list) {
 		now: () => Date.now(),
 		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 	};
-}
-
-/** The app menu's check while connected to a server, which has no local Settings
- *  page: T3's native dialogs (DesktopApplicationMenu.ts:71-165 at 3ce2145). */
-async function checkForUpdatesNatively() {
-	const parent = BrowserWindow.getFocusedWindow() ?? undefined;
-	const show = (options) => (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options));
-	if (!autoUpdater) {
-		await show({ type: "info", title: "Updates unavailable", message: "Automatic updates are not available right now.", detail: "Automatic updates are not available in this build.", buttons: ["OK"] });
-		return;
-	}
-	try {
-		await autoUpdater.checkForUpdates();
-	} catch (err) {
-		log(`update check failed: ${err?.message ?? err}`);
-		reportUpdateStatus("error");
-	}
-	const { status, version } = updateState;
-	if (status === "up-to-date") {
-		await show({ type: "info", title: "You're up to date!", message: `LearnHarness ${app.getVersion()} is currently the newest version available.`, buttons: ["OK"] });
-	} else if (status === "available") {
-		const { response } = await show({
-			type: "info", title: "Update available",
-			message: version ? `LearnHarness ${version} is available.` : "A new version of LearnHarness is available.",
-			detail: `You're running LearnHarness ${app.getVersion()}.`, buttons: ["Download", "Later"], defaultId: 0, cancelId: 1,
-		});
-		if (response === 0) downloadUpdateNow();
-	} else if (status === "downloading") {
-		await show({ type: "info", title: "Update downloading", message: version ? `LearnHarness ${version} is already downloading.` : "A new version of LearnHarness is already downloading.", buttons: ["OK"] });
-	} else if (status === "downloaded") {
-		const { response } = await show({
-			type: "info", title: "Update ready",
-			message: version ? `LearnHarness ${version} is ready to install.` : "A new version of LearnHarness is ready to install.",
-			detail: "LearnHarness will restart to install it. Any running tasks will be interrupted.", buttons: ["Restart", "Later"], defaultId: 0, cancelId: 1,
-		});
-		if (response === 0) void installUpdateNow();
-	} else if (status === "error") {
-		await show({ type: "warning", title: "Update check failed", message: "Could not check for updates.", detail: "An unknown error occurred. Please try again later.", buttons: ["OK"] });
-	}
 }
 
 function setupAutoUpdater() {
@@ -863,7 +822,7 @@ function installMenu({ local = true } = {}) {
 				// Manual checks report their result in Settings → General.
 				// Connected to a server there is no local Settings page: native dialogs instead,
 				// also the way out when this app is too old to open the server (owner, 2026-11-18).
-				{ label: "Check for Updates…", click: () => (local ? checkForUpdatesFromMenu() : checkForUpdatesNatively()) },
+				{ label: "Check for Updates…", click: () => (local ? checkForUpdatesFromMenu() : updateActions.checkNatively()) },
 				...(serverList ? [{ label: "Switch server…", click: () => serverList.show() }] : []),
 				{ type: "separator" },
 				{ role: "hide" },
@@ -1091,7 +1050,7 @@ async function main() {
 		});
 		installMenu({ local: false });
 		reopenWindow = () => serverList.reopen();
-		const updateEverything = createUpdateEverything(updateEverythingDeps(serverList));
+		updateEverything = createUpdateEverything(updateEverythingDeps(serverList));
 		registerDesktopUpdateIPC(ipcMain, { current: () => serverList.current(), updateEverything });
 		const relaunch = updateEverything.takeLaunch();
 		await serverList.launch({ server: relaunch?.server });

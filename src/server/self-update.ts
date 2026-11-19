@@ -66,6 +66,8 @@ export interface SelfUpdateState {
 	/** False while this server is the launcher's trial, until the launcher commits it. A trial
 	 *  answers /api/health before that, so Update everything waits for this (roadmap item 23). */
 	committed: boolean;
+	/** The exact version Update everything asked this server for, and why it failed (null while it goes on). */
+	pinned: { version: string; error: string | null } | null;
 	/** Detail for the Settings row (errors, rejections, progress). */
 	message: string | null;
 	/** A rolled-back switch until dismissed. */
@@ -110,7 +112,7 @@ export interface SelfUpdaterDeps {
 
 export function createSelfUpdater(deps: SelfUpdaterDeps) {
 	let state: SelfUpdateState = {
-		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, instance: globalThis.crypto.randomUUID(), runningVersion: deps.currentVersion, committed: !deps.trialUpdateId, message: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
+		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, instance: globalThis.crypto.randomUUID(), runningVersion: deps.currentVersion, committed: !deps.trialUpdateId, pinned: null, message: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
 	};
 	let checkTimer: unknown;
 	let commitCheckTimer: unknown;
@@ -202,7 +204,7 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			set({ message: state.version ? `Installing version ${state.version}…` : "Installing the update…" });
 		} else if (message.type === "update-rejected") {
 			requested = false;
-			set({ status: "error", message: message.reason });
+			set({ status: "error", message: message.reason, ...(state.pinned ? { pinned: { version: state.pinned.version, error: message.reason } } : {}) });
 		} else if (message.type === "committed") {
 			set({ committed: true, status: "up-to-date", version: null, message: `Updated to version ${deps.currentVersion}.`, releaseNotes: [], omittedReleaseCount: 0 });
 			// A trial skips the startup check; once it is the active server it checks like any other
@@ -239,41 +241,48 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			await check();
 			if (state.status === "downloaded" && state.version) requestUpdate(state.version);
 		},
-		/** POST /api/updates/install-version (Update everything, roadmap item 23): stage exactly
-		 *  `target` from its own release, then ask the launcher to switch to it. Never takes a
-		 *  newer version. Resolves with a refusal reason, or null once the launcher was asked. */
-		installVersion(target: string): Promise<string | null> {
+		/** POST /api/updates/install-version (Update everything, roadmap item 23): checks the
+		 *  request at once, then stages exactly `target` from its own release in the background
+		 *  and asks the launcher to switch to it. Never takes a newer version. `refused` is the
+		 *  reason it won't, or null (started, or nothing to do); `done` settles when staging ends
+		 *  (with the failure, or null). The desktop follows `pinned` through GET /api/updates. */
+		startInstallVersion(target: string): { refused: string | null; done: Promise<string | null> } {
+			const answer = (refused: string | null) => ({ refused, done: Promise.resolve(refused) });
+			if (!deps.enabled) return answer("This server isn't run by the lh launcher, so it can't update itself.");
+			if (!isExactVersion(target)) return answer("The requested target is not an exact version.");
+			if (requested) return answer(state.version === target ? null : "Another update is already starting.");
+			if (state.pinned && !state.pinned.error) return answer(state.pinned.version === target ? null : "Another update is already starting.");
+			if (!isExactVersion(deps.currentVersion)) return answer("This server's version is unknown.");
+			const order = compareVersions(target, deps.currentVersion);
+			if (order === 0) return answer(null);
+			if (order < 0) return answer(`This server already runs ${deps.currentVersion}, newer than ${target}.`);
+			const bad = deps.readState()?.badVersions ?? [];
+			if (bad.includes(target)) return answer(`Version ${target} failed to start on this server earlier.`);
+			set({ pinned: { version: target, error: null } });
+			const failed = (message: string) => {
+				set({ status: "error", message, pinned: { version: target, error: message } });
+				return message;
+			};
 			const run = async (): Promise<string | null> => {
-				if (!deps.enabled) return "This server isn't run by the lh launcher, so it can't update itself.";
-				if (!isExactVersion(target)) return "The requested target is not an exact version.";
-				if (requested) return state.version === target ? null : "Another update is already starting.";
-				if (!isExactVersion(deps.currentVersion)) return "This server's version is unknown.";
-				const order = compareVersions(target, deps.currentVersion);
-				if (order === 0) return null;
-				if (order < 0) return `This server already runs ${deps.currentVersion}, newer than ${target}.`;
-				const bad = deps.readState()?.badVersions ?? [];
-				if (bad.includes(target)) return `Version ${target} failed to start on this server earlier.`;
+				if (requested) return state.version === target ? null : failed("Another update is already starting.");
 				try {
 					if (!deps.isInstalled(target)) {
 						const feed = await deps.fetchRelease(target, deps.feedUrl);
-						if (requested) return "Another update is already starting.";
 						set({ status: "downloading", version: target, message: null, ...notesFor(feed) });
 						await deps.stage(feed, bad);
 					}
 				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
-					set({ status: "error", version: null, message });
-					return message;
+					return failed(error instanceof Error ? error.message : String(error));
 				}
-				if (requested) return "Another update is already starting.";
+				if (requested) return state.version === target ? null : failed("Another update is already starting.");
 				requestUpdate(target);
-				return requested ? null : state.message;
+				return requested ? null : failed(state.message ?? "Couldn't reach the launcher.");
 			};
 			// Queue behind a check in flight and hold the slot, so a background check can't stage beside it.
-			const queued = (checking ?? Promise.resolve()).then(run);
-			const slot: Promise<void> = queued.then(() => {}, () => {}).finally(() => { if (checking === slot) checking = undefined; });
+			const done = (checking ?? Promise.resolve()).then(run);
+			const slot: Promise<void> = done.then(() => {}, () => {}).finally(() => { if (checking === slot) checking = undefined; });
 			checking = slot;
-			return queued;
+			return { refused: null, done };
 		},
 		/** POST /api/updates/notice/dismiss: hide the rollback notice on every browser of this server. */
 		dismissNotice(): void {
@@ -415,6 +424,7 @@ export function publicUpdateState(state: SelfUpdateState): SelfUpdateState {
 	return {
 		...state,
 		message: state.status === "error" ? null : state.message,
+		pinned: state.pinned ? { version: state.pinned.version, error: state.pinned.error ? "The update failed." : null } : null,
 		notice: state.notice ? { ...state.notice, text: `Update to version ${state.notice.version} failed to start and was rolled back.` } : null,
 	};
 }

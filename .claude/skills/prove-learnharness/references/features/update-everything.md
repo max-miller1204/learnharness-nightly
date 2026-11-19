@@ -10,6 +10,7 @@ Roadmap item 23 PR 2 (answer key: [docs/specs/desktop-server-list.md](../../../.
 - `confirm`: the native "Update everything?" dialog with the running task count; Cancel changes nothing.
 - `pinned`: the server installs exactly the app's version, even after a newer one is published mid-run.
 - `commit`: the app waits for `committed: true` on `GET /api/updates`, not health alone.
+- `answer`: the route answers 202 at once; `pinned` follows the staging. Drop the POST's answer (a proxy that closes the connection after forwarding it): the app keeps following the server.
 - `failures`: refused (409), old server (404), rollback, 32-minute timeout, failed app download; the app stays on its version.
 - `later`: Later reopens the updated server; the next click only restarts the app.
 - `relaunch`: the app reopens the same server once (not the default), and says so when the app update didn't apply.

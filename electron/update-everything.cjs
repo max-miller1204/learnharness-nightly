@@ -117,33 +117,42 @@ function createUpdateEverything(deps) {
 		} catch { return 0; }
 	}
 
-	/** Ask the server for exactly `target`, then wait for its launcher to keep it. */
-	async function updateServer(selection, label, target) {
+	/** Ask the server for exactly `target`, then wait for its launcher to keep it.
+	 *  `before` is the server process seen before the run. The server answers the
+	 *  request at once and stages in the background (`pinned` in GET /api/updates).
+	 *  A request that gets no answer may still have started, so it is sent again on
+	 *  each poll (the same request is harmless) and the run never claims nothing
+	 *  changed unless the server itself refused. */
+	async function updateServer(selection, label, target, before) {
 		const { origin, token } = selection;
 		run.step = "updating";
 		deps.progress(`Updating ${label} to ${target}… This can take a few minutes.`);
-		let response;
-		try {
-			// The server answers once it has downloaded and checked the version: allow as long as the wait.
-			response = await deps.request(origin, INSTALL_VERSION_PATH, { token, method: "POST", body: { version: target }, timeoutMs: HANDOFF_TIMEOUT_MS });
-		} catch {
-			throw new RunProblem(`Couldn’t reach ${label}. Nothing was changed.`, { server: true });
-		}
-		const body = await readJSON(response);
-		if (response.status === 404) throw new RunProblem(`${label} runs a LearnHarness without Update everything. Update it from its own Settings first.`, { server: true });
-		if (response.status === 401) throw new RunProblem("This desktop is no longer paired with the server.", { server: true, kind: "pair" });
-		if (!response.ok) throw new RunProblem(`${label} can’t update: ${typeof body?.error === "string" ? body.error : `HTTP ${response.status}`} Nothing was changed.`, { server: true });
-		const before = typeof body?.instance === "string" ? body.instance : null;
+		let asked = false;
+		const ask = async () => {
+			let response;
+			try {
+				response = await deps.request(origin, INSTALL_VERSION_PATH, { token, method: "POST", body: { version: target } });
+			} catch {
+				return; // No answer: maybe started. Poll, and ask again.
+			}
+			if (response.status >= 500) return; // The proxy while the server restarts.
+			const body = await readJSON(response);
+			if (response.status === 404) throw new RunProblem(`${label} runs a LearnHarness without Update everything. Update it from its own Settings first.`, { server: true });
+			if (response.status === 401) throw new RunProblem("This desktop is no longer paired with the server.", { server: true, kind: "pair" });
+			if (!response.ok) throw new RunProblem(`${label} can’t update: ${typeof body?.error === "string" ? body.error : `HTTP ${response.status}`} Nothing was changed.`, { server: true });
+			asked = true;
+		};
 		const deadline = deps.now() + HANDOFF_TIMEOUT_MS;
 		while (deps.now() < deadline) {
+			if (!asked) await ask();
 			try {
 				const health = await deps.request(origin, "/api/health", {});
 				const healthy = health.ok && (await readJSON(health))?.version === target;
 				const state = await serverUpdates(origin, token, { restarting: true });
 				if (!state) throw new Error("not back yet");
 				if (healthy && state.runningVersion === target && state.committed === true) return;
-				if (state.instance === before && state.status === "error") {
-					throw new RunProblem(`${label} couldn’t start the update: ${state.message ?? "the launcher refused it."} Your app wasn’t changed.`, { server: true });
+				if (state.pinned?.version === target && typeof state.pinned.error === "string") {
+					throw new RunProblem(`${label} couldn’t start the update: ${state.pinned.error} Your app wasn’t changed.`, { server: true });
 				}
 				if (state.instance !== before && state.runningVersion !== target && state.notice?.kind === "rolled-back" && state.notice.version === target) {
 					throw new RunProblem(`${label} couldn’t start ${target} and went back to ${state.runningVersion}. Your app wasn’t changed.`, { server: true });
@@ -154,7 +163,9 @@ function createUpdateEverything(deps) {
 			}
 			await deps.sleep(POLL_MS);
 		}
-		throw new RunProblem(`${label} wasn’t back after ${HANDOFF_TIMEOUT_MS / 60_000} minutes. Your app wasn’t changed.`, { server: true });
+		throw new RunProblem(asked
+			? `${label} wasn’t back after ${HANDOFF_TIMEOUT_MS / 60_000} minutes. Your app wasn’t changed.`
+			: `Couldn’t reach ${label} for ${HANDOFF_TIMEOUT_MS / 60_000} minutes. Your app wasn’t changed.`, { server: true });
 	}
 
 	/** `answered` resolves the page's install() once the confirmation is decided (or skipped). */
@@ -199,7 +210,7 @@ function createUpdateEverything(deps) {
 				throw new RunProblem("Couldn’t download the app update. Nothing was changed.");
 			}
 			if (serverBehind) {
-				await updateServer(selection, label, target);
+				await updateServer(selection, label, target, typeof server.instance === "string" ? server.instance : null);
 				serverDone = true;
 			}
 			run.step = "restarting";
@@ -215,7 +226,8 @@ function createUpdateEverything(deps) {
 				if (serverBehind) deps.reconnect(selection.origin);
 				return;
 			}
-			deps.saveResult({ savedAt: deps.now(), server: selection.origin, from: deps.appVersion, target });
+			// Reopen the server that is open now (the user may have switched); `updated` is the one the run moved.
+			deps.saveResult({ savedAt: deps.now(), server: deps.selection()?.origin ?? selection.origin, updated: selection.origin, from: deps.appVersion, target });
 			deps.updater.installPinned(target);
 		} catch (error) {
 			run = null;
@@ -233,7 +245,8 @@ function createUpdateEverything(deps) {
 
 	return {
 		status,
-		running: () => run !== null,
+		/** A run, or its confirmation, is going: the plain install and the menu wait. */
+		running: () => run !== null || asking,
 		check() {
 			if (!run) deps.updater.check();
 		},
@@ -260,7 +273,7 @@ function createUpdateEverything(deps) {
 				server: saved.server,
 				notice: applied ? null : {
 					message: "The app update didn’t finish.",
-					detail: `LearnHarness is still on ${deps.appVersion} and ${serverLabel(saved.server)} is on ${saved.target}. Use Update everything to try again.`,
+					detail: `LearnHarness is still on ${deps.appVersion} and ${serverLabel(typeof saved.updated === "string" ? saved.updated : saved.server)} is on ${saved.target}. Use Update everything to try again.`,
 				},
 			};
 		},

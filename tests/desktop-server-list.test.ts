@@ -1135,4 +1135,22 @@ test("Update everything: the relaunch reopens its server once, and a covered res
 	const quiet = TestWindow.all.length;
 	await controller.endUpdate(beta, null);
 	assert.equal(TestWindow.all.length, quiet, "without a cover, Later leaves the open page alone");
+
+	// A switch to another server mid-run: the run's end leaves that server's window alone.
+	controller.coverForUpdate("Updating two…");
+	await controller.launch({ server: alpha });
+	const other = controller.current()!.win as TestWindow;
+	assert.equal(controller.current()!.origin, alpha);
+	const checks = calls.length;
+	// A 401 on one of its requests makes the shell recheck that server.
+	other.options.webPreferences!.session!.headersReceived!({ webContentsId: other.webContents.id, url: `${alpha}/api/x`, resourceType: "xhr", statusCode: 401, responseHeaders: {} }, () => {});
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.ok(calls.length > checks, "the other server's rechecks are on");
+	assert.equal(controller.current()?.win, other);
+	controller.endUpdate(beta, { kind: "retry", message: "two wasn’t back after 32 minutes. Your app wasn’t changed." });
+	assert.equal(controller.current()?.win, other, "the open window stays");
+	assert.equal(other.destroyed, false);
+	const windows = TestWindow.all.length;
+	await controller.endUpdate(beta, null);
+	assert.equal(TestWindow.all.length, windows, "Later doesn't switch back");
 });
