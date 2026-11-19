@@ -12,7 +12,7 @@ import { installModalDom } from "./modal-dom.ts";
 import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
 import { UpdateSettings, updateStatusText, MANUAL_UPDATE_HINT, AUTO_UPDATE_HINT, type UpdateState } from "../components/settings/update-settings.tsx";
-import { AUTO_RELOAD_KEY, AUTO_RELOAD_MEMORY, claimAutoReload, downloadingTooltip, downloadRingOffset, hasUnsentMessage, SidebarUpdatePill } from "../components/sidebar-update-pill.tsx";
+import { AUTO_RELOAD_KEY, AUTO_RELOAD_MEMORY, claimAutoReload, downloadingTooltip, downloadRingOffset, hasUnsentMessage, SidebarUpdatePill, updateControlTooltip } from "../components/sidebar-update-pill.tsx";
 import { createRequire } from "node:module";
 import { ServerEventsProvider } from "../components/server-events.tsx";
 import { ReleaseNoteSections } from "../components/release-notes-view.tsx";
@@ -279,7 +279,13 @@ describe("General update rows", () => {
 		assert.match(ring.getAttribute("class") ?? "", /transition-\[stroke-dashoffset\] duration-300 ease-out motion-reduce:transition-none/);
 		assert.match(pill().querySelectorAll("circle")[0]!.getAttribute("class") ?? "", /stroke-current\/22/, "the track at 22%");
 		assert.equal(pill().getAttribute("aria-disabled"), "true");
-		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 4 }));
+		await b.push(state({ status: "downloading", version: "0.3.8", revision: 4, downloadPercent: 100, preparing: true }));
+		assert.equal(pill().getAttribute("aria-label"), "Preparing update", "every byte is in: checked and unpacked next");
+		assert.equal(offset(), 0, "a full ring");
+		assert.equal(pill().getAttribute("aria-disabled"), "true");
+		assert.equal(updateStatusText(state({ status: "downloading", version: "0.3.8", preparing: true })), "Preparing version 0.3.8…");
+		assert.equal(updateControlTooltip(state({ status: "downloading", preparing: true }), "downloading"), "Preparing update");
+		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 5 }));
 		assert.equal(pill().querySelector("circle"), null, "no ring once downloaded");
 	});
 

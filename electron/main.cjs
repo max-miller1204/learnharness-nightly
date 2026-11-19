@@ -674,6 +674,7 @@ const updateActions = createUpdateActions({
 		reportUpdateStatus("available", version);
 	},
 	report: (status) => reportUpdateStatus(status),
+	downloadStarted: (version) => reportUpdateStatus("downloading", version, 0),
 	installing: () => installing,
 	startInstall: () => { installing = true; quitAndInstallNow(); },
 	adoptNotes: (info) => adoptOfferedNotes(info),

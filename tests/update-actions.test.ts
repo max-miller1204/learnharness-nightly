@@ -22,6 +22,7 @@ type State = { status: string; version: string | null };
 
 function fixture({ state = { status: "available", version: V72 } as State, offered = V72 as string | null, running = false, answers = [] as number[] } = {}) {
 	const log: string[] = [];
+	const started: string[] = [];
 	const dialogs: Array<{ title?: string; message: string; detail?: string; buttons: string[] }> = [];
 	const current = { ...state };
 	const flags = { running, checkFails: false, downloadFails: false, inFlight: null as string | null, offered, pinnedFeed: null as string | null };
@@ -47,6 +48,7 @@ function fixture({ state = { status: "available", version: V72 } as State, offer
 		state: () => current,
 		offerAgain: (version: string) => { log.push(`offer ${version}`); Object.assign(current, { status: "available", version }); },
 		report: (status: string) => { log.push(`report ${status}`); current.status = status; },
+		downloadStarted: (version: string) => { started.push(version); },
 		installing: () => false,
 		startInstall: () => log.push(`quit and install ${current.version}`),
 		adoptNotes: (info: { version: string }) => log.push(`notes ${info.version}`),
@@ -60,7 +62,7 @@ function fixture({ state = { status: "available", version: V72 } as State, offer
 		log: () => {},
 		wait: async () => {},
 	});
-	return { actions, updater, log, dialogs, current, flags, remove: () => { present = null; } };
+	return { actions, updater, log, started, dialogs, current, flags, remove: () => { present = null; } };
 }
 
 test("pin re-checks the feed and keeps only a version newer than this app", async () => {
@@ -80,6 +82,19 @@ test("downloadPinned downloads exactly the pinned version and leaves no listener
 	assert.equal(f.updater.listenerCount("update-downloaded"), 0);
 	await f.actions.downloadPinned(V72);
 	assert.deepEqual(f.log, [`download ${V72}`], "already downloaded: nothing to fetch");
+});
+
+test("Update everything's download and Try Again's start the ring at 0, before the first progress event", async () => {
+	const f = fixture();
+	f.updater.downloadUpdate = async () => {
+		assert.deepEqual(f.started, [V72], "reported before the download begins");
+		Object.assign(f.current, { status: "downloaded", version: V72 });
+		f.updater.emit("update-downloaded", { version: V72 });
+	};
+	await f.actions.downloadPinned(V72);
+	const retry = fixture();
+	await retry.actions.downloadExact(V72);
+	assert.deepEqual(retry.started, [V72], "the app-only retry too");
 });
 
 test("an older download already under way finishes first, then the pinned one downloads", async () => {

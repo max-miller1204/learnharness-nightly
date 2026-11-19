@@ -10,6 +10,7 @@
  *   state()              main's update snapshot { status, version }
  *   offerAgain(version)  show `version` as "available" again (the cache is gone)
  *   report(status)       reportUpdateStatus
+ *   downloadStarted(version)  report "downloading" at 0%, as the Download button does
  *   installing()         an install is already under way
  *   startInstall()       quit and install the staged update, no re-check
  *   adoptNotes(info)     keep the offered version's release notes
@@ -47,6 +48,8 @@ function createUpdateActions(deps) {
 			let listener;
 			const downloaded = new Promise((resolve) => { listener = resolve; updater.once("update-downloaded", listener); });
 			try {
+				// The ring starts at 0 here too, not at the first progress event (docs/specs/update-control.md).
+				deps.downloadStarted?.(target);
 				await updater.downloadUpdate();
 				await Promise.race([downloaded, wait(1000)]);
 			} catch (error) {

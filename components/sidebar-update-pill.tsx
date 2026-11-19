@@ -126,7 +126,8 @@ export function updateControlTooltip(state: UpdateState, kind: UpdateControlKind
 		case "checking": return "Checking for updates…";
 		case "unavailable": return UNAVAILABLE_TITLE;
 		case "download": return state.version ? `Update ${state.version} ready to download` : "Update available ready to download";
-		case "downloading": return downloadingTooltip(state.downloadPercent);
+		// Owner decision 2026-11-19: once the server has every byte it checks and unpacks it.
+		case "downloading": return state.preparing ? PREPARING_LABEL : downloadingTooltip(state.downloadPercent);
 		case "install": return `Update ${state.version ?? "ready"} downloaded. Click to restart and install.`;
 		case "dismiss-notice": return state.notice?.text ?? "";
 		// T3's updateTargetsSentence for this app and one server (updateEverything.logic.ts:765-772).
@@ -134,6 +135,8 @@ export function updateControlTooltip(state: UpdateState, kind: UpdateControlKind
 		default: return "Check for updates";
 	}
 }
+
+export const PREPARING_LABEL = "Preparing update";
 
 /** T3's downloading label (desktopUpdate.logic.ts:134-139 at 3ce21458): the percent floored,
  *  or the plain label while the size is unknown. */
@@ -354,7 +357,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	if (!state || !kind) return null;
 	const downloadPercent = shownDownloadPercent(state, desktopStatus);
 	const tooltip = (kind === "app-download" || kind === "app-install") && desktopStatus ? appUpdateTooltip(desktopStatus, kind)
-		: kind === "downloading" ? downloadingTooltip(downloadPercent)
+		: kind === "downloading" && desktopStatus?.phase === "downloading" ? downloadingTooltip(downloadPercent)
 		: updateControlTooltip(state, kind, pageVersion);
 	const detail = kind === "unavailable" ? unavailableDetail(state) : null;
 	const disabled = kind === "checking" || kind === "downloading" || kind === "unavailable" || pending || (kind === "everything" && desktopStatus?.phase === "updating");

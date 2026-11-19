@@ -43,6 +43,7 @@ import {
 	type DownloadBytes,
 	type LatestFeed,
 	type ServiceState,
+	type StageOptions,
 } from "../../selfhost/src/release.ts";
 
 export type SelfUpdateStatus = "idle" | "checking" | "downloading" | "up-to-date" | "downloaded" | "error" | "disabled";
@@ -73,6 +74,9 @@ export interface SelfUpdateState {
 	/** How far the download is while "downloading", 0 to 100; null when the size is unknown
 	 *  or nothing downloads (the sidebar's progress ring, docs/specs/update-control.md). */
 	downloadPercent: number | null;
+	/** True while "downloading" once every byte is in: the archive is checked and unpacked
+	 *  ("Preparing update", owner decision 2026-11-19). Install waits for "downloaded" as before. */
+	preparing: boolean;
 	/** Detail for the Settings row (errors, rejections, progress). */
 	message: string | null;
 	/** A rolled-back switch until dismissed. */
@@ -109,7 +113,7 @@ export interface SelfUpdaterDeps {
 	fetchLatest(feedUrl: string): Promise<LatestFeed>;
 	/** One exact version's own feed entry (selfhost/src/release.ts fetchRelease). */
 	fetchRelease(version: string, feedUrl: string): Promise<LatestFeed>;
-	stage(feed: LatestFeed, badVersions: readonly string[], onBytes?: DownloadBytes): Promise<void>;
+	stage(feed: LatestFeed, badVersions: readonly string[], onBytes?: DownloadBytes, onPhase?: StageOptions["onProgress"]): Promise<void>;
 	isInstalled(version: string): boolean;
 	readState(): ServiceState | undefined;
 	/** Merge the feed's notes into the data folder's notes cache (What's new reads it). */
@@ -126,7 +130,7 @@ export interface SelfUpdaterDeps {
 
 export function createSelfUpdater(deps: SelfUpdaterDeps) {
 	let state: SelfUpdateState = {
-		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, instance: globalThis.crypto.randomUUID(), runningVersion: deps.currentVersion, committed: !deps.trialUpdateId, pinned: null, downloadPercent: null, message: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
+		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, instance: globalThis.crypto.randomUUID(), runningVersion: deps.currentVersion, committed: !deps.trialUpdateId, pinned: null, downloadPercent: null, preparing: false, message: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
 	};
 	let checkTimer: unknown;
 	let commitCheckTimer: unknown;
@@ -138,17 +142,23 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 
 	const set = (next: Partial<SelfUpdateState>) => {
 		state = { ...state, ...next, revision: state.revision + 1 };
-		if (state.status !== "downloading") state.downloadPercent = null;
+		if (state.status !== "downloading") state = { ...state, downloadPercent: null, preparing: false };
 		deps.notify();
 	};
 
 	/** Stage `feed`, moving the progress ring while this download is the one shown. A new
-	 *  state (and update event) only at each whole 10% and at 100%, as T3 broadcasts it. */
-	const stage = (feed: LatestFeed, bad: readonly string[]) => deps.stage(feed, bad, (received, total) => {
-		if (state.status !== "downloading" || state.version !== feed.version) return;
-		const percent = total ? Math.min(100, (received / total) * 100) : null;
-		if (shouldReportDownloadProgress(state.downloadPercent, percent)) set({ downloadPercent: percent });
-	});
+	 *  state (and update event) only at each whole 10% and at 100%, as T3 broadcasts it.
+	 *  Once the bytes are in (the checksum, then the unpack) the ring is full: "Preparing update". */
+	const stage = (feed: LatestFeed, bad: readonly string[]) => {
+		const shown = () => state.status === "downloading" && state.version === feed.version;
+		return deps.stage(feed, bad, (received, total) => {
+			if (!shown() || state.preparing) return;
+			const percent = total ? Math.min(100, (received / total) * 100) : null;
+			if (shouldReportDownloadProgress(state.downloadPercent, percent)) set({ downloadPercent: percent });
+		}, (phase) => {
+			if (phase !== "downloading" && shown() && !state.preparing) set({ downloadPercent: 100, preparing: true });
+		});
+	};
 
 	const requestUpdate = (version: string) => {
 		if (requested) return;
@@ -193,7 +203,7 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			}
 			const notes = notesFor(feed);
 			if (!deps.isInstalled(feed.version)) {
-				if (!ready) set({ status: "downloading", version: feed.version, downloadPercent: null, ...notes });
+				if (!ready) set({ status: "downloading", version: feed.version, downloadPercent: null, preparing: false, ...notes });
 				await stage(feed, bad);
 				if (requested) return;
 			}
@@ -312,7 +322,7 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 				try {
 					if (!deps.isInstalled(target)) {
 						const feed = await deps.fetchRelease(target, deps.feedUrl);
-						set({ status: "downloading", version: target, message: null, downloadPercent: null, ...notesFor(feed) });
+						set({ status: "downloading", version: target, message: null, downloadPercent: null, preparing: false, ...notesFor(feed) });
 						await stage(feed, bad);
 					}
 				} catch (error) {
@@ -431,9 +441,9 @@ export function selfUpdater(): SelfUpdater {
 		autoUpdateEnabled: () => readSettings()?.general?.autoUpdate !== false,
 		fetchLatest: (url) => fetchLatest(url),
 		fetchRelease: (version, url) => fetchRelease(version, url),
-		stage: async (feed, badVersions, onBytes) => {
+		stage: async (feed, badVersions, onBytes, onPhase) => {
 			if (!arch) throw new Error("This platform has no self-hosted builds.");
-			await stageVersion(home, feed, arch, { badVersions, onBytes });
+			await stageVersion(home, feed, arch, { badVersions, onBytes, onProgress: onPhase });
 		},
 		isInstalled: (version) => isInstalled(home, version),
 		readState: () => {

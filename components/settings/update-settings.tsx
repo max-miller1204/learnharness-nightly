@@ -32,6 +32,8 @@ export type UpdateState = {
 	message?: string | null;
 	/** While "downloading": how far, 0 to 100, or null when the size is unknown (the sidebar's progress ring). */
 	downloadPercent?: number | null;
+	/** Self-hosted only: every byte is in and the server checks and unpacks it ("Preparing update"). */
+	preparing?: boolean;
 	notice?: UpdateNotice | null;
 	/** Newest first: versions newer than the running one up to the offered one. */
 	releaseNotes?: ReleaseNoteGroup[];
@@ -240,7 +242,9 @@ export function updateStatusText(state: UpdateState | null, transport: UpdateTra
 	switch (state?.status) {
 		case "checking": return "Checking for updates…";
 		case "available": return state.version ? `Version ${state.version} is available.` : "An update is available.";
-		case "downloading": return state.version ? `Downloading version ${state.version}…` : "Downloading an update…";
+		case "downloading":
+			if (state.preparing) return state.version ? `Preparing version ${state.version}…` : "Preparing the update…";
+			return state.version ? `Downloading version ${state.version}…` : "Downloading an update…";
 		case "up-to-date": return "No newer version was found at the last check.";
 		case "downloaded": return state.version ? `Version ${state.version} is ready to install.` : "An update is ready to install.";
 		case "error": return UPDATE_ERROR;

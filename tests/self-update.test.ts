@@ -414,6 +414,32 @@ describe("self-hosted updater", () => {
 		assert.deepEqual(states.filter((value) => value !== null), [], "unknown size: never a percent");
 	});
 
+	it("once every byte is in, the checksum and unpack show a full ring as preparing, until it is ready", async () => {
+		let hooks: { onBytes?: (received: number, total: number | null) => void; onPhase?: (phase: "downloading" | "verifying" | "extracting") => void } = {};
+		let finish = () => {};
+		const f = fake({ stage: (_feed, _bad, onBytes, onPhase) => { hooks = { onBytes, onPhase }; return new Promise<void>((resolve) => { finish = resolve; }); } });
+		const u = createSelfUpdater(f.deps);
+		const pending = u.check();
+		await settle();
+		hooks.onPhase!("downloading");
+		hooks.onBytes!(0, null);
+		hooks.onBytes!(4000, null);
+		assert.equal(u.state().preparing, false);
+		assert.equal(u.state().downloadPercent, null, "no size yet: an empty ring");
+		hooks.onPhase!("verifying");
+		assert.equal(u.state().status, "downloading", "Install still waits for the unpack");
+		assert.equal(u.state().preparing, true);
+		assert.equal(u.state().downloadPercent, 100, "the ring is full");
+		const events = f.notifications();
+		hooks.onPhase!("extracting");
+		hooks.onBytes!(4000, 4000);
+		assert.equal(f.notifications(), events, "the unpack and late byte counts send nothing new");
+		finish();
+		await pending;
+		assert.equal(u.state().status, "downloaded");
+		assert.equal(u.state().preparing, false);
+	});
+
 	it("a pinned download (Update everything) moves the ring too", async () => {
 		let feedBytes: ((received: number, total: number | null) => void) | undefined;
 		let finish = () => {};

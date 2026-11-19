@@ -252,6 +252,15 @@ describe("status observation never controls the updater", () => {
 		assert.equal(f.state().downloadPercent, null);
 	});
 
+	it("Update everything's pinned download also reports 0 at the start", () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.updater.emit("update-available", { version: "0.3.8" });
+		f.updater.downloadUpdate = () => new Promise<never[]>(() => {});
+		void f.run(`updateActions.downloadPinned("0.3.8")`);
+		assert.equal(f.state().status, "downloading");
+		assert.equal(f.state().downloadPercent, 0);
+	});
+
 	for (const status of ["checking", "downloading", "error", "disabled", "downloaded"]) {
 		it(`a ${status} display state does not block a future automatic check`, async () => {
 			const f = fixture(); f.run(`setupAutoUpdater(); reportUpdateStatus("${status}")`); await f.check();
