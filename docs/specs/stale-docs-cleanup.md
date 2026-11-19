@@ -37,7 +37,7 @@ The owner's rule, in their words: "any doc that will easily go stale, please del
 
 **Non-goals**
 
-- Moving, renaming or rewording specs. The owner chose to keep them flat with topic names, because only agents read them. The only spec edits are the three links to deleted roadmap entries, which become plain text.
+- Moving, renaming or rewording specs. The owner chose to keep them flat with topic names, because only agents read them. The only spec edits are the three links to deleted roadmap entries, which become plain text, and the three decision lines listed under Owner decisions during the build.
 - A list or index of planned specs. Nothing could check it, so it would go stale.
 - Removing spec pointers from code comments. Specs don't move, so those pointers stay true, and they help agents.
 - Dated or status notes in code comments ("Wave A", "INTERIM", "NOTE (2026-09-11 pivot)") and "roadmap item N" mentions in comments. **Deferred** to their own cleanup PR, planned to follow right after this one.
@@ -52,7 +52,7 @@ The owner's rule, in their words: "any doc that will easily go stale, please del
 
 | Invariant | Where it is enforced or detected | Kind |
 |---|---|---|
-| Spec files keep their content; only the three listed link lines change | the end-state script (Proof 3) on the PR diff | machine |
+| Spec files keep their content; only the three listed link lines change, plus the three added decision lines under Owner decisions during the build | the end-state script (Proof 3) on the PR diff | machine |
 | No Markdown link or `docs/` path in code points at a missing file | the link check in CI lint, from now on | machine |
 | Generated `docs/plugin-api/` matches its source | `tests/plugin-api-reference.test.ts` in CI | machine |
 | Nothing deleted was an owner decision or a spec's answer key that isn't kept elsewhere | fresh agent with the deletion list (Proof 6) | fresh agent |
@@ -78,6 +78,13 @@ The owner's rule, in their words: "any doc that will easily go stale, please del
 4. "roadmap item N" mentions in comments wait for the follow-up PR. In specs they stay, because specs are exempt.
 5. The docs index lines that describe the roadmap stay ("work considered and deliberately deferred" stays true).
 
+**Owner decisions during the build (2026-11-19).** The owner approved these changes beyond the goals above:
+
+1. Three built or parked roadmap entries held an owner decision their spec lacked. Each moved into its spec as one line (added, or appended to an existing line): item 20's "Rejected for now" CLI list into `docs/specs/gemini-cli-provider.md`, item 1's "Mac checks run over the linked MacBook" into `docs/specs/electron-nightlies.md`, and item 26's 192 MB converter heap limit into `docs/specs/extract-more-types.md` (decision 10).
+2. `docs/flashcards-implementation-plan.md` is deleted: a plan for work that is already built. The two `docs/flashcards-vision.md` sentences that deferred details to an implementation plan go with it.
+3. `apps/mobile/README.md` loses its "Proposal for owner approval" paragraph (the unapproved TestFlight cadence), which the mobile auto-updates spec will decide. One line keeps the lasting fact that a TestFlight build stops opening 90 days after upload, with its source links.
+4. Item 27's "**Decided.** Nothing yet." is deleted: not a decision, a point-in-time placeholder. Every other Decided note stays word for word.
+
 **Generated docs.** `docs/plugin-api/` is never hand-edited. After editing source comments, regenerate it with its script and commit the result.
 
 **Merge.** The owner's standing rule applies: auto-merge when CI is green, review findings are resolved and the proof says PROVED.
@@ -92,7 +99,7 @@ The owner's rule, in their words: "any doc that will easily go stale, please del
 |---|---|---|---|---|---|
 | 1 | Goals 2, 4, 6: no dead links remain | CI lint job on the PR | the new link check over the PR head | GitHub Actions | the lint job passes, with the link check in its log |
 | 2 | Goal 6: the check really catches a dead link | the link check's own test | a fixture with a link to a missing file, and one with a missing `docs/` path in a comment | CI lint job (the same step that runs `ci-changes.test.cjs`) | both cases fail, and a clean fixture passes |
-| 3 | Goals 1, 2, 5 and the spec invariant | the repo tree and the PR diff | a script asserting: no Index table in `docs/fork-roadmap.md`, no heading for items 1, 3, 6, 7, 12, 20, 21 to 26, headings present for the 14 unbuilt items, `docs/archive/` absent, both `AGENTS.md` lines present after `END:nextjs-agent-rules`, and `git diff origin/main -- docs/specs` changing only the three listed link lines | local, on the PR head, output pasted in the PR | every assertion prints ok |
+| 3 | Goals 1, 2, 5 and the spec invariant | the repo tree and the PR diff | a script asserting: no Index table in `docs/fork-roadmap.md`, no heading for items 1, 3, 6, 7, 12, 20, 21 to 26, headings present for the 14 unbuilt items, `docs/archive/` absent, both `AGENTS.md` lines present after `END:nextjs-agent-rules`, `docs/flashcards-implementation-plan.md` absent, no "Proposal for owner approval" in `apps/mobile/README.md`, no "Nothing yet" Decided line in the roadmap, and `git diff origin/main -- docs/specs` (this spec aside) changing only the three listed link lines and the three decision lines under Owner decisions during the build | local, on the PR head, output pasted in the PR | every assertion prints ok |
 | 4 | Generated docs and bundled docs still match | existing CI tests | `tests/plugin-api-reference.test.ts`, `tests/plugin-authoring-bundle.test.ts`, `tests/desktop-payload.test.ts`, `tests/plugin-setup.test.ts`, and the rest of the suite | GitHub Actions | the `Check` job is green |
 | 5 | Goal 3 | the docs as an agent reads them | a fresh agent that never saw this work gets only the rule from Goal 3 and the list of covered files, and reports any stale text left | local | zero findings, or each finding fixed and the agent re-run with zero |
 | 6 | Goals 1, 3, 7: nothing decided was lost | the PR description's deletion list and the diff | a fresh agent gets the deletion list, the diff and the rule "keep owner decisions and spec answer keys", and checks each deletion; for each removed roadmap entry it confirms the decisions exist in that item's spec | local | zero violations |
