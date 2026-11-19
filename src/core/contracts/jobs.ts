@@ -149,7 +149,7 @@ export function accumulateJobUsage(
 }
 
 /**
- * THE ASYNC PROTOCOL — "ack now, steer later" (the pi sub-agents model):
+ * THE ASYNC PROTOCOL: "ack now, steer later" (the pi sub-agents model):
  *
  *  1. Job tools (research / demo / visual / pdf) are SERVER-EXECUTED. The model
  *     calls one MID-TURN; execute creates the job record, fires the

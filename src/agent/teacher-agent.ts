@@ -36,7 +36,7 @@ import { PluginQuestionLedger, type NativePluginQuestionContribution } from "./p
  * The two teaching-side agents: the PROBER and
  * the TEACHER. Same transcript, different prompts and tool sets; the
  * chat-handler constructs ONE per request off the transcript's seam
- * (probe_done = teacher) — the STATELESS per-turn engine: the persisted record is the source of truth, the
+ * (probe_done = teacher), the STATELESS per-turn engine: the persisted record is the source of truth, the
  * agent is rebuilt from it every POST and discarded at turn end.
  *
  * Engines are injectable so tests can pass a scripted faux engine and drive

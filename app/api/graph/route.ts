@@ -1,7 +1,7 @@
 import { graphView } from "@/src/server";
 
 /**
- * The home graph view's data endpoint (W4) — thin
+ * The home graph view's data endpoint (W4): thin
  * transport: the server entry (src/server/graph.ts) returns nodes, edges,
  * session provenance, and per-session understanding observations.
  */
