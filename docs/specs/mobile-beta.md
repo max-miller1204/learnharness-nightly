@@ -2,6 +2,8 @@
 
 Approved by the owner on 2026-11-18 as “Approve the revised mobile plan.” See the [approved revised plan and evidence](t3-thread://v2/7b5ba43d-a4e4-4388-a505-3d60b101c0fc/thread:delegated-task:command%3Amcp%3Acabf6398-4973-4ebf-9e10-a839e574d62a%3Adelegate-task%3Aprepare-roadmap-item22-mobile-plan-1), [owner decisions in #240](https://github.com/max-miller1204/learnharness-nightly/pull/240), and [protocol #246](https://github.com/max-miller1204/learnharness-nightly/pull/246).
 
+Session list search, the kind switch, Rename, Export as Markdown and Delete (mobile parity area 4) are specified in [mobile session basics](mobile-session-basics.md).
+
 ## Connections and teaching
 
 - The app talks to one LearnHarness server at a time over Tailscale Serve HTTPS. A learner can save multiple origins, switch servers, and explicitly choose which server opens on cold launch. When the default cannot be reached, the app shows Retry and the server picker. Each bearer lives in SecureStore under its own normalized origin, including the port. A revoked credential is cleared and that server can be paired again.
