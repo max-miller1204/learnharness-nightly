@@ -20,7 +20,7 @@ Upstream often lands a reworked version of a PR you already merged here, so conf
 
 `.github/workflows/ci.yml` runs on every PR and every push to `main` (design: [specs/ci-foundation.md](specs/ci-foundation.md)). A first `Changes` job reads the PR's diff and skips jobs it can't affect: a docs-only PR runs only lint, and a tests-only PR skips the standalone builds. Pushes to `main` always run everything. The last job, **`Check`**, passes only when every other job passed or was skipped for that reason.
 
-The `Lint` job also runs `.github/scripts/link-check.cjs`. It fails when a Markdown link in a tracked `.md` file, or a `docs/...` path named in any other tracked file, points at a file that doesn't exist (`#anchors` aren't checked). A line containing `link-check-ignore` is skipped, for test fixtures that name a missing path on purpose.
+The `Lint` job also runs `.github/scripts/link-check.cjs`. It fails when a Markdown link in a tracked `.md` file, or a `docs/...` path named in any other tracked file, points at a file that doesn't exist (`#anchors` aren't checked). A line containing `link-check-ignore` is skipped, and so is a file whose first line contains `link-check-ignore-file`, for test fixtures that name a missing path on purpose.
 
 `main` requires `Check`: a PR merges only when its `Check` is green, and **direct pushes to `main` must pass `Check` too.** Push to a branch and open a PR instead. A new push to a PR cancels its older CI run.
 

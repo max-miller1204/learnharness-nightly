@@ -1,3 +1,4 @@
+// link-check-ignore-file: the fixtures below name missing paths on purpose.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -64,6 +65,11 @@ test("a reference-style link and a link out of the repository fail", () => {
 test("a missing docs/ path named in a code comment fails", () => {
 	const problems = checkFixture({ ...clean, "src/app.ts": "/** The split (docs/archive/split.md §2). */\n" });
 	assert.deepEqual(problems, [{ file: "src/app.ts", line: 1, target: "docs/archive/split.md" }]);
+});
+
+test("a file whose first line has the file marker is skipped", () => {
+	assert.deepEqual(checkFixture({ ...clean, "src/fixture.ts": "// link-check-ignore-file\nwrite(\"docs/missing.md\");\n" }), []);
+	assert.deepEqual(checkFixture({ ...clean, "src/fixture.ts": "\n// link-check-ignore-file\nwrite(\"docs/missing.md\");\n" }), [{ file: "src/fixture.ts", line: 3, target: "docs/missing.md" }]);
 });
 
 test("the repository's tracked files have no dead links", () => {

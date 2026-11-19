@@ -1,13 +1,15 @@
 // Fails when a Markdown link in a tracked .md file, or a docs/... path named in
 // any other tracked text file, points at a file that does not exist. It checks
 // files and folders only, not #anchors. It skips URLs, fenced code blocks,
-// inline code, and any line that contains "link-check-ignore" (for test
-// fixtures that name a missing path on purpose).
+// inline code, any line that contains "link-check-ignore", and any file whose
+// first line contains "link-check-ignore-file" (for test fixtures that name a
+// missing path on purpose).
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 
 const IGNORE_MARKER = "link-check-ignore";
+const IGNORE_FILE_MARKER = "link-check-ignore-file";
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 const INLINE_LINK = /\]\(\s*(<[^>\n]*>|[^\s)]+(?:\([^\s)]*\)[^\s)]*)*)/g;
 const REFERENCE_DEFINITION = /^ {0,3}\[[^\]]+\]:\s*(<[^>\n]*>|\S+)/;
@@ -70,6 +72,7 @@ function check({ root, files }) {
 		try { bytes = fs.readFileSync(path.join(root, file)); } catch { continue; }
 		if (bytes.subarray(0, 8000).includes(0)) continue;
 		const text = bytes.toString("utf8");
+		if (text.split("\n", 1)[0].includes(IGNORE_FILE_MARKER)) continue;
 		const targets = file.endsWith(".md") ? markdownTargets(text) : docsPathTargets(text);
 		for (const { line, target } of targets) {
 			const resolved = resolveTarget(file, target);
