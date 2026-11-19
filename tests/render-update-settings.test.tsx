@@ -504,6 +504,15 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		assert.ok(r.calls.fetches.includes("/api/updates/check"), "and the server");
 	});
 
+	it("mid-run, a page whose server came back on the new version still reloads by itself, once (#264), under the app's cover", async () => {
+		remote({ version: V71, target: V72, phase: "updating", error: null }, state({ status: "up-to-date", runningVersion: V72 }));
+		let reloads = 0;
+		const host = await mount(<SidebarUpdatePill pageVersion={V71} reload={() => { reloads++; }} />);
+		await settle();
+		assert.equal(reloads, 1, "the run doesn't hold the page back");
+		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "reload", "reload outranks the run's everything state");
+	});
+
 	it("Settings shows Server and This app rows; the app row is T3's About button", async () => {
 		const r = remote({ version: V71, target: V72, phase: "downloaded", error: null }, state({ status: "up-to-date", runningVersion: V71 }));
 		const host = await mount(<UpdateSettings {...props} version={V71} />);
