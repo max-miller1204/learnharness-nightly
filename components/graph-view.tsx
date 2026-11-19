@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * The home knowledge-graph view (W4; vision §1 "Rendering (DECIDED)").
+ * The home knowledge-graph view (W4).
  *
  * ARCHITECTURE (2026-09-13, decided after the research pass —
  * docs/research/graph-rendering.md, Option B): sigma.js is GONE. The
@@ -35,7 +35,7 @@
  *   - Hover: a soft glow halo in the node's own color at a constant
  *     radius, opacity cross-faded ~180ms with the name brightening on
  *     the same factor; the whole halo is hit-testable (picking pad).
- *   - Cluster hulls (vision §1): soft layered translucent fills + a
+ *   - Cluster hulls: soft layered translucent fills + a
  *     dashed boundary per cluster, stable hue from the cluster id; the
  *     region label at the centroid fades in over the exact zoom span
  *     node labels fade out (THE single zoom control) — and is

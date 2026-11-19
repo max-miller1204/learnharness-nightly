@@ -1,5 +1,5 @@
 /**
- * The extraction pipeline tests (vision §1 construction, 2026-09-02 redesign;
+ * The extraction pipeline tests (2026-09-02 redesign;
  * relinked 2026-09-27): extractor → auditor → merger, the sole graph writer —
  * the extractor alone sees the source (whole-session markdown), the auditor
  * never does (identity linking through graph tools), the merger is
@@ -67,7 +67,7 @@ import { PATHS } from "../config.ts";
 
 const createdChats: string[] = [];
 
-/** A scripted pi engine (faux provider, docs/archive/pi-engine-swap.md §7): the
+/** A scripted pi engine (faux provider): the
  *  response queue replaces the old doGenerate turn counter. Usage is
  *  ESTIMATED by faux from the prompt/response text (deterministic, > 0) —
  *  the tests assert structure and positivity, not flat mock numbers. */
