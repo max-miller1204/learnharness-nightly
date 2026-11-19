@@ -103,9 +103,13 @@ describe("GET /api/jobs", () => {
 		const chat = chatStore.createChat("Sweep fixture");
 		const orphan = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call_orphan" });
 		const respawned: string[] = [];
+		// Save the real hook and throttle so later tests see them unchanged.
+		const global = globalThis as { __lhWakePipeline?: { lastSweepAt: number; respawn?: (jobId: string) => void } };
+		const savedRespawn = global.__lhWakePipeline?.respawn;
+		const savedSweepAt = global.__lhWakePipeline?.lastSweepAt ?? 0;
 		setJobRespawn((jobId) => { respawned.push(jobId); });
-		const global = globalThis as { __lhWakePipeline?: { lastSweepAt: number } };
-		if (global.__lhWakePipeline) global.__lhWakePipeline.lastSweepAt = 0;
+		const pipeline = global.__lhWakePipeline!;
+		pipeline.lastSweepAt = 0;
 		const env = process.env as Record<string, string | undefined>;
 		const previous = env.NODE_ENV;
 		env.NODE_ENV = "production";
@@ -114,6 +118,8 @@ describe("GET /api/jobs", () => {
 			response = await get(`?chatId=${chat.id}`);
 		} finally {
 			env.NODE_ENV = previous;
+			pipeline.respawn = savedRespawn;
+			pipeline.lastSweepAt = savedSweepAt;
 		}
 		assert.equal(response.status, 200);
 		assert.deepEqual(respawned, [orphan.id]);
