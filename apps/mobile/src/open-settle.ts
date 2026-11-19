@@ -7,10 +7,10 @@
  * `ready` (the phone reports it at the bottom), or after `maxMs` at the
  * latest, so the screen can stay hidden while it pins to the bottom and then
  * appear already showing the latest message (the web's instant initial
- * scroll). A view that is not ready yet is expected to call `changed` again,
- * for example from the scroll event of another jump to the end.
+ * scroll). A view that is not ready yet is checked again after `retryMs`,
+ * or sooner when `changed` runs (the scroll event of another jump to the end).
  */
-export function openSettle(settle: () => void, { quietMs = 250, maxMs = 2000, loading = (): boolean => false, ready = (): boolean => true } = {}) {
+export function openSettle(settle: () => void, { quietMs = 250, maxMs = 2000, retryMs = 50, loading = (): boolean => false, ready = (): boolean => true } = {}) {
   let done = false;
   let quiet: ReturnType<typeof setTimeout> | undefined;
   const stop = () => {
@@ -25,10 +25,15 @@ export function openSettle(settle: () => void, { quietMs = 250, maxMs = 2000, lo
   };
   const cap = setTimeout(finish, maxMs);
   // A view that finishes loading calls `changed` again, which restarts the quiet wait.
+  const check = () => {
+    if (loading()) return;
+    if (ready()) finish();
+    else quiet = setTimeout(check, retryMs);
+  };
   const changed = () => {
     if (done) return;
     clearTimeout(quiet);
-    quiet = setTimeout(() => { if (!loading() && ready()) finish(); }, quietMs);
+    quiet = setTimeout(check, quietMs);
   };
   changed();
   return { changed, cancel: stop };

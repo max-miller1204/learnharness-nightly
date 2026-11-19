@@ -120,7 +120,9 @@ function RevealBar({ question, onOpen }: { question: string; onOpen: () => void 
       <View style={{ flex: 1 }}>
         <Text style={[s.ui, { fontFamily: fonts.uiMedium, fontSize: 14 }]}>Check your understanding</Text>
         {/* The question's first line, rendered (math included) like the web's QuestionPreview. */}
-        <View pointerEvents="none" style={{ maxHeight: 24, overflow: "hidden", opacity: 0.7 }}><Markdown text={question} /></View>
+        <View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ maxHeight: 24, overflow: "hidden", opacity: 0.7 }}>
+          <Markdown text={question} hidden />
+        </View>
       </View>
       <Text style={[s.ui, { fontFamily: fonts.uiMedium, fontSize: 11 }]}>Open ›</Text>
     </Pressable>

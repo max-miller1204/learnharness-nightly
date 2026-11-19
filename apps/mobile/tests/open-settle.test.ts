@@ -135,3 +135,18 @@ test("at the bottom means the reported position reaches the reported end", () =>
   assert.equal(atBottom({ content: 400, offset: 0, viewport: 800 }), true); // shorter than the screen
   assert.equal(atBottom({ content: 0, offset: 0, viewport: 0 }), false); // nothing measured yet
 });
+
+test("a jump that reports no scroll event is checked again, well before the cap", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let settled = 0;
+  let checks = 0;
+  // The first check finds a stale position and jumps; that jump never reports, so
+  // nothing calls `changed`. The retry finds the fresh position.
+  openSettle(() => settled++, { quietMs: 250, maxMs: 2000, retryMs: 50, ready: () => ++checks > 1 });
+  t.mock.timers.tick(250);
+  assert.equal(settled, 0);
+  assert.equal(checks, 1);
+  t.mock.timers.tick(50);
+  assert.equal(settled, 1);
+  assert.equal(checks, 2);
+});

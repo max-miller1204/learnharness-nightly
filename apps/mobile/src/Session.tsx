@@ -103,16 +103,20 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
       settleStarted.current = true;
       // Reveal only once the phone reports the view at the bottom: a jump to the end
       // can land after the reveal, or against a height that is about to change.
+      // The stored position can be stale (a dropped event), and a jump to where the view
+      // already is reports nothing, so step back a point first: both moves report.
       const ready = () => {
         if (atBottom({ ...measured.current, offset: lastOffset.current })) return true;
+        scroller.current?.scrollTo({ y: Math.max(0, lastOffset.current - 1), animated: false });
         scroller.current?.scrollToEnd({ animated: false });
         return false;
       };
       settling.current = openSettle(() => {
         settling.current = null;
-        scroller.current?.scrollToEnd({ animated: false });
         nearBottom.current = true;
-        setOpened(true);
+        // At the cap the view may not be at the bottom yet: jump, let a frame apply it, then show.
+        scroller.current?.scrollToEnd({ animated: false });
+        requestAnimationFrame(() => setOpened(true));
       }, { loading: () => math.count > 0, ready });
     }
     pin();
@@ -238,7 +242,7 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
       )}
       <ScrollView ref={scroller} style={{ flex: 1, opacity: hidden ? 0 : 1 }} contentContainerStyle={[s.section, { gap: space.lg }]}
         pointerEvents={hidden ? "none" : "auto"} accessibilityElementsHidden={hidden} importantForAccessibility={hidden ? "no-hide-descendants" : "auto"}
-        keyboardShouldPersistTaps="handled" scrollEventThrottle={100} onLayout={({ nativeEvent }) => { measured.current.viewport = nativeEvent.layout.height; pin(); }}
+        keyboardShouldPersistTaps="handled" scrollEventThrottle={hidden ? 0 : 100} onLayout={({ nativeEvent }) => { measured.current.viewport = nativeEvent.layout.height; pin(); }}
         onContentSizeChange={(_width, height) => { measured.current.content = height; pin(); }}
         onScrollBeginDrag={() => { userScrolling.current = true; }} onMomentumScrollBegin={() => { userScrolling.current = true; }}
         // The last scroll event of a fling can be dropped, so the ends check again.
