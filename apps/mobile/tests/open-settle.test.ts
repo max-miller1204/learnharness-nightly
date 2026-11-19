@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { followsBottom, openSettle } from "../src/open-settle.ts";
+import { followsBottom, openSettle, pendingCounter } from "../src/open-settle.ts";
 
 test("settles once the content stops growing", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -63,13 +63,44 @@ test("math views that never report still settle at the cap", (t) => {
 });
 
 test("only the learner's own scrolling stops following the bottom", () => {
+  const at = (distance: number, offset: number, previousOffset: number, dragging = false) => ({ distance, offset, previousOffset, dragging });
   // Our jump to the end, reported after the content grew by 400: keep following.
-  assert.equal(followsBottom(true, 400, false), true);
-  // The learner scrolled up: stop following.
-  assert.equal(followsBottom(true, 400, true), false);
+  assert.equal(followsBottom(true, at(400, 1000, 600)), true);
+  assert.equal(followsBottom(true, at(400, 1000, 1000)), true);
+  // The learner dragged up: stop following.
+  assert.equal(followsBottom(true, at(400, 900, 1000, true)), false);
+  // A screen reader or keyboard scroll up has no drag, but it moved up: stop following.
+  assert.equal(followsBottom(true, at(400, 600, 1000)), false);
   // Not following, and content keeps growing: stay put.
-  assert.equal(followsBottom(false, 900, false), false);
-  // Back near the bottom, by any scroll: follow again.
-  assert.equal(followsBottom(false, 40, false), true);
-  assert.equal(followsBottom(false, 40, true), true);
+  assert.equal(followsBottom(false, at(900, 600, 600)), false);
+  // Back near the bottom, by any scroll (also the end of a fling): follow again.
+  assert.equal(followsBottom(false, at(40, 1500, 600)), true);
+  assert.equal(followsBottom(false, at(40, 1500, 1400, true)), true);
+});
+
+test("the loading counter counts each view once and reports when all are done", () => {
+  let idle = 0;
+  const counter = pendingCounter(() => idle++);
+  const first = counter.begin();
+  const second = counter.begin();
+  assert.equal(counter.count, 2);
+  first();
+  first(); // the same view reports twice
+  assert.equal(counter.count, 1);
+  assert.equal(idle, 0);
+  second();
+  assert.equal(counter.count, 0);
+  assert.equal(idle, 1);
+  second(); // it unmounts after reporting
+  assert.equal(counter.count, 0);
+  assert.equal(idle, 1);
+});
+
+test("a view that goes away before reporting stops counting", () => {
+  let idle = 0;
+  const counter = pendingCounter(() => idle++);
+  const unmount = counter.begin();
+  unmount();
+  assert.equal(counter.count, 0);
+  assert.equal(idle, 1);
 });

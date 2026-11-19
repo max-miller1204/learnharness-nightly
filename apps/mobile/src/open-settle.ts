@@ -33,12 +33,35 @@ export function openSettle(settle: () => void, { quietMs = 250, maxMs = 2000, lo
 }
 
 /**
- * Whether the transcript keeps following new content. Only the learner's own
- * scrolling turns it off. A scroll event that follows our own jump to the
- * end can report content that grew in the meantime, which looks like being
- * scrolled away from the bottom.
+ * Counts views still loading. `begin` returns that view's `done`, which
+ * counts once however often it is called (reported, then unmounted). When
+ * the last one is done, `idle` runs.
  */
-export function followsBottom(following: boolean, distanceFromBottom: number, userScrolling: boolean, threshold = 100) {
-  if (distanceFromBottom < threshold) return true;
-  return userScrolling ? false : following;
+export function pendingCounter(idle: () => void) {
+  let count = 0;
+  return {
+    get count() { return count; },
+    begin() {
+      count++;
+      let open = true;
+      return () => {
+        if (!open) return;
+        open = false;
+        count--;
+        if (count === 0) idle();
+      };
+    },
+  };
+}
+
+/**
+ * Whether the transcript keeps following new content. Only the learner's own
+ * scrolling turns it off: a drag or fling, or any scroll that moved up (a
+ * screen reader or keyboard scroll has no drag). A scroll event that follows
+ * our own jump to the end can report content that grew in the meantime,
+ * which looks like being scrolled away, but our jumps never move up.
+ */
+export function followsBottom(following: boolean, scroll: { distance: number; offset: number; previousOffset: number; dragging: boolean }, threshold = 100) {
+  if (scroll.distance < threshold) return true;
+  return scroll.dragging || scroll.offset < scroll.previousOffset ? false : following;
 }

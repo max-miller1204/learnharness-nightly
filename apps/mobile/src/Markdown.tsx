@@ -16,9 +16,10 @@ export function confirmExternalLink(value: string) {
   ]);
 }
 
-/** Told +1 when a math view mounts and -1 once it has reported its height
- *  (or failed or gone away), so opening a session can wait for them. */
-export const MathLoading = createContext<((delta: 1 | -1) => void) | null>(null);
+/** A math view calls this when it mounts, and the function it returns once it
+ *  has reported its height (or failed or gone away), so opening a session can
+ *  wait for them (open-settle.ts pendingCounter). */
+export const MathLoading = createContext<(() => () => void) | null>(null);
 
 export function Markdown({ text, small }: { text: string; small?: boolean }) {
   const parsed = useMemo(() => parseMarkdown(text), [text]);
@@ -32,23 +33,15 @@ function MathMarkdown({ parsed, small }: { parsed: ReturnType<typeof parseMarkdo
   const { fontScale } = useWindowDimensions();
   const [height, setHeight] = useState(26);
   const [failed, setFailed] = useState(false);
-  const track = useContext(MathLoading);
-  const pending = useRef(false);
-  const reported = () => {
-    if (!pending.current) return;
-    pending.current = false;
-    track?.(-1);
-  };
+  const begin = useContext(MathLoading);
+  const done = useRef<(() => void) | null>(null);
+  const reported = () => done.current?.();
   useEffect(() => {
-    if (!track) return;
-    pending.current = true;
-    track(1);
-    return () => {
-      if (!pending.current) return;
-      pending.current = false;
-      track(-1);
-    };
-  }, [track]);
+    if (!begin) return;
+    const end = begin();
+    done.current = end;
+    return () => { end(); done.current = null; };
+  }, [begin]);
   const font = proseCss(small, fontScale);
   const source = useMemo(() => ({
     html: `<!doctype html><html><head>
@@ -94,10 +87,14 @@ function MathMarkdown({ parsed, small }: { parsed: ReturnType<typeof parseMarkdo
     <WebView source={source} originWhitelist={["*"]} onShouldStartLoadWithRequest={(request) => request.url === "about:blank"}
       scrollEnabled={false} allowsLinkPreview={false} allowFileAccess={false} setSupportMultipleWindows={false} domStorageEnabled={false}
       style={{ backgroundColor: "transparent", height }} containerStyle={{ flex: 0, height }}
-      onError={() => { setFailed(true); reported(); }} onMessage={({ nativeEvent }) => {
-        const measured = Number(nativeEvent.data);
-        if (Number.isFinite(measured) && measured > 0) { setHeight(measured + 2); reported(); }
-        else confirmExternalLink(nativeEvent.data);
+      onError={() => { setFailed(true); reported(); }} onRenderProcessGone={() => { setFailed(true); reported(); }}
+      onMessage={({ nativeEvent }) => {
+        // A height, which may be 0 for an empty block, or a tapped link.
+        if (/^\d+$/.test(nativeEvent.data)) {
+          const measured = Number(nativeEvent.data);
+          if (measured > 0) setHeight(measured + 2);
+          reported();
+        } else confirmExternalLink(nativeEvent.data);
       }} />
   );
 }

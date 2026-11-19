@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject, type ComponentRef } from "react";
-import { Alert, Keyboard, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { Alert, Keyboard, Linking, Pressable, ScrollView, Text, TextInput, View, type NativeScrollEvent } from "react-native";
 import {
   BROWSER_HANDOFF_ROUTES, BROWSER_HANDOFF_V1, LESSON_VIEW_V1, PRACTICE_CONTROLS_V1, hasCapability,
   type LhMessage, type PairingTokenResponse, type ServerInfo,
@@ -13,7 +13,7 @@ import { Transcript } from "./Transcript";
 import { Button, Label, Notice } from "./ui";
 import { fonts, radius, space, useTheme } from "./theme";
 import { revealOffset } from "./reveal";
-import { followsBottom, openSettle } from "./open-settle";
+import { followsBottom, openSettle, pendingCounter } from "./open-settle";
 import { MathLoading } from "./Markdown";
 import { checkNeedsReveal, livePlan, PHASE_LABEL, sessionPhase, skipAnswer, skipParked } from "./lesson";
 import { PlanScreen } from "./PlanScreen";
@@ -55,6 +55,7 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const scroller = useRef<ComponentRef<typeof ScrollView>>(null);
   const nearBottom = useRef(true);
   const userScrolling = useRef(false);
+  const lastOffset = useRef(0);
   // On open the transcript stays hidden until its first layout settles at the bottom.
   const [opened, setOpened] = useState(false);
   const settling = useRef<ReturnType<typeof openSettle> | null>(null);
@@ -90,11 +91,8 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
 
   const loaded = !!record;
   const hidden = loaded && !opened;
-  const mathLoading = useRef(0);
-  const trackMath = useCallback((delta: 1 | -1) => {
-    mathLoading.current += delta;
-    if (mathLoading.current === 0) settling.current?.changed();
-  }, []);
+  // Math views still loading; the last one finishing restarts the quiet wait.
+  const [math] = useState(() => pendingCounter(() => settling.current?.changed()));
   useEffect(() => () => settling.current?.cancel(), []);
   // The settle starts at the transcript's first real layout, not when the
   // record arrives: a long session can take longer to lay out than the quiet wait.
@@ -106,12 +104,19 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
         scroller.current?.scrollToEnd({ animated: false });
         nearBottom.current = true;
         setOpened(true);
-      }, { loading: () => mathLoading.current > 0 });
+      }, { loading: () => math.count > 0 });
     }
     pin();
   }
   // Content growth, or a shorter viewport when the question dock below grows,
   // keeps the transcript at the bottom while opening or already there.
+  function scrolled({ contentOffset, layoutMeasurement, contentSize }: NativeScrollEvent, dragging: boolean) {
+    const previousOffset = lastOffset.current;
+    lastOffset.current = contentOffset.y;
+    if (settling.current) return;
+    const distance = contentSize.height - contentOffset.y - layoutMeasurement.height;
+    nearBottom.current = followsBottom(nearBottom.current, { distance, offset: contentOffset.y, previousOffset, dragging });
+  }
   function pin() {
     if (settling.current || nearBottom.current) scroller.current?.scrollToEnd({ animated: false });
     settling.current?.changed();
@@ -199,7 +204,7 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   // Browser handoff lives in the top bar's menu until the phone handles these flows itself.
   const close = () => setMenuOpen(false);
   return (
-    <MathLoading.Provider value={trackMath}>
+    <MathLoading.Provider value={math.begin}>
     <View style={{ flex: 1 }}>
       <View style={[s.bar, { zIndex: 2 }]} onLayout={({ nativeEvent }) => setBarHeight(nativeEvent.layout.height)}>
         <Button variant="ghost" label="Sessions" onPress={back} style={{ width: 36, paddingHorizontal: 0 }}>
@@ -221,12 +226,11 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
       <ScrollView ref={scroller} style={{ flex: 1, opacity: hidden ? 0 : 1 }} contentContainerStyle={[s.section, { gap: space.lg }]}
         pointerEvents={hidden ? "none" : "auto"} accessibilityElementsHidden={hidden} importantForAccessibility={hidden ? "no-hide-descendants" : "auto"}
         keyboardShouldPersistTaps="handled" scrollEventThrottle={100} onLayout={pin} onContentSizeChange={pin}
-        onScrollBeginDrag={() => { userScrolling.current = true; }} onScrollEndDrag={() => { userScrolling.current = false; }}
-        onMomentumScrollBegin={() => { userScrolling.current = true; }} onMomentumScrollEnd={() => { userScrolling.current = false; }}
-        onScroll={({ nativeEvent: { contentOffset, layoutMeasurement, contentSize } }) => {
-          if (settling.current) return;
-          nearBottom.current = followsBottom(nearBottom.current, contentSize.height - contentOffset.y - layoutMeasurement.height, userScrolling.current);
-        }}>
+        onScrollBeginDrag={() => { userScrolling.current = true; }} onMomentumScrollBegin={() => { userScrolling.current = true; }}
+        // The last scroll event of a fling can be dropped, so the ends check again.
+        onScrollEndDrag={({ nativeEvent }) => { scrolled(nativeEvent, true); userScrolling.current = false; }}
+        onMomentumScrollEnd={({ nativeEvent }) => { scrolled(nativeEvent, true); userScrolling.current = false; }}
+        onScroll={({ nativeEvent }) => scrolled(nativeEvent, userScrolling.current)}>
         {session.loading && <Text style={s.muted}>Loading session…</Text>}
         <Transcript settled={settledView} tail={session.tail} api={api} chatId={id} jobs={jobs} liveHelpers={lessonView} openPlan={() => setPlanOpen(true)} />
         {busy && <Text accessibilityLiveRegion="polite" style={s.muted}>Reply in progress…</Text>}
