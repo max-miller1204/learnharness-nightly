@@ -49,8 +49,8 @@ const RECORDED = {
 		"src/core/plugin-submissions.ts": "41625a9ecd73afb7",
 		"src/core/prices.ts": "059a6fdabac2ec43",
 		"src/core/question-core.ts": "9ad92ef81c8b7f99",
-		"@earendil-works/pi-agent-core": "1.4.0",
-		"@earendil-works/pi-ai": "1.4.0",
+		"@earendil-works/pi-agent-core": "1.5.2",
+		"@earendil-works/pi-ai": "1.5.2",
 	} as Record<string, string>,
 };
 

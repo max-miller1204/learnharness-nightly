@@ -114,12 +114,8 @@ describe("parseQuizInput", () => {
 		const parsedArray = parseQuizInput(numericArray);
 		assert.ok(parsedArray);
 		assert.deepEqual(parsedArray.correctAnswer, ["17", "27"]);
-		// Non-convertible garbage still never parses (structure owns it)…
+		// Non-convertible garbage still never parses (structure owns it).
 		assert.equal(parseQuizInput({ ...PROBER_QUIZ, correctAnswer: { bad: true } }), undefined);
-		// …and Convert's widening (undefined → "") is caught by the refinement
-		// chain the boundary itself uses — garbage renders as a quiet fallback.
-		const widened = { ...PROBER_QUIZ, correctAnswer: undefined };
-		assert.equal(parseQuizInput(widened), undefined, "the refinement owns the reject");
 	});
 
 	it("garbage never parses: non-object, missing question, missing correctAnswer", () => {
