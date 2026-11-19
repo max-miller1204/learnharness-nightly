@@ -110,13 +110,28 @@ test("downloadExact pins the feed to the version for the retry, then unpins it",
 	const wrong = fixture({ offered: V73 });
 	const actions = wrong.actions;
 	wrong.flags.offered = V73;
-	// A feed that ignores the pin (the LH_UPDATE_FEED test override) offers another version: refuse.
 	const original = wrong.updater.checkForUpdates;
+	// A feed that keeps offering another version (it doesn't have V72): refuse, after one more check.
 	wrong.updater.checkForUpdates = async () => ({ updateInfo: { version: V73 } });
 	await assert.rejects(actions.downloadExact(V72), /offered .*20261118\.73, not .*20261118\.72/);
 	assert.equal(wrong.flags.pinnedFeed, null, "unpinned on failure too");
 	assert.equal(wrong.log.some((line) => line.startsWith("download")), false);
 	wrong.updater.checkForUpdates = original;
+});
+
+test("a Try Again during the startup check (which read the newest version before the pin) checks once more, pinned", async () => {
+	const f = fixture({ state: { status: "idle", version: null }, offered: V73 });
+	let calls = 0;
+	const real = f.updater.checkForUpdates;
+	f.updater.checkForUpdates = async () => {
+		calls++;
+		// The first call returns the in-flight unpinned check: the newest, V73.
+		if (calls === 1) { f.log.push("check (in flight)"); return { updateInfo: { version: V73 } }; }
+		return real();
+	};
+	await f.actions.downloadExact(V72);
+	assert.deepEqual(f.log, [`pin feed ${V72}`, "check (in flight)", "check", `notes ${V72}`, `download ${V72}`, "pin feed null"]);
+	assert.deepEqual(f.current, { status: "downloaded", version: V72 });
 });
 
 test("installPinned installs only the ready pinned version", () => {

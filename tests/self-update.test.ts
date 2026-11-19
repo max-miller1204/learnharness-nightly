@@ -345,6 +345,39 @@ describe("self-hosted updater", () => {
 		assert.deepEqual(v.state().pinned, left, "a plain Install's refusal isn't written into an old attempt");
 	});
 
+	it("an attempt queued behind the server's own Install for the same version joins it: the launcher's refusal is the attempt's", async () => {
+		const f = fake();
+		f.flags.auto = false;
+		let release: () => void = () => {};
+		f.deps.fetchLatest = async () => { await new Promise<void>((resolve) => { release = resolve; }); return feed(NEXT); };
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		// Install's re-check is in flight; Update everything asks for the same version meanwhile.
+		const installing = u.install();
+		await settle();
+		const started = u.startInstallVersion(NEXT);
+		assert.equal(started.refused, null);
+		const id = u.state().pinned!.id;
+		release();
+		await installing;
+		assert.equal(await started.done, null, "the plain Install asked the launcher first; the attempt joined");
+		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }], "one request");
+		f.toParent({ type: "update-rejected", reason: "Not enough disk space" });
+		assert.deepEqual(u.state().pinned, { version: NEXT, error: "Not enough disk space", id }, "the desktop sees the refusal");
+		assert.equal(u.startInstallVersion(NEXT).refused, null);
+		assert.notEqual(u.state().pinned!.id, id, "a later run starts a fresh attempt instead of joining a dead one");
+	});
+
+	it("an attempt whose launcher can't be reached fails without leaving the launcher's next answer to it", async () => {
+		const f = fake({ send: () => { throw new Error("channel closed"); } });
+		f.flags.auto = false;
+		const u = createSelfUpdater(f.deps);
+		assert.match(await pin(u, NEXT) ?? "", /Couldn't reach the launcher/);
+		const left = u.state().pinned;
+		f.toParent({ type: "update-rejected", reason: "a later plain Install's refusal" });
+		assert.deepEqual(u.state().pinned, left);
+	});
+
 	it("is committed unless it is a trial the launcher hasn't committed yet", async () => {
 		assert.equal(createSelfUpdater(fake().deps).state().committed, true);
 		const f = fake({ trialUpdateId: "u-1" });

@@ -675,7 +675,7 @@ const updateActions = createUpdateActions({
 	download: () => downloadUpdateNow(),
 	install: () => installUpdateNow(),
 	running: () => updateEverything?.running() ?? false,
-	pinFeed: (version) => { require("./nightly-updater.cjs").NightlyProvider.pinned = version; },
+	pinFeed: (version) => require("./nightly-updater.cjs").pinFeed(autoUpdater, version, { override: process.env.LH_UPDATE_FEED }),
 	log,
 });
 

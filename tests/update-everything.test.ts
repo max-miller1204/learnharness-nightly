@@ -334,9 +334,10 @@ test("an app install that fails after the server committed offers the app-only r
 	assert.equal(retry.detail, `LearnHarness is still on ${V71} and max-desktop is on ${V72}. Install LearnHarness ${V72} again? Only this app restarts.`);
 	assert.deepEqual(retry.buttons, ["Try Again", "Later"]);
 	assert.deepEqual(f.log, ["pin", `download ${V72}`, `install ${V72} failed`, `reconnect ${ORIGIN}`, `exact ${V72}`, `install ${V72} failed`]);
-	assert.equal(f.notices.at(-1)!.message, "Couldn’t install the app update.");
+	assert.deepEqual(f.notices.at(-1), { message: "Couldn’t install the app update.", detail: `LearnHarness is still on ${V71} and max-desktop is on ${V72}. Use Update everything to try again.` }, "the owner's wording: not the menu, which installs the newest version");
 	assert.equal(f.requests.filter((request) => request.path === "/api/updates/install-version").length, 1, "the retry never touches the server");
 	assert.deepEqual(f.failures, []);
+	assert.equal(f.ue.takeLaunch(), null, "offered once: nothing saved for the next launch");
 });
 
 test("after a relaunch the retry installs the pinned version, even once the feed has moved on", async () => {

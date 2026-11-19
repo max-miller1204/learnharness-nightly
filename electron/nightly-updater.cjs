@@ -78,4 +78,18 @@ class NightlyProvider extends GenericProvider {
 /** While set, every check offers exactly this nightly (see getLatestVersion). */
 NightlyProvider.pinned = null;
 
-module.exports = { NightlyProvider };
+/** Pin every check to exactly `version`, or null for the newest again (the app-only
+ *  retry of Update everything). The real feed reads `v<version>/` beside
+ *  `nightly/latest.json`. The LH_UPDATE_FEED test feed (a plain folder with the newest
+ *  manifest) reads `<feed>/v<version>/` the same way, so a real updater run can prove it. */
+function pinFeed(updater, version, { override } = {}) {
+	if (version !== null && (typeof version !== "string" || !NIGHTLY_VERSION.test(version))) throw new Error("Invalid nightly version");
+	if (override) {
+		const base = override.endsWith("/") ? override : `${override}/`;
+		updater.setFeedURL({ provider: "generic", url: version ? new URL(`v${version}/`, base).href : override });
+		return;
+	}
+	NightlyProvider.pinned = version;
+}
+
+module.exports = { NightlyProvider, pinFeed };

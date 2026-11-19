@@ -166,7 +166,9 @@ class TestWindow extends EventEmitter {
 		},
 		setWindowOpenHandler: (handler: typeof this.windowOpen) => { this.windowOpen = handler; },
 		send: (_channel: string, snapshot: typeof this.snapshot) => { this.snapshot = snapshot; },
+		reload: () => { this.reloads++; },
 	});
+	reloads = 0;
 	constructor(options: { backgroundColor?: string; webPreferences?: { preload?: string; session?: TestSession } } = {}) {
 		super();
 		this.options = options;
@@ -1126,15 +1128,24 @@ test("Update everything: the relaunch reopens its server once, and a covered res
 	assert.deepEqual(list.snapshot?.problem, { server: beta, kind: "retry", message: "two wasn’t back after 32 minutes. Your app wasn’t changed." });
 	assert.equal(controller.current(), null);
 
-	// Later: the covered page is replaced by a fresh load of the updated server.
+	// Later: the same window stays and loads the updated server's page. Destroying it first
+	// would leave no window, and Windows and Linux quit then (the 91b5951 proof).
 	await controller.launch({ server: beta });
 	const again = controller.current()!.win as TestWindow;
 	controller.coverForUpdate(beta, "Updating two…");
+	assert.equal(again.contentView.children.length, 1);
 	const reopened = TestWindow.all.length;
 	await controller.endUpdate(beta, null);
-	assert.equal(again.destroyed, true);
-	assert.equal(TestWindow.since(reopened).first.url, beta);
+	assert.equal(again.destroyed, false, "never zero windows");
+	assert.equal(TestWindow.all.length, reopened, "no replacement window");
+	assert.equal(again.contentView.children.length, 0, "the cover is gone");
+	assert.equal(again.reloads, 1, "the updated server's page loads in it");
+	assert.equal(controller.current()?.win, again);
 	assert.equal(controller.current()?.origin, beta);
+	const rechecked = calls.length;
+	again.options.webPreferences!.session!.headersReceived!({ webContentsId: again.webContents.id, url: `${beta}/api/x`, resourceType: "xhr", statusCode: 401, responseHeaders: {} }, () => {});
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.ok(calls.length > rechecked, "rechecks are on again");
 	const quiet = TestWindow.all.length;
 	await controller.endUpdate(beta, null);
 	assert.equal(TestWindow.all.length, quiet, "without a cover, Later leaves the open page alone");

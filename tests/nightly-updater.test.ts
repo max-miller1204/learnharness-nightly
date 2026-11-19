@@ -123,3 +123,24 @@ test("a pinned retry reads exactly that release, never the moving pointer", asyn
 	NightlyProvider.pinned = "../evil";
 	await assert.rejects(provider.getLatestVersion(), /Invalid nightly version/);
 });
+
+test("pinFeed pins the real feed through the provider, and the LH_UPDATE_FEED test feed to its v<version>/ folder", (t) => {
+	const { pinFeed } = require("../electron/nightly-updater.cjs");
+	t.after(() => { NightlyProvider.pinned = null; });
+	const feeds: unknown[] = [];
+	const updater = { setFeedURL: (options: unknown) => feeds.push(options) };
+	pinFeed(updater, version);
+	assert.equal(NightlyProvider.pinned, version);
+	pinFeed(updater, null);
+	assert.equal(NightlyProvider.pinned, null);
+	assert.deepEqual(feeds, [], "the real feed keeps its provider");
+
+	pinFeed(updater, version, { override: "http://127.0.0.1:4100" });
+	pinFeed(updater, null, { override: "http://127.0.0.1:4100" });
+	assert.deepEqual(feeds, [
+		{ provider: "generic", url: `http://127.0.0.1:4100/v${version}/` },
+		{ provider: "generic", url: "http://127.0.0.1:4100" },
+	], "the test feed's own folder for that version, then the newest again");
+	assert.throws(() => pinFeed(updater, "../evil", { override: "http://127.0.0.1:4100/" }), /Invalid nightly version/);
+	assert.equal(feeds.length, 2);
+});

@@ -68,7 +68,10 @@ function createUpdateActions(deps) {
 		if (!updater) throw new Error("The updater is unavailable.");
 		deps.pinFeed(target);
 		try {
-			const result = await updater.checkForUpdates();
+			// electron-updater hands back a check already in flight (the startup check, say),
+			// which read the newest version before the pin: then check once more, pinned.
+			let result = await updater.checkForUpdates();
+			if (result?.updateInfo?.version !== target) result = await updater.checkForUpdates();
 			const offered = result?.updateInfo?.version;
 			if (offered !== target) throw new Error(`The feed offered ${offered ?? "nothing"}, not ${target}.`);
 			deps.adoptNotes(result.updateInfo);

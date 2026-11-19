@@ -279,8 +279,14 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 				set({ status: "error", message, pinned: { version: target, error: message, id } });
 				return message;
 			};
+			// A switch to the target already under way (the server's own Install got there first):
+			// this attempt joins it, so the launcher's answer to that request is this attempt's.
+			const joined = () => {
+				pinnedRequest = id;
+				return null;
+			};
 			const run = async (): Promise<string | null> => {
-				if (requested) return state.version === target ? null : failed("Another update is already starting.");
+				if (requested) return state.version === target ? joined() : failed("Another update is already starting.");
 				try {
 					if (!deps.isInstalled(target)) {
 						const feed = await deps.fetchRelease(target, deps.feedUrl);
@@ -290,10 +296,12 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 				} catch (error) {
 					return failed(error instanceof Error ? error.message : String(error));
 				}
-				if (requested) return state.version === target ? null : failed("Another update is already starting.");
+				if (requested) return state.version === target ? joined() : failed("Another update is already starting.");
 				pinnedRequest = id;
 				requestUpdate(target);
-				return requested ? null : failed(state.message ?? "Couldn't reach the launcher.");
+				if (requested) return null;
+				pinnedRequest = null; // the launcher was never asked
+				return failed(state.message ?? "Couldn't reach the launcher.");
 			};
 			// Queue behind a check in flight and hold the slot, so a background check can't stage beside it.
 			const done = (checking ?? Promise.resolve()).then(run);

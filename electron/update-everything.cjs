@@ -82,7 +82,7 @@ async function readJSON(response) {
  *   tell({ message, detail })  a native notice with one OK button
  *   progress(origin, text)     cover that server's page with the ghost dashboard line
  *   fail(origin, { kind, message }) show the server window with Retry (or Pair again)
- *   reconnect(origin)          reopen the server's page (after Later)
+ *   reconnect(origin)          uncover the server's page and reload it in the same window (after Later)
  *   saveResult(record) / takeResult()  userData file for the next launch
  *   now(), sleep(ms), timeoutSignal(ms) (defaults to AbortSignal.timeout)
  */
@@ -188,6 +188,11 @@ function createUpdateEverything(deps) {
 			: `Couldn’t reach ${label} for ${HANDOFF_TIMEOUT_MS / 60_000} minutes. Your app wasn’t changed.`, { server: true });
 	}
 
+	/** A saved result whose install never started: read it away, so the next launch offers nothing. */
+	function forgetResult() {
+		try { deps.takeResult(); } catch { /* nothing saved */ }
+	}
+
 	/** PR 2 item 4: the server committed `target` but this app didn't install it.
 	 *  Offer an explicit app-only retry of exactly that version, even when the
 	 *  feed has moved on (a newer version means a new Update everything). */
@@ -212,7 +217,9 @@ function createUpdateEverything(deps) {
 			deps.updater.installPinned(retry.target);
 		} catch {
 			run = null;
-			await deps.tell({ message: "Couldn’t install the app update.", detail: `LearnHarness is still on ${deps.appVersion}. Try again from the app menu’s Check for Updates… or Update everything.` });
+			forgetResult(); // offered once: a relaunch doesn't offer it again
+			// Owner wording, 2026-11-19: point to Update everything (the menu installs the newest app version, not X).
+			await deps.tell({ message: "Couldn’t install the app update.", detail: `LearnHarness is still on ${deps.appVersion} and ${serverLabel(retry.updated ?? retry.server)} is on ${retry.target}. Use Update everything to try again.` });
 		}
 	}
 
@@ -278,7 +285,9 @@ function createUpdateEverything(deps) {
 			deps.saveResult({ savedAt: deps.now(), server: deps.selection()?.origin ?? selection.origin, updated: selection.origin, from: deps.appVersion, target });
 			deps.updater.installPinned(target);
 		} catch (error) {
+			const saved = run?.step === "restarting";
 			run = null;
+			if (saved) forgetResult(); // installPinned threw after saveResult: this session offers the retry itself
 			if (serverDone) {
 				// The server is already on the target: uncover its new page and offer the app-only retry.
 				deps.reconnect(selection.origin);

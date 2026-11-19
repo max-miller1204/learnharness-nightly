@@ -373,7 +373,14 @@ async function createServerList({
 				publish();
 				return;
 			}
-			if (covered) return connect(origin, undefined, { quiet: true });
+			// Later (or the app install failing after the server committed): keep this window and
+			// load the updated server's page in it. A reconnect would destroy the only window first,
+			// and Windows and Linux quit when the last one closes (window-all-closed).
+			if (covered) {
+				covered.cover.reveal();
+				covered.win.webContents.reload();
+				covered.win.focus();
+			}
 		},
 		reopen() {
 			if (ghosting) {
