@@ -116,7 +116,7 @@ async function waitFor(screen, test, timeoutMs = 45_000) {
 		if (test(elements)) return elements;
 		await sleep(1000);
 	}
-	const seen = elements.map(label).filter(Boolean).slice(0, 40).join(" | ");
+	const seen = elements.filter(label).slice(0, 60).map((el) => `${label(el)} [${[el.type, el.role_description].filter(Boolean).join("/")}]`).join(" | ");
 	fail(screen, `not reached within ${timeoutMs / 1000}s. On screen: ${seen}`);
 }
 const has = (text) => (elements) => elements.some((el) => label(el) === text);
@@ -332,9 +332,10 @@ async function phone() {
 	const minted = await api("/api/auth/pairing-token", { method: "POST", body: JSON.stringify({ label: "CI iPhone" }) });
 	const { credential } = await minted.json().catch(() => ({}));
 	if (!minted.ok || !credential) fail("pair", `could not mint a pairing code: ${minted.status}`);
-	await tap("pair", (el) => label(el) === "Server address");
+	const field = (name) => (el) => label(el) === name && /text ?field/i.test(`${el.type ?? ""} ${el.role_description ?? ""} ${el.role ?? ""}`);
+	await tap("pair", field("Server address"));
 	await axe(["type", ORIGIN]);
-	await tap("pair", (el) => label(el) === "Pairing code");
+	await tap("pair", field("Pairing code"));
 	await axe(["type", credential]);
 	await tap("pair", (el) => label(el) === "Connect");
 
