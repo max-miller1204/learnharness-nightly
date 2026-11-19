@@ -9,9 +9,10 @@
  * too. Mounted once in the root layout, inside the events provider.
  *
  * Held back while the server runs a newer version than this page's code
- * (docs/specs/update-control.md): the old page shows the sidebar's "Updated
- * to X. Click to reload." button instead, and the popup shows on the first
- * page that runs X (after the reload, or the next time the app opens). It is
+ * (docs/specs/update-control.md): the old page reloads by itself (or shows
+ * the sidebar's "Updated to X. Click to reload." button until it does), and
+ * the popup shows on the first page that runs X (after the reload, or the
+ * next time the app opens). It is
  * not marked seen while held back, so it is neither lost nor shown twice.
  */
 
