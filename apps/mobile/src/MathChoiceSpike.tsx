@@ -1,14 +1,17 @@
 // First-task spike for docs/specs/mobile-quiz-choice-math.md, shown in place of the
 // app when EXPO_PUBLIC_MATH_SPIKE=1. It is removed once the feature is built.
 import { useEffect, useMemo, useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { LogBox, Pressable, ScrollView, Text, View } from "react-native";
 import { splitLabel, type LabelPiece } from "./choice-math";
-import { spokenLabel, startSpeech } from "./math-speech";
+import { speak, spokenLabel, startSpeech } from "./math-speech";
 import { MathLabel } from "./MathLabel";
 import { radius, space, useTheme } from "./theme";
 
 const MATH_LABEL = "No, $P\\to Q$ is blocked.";
 const PLAIN_LABEL = "Yes, it holds.";
+
+// A LogBox banner would be one more TalkBack stop over the rows; logcat still gets every line.
+LogBox.ignoreAllLogs(true);
 
 const engine = typeof (globalThis as { HermesInternal?: unknown }).HermesInternal === "object" ? "Hermes" : "not Hermes";
 
@@ -26,14 +29,20 @@ export function MathChoiceSpike() {
   const ready = speech === "ready";
   const labels = drawn.pieces?.map((pieces) => spokenLabel(pieces, ready));
   const mathDrawn = drawn.pieces?.[0]?.some((piece) => piece.kind === "math") ?? false;
+  const math = drawn.pieces?.[0]?.find((piece) => piece.kind === "math");
+  const rawSpeech = useMemo(() => ready && math ? diagnoseSpeech(math.drawn.mathml) : "not run", [ready, math]);
   const status = [
     `Engine: ${engine}`,
     `MathJax: ${drawn.error ? `failed: ${drawn.error}` : mathDrawn ? "drew the math" : "did not find math"}`,
     `Speech engine: ${speech}`,
+    `Raw speech for the math: ${rawSpeech}`,
     `Row 1 spoken label: ${labels?.[0] ?? "none"}`,
     `Selected: ${selected === undefined ? "none" : `row ${selected + 1}`}`,
   ];
   useEffect(() => { console.log(`[MathSpike] ${status.join(" | ")}`); });
+  // Each row's final accessibilityLabel, for matching against TalkBack's spoken output.
+  const labelLog = labels?.map((label, index) => `[MathSpike] row ${index + 1} accessibilityLabel=${JSON.stringify(label)} role=radio checked=${selected === index}`).join("\n");
+  useEffect(() => { if (labelLog) console.log(labelLog); }, [labelLog]);
   return (
     <ScrollView contentContainerStyle={{ padding: space.lg, gap: space.md }}>
       <Text accessibilityRole="header" style={s.title}>Math choice spike</Text>
@@ -48,6 +57,27 @@ export function MathChoiceSpike() {
       <Text style={s.ui}>End of spike</Text>
     </ScrollView>
   );
+}
+
+/** What the engine itself returns for the math, before the symbol fallback. The engine
+ * catches its own errors and only logs them, so the logged Error is captured here with its
+ * stack, which names the function that threw. */
+function diagnoseSpeech(mathml: string): string {
+  const log = console.log;
+  const errors: string[] = [];
+  console.log = (...args: unknown[]) => {
+    for (const arg of args) if (arg instanceof Error) errors.push(arg.stack ?? String(arg));
+    log(...args);
+  };
+  let result: string;
+  try { result = JSON.stringify(speak(mathml)); }
+  catch (error) { result = `threw ${String((error as Error)?.stack ?? error)}`; }
+  finally { console.log = log; }
+  if (errors.length) {
+    log(`[MathSpike] speech engine error stack:\n${errors.join("\n---\n")}`);
+    result += `; engine error: ${errors[0]}`;
+  }
+  return result;
 }
 
 /** The design under test: one accessible radio row whose label is spoken whole,
