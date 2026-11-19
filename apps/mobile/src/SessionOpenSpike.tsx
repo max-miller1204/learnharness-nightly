@@ -13,6 +13,7 @@ import mathChat from "../../../tests/fixtures/mobile-session-open/chats/chat_zzo
 import { cachedEquations, drawCount, drawEquation, equationsIn, isDrawn } from "./message-math";
 import { speak, startSpeech } from "./math-speech";
 import type { MobileApi } from "./protocol";
+import { MathWindowContext } from "./math-window";
 import { SLICE_MS, useSessionOpening, type OpeningTrace } from "./session-open";
 import { markdownTexts, Transcript } from "./Transcript";
 import { Button } from "./ui";
@@ -24,12 +25,13 @@ const log = (line: string) => console.log(`[OpenSpike] ${line}`);
 const now = () => performance.now();
 const round = (value: number) => Math.round(value * 10) / 10;
 
-type Mode = "plain" | "scroll-up" | "top";
+type Mode = "plain" | "scroll-up" | "top" | "tour";
 interface Choice { key: string; label: string; chat: unknown; mode: Mode }
 const CHOICES: Choice[] = [
   { key: "long", label: "Long session", chat: longChat, mode: "plain" },
   { key: "long-up", label: "Long, scroll up 600 px when shown", chat: longChat, mode: "scroll-up" },
   { key: "long-top", label: "Long, jump to top when shown", chat: longChat, mode: "top" },
+  { key: "long-tour", label: "Long, then scroll to the top and back", chat: longChat, mode: "tour" },
   { key: "short", label: "Short session", chat: shortChat, mode: "plain" },
   { key: "plain", label: "Session without math", chat: plainChat, mode: "plain" },
   { key: "math", label: "Math cases", chat: mathChat, mode: "plain" },
@@ -44,7 +46,7 @@ export function SessionOpenSpike() {
   const [open, setOpen] = useState<{ choice: Choice; tappedAt: number; run: number }>();
   const runs = useRef(0);
   const [note, setNote] = useState("");
-  useEffect(() => log(`spike ready engine=${engine} dev=${__DEV__} slice=${SLICE_MS}ms`), []);
+  useEffect(() => log(`spike ready engine=${engine} dev=${__DEV__} slice=${JSON.stringify(SLICE_MS)}`), []);
   if (open) return <SpikeSession key={open.run} {...open} back={() => setOpen(undefined)} />;
   return (
     <ScrollView contentContainerStyle={[s.section, { gap: space.md }]}>
@@ -86,9 +88,11 @@ function SpikeSession({ choice, tappedAt, back }: { choice: Choice; tappedAt: nu
   const { s } = useTheme();
   const record = choice.chat as unknown as ChatResponse;
   const settled = useMemo(() => projectView(record.messages), [record]);
-  const stats = useRef({ shownAt: 0, steps: 0, stepMsMax: 0, commitMsMax: 0, stallMax: 0, resizesAfterShown: 0, drawsAtTap: drawCount(), fillDoneAt: 0, anchors: [] as string[] });
+  const stats = useRef({ shownAt: 0, steps: 0, stepMsMax: 0, commitMsMax: 0, stallMax: 0, resizesAfterShown: 0, drawsAtTap: drawCount(), fillDoneAt: 0, anchors: [] as string[], offsetChanges: 0 });
   const layouts = useRef(new Map<string, { y: number; height: number }>());
   const offset = useRef(0);
+  const metrics = useRef({ viewport: 0, content: 0 });
+  const touring = useRef(false);
   const [loaded, setLoaded] = useState(false);
   const shownRef = useRef(false);
 
@@ -105,6 +109,7 @@ function SpikeSession({ choice, tappedAt, back }: { choice: Choice; tappedAt: nu
     if (event === "shown") {
       stats.current.shownAt = at;
       shownRef.current = true;
+      log(`MARK shown +${at}ms`);
     }
     if (event !== "content" || !shownRef.current) log(`+${at}ms ${event} ${JSON.stringify(data)}`);
   }, [tappedAt]);
@@ -157,6 +162,32 @@ function SpikeSession({ choice, tappedAt, back }: { choice: Choice; tappedAt: nu
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opening.shown]);
 
+  /** Scrolls to the top half a screen at a time, then back to the end, noting any on-screen
+   * math whose picture hadn't mounted 100 ms after each step, and the pictures held. */
+  async function tour() {
+    const scroller = opening.scrollProps.ref.current;
+    const { viewport, content } = metrics.current;
+    if (!scroller || !viewport) return;
+    touring.current = true;
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    let blankMax = 0;
+    const visit = async (y: number) => {
+      scroller.scrollTo({ y, animated: false });
+      await wait(100);
+      blankMax = Math.max(blankMax, opening.mathWindow.pendingOnScreen());
+      await wait(50);
+    };
+    log(`MARK tour-start +${round(now() - tappedAt)}ms`);
+    for (let y = offset.current; y > 0; y -= viewport / 2) await visit(Math.max(0, y - viewport / 2));
+    log(`MARK top +${round(now() - tappedAt)}ms livePictures=${opening.mathWindow.livePictures}`);
+    await wait(1000);
+    for (let y = 0; y < content - viewport; y += viewport / 2) await visit(Math.min(content - viewport, y + viewport / 2));
+    await wait(1000);
+    log(`MARK end +${round(now() - tappedAt)}ms livePictures=${opening.mathWindow.livePictures}`);
+    log(`TOUR fixture=${choice.key} blankOnScreenMax=${blankMax} livePicturesNow=${opening.mathWindow.livePictures} livePicturesMax=${opening.mathWindow.livePicturesMax}`);
+    touring.current = false;
+  }
+
   // The result, once every message is in and has had time to settle.
   useEffect(() => {
     if (!opening.shown || opening.from > 0) return;
@@ -171,13 +202,19 @@ function SpikeSession({ choice, tappedAt, back }: { choice: Choice; tappedAt: nu
       }
       const anchorMoves = [...byAnchor.entries()].filter(([, positions]) => positions.size > 1).map(([id, positions]) => `${id}:${[...positions].join("/")}`);
       const { shownAt, steps, stepMsMax, commitMsMax, stallMax, resizesAfterShown, drawsAtTap, fillDoneAt } = stats.current;
+      const pictures = opening.mathWindow;
+      log(`MARK filled +${fillDoneAt}ms`);
       log(`RESULT fixture=${choice.key} engine=${engine} dev=${__DEV__} tapToShownMs=${shownAt} fillDoneMs=${fillDoneAt}`
         + ` messages=${settled.length} equations=${equations.length} latestEquations=${latest.length} latestAllDrawn=${latest.every(isDrawn)}`
         + ` drawnThisRun=${drawCount() - drawsAtTap} steps=${steps} stepMsMax=${stepMsMax} commitMsMax=${commitMsMax} jsStallMaxMs=${Math.round(stallMax)}`
-        + ` resizesAfterShown=${resizesAfterShown} anchorMoves=${anchorMoves.length ? anchorMoves.join(",") : "none"}`);
+        + ` resizesAfterShown=${resizesAfterShown} anchorMoves=${anchorMoves.length ? anchorMoves.join(",") : "none"}`
+        + ` livePicturesNow=${pictures.livePictures} livePicturesMax=${pictures.livePicturesMax} offsetChangesAfterShown=${stats.current.offsetChanges}`);
+      if (choice.mode === "tour") void tour();
     }, 600);
     return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opening.shown, opening.from, settled, choice.key, tappedAt]);
+
 
   const onMessageLayout = useCallback((id: string, { nativeEvent: { layout } }: LayoutChangeEvent) => {
     const before = layouts.current.get(id);
@@ -201,9 +238,21 @@ function SpikeSession({ choice, tappedAt, back }: { choice: Choice; tappedAt: nu
       <View style={{ flex: 1 }}>
         <ScrollView {...scrollProps} style={{ flex: 1, opacity: opening.shown ? 1 : 0 }} contentContainerStyle={[s.section, { gap: space.lg }]}
           importantForAccessibility={opening.shown ? "auto" : "no-hide-descendants"} accessibilityElementsHidden={!opening.shown}
-          onScroll={(event: NativeSyntheticEvent<NativeScrollEvent>) => { offset.current = event.nativeEvent.contentOffset.y; onScroll(event); }}>
-          <Transcript settled={settled} from={opening.from} tail={EMPTY} api={NO_API} chatId={record.id} jobs={[]} liveHelpers={false} openPlan={() => {}}
-            files={new Map()} unavailableFiles={new Set()} onMessageLayout={onMessageLayout} />
+          onScroll={(event: NativeSyntheticEvent<NativeScrollEvent>) => {
+            const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+            // Any scroll the spike didn't ask for after showing, to catch a pixel's shift.
+            if (shownRef.current && choice.mode === "plain" && contentOffset.y !== offset.current) {
+              stats.current.offsetChanges++;
+              log(`+${round(now() - tappedAt)}ms offset ${round(offset.current)}->${round(contentOffset.y)} content=${round(contentSize.height)}`);
+            }
+            offset.current = contentOffset.y;
+            metrics.current = { viewport: layoutMeasurement.height, content: contentSize.height };
+            onScroll(event);
+          }}>
+          <MathWindowContext.Provider value={opening.mathWindow}>
+            <Transcript settled={settled} from={opening.from} tail={EMPTY} api={NO_API} chatId={record.id} jobs={[]} liveHelpers={false} openPlan={() => {}}
+              files={new Map()} unavailableFiles={new Set()} onMessageLayout={onMessageLayout} />
+          </MathWindowContext.Provider>
         </ScrollView>
         {!opening.shown && (
           <View style={[s.section, { position: "absolute", top: 0, left: 0, right: 0 }]}>

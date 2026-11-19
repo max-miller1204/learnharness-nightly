@@ -36,6 +36,13 @@ T3 references are to github.com/pingdotgg/t3code at `3ce2145864f1e8b822cc8dff9c8
    - Content added above the visible messages leaves them still on screen.
 3. If either fails, **stop and report to the owner** with the evidence.
 
+**Owner decision after the first spike (2026-11-19).** The first spike (`cb1eee8`, release build on the ThinkPad emulator) mounted every equation's picture with its message. It showed the latest message fully drawn after only "Loading session…", but took 2,233 ms from the tap (the limit is 2 s), shifted the content down by one pixel about 2.1 s after showing, held the JS thread for one 1,799 ms commit while older messages filled in, and crashed about 22 s after the tap with an `OutOfMemoryError`. Each react-native-svg `SvgView` draws into its own bitmap on Android (`SvgView.java`, around line 280), and all of about 1,291 stayed mounted. The owner chose a second spike with this approach:
+
+- Every equation's box is sized up front from MathJax's measured width, height and depth, which come with drawing it and need no view. A picture appearing or going away never moves anything.
+- Only blocks on or near the screen mount their pictures. Blocks that scroll far away unmount theirs and free the views. Memory stays bounded however long the session is.
+- Messages themselves stay mounted, so this is not the virtualized message list ruled out below. Only the math pictures are lazy.
+- The 2 s open stays. No commit while older messages fill in may hold the JS thread over 500 ms, and the one-pixel shift is fixed.
+
 ## 2. Goals and non-goals
 
 **Goals.**
@@ -69,7 +76,8 @@ T3 references are to github.com/pingdotgg/t3code at `3ce2145864f1e8b822cc8dff9c8
 | The quiz spec's math rules still hold for message math: AI-written math is untrusted, the same packages stay off, broken math shows its source text, nothing loads from the network, and faint colors switch to the theme's text color. Must still satisfy `docs/specs/mobile-quiz-choice-math.md` Constraints. | Unit tests, proof 3 | machine |
 | Math follows the theme: Default when the phone is dark, Ivory when it is light. | Proof 3 | machine |
 | Each distinct equation is drawn at most once per app run. The cache lives in memory only and has a size cap. | Unit test | machine |
-| The app stays responsive while older math draws: Back responds within 500 ms. | Proof 2 | machine |
+| The app stays responsive while older math draws: Back responds within 500 ms, and no commit holds the JS thread over 500 ms. | Proof 2 | machine |
+| Memory stays bounded however long the session is: only blocks on or near the screen hold picture views. | Proof 2 (peak memory from `adb shell dumpsys meminfo` across the long session, including scrolling to the top and back) | machine |
 | A paragraph with math is one screen-reader stop with the math spoken. | Proof 4 (real TalkBack driver) | machine |
 | Everything works from the keyboard (AGENTS.md), including the "Scroll to end" button. | Proof 5 | machine |
 | The change is JavaScript only: the native fingerprint is unchanged, so it ships as an OTA update. | Proof 7 | machine |

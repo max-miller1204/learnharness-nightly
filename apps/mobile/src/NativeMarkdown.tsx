@@ -1,6 +1,7 @@
-import { Fragment, memo, type ReactNode } from "react";
-import { Text, View, useWindowDimensions } from "react-native";
+import { Fragment, memo, type ReactElement, type ReactNode, type RefObject } from "react";
+import { Text, View, useWindowDimensions, type HostInstance, type LayoutChangeEvent } from "react-native";
 import { drawEquation, equationOf } from "./message-math";
+import { useLivePictures } from "./math-window";
 import { fit, lineHeightFor, MathPicture, MATH_SCALE, MAX_LINES, type Size } from "./MathLabel";
 import { httpsLink, type MarkdownToken } from "./render-markdown";
 import { fonts, radius, space, useTheme } from "./theme";
@@ -12,6 +13,20 @@ const BESIDE_TEXT = 120;
 interface Node {
   token: MarkdownToken;
   children: Node[];
+}
+
+/** Gives a block whether its pictures show now (math-window.ts), for its own view. */
+function Live({ pictures, children }: {
+  pictures: number;
+  children: (live: boolean, ref: RefObject<HostInstance | null>, onLayout?: (event: LayoutChangeEvent) => void) => ReactElement;
+}) {
+  const { live, ref, onLayout } = useLivePictures(pictures);
+  return children(live, ref, onLayout);
+}
+
+interface InlineMath {
+  sizes: Map<MarkdownToken, Size>;
+  live: boolean;
 }
 
 function tokenTree(tokens: MarkdownToken[]): Node[] {
@@ -53,20 +68,28 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
   function line(key: number, nodes: Node[], style: { fontSize: number; lineHeight: number }, extra?: object, role?: "header") {
     const sizes = mathSizes(nodes, style.fontSize, style.lineHeight);
     const lineHeight = sizes.size ? lineHeightFor([...sizes.values()], style.fontSize, style.lineHeight, fontScale) : style.lineHeight;
-    return <Text key={key} accessibilityRole={role} selectable style={[s.prose, style, extra, { lineHeight }]}>{inline(nodes, sizes)}</Text>;
+    return (
+      <Live key={key} pictures={sizes.size}>
+        {(live, ref, onLayout) => (
+          <Text ref={ref} onLayout={onLayout} accessibilityRole={role} selectable style={[s.prose, style, extra, { lineHeight }]}>
+            {inline(nodes, { sizes, live })}
+          </Text>
+        )}
+      </Live>
+    );
   }
 
   // Each weight and slant is its own font file, so nested emphasis picks the combined face.
-  function inline(nodes: Node[], sizes: Map<MarkdownToken, Size>, bold = false, italic = false): ReactNode {
+  function inline(nodes: Node[], math: InlineMath, bold = false, italic = false): ReactNode {
     const face = (b: boolean, i: boolean) => b ? (i ? fonts.proseBoldItalic : fonts.proseBold) : i ? fonts.proseItalic : fonts.prose;
     return nodes.map(({ token, children }, index) => {
       switch (token.type) {
         case "strong_open":
-          return <Text key={index} style={{ fontFamily: face(true, italic), color: c.strong }}>{inline(children, sizes, true, italic)}</Text>;
+          return <Text key={index} style={{ fontFamily: face(true, italic), color: c.strong }}>{inline(children, math, true, italic)}</Text>;
         case "em_open":
-          return <Text key={index} style={{ fontFamily: face(bold, true), color: c.italic }}>{inline(children, sizes, bold, true)}</Text>;
+          return <Text key={index} style={{ fontFamily: face(bold, true), color: c.italic }}>{inline(children, math, bold, true)}</Text>;
         case "s_open":
-          return <Text key={index} style={{ textDecorationLine: "line-through" }}>{inline(children, sizes, bold, italic)}</Text>;
+          return <Text key={index} style={{ textDecorationLine: "line-through" }}>{inline(children, math, bold, italic)}</Text>;
         case "code_inline":
           return <Text key={index} style={[s.well, { fontSize: 14 }]}>{token.content}</Text>;
         case "softbreak":
@@ -76,17 +99,17 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
           const href = httpsLink(token.attrGet("href"));
           return <Text key={index} accessibilityRole={href ? "link" : undefined}
             onPress={href ? () => openLink(href) : undefined}
-            style={href ? { color: c.text, textDecorationLine: "underline" } : undefined}>{inline(children, sizes, bold, italic)}</Text>;
+            style={href ? { color: c.text, textDecorationLine: "underline" } : undefined}>{inline(children, math, bold, italic)}</Text>;
         }
         case "math_inline": {
-          const size = sizes.get(token);
+          const size = math.sizes.get(token);
           const drawn = size && drawEquation(equationOf(token) as NonNullable<ReturnType<typeof equationOf>>);
           // Math that can't be drawn shows its source.
           if (!size || !drawn) return token.markup === "$" ? `$${token.content}$` : `\\(${token.content}\\)`;
-          return <MathPicture key={index} svg={drawn.svg[c.mode]} drawn={drawn} size={size} scale={fontScale} color={c.text} inline />;
+          return <MathPicture key={index} svg={drawn.svg[c.mode]} drawn={drawn} size={size} scale={fontScale} color={c.text} live={math.live} inline />;
         }
         default:
-          return children.length > 0 ? inline(children, sizes, bold, italic) : token.content;
+          return children.length > 0 ? inline(children, math, bold, italic) : token.content;
       }
     });
   }
@@ -142,10 +165,14 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
           if (!drawn) return <Text key={index} selectable style={s.prose}>{token.content.trim()}</Text>;
           // Display math is centered as on the web, and scales down to fit the column instead of scrolling.
           return (
-            <View key={index} style={{ alignItems: "center" }}>
-              <MathPicture svg={drawn.svg[c.mode]} drawn={drawn} size={fit(drawn, s.prose.fontSize * MATH_SCALE, Infinity, MAX_LINES * s.prose.lineHeight)}
-                scale={fontScale} color={c.text} />
-            </View>
+            <Live key={index} pictures={1}>
+              {(live, ref, onLayout) => (
+                <View ref={ref} onLayout={onLayout} style={{ alignItems: "center" }}>
+                  <MathPicture svg={drawn.svg[c.mode]} drawn={drawn} size={fit(drawn, s.prose.fontSize * MATH_SCALE, Infinity, MAX_LINES * s.prose.lineHeight)}
+                    scale={fontScale} color={c.text} live={live} />
+                </View>
+              )}
+            </Live>
           );
         }
         default:

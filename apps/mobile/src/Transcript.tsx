@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
-import { Image, Pressable, Text, useWindowDimensions, View, type LayoutChangeEvent } from "react-native";
+import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Image, Pressable, Text, useWindowDimensions, View, type HostInstance, type LayoutChangeEvent, type StyleProp, type ViewStyle } from "react-native";
+import { MathWindowContext, MessageScope } from "./math-window";
 import { PROTOCOL_ROUTES, type AttachmentReference, type ImageSnapshot, type JobRecord, type LhMessage } from "../../../src/client-protocol/index.ts";
 import type { PlanBlockData } from "../../../src/core/contracts/chat.ts";
 import { blockLayout, GRAPH_PAD, TEXT_CAP_SCALE } from "../../../src/core/plan-layout.ts";
@@ -79,6 +80,25 @@ export function markdownTexts(message: LhViewMessage): string[] {
     }
     return [];
   }).filter((text): text is string => typeof text === "string" && text.length > 0);
+}
+
+/** A settled message's own view. Its blocks of math place themselves inside it, and it tells
+ * the session's math window where it is (math-window.ts). */
+function MessageFrame({ id, style, children, onMessageLayout }: {
+  id: string; style?: StyleProp<ViewStyle>; children: ReactNode; onMessageLayout?: (id: string, event: LayoutChangeEvent) => void;
+}) {
+  const window = useContext(MathWindowContext);
+  const ref = useRef<HostInstance | null>(null);
+  const scope = useMemo(() => ({ id, ref }), [id]);
+  useEffect(() => () => window?.removeMessage(id), [window, id]);
+  return (
+    <MessageScope.Provider value={scope}>
+      <View ref={ref} style={style} onLayout={(event) => {
+        window?.setMessage(id, event.nativeEvent.layout.y, event.nativeEvent.layout.height);
+        onMessageLayout?.(id, event);
+      }}>{children}</View>
+    </MessageScope.Provider>
+  );
 }
 
 type PartContext = { api: MobileApi; chatId: string; jobs: readonly JobRecord[]; liveHelpers: boolean; openPlan: () => void };
@@ -167,9 +187,9 @@ export function Transcript({ settled, from = 0, tail, api, chatId, jobs, liveHel
   return (
     <>
       {settled.slice(from).map((message) => {
-        const layout = onMessageLayout && ((event: LayoutChangeEvent) => onMessageLayout(message.id, event));
-        if (isSubagentSteer(message)) return <View key={message.id} onLayout={layout}><SteerCard message={message} /></View>;
-        if (message.parts.some(({ type }) => type === "data-probe-handoff")) return <View key={message.id} onLayout={layout}><SeamDivider label="Planning" /></View>;
+        const frame = { id: message.id, onMessageLayout };
+        if (isSubagentSteer(message)) return <MessageFrame key={message.id} {...frame}><SteerCard message={message} /></MessageFrame>;
+        if (message.parts.some(({ type }) => type === "data-probe-handoff")) return <MessageFrame key={message.id} {...frame}><SeamDivider label="Planning" /></MessageFrame>;
         const teachAt = seam?.messageId === message.id ? seam.stepIndex : null;
         const parts = message.parts.map((part, index) => index === teachAt && part.type === "step-start"
           ? <SeamDivider key={part.id ?? index} label="Teaching" />
@@ -177,14 +197,14 @@ export function Transcript({ settled, from = 0, tail, api, chatId, jobs, liveHel
         // The learner's words sit in the web's band: card fill, left rail, YOU label.
         if (message.role === "user" && message.parts.some(({ type }) => type === "text")) {
           const attached = files.get(message.id);
-          return <View key={message.id} onLayout={layout} style={s.band}><Label>You</Label>{parts}
-            {attached && <View style={{ paddingVertical: space.xs }}><SavedChips files={attached} unavailable={unavailableFiles} /></View>}</View>;
+          return <MessageFrame key={message.id} {...frame} style={s.band}><Label>You</Label>{parts}
+            {attached && <View style={{ paddingVertical: space.xs }}><SavedChips files={attached} unavailable={unavailableFiles} /></View>}</MessageFrame>;
         }
         return (
-          <View key={message.id} onLayout={layout} style={{ gap: space.sm }}>
+          <MessageFrame key={message.id} {...frame} style={{ gap: space.sm }}>
             {teachAt === -1 && <SeamDivider label="Teaching" />}
             {parts}
-          </View>
+          </MessageFrame>
         );
       })}
       {live.map((message, messageIndex) => (

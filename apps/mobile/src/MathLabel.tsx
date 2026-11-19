@@ -104,8 +104,10 @@ export function MathLabel({ pieces, style, color }: { pieces: LabelPiece[]; styl
   );
 }
 
-export function MathPicture({ svg, drawn, size, scale, color, inline }: {
-  svg: string; drawn: DrawnMath; size: Size; scale: number; color: string; inline?: boolean;
+/** A drawn equation in a box of its exact size. Without `live` the box stays empty, so a
+ * picture coming or going never moves anything. */
+export function MathPicture({ svg, drawn, size, scale, color, inline, live = true }: {
+  svg: string; drawn: DrawnMath; size: Size; scale: number; color: string; inline?: boolean; live?: boolean;
 }) {
   const width = size.width * scale;
   const height = size.height * scale;
@@ -113,7 +115,7 @@ export function MathPicture({ svg, drawn, size, scale, color, inline }: {
     // Block math scales down to fit the row instead of scrolling; the layout pass sizes it, not a re-measure.
     return (
       <View style={{ width, maxWidth: "100%", aspectRatio: drawn.width / drawn.height }}>
-        <Picture svg={svg} color={color} />
+        {live && <Picture svg={svg} color={color} />}
       </View>
     );
   }
@@ -122,7 +124,7 @@ export function MathPicture({ svg, drawn, size, scale, color, inline }: {
   return (
     <View style={{ width, height: (size.height - size.depth) * scale }}>
       <View style={{ position: "absolute", top: 0, left: 0, width, height }}>
-        <Picture svg={svg} color={color} />
+        {live && <Picture svg={svg} color={color} />}
       </View>
     </View>
   );
