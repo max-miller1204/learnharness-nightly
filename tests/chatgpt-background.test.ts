@@ -37,8 +37,8 @@ after(() => {
 });
 
 for (const revokedAfterQueue of [false, true]) {
-	// The timeout only guards a hang. Each case waits out the pump's real 750 ms
-	// grace and makes synchronous fsync'd store writes, which a loaded CI disk
+	// The timeout only guards a hang. Each case waits out the pump's real GRACE_MS
+	// (src/server/jobs.ts) and makes synchronous fsync'd store writes, which a loaded CI disk
 	// can stall for many seconds while blocking the event loop.
 	test(`mixed learner+automatic batch: foreground runs, automatic result stays owned/deferred without consent (${revokedAfterQueue ? "revoked after handoff" : "initially off"})`, { timeout: 30_000 }, async (t) => {
 		connection(revokedAfterQueue);
