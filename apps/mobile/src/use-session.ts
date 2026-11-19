@@ -118,6 +118,7 @@ export function useSession(api: MobileApi, id: string, active: boolean, connecti
           latest.current = fresh;
           setRecord(fresh);
           setRefreshError("");
+          setDeleted(false);
           const outstanding = pending.current;
           if (outstanding && inputWasSaved(fresh.messages, outstanding.priorIds, outstanding.input)) {
             pending.current = null;
@@ -145,8 +146,9 @@ export function useSession(api: MobileApi, id: string, active: boolean, connecti
       } catch (error) {
         if (!signal.aborted && !connectionFault(error)) {
           setRefreshError(errorText(error));
-          if (error instanceof ApiError && error.status === 404) setDeleted(true);
-          else retry();
+          const gone = error instanceof ApiError && error.status === 404;
+          setDeleted(gone);
+          if (!gone) retry();
         }
       } finally {
         if (!signal.aborted) setLoading(false);
