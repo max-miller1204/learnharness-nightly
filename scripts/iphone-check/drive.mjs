@@ -76,7 +76,9 @@ function flatten(nodes, out = []) {
 const label = (el) => String(el.AXLabel ?? "").trim();
 const frame = (el) => el.frame ?? { x: 0, y: 0, width: 0, height: 0 };
 const center = (el) => ({ x: Math.round(frame(el).x + frame(el).width / 2), y: Math.round(frame(el).y + frame(el).height / 2) });
-const isChoice = (el) => /radio|check ?box/i.test(`${el.role_description ?? ""} ${el.type ?? ""} ${el.role ?? ""}`);
+// React Native on iOS announces a radio or checkbox role in the value
+// ("radio button, unchecked"), since UIKit has no such trait.
+const isChoice = (el) => /radio|check ?box/i.test(`${el.AXValue ?? ""} ${el.role_description ?? ""} ${el.type ?? ""} ${el.role ?? ""}`);
 
 let screenSize = { width: 402, height: 874 };
 async function describe() {
@@ -116,7 +118,7 @@ async function waitFor(screen, test, timeoutMs = 45_000) {
 		if (test(elements)) return elements;
 		await sleep(1000);
 	}
-	const seen = elements.filter(label).slice(0, 60).map((el) => `${label(el)} [${[el.type, el.role_description].filter(Boolean).join("/")}]`).join(" | ");
+	const seen = elements.filter(label).slice(0, 60).map((el) => `${label(el)} [${[el.type, el.role_description, el.AXValue].filter(Boolean).join("/")}]`).join(" | ");
 	fail(screen, `not reached within ${timeoutMs / 1000}s. On screen: ${seen}`);
 }
 const has = (text) => (elements) => elements.some((el) => label(el) === text);
