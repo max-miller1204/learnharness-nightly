@@ -46,3 +46,22 @@ export const SESSION_ACTIONS: readonly { id: SessionAction; title: string; label
 
 /** No menu on a server without the session basics routes. */
 export const sessionActions = (info: Pick<ServerInfo, "capabilities">) => hasCapability(info, SESSION_BASICS_V1) ? SESSION_ACTIONS : [];
+
+/** The long-press menu's native view sees the same touch as the row, so the
+ *  release after a hold that opened the menu would also open the session.
+ *  The menu reports opening while the finger is still down; that press is
+ *  then not a tap. */
+export function menuPressGuard() {
+  let menuShown = false;
+  return {
+    pressIn() { menuShown = false; },
+    menuOpened() { menuShown = true; },
+    menuClosed() { menuShown = false; },
+    /** True when this press should open the session. */
+    released() {
+      const tap = !menuShown;
+      menuShown = false;
+      return tap;
+    },
+  };
+}

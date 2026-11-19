@@ -5,7 +5,7 @@ import { SESSION_BASICS_V1, type ChatListItem } from "../../../src/client-protoc
 import { resolveTheme } from "../../../src/core/themes.ts";
 import { apiClient } from "../src/protocol.ts";
 import { RENAME_EMPTY, deleteFlow, deleteSession, exportFileName, exportFolderName, renameSession, staleExportFolders } from "../src/session-actions.ts";
-import { KIND_FILTERS, KIND_FILTER_KEY, emptyListText, readKindFilter, sessionActions, shownSessions } from "../src/session-list.ts";
+import { KIND_FILTERS, KIND_FILTER_KEY, emptyListText, menuPressGuard, readKindFilter, sessionActions, shownSessions } from "../src/session-list.ts";
 import { freshView, workspaceView } from "../src/workspace-view.ts";
 
 const origin = "https://test.learnharness.example";
@@ -80,6 +80,23 @@ test("the query survives opening a session and coming back; a new server's works
   }
   // App.tsx mounts a new Workspace for each server connection.
   assert.deepEqual(freshView(), { page: { type: "list" }, query: "" });
+});
+
+test("the release after a hold that opened the menu does not open the session", () => {
+  const guard = menuPressGuard();
+  guard.pressIn();
+  assert.equal(guard.released(), true, "a tap opens the session");
+  guard.pressIn();
+  guard.menuOpened();
+  assert.equal(guard.released(), false, "the hold's release leaves the menu up");
+  guard.menuClosed();
+  guard.pressIn();
+  assert.equal(guard.released(), true, "the next tap opens the session again");
+  // A screen reader activates without a press-in; a menu dismissed without a release resets too.
+  guard.pressIn();
+  guard.menuOpened();
+  guard.menuClosed();
+  assert.equal(guard.released(), true);
 });
 
 test("rename sends the trimmed text and keeps the server's title", async () => {
@@ -201,4 +218,14 @@ test("the launch screen follows the phone's setting with the app's palette", () 
   const splash = config.expo.plugins.find((plugin) => Array.isArray(plugin) && plugin[0] === "expo-splash-screen") as [string, { backgroundColor: string; dark: { backgroundColor: string } }];
   assert.equal(splash[1].backgroundColor, resolveTheme("ivory").colors.background);
   assert.equal(splash[1].dark.backgroundColor, resolveTheme("default").colors.background);
+});
+
+test("the Android menu uses the web menu's palette in both themes", () => {
+  const config = JSON.parse(readFileSync(new URL("../app.json", import.meta.url), "utf8")) as { expo: { plugins: unknown[] } };
+  const menu = config.expo.plugins.find((plugin) => Array.isArray(plugin) && plugin[0] === "./plugins/android-menu-theme.js") as
+    [string, Record<"light" | "dark", { surface: string; border: string; text: string }>];
+  for (const [mode, theme] of [["light", "ivory"], ["dark", "default"]] as const) {
+    const { colors } = resolveTheme(theme);
+    assert.deepEqual(menu[1][mode], { surface: colors.surface, border: colors.border, text: colors.text }, mode);
+  }
 });

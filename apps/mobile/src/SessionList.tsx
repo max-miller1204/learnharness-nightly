@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { KeyboardAvoidingView, Modal, Pressable, Text, TextInput, View } from "react-native";
+import { KeyboardAvoidingView, Modal, Platform, Pressable, Text, TextInput, View } from "react-native";
 import { MenuView } from "@react-native-menu/menu";
 import type { ChatListItem } from "../../../src/client-protocol/index.ts";
 import { DELETE_SESSION_COPY } from "../../../src/core/session-delete-copy.ts";
 import type { MobileApi } from "./protocol";
 import { deleteFlow, type DeleteBoxState } from "./session-actions";
-import { KIND_FILTERS, type SessionAction, type SessionKindFilter, type sessionActions } from "./session-list";
+import { KIND_FILTERS, menuPressGuard, type SessionAction, type SessionKindFilter, type sessionActions } from "./session-list";
 import { alpha, fonts, radius, space, useTheme } from "./theme";
 
 /** The Sessions header's search field (components/sidebar.tsx). */
@@ -44,8 +44,9 @@ export function SessionRow({ chat, actions, onOpen, onAction }: {
   chat: ChatListItem; actions: ReturnType<typeof sessionActions>; onOpen: () => void; onAction: (action: SessionAction) => void;
 }) {
   const { c, s } = useTheme();
+  const [guard] = useState(menuPressGuard);
   const row = (
-    <Pressable accessibilityRole="button" onPress={onOpen}
+    <Pressable accessibilityRole="button" onPressIn={guard.pressIn} onPress={() => { if (guard.released()) onOpen(); }}
       accessibilityActions={actions.map(({ id, label }) => ({ name: id, label }))}
       onAccessibilityAction={({ nativeEvent }) => onAction(nativeEvent.actionName as SessionAction)}
       style={({ pressed }) => ({ marginBottom: 2, paddingHorizontal: space.md, paddingVertical: space.sm, borderRadius: radius.lg, borderCurve: "continuous", backgroundColor: pressed ? c.hover : "transparent" })}>
@@ -55,8 +56,11 @@ export function SessionRow({ chat, actions, onOpen, onAction }: {
   );
   if (!actions.length) return row;
   return (
-    <MenuView shouldOpenOnLongPress themeVariant={c.mode} onPressAction={({ nativeEvent }) => onAction(nativeEvent.event as SessionAction)}
-      actions={actions.map(({ id, title, destructive }) => destructive ? { id, title, attributes: { destructive }, titleColor: c.error } : { id, title })}>
+    <MenuView shouldOpenOnLongPress themeVariant={c.mode} onOpenMenu={guard.menuOpened} onCloseMenu={guard.menuClosed}
+      onPressAction={({ nativeEvent }) => onAction(nativeEvent.event as SessionAction)}
+      // Android paints `destructive` pure red over titleColor (MenuView.kt), so it gets the theme's error color only.
+      actions={actions.map(({ id, title, destructive }) => !destructive ? { id, title }
+        : Platform.OS === "ios" ? { id, title, attributes: { destructive } } : { id, title, titleColor: c.error })}>
       {row}
     </MenuView>
   );
