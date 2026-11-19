@@ -167,7 +167,9 @@ export function accumulateJobUsage(
  *     ONE central client poll of GET /api/jobs?chatId=… (in Chat) drives every
  *     job surface: the transcript dispatch cards (live activity by
  *     toolCallId, quiet one-liner after worker completion), the sub-agents sidebar
- *     panel, and the single re-sync when a job settles.
+ *     panel, and the single re-sync when a job settles. That list is status
+ *     only: it never carries result, input, usage, delivery or plugin.input;
+ *     the result reaches the UI through the steer marker (3 below).
  *
  *  3. Dispatch saves input on the job before spawn. On completion the
  *     runner saves result + terminal worker status + pending delivery in

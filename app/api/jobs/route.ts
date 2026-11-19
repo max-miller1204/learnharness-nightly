@@ -1,4 +1,4 @@
-import { isTurnRunning, listJobs, type JobsResponse } from "@/src/server";
+import { isTurnRunning, jobStatusOnly, listJobs, type JobsResponse } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +10,11 @@ export const dynamic = "force-dynamic";
  * poll is retired). It drives the dispatch cards, the sub-agents panel,
  * and the re-sync when a job settles. `turnInFlight` rides along for the
  * settle logic's idle check.
+ *
+ * Each job is status only (jobStatusOnly, docs/specs/jobs-payload.md): no
+ * `result`, `input`, `usage`, `delivery` or `plugin.input`. Results reach
+ * clients through the saved transcript. listJobs still runs the recovery
+ * sweep and returns full records; only this response is trimmed.
  */
 export async function GET(req: Request) {
 	const chatId = new URL(req.url).searchParams.get("chatId");
@@ -19,5 +24,5 @@ export async function GET(req: Request) {
 	if (!/^[A-Za-z0-9_-]+$/.test(chatId)) {
 		return Response.json({ error: "Invalid chatId" }, { status: 400 });
 	}
-	return Response.json({ jobs: listJobs(chatId), turnInFlight: isTurnRunning(chatId) } satisfies JobsResponse);
+	return Response.json({ jobs: listJobs(chatId).map(jobStatusOnly), turnInFlight: isTurnRunning(chatId) } satisfies JobsResponse);
 }
