@@ -47,9 +47,10 @@ echo $! >"$SD/fake-model.pid"
 APP_PORT=$(free_port)
 # Login (docs/specs/login-pairing.md): a build that has the login store gets a
 # session written into it, the way `lh` does; a base build from before has none.
+# It lasts 12 hours, not lh's 5 minutes: a drive can outlast that.
 APP_TOKEN=
 if [ -f "$BUILD/selfhost/src/auth-store.ts" ]; then
-	APP_TOKEN=$(node -e 'import(process.argv[1]).then((m) => console.log(m.issueSession(process.argv[2], { method: "cli", client: { label: "prove", deviceType: "bot" } }).token))' "$BUILD/selfhost/src/auth-store.ts" "$SD/data")
+	APP_TOKEN=$(node -e 'import(process.argv[1]).then((m) => console.log(m.issueSession(process.argv[2], { method: "cli", ttlMs: 12 * 3600_000, client: { label: "prove", deviceType: "bot" } }).token))' "$BUILD/selfhost/src/auth-store.ts" "$SD/data")
 fi
 # env -i: no ambient provider keys, tokens or LH_* settings reach the app.
 # PROVE_MODEL=claude-code keeps your real HOME so the claude CLI finds its login.
