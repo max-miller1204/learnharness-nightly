@@ -10,6 +10,7 @@ Item 20 wants the Gemini CLI for one reason: Google/Gemini **subscriptions** can
 - What still works is a Gemini API key, Vertex AI, or a gateway URL. LearnHarness already supports API-key Gemini directly, so a CLI provider on those terms adds nothing.
 - Antigravity is already on item 20's "Rejected for now" list: Grok CLI and GitHub Copilot CLI (they duplicate the existing Grok and Copilot sign-ins), Cursor CLI, OpenCode, Kiro, Antigravity, and letting a CLI run as a full agent (owner).
 - Item 20's scope rule (owner): **Scope is small on purpose:** add these two CLIs, each built **exactly like the Claude Code provider**. No new agent architecture, no ACP layer, no builder-job agents, no multi-provider framework. Keep changes to the core small.
+- Item 20's model rule (owner): Each CLI is a **model**, not an agent: its own tools turned off, LearnHarness's tools only, LearnHarness keeps the agent loop and the transcript.
 
 The owner decided to drop the Gemini CLI provider. Look at it again only if Google brings back personal-subscription sign-in for the CLI.
 
