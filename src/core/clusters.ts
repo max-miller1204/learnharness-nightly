@@ -1,5 +1,5 @@
 /**
- * CLUSTER PRESENTATION RULES (vision §1). DETECTION is birth-session
+ * CLUSTER PRESENTATION RULES. DETECTION is birth-session
  * clustering since wave 7 (core/session-clusters.ts; the semantic
  * embedder, its Louvain predecessor, and the LLM label matcher are all
  * dead — labels are session names now). What remains here is the

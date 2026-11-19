@@ -15,6 +15,7 @@ Goal: the graph's **Extract files** takes Office and OpenDocument documents, RTF
 7. **Default excludes**, on top of today's hidden-file rule and `.gitignore`: folders `node_modules`, `vendor`, `dist`, `build`, `out`, `target`, `__pycache__`, `venv`, `coverage`, `bin`, `obj`; files `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `Cargo.lock`, `poetry.lock`, `Gemfile.lock`, `composer.lock`, `go.sum`, `*.min.js`, `*.min.css`, `*.map`.
 8. **Prompts:** documents and image descriptions use today's notes prompt unchanged. Code gets its own goal and selection paragraphs (wording below); the shared rules are identical.
 9. **Estimate** is computed in the browser: text and code measured exactly, images priced per image, PDFs and documents guessed from file size and marked rough. Rates come from the current models through a small server endpoint.
+10. **One converter heap limit, 192 MB, on every runtime** (owner, 2026-11-17). Electron builds V8 with pointer compression and Node doesn't, so the same limit holds about twice as much data in the desktop app. Notebooks made of millions of tiny JSON values can therefore fail to convert on the self-hosted server (`lh`, Node) yet convert in the desktop app. Measured on a 15 MiB notebook of 5.2 million empty cells: parsing it needs about 320 MB of heap on Node 26 (over the limit, so it fails) and 160 MB on Electron 44 (under it). Real notebooks and all XML formats stay far below the limit on both, and T3 Code behaves the same way. Accepted as is.
 
 ## Adopted from T3 Code (veto any)
 

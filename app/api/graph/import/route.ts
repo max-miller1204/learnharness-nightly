@@ -1,6 +1,6 @@
 /**
  * POST /api/graph/import — the format-agnostic front door's transport
- * (vision §1, 2026-09-13): raw personal-notes files in, one extraction run
+ * (2026-09-13): raw personal-notes files in, one extraction run
  * per file through the SAME pipeline the sessions use. Multipart form data
  * (field "files"); the pipeline mints a deterministic source id per file
  * path, persists the source record (the file's provenance + the run's usage),

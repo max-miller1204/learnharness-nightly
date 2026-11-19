@@ -1,5 +1,5 @@
 /**
- * Graph merger + trigger + derivation tests (vision §1, 2026-09-02 redesign;
+ * Graph merger + trigger + derivation tests (2026-09-02 redesign;
  * events cleanup 2026-09-27).
  * The merger (core/graph.ts mergeFindings) is the pipeline's deterministic
  * apply stage: AUDITED VERDICTS in, ledger appends out — link-or-create

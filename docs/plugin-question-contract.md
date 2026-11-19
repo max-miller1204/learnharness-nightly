@@ -262,3 +262,6 @@ reconnect/adoption, exact occurrences, schemas/local references, unavailable/inc
 states, grading cancellation/save order, duplicate/legacy bypasses, editor generations,
 drafts, keyboard/IME, speech delivery and host fallback. Typecheck against the portable SDK
 and exercise the plugin in an isolated app profile as well as unit/component fixtures.
+Proof also requires: Real packaged-browser proof through a disposable plugin and loopback mock
+provider/native turns; strict packaged-SDK consumer, isolated production build, packaged
+Electron/Chromium, privacy/tracing and production-byte audit.

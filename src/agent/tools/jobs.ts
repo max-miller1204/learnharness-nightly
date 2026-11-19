@@ -7,7 +7,7 @@ import { checkLearnerImage } from "./learner-image.ts";
 import { resolveLearnerFile, type ResolveAttachment } from "./learner-file.ts";
 
 /**
- * Async sub-agent job tools (vision §2.5; W2/W6 kinds + the pi-model
+ * Async sub-agent job tools (W2/W6 kinds + the pi-model
  * protocol). SERVER-EXECUTED: each call creates the job record, fires the
  * background runner (via the injected spawn seam — the agent layer never
  * imports one), and resolves IMMEDIATELY with a fire-and-forget ack. The
