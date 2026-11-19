@@ -1,36 +1,31 @@
-// Spoken math for screen readers: MathJax's speech rule engine, English ClearSpeak,
-// with its rules bundled into the app so nothing loads from the network.
-import { engineReady, setupEngine, toSpeech } from "speech-rule-engine/js/common/system.js";
+// Spoken math for screen readers: MathJax's speech rule engine, English ClearSpeak.
+// Its rules are bundled into the app (src/sre-system-external.js), so nothing loads
+// from the network.
+import type * as Sre from "speech-rule-engine/js/common/system.js";
 import type { DrawnMath, LabelPiece } from "./choice-math";
 
-// Metro hands back the parsed JSON; Node's ESM loader wraps it as { default }.
-const json = (mod: { default?: unknown }) => mod.default ?? mod;
-const rules: Record<string, unknown> = {
-  base: json(require("speech-rule-engine/lib/mathmaps/base.json")),
-  en: json(require("speech-rule-engine/lib/mathmaps/en.json")),
-};
-
+let engine: typeof Sre | undefined;
 let ready: Promise<void> | undefined;
 
 /** Resolves once the engine can speak, and rejects when it can't run here. */
 export function startSpeech(): Promise<void> {
   ready ??= (async () => {
-    await setupEngine({
-      locale: "en",
-      domain: "clearspeak",
-      modality: "speech",
-      // The engine parses either a JSON string or the parsed maps.
-      custom: (locale: string) => rules[locale] ? Promise.resolve(rules[locale]) : Promise.reject(new Error(`No ${locale} rules`)),
-    } as unknown as Parameters<typeof setupEngine>[0]); // its types allow only strings for `custom`
-    await engineReady();
+    // Required here, not imported, so the engine and its rules load only once math is read.
+    const sre = require("speech-rule-engine/js/common/system.js") as typeof Sre;
+    await sre.engineReady();
+    // Readiness resets the domain to MathSpeak, so ClearSpeak is set last.
+    await sre.setupEngine({ locale: "en", domain: "clearspeak", modality: "speech" });
+    // The engine reports ready even when its rules failed to load, and then speaks nothing.
+    if (!sre.toSpeech("<math><mi>x</mi></math>").trim()) throw new Error("The speech rules did not load");
+    engine = sre;
   })();
   return ready;
 }
 
-/** Speaks MathML. Only call after startSpeech resolves. The engine catches its own
- * errors and returns "" for math it can't speak. */
+/** Speaks MathML. The engine catches its own errors and returns "" for math it can't speak. */
 export function speak(mathml: string): string {
-  return toSpeech(mathml);
+  if (!engine) throw new Error("Speech has not started");
+  return engine.toSpeech(mathml);
 }
 
 /** One equation as a screen reader reads it: spoken by the engine when it can,
