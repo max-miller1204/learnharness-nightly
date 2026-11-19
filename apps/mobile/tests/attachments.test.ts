@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PROTOCOL_HEADER, PROTOCOL_ROUTES } from "../../../src/client-protocol/index.ts";
-import { AttachmentDraft, localDeadline, photoFileName, photoName, type PickedFile, type PutFile } from "../src/attachments.ts";
+import { AttachmentDraft, localDeadline, photoName, photoNames, type PickedFile, type PutFile } from "../src/attachments.ts";
 import { apiClient } from "../src/protocol.ts";
 
 const origin = "https://test.learnharness.example";
@@ -35,13 +35,20 @@ function harness({ chatId, putStatus = () => 204, now = () => 1_000_000 }: { cha
   return { draft, calls, puts, redraws: () => redraws };
 }
 
-test("names unnamed photos by local time and fixes converted HEIC extensions", () => {
+test("timestamps camera and Android library photos, numbering several from one pick", () => {
   const date = new Date(2026, 10, 18, 9, 5, 7);
   assert.equal(photoName(date), "photo-20261118-090507.jpg");
-  assert.equal(photoFileName(null, "image/jpeg", date), "photo-20261118-090507.jpg");
-  assert.equal(photoFileName("IMG_0042.HEIC", "image/jpeg", date), "IMG_0042.jpg");
-  assert.equal(photoFileName("IMG_0042.heic", "image/heic", date), "IMG_0042.heic");
-  assert.equal(photoFileName("scan.png", "image/png", date), "scan.png");
+  assert.deepEqual(photoNames([{ fileName: "0ca5ae69-260b.jpeg", mimeType: "image/jpeg" }], date, false), ["photo-20261118-090507.jpg"]);
+  assert.deepEqual(photoNames([{ fileName: "18.jpg", mimeType: "image/jpeg" }, { fileName: "19.png", mimeType: "image/png" }, { mimeType: "image/jpeg" }], date, false),
+    ["photo-20261118-090507.jpg", "photo-20261118-090507-2.png", "photo-20261118-090507-3.jpg"]);
+});
+
+test("the iPhone library keeps real names and fixes converted HEIC extensions", () => {
+  const date = new Date(2026, 10, 18, 9, 5, 7);
+  assert.deepEqual(photoNames([
+    { fileName: "IMG_0042.HEIC", mimeType: "image/jpeg" }, { fileName: "IMG_0043.heic", mimeType: "image/heic" },
+    { fileName: "scan.png", mimeType: "image/png" }, { fileName: null, mimeType: "image/jpeg" },
+  ], date, true), ["IMG_0042.jpg", "IMG_0043.heic", "scan.png", "photo-20261118-090507.jpg"]);
 });
 
 test("reads a grant deadline against the server's clock", () => {

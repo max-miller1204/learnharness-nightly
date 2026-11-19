@@ -31,16 +31,25 @@ export type PutFile = (file: PickedFile, url: string, headers: Record<string, st
 
 const pad = (value: number) => String(value).padStart(2, "0");
 
-/** A photo the camera or picker gave no name: photo-YYYYMMDD-HHMMSS.jpg (local time). */
-export function photoName(date: Date): string {
+const PHOTO_EXTENSIONS: Record<string, string> = { "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp" };
+
+/** photo-YYYYMMDD-HHMMSS.jpg (local time); the second photo of one pick adds -2, and so on. */
+export function photoName(date: Date, mimeType = "image/jpeg", index = 1): string {
   return `photo-${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}` +
-    `-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}.jpg`;
+    `-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}` +
+    `${index > 1 ? `-${index}` : ""}${PHOTO_EXTENSIONS[mimeType] ?? ".jpg"}`;
 }
 
-/** A converted HEIC photo keeps its name but is JPEG, so its extension follows. */
-export function photoFileName(name: string | null | undefined, mimeType: string, date: Date): string {
-  if (!name) return photoName(date);
-  return mimeType === "image/jpeg" ? name.replace(/\.(?:heic|heif)$/i, ".jpg") : name;
+/** One pick's photo names. Camera photos, and Android library photos (whose
+ *  names are internal IDs such as "18.jpg"), are timestamped. With
+ *  `keepNames` (the iPhone library) a real name stays, and a converted HEIC
+ *  photo's extension follows its JPEG bytes. */
+export function photoNames(assets: readonly { fileName?: string | null; mimeType: string }[], date: Date, keepNames: boolean): string[] {
+  let stamped = 0;
+  return assets.map(({ fileName, mimeType }) => {
+    if (keepNames && fileName) return mimeType === "image/jpeg" ? fileName.replace(/\.(?:heic|heif)$/i, ".jpg") : fileName;
+    return photoName(date, mimeType, ++stamped);
+  });
 }
 
 /** The server's `expiresAt` on this phone's clock, from the response's Date

@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { uuid } from "expo";
 import { Directory, File, Paths, UploadTask, UploadType } from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
+import { Platform } from "react-native";
 import type { AttachmentSend } from "../../../src/client-protocol/index.ts";
-import { AttachmentDraft, photoFileName, type DraftFile, type PickedFile, type PutFile } from "./attachments";
+import { AttachmentDraft, photoNames, type DraftFile, type PickedFile, type PutFile } from "./attachments";
 import type { MobileApi } from "./protocol";
 import { errorText } from "./use-session";
 
@@ -28,13 +29,11 @@ const PHOTO_OPTIONS: ImagePicker.ImagePickerOptions = {
   preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
 };
 
-function photos(result: ImagePicker.ImagePickerResult): PickedFile[] {
+function photos(result: ImagePicker.ImagePickerResult, keepNames: boolean): PickedFile[] {
   if (result.canceled) return [];
-  const now = new Date();
-  return result.assets.map((asset) => {
-    const mimeType = asset.mimeType ?? "image/jpeg";
-    return { name: photoFileName(asset.fileName, mimeType, now), uri: asset.uri, mimeType, size: new File(asset.uri).size };
-  });
+  const assets = result.assets.map((asset) => ({ ...asset, mimeType: asset.mimeType ?? "image/jpeg" }));
+  const names = photoNames(assets, new Date(), keepNames);
+  return assets.map((asset, index) => ({ name: names[index]!, uri: asset.uri, mimeType: asset.mimeType, size: new File(asset.uri).size }));
 }
 
 /** Android's file picker returns content URIs whose last segment is an ID such
@@ -54,10 +53,10 @@ async function pick(kind: PickKind): Promise<PickedFile[] | string> {
   if (kind === "camera") {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) return "Camera access is off. Allow it for LearnHarness Nightly in Settings to take photos.";
-    return photos(await ImagePicker.launchCameraAsync(PHOTO_OPTIONS));
+    return photos(await ImagePicker.launchCameraAsync(PHOTO_OPTIONS), false);
   }
   if (kind === "photos") {
-    return photos(await ImagePicker.launchImageLibraryAsync({ ...PHOTO_OPTIONS, allowsMultipleSelection: true }));
+    return photos(await ImagePicker.launchImageLibraryAsync({ ...PHOTO_OPTIONS, allowsMultipleSelection: true }), Platform.OS === "ios");
   }
   const result = await File.pickFileAsync({ multipleFiles: true });
   if (result.canceled) return [];
