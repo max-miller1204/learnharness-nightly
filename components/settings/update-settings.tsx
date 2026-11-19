@@ -143,11 +143,18 @@ export function useUpdateState() {
 		accept(await fetchWebState("/api/updates/check", "POST"));
 	}, [accept]);
 
-	/** Apply now. Callers confirm first (InstallUpdateDialog). */
-	const install = useCallback((): void => {
+	/** Apply now. Callers confirm first (InstallUpdateDialog). Resolves false when the request
+	 *  failed (the sidebar control then shows its normal button again), never rejects. */
+	const install = useCallback(async (): Promise<boolean> => {
 		const lh = localDesktopBridge();
-		if (lh) { lh.installUpdate?.(); return; }
-		void fetchWebState("/api/updates/install", "POST").then(accept).catch(() => setFailed(true));
+		if (lh) { lh.installUpdate?.(); return true; }
+		try {
+			accept(await fetchWebState("/api/updates/install", "POST"));
+			return true;
+		} catch {
+			setFailed(true);
+			return false;
+		}
 	}, [accept]);
 
 	/** Desktop only: download the "available" version. */
@@ -316,7 +323,7 @@ export function UpdateSettings({
 				open={confirming && state?.status === "downloaded"}
 				version={state?.version ?? null}
 				onClose={() => setConfirming(false)}
-				onConfirm={() => { setConfirming(false); install(); }}
+				onConfirm={() => { setConfirming(false); void install(); }}
 			/>
 		</>
 	);

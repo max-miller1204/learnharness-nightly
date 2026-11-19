@@ -12,6 +12,8 @@
  *   download       desktop "available": download it
  *   downloading    download arrow in a ring that fills with the download, disabled
  *   install        "downloaded": the install confirm dialog
+ *   restarting     the install was confirmed and the restart hasn't happened yet:
+ *                  grey, disabled, the restart arrow spins (owner decision 2026-11-19)
  *   dismiss-notice rolled-back notice: dismiss it (per server)
  *   reload         the server runs a different version than this page: reload
  *                  (newer: the page also reloads by itself, once per version)
@@ -23,6 +25,8 @@
  *   app-download   this app's update is available, the server already runs it
  *   app-install    this app's update is downloaded, the server already runs it
  *                  (also through the app's confirmation: just an app restart)
+ *   restarting     also while this app's run is going and the server already runs
+ *                  its version: what is left is this app's restart
  *
  * Adapted from T3 Code's SidebarUpdateControl and DesktopUpdateStatusIcon
  * (apps/web/src/components/sidebar/SidebarUpdatePill.tsx and
@@ -51,7 +55,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "@/lib/utils";
 import { isExactVersion, isNewerVersion } from "@/selfhost/src/version-order.ts";
 
-export type UpdateControlKind = "check" | "checking" | "unavailable" | "download" | "downloading" | "install" | "dismiss-notice" | "reload" | "everything" | "app-download" | "app-install";
+export type UpdateControlKind = "check" | "checking" | "unavailable" | "download" | "downloading" | "install" | "restarting" | "dismiss-notice" | "reload" | "everything" | "app-download" | "app-install";
 
 /** True when the server runs a different exact version than the code of this
  *  page: newer after an update, older after a rollback. Either way, reload. */
@@ -94,20 +98,22 @@ export function claimAutoReload(version: string): boolean {
 }
 
 /** The one place that picks the button's state (T3's resolveSidebarUpdatePresentation order).
- *  `desktop` is this app's own update, only in its window onto a self-hosted server. */
-export function resolveUpdateControl(state: UpdateState | null, { showCheckIcon = false, pageVersion = APP_VERSION, desktop = null }: { showCheckIcon?: boolean; pageVersion?: string; desktop?: DesktopAppStatus | null } = {}): UpdateControlKind | null {
+ *  `desktop` is this app's own update, only in its window onto a self-hosted server.
+ *  `installing`: the user confirmed Install in this page and the restart hasn't happened. */
+export function resolveUpdateControl(state: UpdateState | null, { showCheckIcon = false, pageVersion = APP_VERSION, desktop = null, installing = false }: { showCheckIcon?: boolean; pageVersion?: string; desktop?: DesktopAppStatus | null; installing?: boolean } = {}): UpdateControlKind | null {
 	if (!state) return null;
 	if (pageIsStale(state, pageVersion)) return "reload";
 	if (showCheckIcon) return "checking";
 	if (desktop?.phase === "downloading") return "downloading";
-	if (desktop?.phase === "updating") return "everything";
 	const offered = desktopOffer(desktop);
+	// A run whose server already runs this app's version only has this app's restart left.
+	if (desktop?.phase === "updating") return offered && !isNewerVersion(offered, state.runningVersion) ? "restarting" : "everything";
 	if (offered && (desktop?.phase === "available" || desktop?.phase === "downloaded")) {
 		if (isNewerVersion(offered, state.runningVersion)) return "everything";
 		return desktop.phase === "downloaded" ? "app-install" : "app-download";
 	}
 	if (state.status === "downloading") return "downloading";
-	if (state.status === "downloaded") return "install";
+	if (state.status === "downloaded") return installing ? "restarting" : "install";
 	if (state.status === "available") return "download";
 	if (state.notice?.kind === "rolled-back") return "dismiss-notice";
 	if (state.status === "disabled") return "unavailable";
@@ -129,6 +135,7 @@ export function updateControlTooltip(state: UpdateState, kind: UpdateControlKind
 		// Owner decision 2026-11-19: once the server has every byte it checks and unpacks it.
 		case "downloading": return state.preparing ? PREPARING_LABEL : downloadingTooltip(state.downloadPercent);
 		case "install": return `Update ${state.version ?? "ready"} downloaded. Click to restart and install.`;
+		case "restarting": return restartingTooltip(state.version);
 		case "dismiss-notice": return state.notice?.text ?? "";
 		// T3's updateTargetsSentence for this app and one server (updateEverything.logic.ts:765-772).
 		case "everything": return "Update this app and 1 server";
@@ -137,6 +144,9 @@ export function updateControlTooltip(state: UpdateState, kind: UpdateControlKind
 }
 
 export const PREPARING_LABEL = "Preparing update";
+
+/** Owner decision 2026-11-19: the label between the confirmed install and the restart. */
+export const restartingTooltip = (version: string | null | undefined) => `Restarting to install ${version || "the update"}…`;
 
 /** T3's downloading label (desktopUpdate.logic.ts:134-139 at 3ce21458): the percent floored,
  *  or the plain label while the size is unknown. */
@@ -250,11 +260,18 @@ function DownloadingIcon({ percent }: { percent: number | null }) {
 	);
 }
 
-/** T3's DesktopUpdateDownloadedIcon: RotateCw with a check badge. */
-function RestartIcon() {
+/** T3's DesktopUpdateDownloadedIcon: RotateCw with a check badge. While restarting the
+ *  arrow spins (the badge stays put), like the check spin: motion-safe, paused while hidden. */
+function RestartIcon({ spinning = false }: { spinning?: boolean }) {
 	return (
 		<span className="relative grid size-4 place-items-center">
-			<RotateCwIcon className="size-4" aria-hidden />
+			<RotateCwIcon
+				aria-hidden
+				data-testid="update-control-restart-icon"
+				data-spinning={spinning || undefined}
+				ref={spinning ? pauseWhileHidden : undefined}
+				className={cn("size-4", spinning && "motion-safe:animate-spin")}
+			/>
 			<span className="absolute -right-1 -bottom-1 grid size-2.5 place-items-center rounded-full bg-foreground text-background ring-2 ring-background">
 				<CheckIcon className="size-2" strokeWidth={3} aria-hidden />
 			</span>
@@ -274,6 +291,7 @@ function ControlIcon({ kind, spinning, onIteration, downloadPercent = null }: { 
 	if (kind === "downloading") return <DownloadingIcon percent={downloadPercent} />;
 	if (kind === "everything") return <CircleArrowUpIcon className="size-4" aria-hidden />;
 	if (kind === "install" || kind === "app-install" || kind === "reload") return <RestartIcon />;
+	if (kind === "restarting") return <RestartIcon spinning={spinning} />;
 	if (kind === "dismiss-notice") return <TriangleAlertIcon className="size-3.5 text-destructive" aria-hidden />;
 	return (
 		<RefreshCwIcon
@@ -330,6 +348,8 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	const [confirming, setConfirming] = useState(false);
 	const [confirmingReload, setConfirmingReload] = useState(false);
 	const [pending, setPending] = useState(false);
+	// Confirmed Install in this page: "restarting" until the page reloads, or the state moves on (a failure).
+	const [installing, setInstalling] = useState(false);
 	const [open, setOpen] = useState(false);
 	const [spinKey, setSpinKey] = useState(0);
 	const isChecking = state?.status === "checking" || desktopStatus?.phase === "checking";
@@ -344,7 +364,10 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
 
 	const showCheckIcon = showsCheckIcon(isChecking, latched, reducedMotion);
-	const kind = resolveUpdateControl(state, { showCheckIcon, pageVersion, desktop: desktopStatus });
+	const kind = resolveUpdateControl(state, { showCheckIcon, pageVersion, desktop: desktopStatus, installing });
+	// Anything but the restart (an error, a newer version to download, a rollback notice) is the normal
+	// button again. A check spin started elsewhere (this app's own timer) outranks it only for a moment.
+	useEffect(() => { if (kind !== "restarting" && kind !== "checking") setInstalling(false); }, [kind]);
 	const autoReloadTo = autoReloadVersion(state, pageVersion);
 	useEffect(() => {
 		if (autoReloadTo && claimAutoReload(autoReloadTo)) reload();
@@ -358,9 +381,10 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	const downloadPercent = shownDownloadPercent(state, desktopStatus);
 	const tooltip = (kind === "app-download" || kind === "app-install") && desktopStatus ? appUpdateTooltip(desktopStatus, kind)
 		: kind === "downloading" && desktopStatus?.phase === "downloading" ? downloadingTooltip(downloadPercent)
+		: kind === "restarting" && desktopStatus?.phase === "updating" ? restartingTooltip(desktopOffer(desktopStatus))
 		: updateControlTooltip(state, kind, pageVersion);
 	const detail = kind === "unavailable" ? unavailableDetail(state) : null;
-	const disabled = kind === "checking" || kind === "downloading" || kind === "unavailable" || pending || (kind === "everything" && desktopStatus?.phase === "updating");
+	const disabled = kind === "checking" || kind === "downloading" || kind === "unavailable" || kind === "restarting" || pending || (kind === "everything" && desktopStatus?.phase === "updating");
 	const surface = kind !== "check" && kind !== "checking" && kind !== "unavailable";
 
 	const cancelClose = () => {
@@ -413,10 +437,10 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 				surface
 					? cn("bg-accent text-foreground", !disabled && "hover:bg-accent/70")
 					: cn("text-muted-foreground", !disabled && "hover:bg-accent hover:text-foreground"),
-				kind === "unavailable" && "opacity-60",
+				(kind === "unavailable" || kind === "restarting") && "opacity-60",
 			)}
 		>
-			<ControlIcon key={showCheckIcon ? `spin-${spinKey}` : kind} kind={kind} spinning={kind === "checking" && !reducedMotion} onIteration={onIteration} downloadPercent={downloadPercent} />
+			<ControlIcon key={showCheckIcon ? `spin-${spinKey}` : kind} kind={kind} spinning={(kind === "checking" || kind === "restarting") && !reducedMotion} onIteration={onIteration} downloadPercent={downloadPercent} />
 		</button>
 	);
 
@@ -464,7 +488,12 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 				open={confirming && state.status === "downloaded"}
 				version={state.version}
 				onClose={() => setConfirming(false)}
-				onConfirm={() => { setConfirming(false); install(); }}
+				onConfirm={() => {
+					setConfirming(false);
+					setInstalling(true);
+					// A failed request (the existing error behavior: the server's error state) shows the normal button again.
+					void install().then((sent) => { if (!sent) setInstalling(false); });
+				}}
 			/>
 			<ReloadConfirmDialog
 				open={confirmingReload}
