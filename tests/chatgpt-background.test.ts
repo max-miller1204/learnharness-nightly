@@ -14,7 +14,7 @@ process.env.LH_AUTH_FILE = path.join(dir, "scratch-auth.json");
 fs.writeFileSync(process.env.LH_AUTH_FILE, "{}");
 const { stores } = await import("../src/server/stores.ts");
 const { beginTurn, endTurn } = await import("../src/server/turn-liveness.ts");
-const { deliverJobResult, registerLiveAgent, unregisterLiveAgent, setTurnRunner, settleSteers, steerLiveChat } = await import("../src/server/jobs.ts");
+const { deliverJobResult, discardChatDeliveries, registerLiveAgent, unregisterLiveAgent, setTurnRunner, settleSteers, steerLiveChat } = await import("../src/server/jobs.ts");
 const { persistTurn } = await import("../src/server/turn-service.ts");
 const ipc = (value: unknown) => (process.emit as (name: string, value: unknown) => boolean)("message", value);
 let revision = 1;
@@ -37,9 +37,16 @@ after(() => {
 });
 
 for (const revokedAfterQueue of [false, true]) {
-	test(`mixed learner+automatic batch: foreground runs, automatic result stays owned/deferred without consent (${revokedAfterQueue ? "revoked after handoff" : "initially off"})`, { timeout: 5000 }, async () => {
+	// The timeout only guards a hang. Each case waits out the pump's real 750 ms
+	// grace and makes synchronous fsync'd store writes, which a loaded CI disk
+	// can stall for many seconds while blocking the event loop.
+	test(`mixed learner+automatic batch: foreground runs, automatic result stays owned/deferred without consent (${revokedAfterQueue ? "revoked after handoff" : "initially off"})`, { timeout: 30_000 }, async (t) => {
 		connection(revokedAfterQueue);
 		const chat = stores.chatStore.createChat("Scratch mixed queue");
+		// The wake registry, live agents and turn runner are process-global. A
+		// failed or timed-out case must not leave its parked result for the next
+		// case's consent change to wake through the next case's runner.
+		t.after(() => { discardChatDeliveries(chat.id); unregisterLiveAgent(chat.id); endTurn(chat.id); });
 		stores.chatStore.saveSettings(chat.id, { model: { provider: "chatgpt", id: "gpt-5" } });
 		const job = stores.jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "scratch-job-call" });
 		const result = { brief: "Scratch completed job result", sources: [] };
@@ -59,7 +66,7 @@ for (const revokedAfterQueue of [false, true]) {
 		});
 		let wakes = 0;
 		setTurnRunner(async (chatId, input) => {
-			wakes++;
+			if (chatId === chat.id) wakes++;
 			assert.equal(input.type, "steers");
 			if (input.type === "steers") stores.chatStore.saveMessages(chatId, [...stores.chatStore.getChat(chatId)!.messages, ...input.steers]);
 			return 200;
