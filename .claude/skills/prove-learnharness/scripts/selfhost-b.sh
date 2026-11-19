@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # selfhost-b.sh <RUN>
 #
-# Selfhost tier B (hard: update, rollback, snapshots, supervisor, protocol).
+# Selfhost tier B (update, rollback, snapshots, supervisor, protocol).
 # Needs both builds (build.sh <RUN> both). Packs three archives:
 #   A = the base build (version ...1), B = the head build (...2),
 #   C = B with a server that exits at once (...3, a failing trial).

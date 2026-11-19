@@ -19,11 +19,11 @@ Guards, in order:
 2. Your real install is fingerprinted before and after, on every exit: `learnharness.service` pid, state and unit path; sha256 of its unit file, `~/.local/bin/lh`, `service-state.json`, `service.env` and `userdata/config.json`; a listing (path, size, mtime) of `~/.learnharness/runtime/` and `userdata/backups/`. Any difference fails the run. Learning data and logs are left out, since your own use changes them (if your real service updated itself during the run, rerun).
 3. Every `lh` call is time-boxed (120 s), and tier B runs once per run folder.
 
-## Tier A (routine)
+## Tier A
 
 `scripts/selfhost-a.sh "$RUN" base|head`: `node --test selfhost/tests/*.test.ts` in that tree, then `lh help|status|versions|update|rollback|use 9.9.9|restore|logs|__selftest-launcher|bogus-command` from source in an empty throwaway home (each must refuse cleanly). Outputs are observations: compare base and head with `compare.mjs`. No build needed beyond the base tree.
 
-## Tier B (hard)
+## Tier B
 
 `scripts/selfhost-b.sh "$RUN"` after `build.sh "$RUN" both`:
 

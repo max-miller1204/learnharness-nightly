@@ -62,7 +62,6 @@ Prove checks what the change touches. Answer these for each flow Scope reached, 
 3. **New, and did this change also edit the thing it copies?** Then use the spec AND parity. Both sides can be wrong the same way, and parity still passes.
 4. **Existing, and did the change touch its code**, directly or through shared code (schema, auth, nav, a shared component or function)? Answer key is the app before the change.
 5. **Existing, and untouched?** Not something the change touches: skip it. If the whole change is new files, also run the smoke test once: the app starts and a teaching session (goal, a tool call, a question, an answer) works.
-6. **Hard or routine?** Hard means work near the edge of what agents get right the first time: the agent loop and tool calls, streamed turns and their stored records, settings and auth storage (auth.json, the custom endpoint binding, the desktop API secret, `proxy.ts` host and origin checks), self-update, the launcher's switch, trial and rollback, data snapshots, the one-server-per-data-folder lock, background jobs, the Electron server spawn and bridge, and any existing flow reached through shared code. Routine means work like what already works in this app (a form field, a static page, a list like the others). A hard flow gets the full proof in a fresh agent plus the break-it probes. A routine flow gets its scripted checks, and goes to the fresh agent too when a script fails or no script covers it. When unsure, it is hard.
 
 A change to code used by several actions (a viewset's `get_queryset`, a serializer, a shared query) runs each of those actions with the new input, not just the one the feature is for.
 
@@ -100,9 +99,7 @@ Ladder, best first: 1 an old system that does the same job, 2 a snapshot, 3 an i
 
 ## Check in a fresh agent
 
-The agent that made the change knows what it meant to build, so it tends to see what it expects. Do Scope, Sort and Find the spec yourself, then, if you can start a sub-agent (the Agent tool in Claude Code, a subagent in Codex), hand the proof to a fresh one. Give it only the flows, their feature recipes, the surfaces, whether each is new or existing, whether each is hard or routine, the answer keys, and the name of this skill. Not your plan, your reasoning or what you think the change does. Ask for PROVED, BROKEN, BLOCKED or UNPROVEN and the receipt path.
-
-When several hard flows are independent (they share no records, and Start can run each on its own port and data) and you can start several sub-agents, give each flow its own fresh checker with just its recipe, in parallel, then combine their receipts into one. Otherwise one checker proves them in order.
+The agent that made the change knows what it meant to build, so it tends to see what it expects. Do Scope, Sort and Find the spec yourself, then, if you can start a sub-agent (the Agent tool in Claude Code, a subagent in Codex), hand the proof to a fresh one. Give it only the flows, the surfaces, whether each is new or existing, the answer keys, and the name of this skill. Not your plan, your reasoning or what you think the change does. Ask for PROVED, BROKEN, BLOCKED or UNPROVEN and the receipt path.
 
 If you can't start a sub-agent, run the proof yourself and write `Checker: same agent (not independent)` on the receipt.
 
@@ -168,7 +165,7 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 
 ### Self-hosted server and `lh` launcher (`selfhost/`)
 
-**Drive**: tier A (routine, seconds): `scripts/selfhost-a.sh "$RUN" base` and `head`, then `compare.mjs` on `selfhost-a/result.json`. Tier B (hard, about a minute after builds): `scripts/selfhost-b.sh "$RUN"` installs the base build through `install.sh` under a throwaway `lh-prove-<hash of the run path>.service`, updates to the change, fails a broken trial, and `lh rollback`s. Details: [references/selfhost.md](references/selfhost.md).
+**Drive**: tier A (seconds): `scripts/selfhost-a.sh "$RUN" base` and `head`, then `compare.mjs` on `selfhost-a/result.json`. Tier B (about a minute after builds): `scripts/selfhost-b.sh "$RUN"` installs the base build through `install.sh` under a throwaway `lh-prove-<hash of the run path>.service`, updates to the change, fails a broken trial, and `lh rollback`s. Details: [references/selfhost.md](references/selfhost.md).
 
 **Copies**: nothing; the base build's launcher is the "before".
 
@@ -238,7 +235,7 @@ Changed files: <list, or "n/a" for a flow>
 Surfaces driven: <web, api, ...>
 Instance: <url or binary, version or commit, port>
 ## What the change touches
-- <flow> -> new|existing, hard|routine, copies <thing|nothing> -> answer key <name> (rung <n>)
+- <flow> -> new|existing, copies <thing|nothing> -> answer key <name> (rung <n>)
 - <smoke test of the existing app, if the change is only new files>
 ## Steps
 1. [PASS|FAIL|BLOCKED] <flow> (new|existing) <what you did to the running app> -> <what it showed> vs <answer key it was compared with> (<evidence file or inline output>)
