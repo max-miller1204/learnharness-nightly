@@ -94,7 +94,7 @@ T3 references are to github.com/pingdotgg/t3code at `082bc2cb7acdb12ce6d015f9709
 
 | # | Proves | Surface | Check | Where it runs | Pass signal |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Goals 1, 6; size, color and block-math invariants | Quiz dock on the phone | Screenshot each fixture question in dark mode (web Default) and light mode (web Ivory), next to the web's same question | Emulator and Chrome, same server | Every math label is drawn with no `$` or `\` visible. Size, color and line placement match the web. Block math sits on its own line. Broken math shows its source text. |
+| 1 | Goals 1, 6; size, color and block-math invariants | Quiz dock on the phone | Screenshot each fixture question in dark mode (web Default) and light mode (web Ivory), next to the web's same question | Emulator and Chrome, same server | Every math label is drawn with no `$` or `\` visible. Size, color and line placement match the web, under the visual-parity rule below. Block math sits on its own line. Broken math shows its source text. |
 | 2 | Goal 4 | Quiz dock | Tap the center of the drawn math in each math choice, then submit | Emulator | Each tap selects that row. The saved answer on the server equals the chosen option. |
 | 3 | Goals 3, 4; one-stop, role and state invariants | Quiz dock with TalkBack on | From the question, move next-item through every row with the real driver and capture TalkBack's spoken output. Double tap one row. Repeat on the multi-select ask question. | Emulator | Exactly one TalkBack focus stop per row, in order, with no stop between rows. Android's standard usage hint ("Double-tap to toggle") may follow a row as its own utterance. Each row's utterance has the label with math spoken, no `$` or `\`, "radio button" or "checkbox", and checked state. The double tap selects the row. |
 | 4 | Goals 2, 5 | Answered card | Screenshot it, then move through it with TalkBack and capture spoken output | Emulator and Chrome | The chosen answers' math is drawn. Each equation is read once, spoken, never in pieces or as source. |
@@ -103,6 +103,8 @@ T3 references are to github.com/pingdotgg/t3code at `082bc2cb7acdb12ce6d015f9709
 | 7 | Font-scale invariant | Quiz dock | Set the system font scale to 1.3 and screenshot | Emulator | Math and text grow together. Nothing is clipped or overlaps. |
 | 8 | Untrusted-input, network, broken-math, repair, payload and plain-"Other" invariants | Unit tests | `npm test` in `apps/mobile` | CI Mobile job | All pass. |
 | 9 | Build health and bundle cap | CI | The Mobile job (deps:check, lint, typecheck, test, both exports), plus the bundle size diff in the PR | CI | All green. The bundle grows by 5 MB or less. |
+
+**Visual parity (owner's decision, 2026-11-19).** The phone draws math with MathJax SVG and the web with KaTeX, so the two may differ slightly in size and spacing. Parity means the same math, the same structure, the same placement class (inline or block), and readable at a similar size. It doesn't mean pixel-identical. The re-verify at `6e0780c` measured, for example, a display fraction starting 0.8 dp from the prose edge on Android but 43 CSS px in on the web, and an inline arrow 50.7 dp wide against 58 CSS px; both are within this rule. Matching the web's display-math indent is a follow-up.
 
 Every check must pass to merge. Pass means every step shows its stated result; anything else fails the step. A step that can't run is a failure, not a skip.
 
