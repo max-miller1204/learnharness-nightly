@@ -345,6 +345,20 @@ describe("status observation never controls the updater", () => {
 		assert.deepEqual(f.order, ["SIGTERM", "install"]);
 	});
 
+	it("Install is a trusted IPC call that answers whether main took it", async () => {
+		const f = fixture(); f.setSettings({ general: { autoUpdate: false } }); await f.run("main()");
+		const sender = f.windows[0]!.webContents;
+		const install = f.handles.get("lh:update-install")!;
+		assert.equal(install({ sender, senderFrame: sender.mainFrame }), false, "nothing staged");
+		assert.throws(() => install({ sender: {}, senderFrame: sender.mainFrame }), /Untrusted/);
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		f.run("updateEverything = { running: () => true }");
+		assert.equal(install({ sender, senderFrame: sender.mainFrame }), false, "an Update everything run owns the updater");
+		assert.equal(f.updater.checks, 0, "and nothing started");
+		f.run("updateEverything = null");
+		assert.equal(install({ sender, senderFrame: sender.mainFrame }), true);
+	});
+
 	it("Download is a trusted IPC call and only acts on an offered version", async () => {
 		const f = fixture(); f.setSettings({ general: { autoUpdate: false } }); await f.run("main()");
 		const sender = f.windows[0]!.webContents;
