@@ -61,6 +61,28 @@ test("a multi-select row is a checked checkbox; a plain row keeps its text", () 
   act(() => plain.unmount());
 });
 
+test("at font scale 1.3 a tall inline equation's line still holds its depth on Android", () => {
+  Object.assign(globalThis, { fontScale: 1.3 });
+  try {
+    const tree = row("Pick $\\begin{pmatrix}1\\\\2\\\\3\\end{pmatrix}$ now");
+    const picture = tree.root.find((node) => is(node, "View") && node.props.style?.position === "absolute");
+    const box = picture.parent as ReactTestInstance;
+    const paragraph = tree.root.find((node) => is(node, "Text") && Array.isArray(node.props.style));
+    const lineHeight = (paragraph.props.style as { lineHeight?: number }[]).at(-1)?.lineHeight ?? 0;
+    const [height, above] = [picture.props.style.height as number, box.props.style.height as number];
+    // Android's line: ascent is the taller of the box and the text's, descent the text's, then
+    // the extra split evenly. Passed as is, it is never scaled down.
+    const fontSize = 14 * 1.3;
+    const top = Math.max(above, 1.024 * fontSize);
+    const below = 0.4 * fontSize + (lineHeight - top - 0.4 * fontSize) / 2;
+    assert.ok(height > 80, `the matrix grows with the font scale: ${height}`);
+    assert.ok(below >= height - above, `depth ${height - above} fits below the baseline: ${below}`);
+    act(() => tree.unmount());
+  } finally {
+    Object.assign(globalThis, { fontScale: 1 });
+  }
+});
+
 test("an answered card draws chosen math as one stop with no web view, and copies it", async () => {
   const label = "No, $P\\to Q$ is blocked.";
   const tree = render(createElement(AnswerLine, { answer: { kind: "quiz", answers: [{ label, value: "no", index: 1 }], other: "maybe" } }));

@@ -32,15 +32,16 @@ test("block math has no blank lines around it", () => {
   assert.deepEqual(kinds(splitLabel("Area:\n$$\nx^2\n$$\nhere")), ["text:Area:", "block:x^2", "text:here"]);
 });
 
-test("covers STEM packages: chemistry, matrices, cancel, units, braket", () => {
-  for (const tex of ["\\ce{H2O}", "\\begin{pmatrix}1&2\\\\3&4\\end{pmatrix}", "\\frac{1}{2}", "\\int_0^1 x^2\\,dx", "\\cancel{x}", "\\mathbb{R}", "\\xrightarrow{f}", "\\degree", "\\text{café}"]) {
+test("covers STEM packages: matrices, cancel, units, braket", () => {
+  for (const tex of ["\\begin{pmatrix}1&2\\\\3&4\\end{pmatrix}", "\\frac{1}{2}", "\\int_0^1 x^2\\,dx", "\\cancel{x}", "\\mathbb{R}", "\\xrightarrow{f}", "\\degree", "\\text{café}"]) {
     assert.ok(drawTex(tex, false), tex);
   }
-  assert.equal(read("\\ce{H2O}"), "H subscript 2 O", "no phantom letters");
 });
 
-test("standard commands mean what they mean on the web (no physics package)", () => {
-  assert.deepEqual(EXCLUDED_PACKAGES, ["html", "bussproofs", "action", "noerrors", "noundefined"]);
+test("standard commands mean what they mean on the web (no physics or mhchem package)", () => {
+  assert.deepEqual(EXCLUDED_PACKAGES, ["html", "bussproofs", "action", "noerrors", "noundefined", "mhchem"]);
+  // The web's KaTeX has no mhchem, so chemistry stays source there and here.
+  assert.deepEqual(splitLabel("Water is $\\ce{H2O}$"), asText("Water is $\\ce{H2O}$"));
   assert.equal(read("6 \\div 2"), "6 ÷ 2");
   assert.equal(read("\\braket{\\psi|\\phi}"), "⟨ ψ | ϕ ⟩");
   assert.equal(read("\\Re z"), "ℜ z");

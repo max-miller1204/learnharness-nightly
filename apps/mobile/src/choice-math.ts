@@ -28,10 +28,11 @@ import { resolveTheme, shiftHex } from "../../../src/core/themes.ts";
 /** AI-written math is untrusted. `html` makes links, styles and ids; `bussproofs` needs
  * an output that measures boxes; `action` adds event handlers, which the drawing can't
  * run. `noerrors` and `noundefined` would draw broken math instead of handing it back as
- * its source text. `require` and `autoload` load code and aren't bundled. Every other
- * package in MathJax's AllPackages is on. Its `physics` and `setoptions` stay off: the
- * web draws with KaTeX, which has neither, and physics redefines standard commands. */
-export const EXCLUDED_PACKAGES = ["html", "bussproofs", "action", "noerrors", "noundefined"];
+ * its source text. `require` and `autoload` load code and aren't bundled. Packages the
+ * web's KaTeX doesn't have stay off to match it: `mhchem` here, and `physics` and
+ * `setoptions`, which AllPackages leaves out (physics also redefines standard commands).
+ * Every other package in MathJax's AllPackages is on. */
+export const EXCLUDED_PACKAGES = ["html", "bussproofs", "action", "noerrors", "noundefined", "mhchem"];
 const PACKAGES = AllPackages.filter((name) => !EXCLUDED_PACKAGES.includes(name));
 /** Math that sets any of these (\mmlToken, \bbox[style], \unicode[font], \label, \eqref)
  * stays as text. */
