@@ -31,8 +31,9 @@ function harness({ chatId, putStatus = () => 204, now = () => 1_000_000 }: { cha
     return status === 204 ? { status, body: "" } : { status, body: JSON.stringify({ error: "Pairing revoked." }) };
   };
   let redraws = 0;
-  const draft = new AttachmentDraft({ api, chatId, put, now, newId: () => `id-${++ids}`, changed: () => { redraws++; } });
-  return { draft, calls, puts, redraws: () => redraws };
+  const released: string[] = [];
+  const draft = new AttachmentDraft({ api, chatId, put, now, newId: () => `id-${++ids}`, changed: () => { redraws++; }, release: (path) => { released.push(path); } });
+  return { draft, calls, puts, released, redraws: () => redraws };
 }
 
 test("timestamps camera and Android library photos, numbering several from one pick", () => {
@@ -43,12 +44,18 @@ test("timestamps camera and Android library photos, numbering several from one p
     ["photo-20261118-090507.jpg", "photo-20261118-090507-2.png", "photo-20261118-090507-3.jpg"]);
 });
 
-test("the iPhone library keeps real names and fixes converted HEIC extensions", () => {
+test("the iPhone library keeps real names, with an extension that matches the bytes", () => {
   const date = new Date(2026, 10, 18, 9, 5, 7);
   assert.deepEqual(photoNames([
     { fileName: "IMG_0042.HEIC", mimeType: "image/jpeg" }, { fileName: "IMG_0043.heic", mimeType: "image/heic" },
     { fileName: "scan.png", mimeType: "image/png" }, { fileName: null, mimeType: "image/jpeg" },
-  ], date, true), ["IMG_0042.jpg", "IMG_0043.heic", "scan.png", "photo-20261118-090507.jpg"]);
+    { fileName: "loop.gif", mimeType: "image/jpeg" }, { fileName: "IMG_0044.JPEG", mimeType: "image/jpeg" },
+  ], date, true), ["IMG_0042.jpg", "IMG_0043.heic", "scan.png", "photo-20261118-090507.jpg", "loop.jpg", "IMG_0044.JPEG"]);
+});
+
+test("a timestamped name follows the bytes, so a re-encoded WebP is a .jpg", () => {
+  const date = new Date(2026, 10, 18, 9, 5, 7);
+  assert.deepEqual(photoNames([{ fileName: "21.webp", mimeType: "image/jpeg" }], date, false), ["photo-20261118-090507.jpg"]);
 });
 
 test("reads a grant deadline against the server's clock", () => {
@@ -146,19 +153,27 @@ test("Remove during an upload lets the PUT finish before releasing it", async ()
   assert.deepEqual(order, ["POST", "PUT", "PUT done", "DELETE"]);
 });
 
-test("a remount revives cancelled uploads with Retry", async () => {
-  const { draft, puts } = harness({ chatId: "chat-1", putStatus: () => 204 });
-  draft.add([photo]);
+test("the app's copies are deleted when a file is refused, removed, sent, or the composer closes", async () => {
+  const copy = (name: string): PickedFile => ({ ...pdf, name, cleanup: `file:///cache/attachments/${name}/` });
+  const { draft, released } = harness({ chatId: "chat-1" });
+  assert.equal(draft.add([{ ...copy("huge"), size: 60 * MiB }]), false);
+  assert.deepEqual(released, ["file:///cache/attachments/huge/"]);
+
+  draft.add([copy("removed"), copy("sent"), copy("kept"), pdf]);
+  await settle(); await settle();
+  draft.remove(draft.rows[0]!);
+  await settle();
+  assert.deepEqual(released.at(-1), "file:///cache/attachments/removed/");
+
+  const sent = draft.rows[0]!;
+  draft.accept({ attachmentUploadIds: [sent.grant!.id], sendId: "send" });
+  assert.deepEqual(released.at(-1), "file:///cache/attachments/sent/");
+
   draft.dispose();
-  await settle(); await settle();
-  draft.open();
-  const [row] = draft.rows;
-  assert.equal(row!.cancel.signal.aborted, false);
-  assert.equal(row!.error, "Upload interrupted. Try again.");
-  draft.retry(row!);
-  await settle(); await settle();
-  assert.equal(row!.ready, true);
-  assert.equal(puts.length, 1);
+  await settle();
+  assert.equal(draft.rows.length, 0);
+  assert.deepEqual(released, ["file:///cache/attachments/huge/", "file:///cache/attachments/removed/",
+    "file:///cache/attachments/sent/", "file:///cache/attachments/kept/"], "a pick with no copy of its own deletes nothing");
 });
 
 test("a send waits for uploads and reuses its send ID for the same message", async () => {

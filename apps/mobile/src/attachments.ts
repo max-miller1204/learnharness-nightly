@@ -12,6 +12,8 @@ export interface PickedFile {
   uri: string;
   mimeType: string;
   size: number;
+  /** A copy the app made for this pick (a file or a folder), deleted once the file leaves the draft. */
+  cleanup?: string;
 }
 
 export interface DraftFile extends PickedFile {
@@ -40,15 +42,21 @@ export function photoName(date: Date, mimeType = "image/jpeg", index = 1): strin
     `${index > 1 ? `-${index}` : ""}${PHOTO_EXTENSIONS[mimeType] ?? ".jpg"}`;
 }
 
-/** One pick's photo names. Camera photos, and Android library photos (whose
+const SAME_EXTENSION: Record<string, RegExp> = { "image/jpeg": /\.jpe?g$/i, "image/png": /\.png$/i, "image/gif": /\.gif$/i, "image/webp": /\.webp$/i };
+
+/** One pick's photo names. `mimeType` is the type of the bytes actually
+ *  written, which can differ from the source (a HEIC, GIF or WebP photo
+ *  re-encoded as JPEG). Camera photos, and Android library photos (whose
  *  names are internal IDs such as "18.jpg"), are timestamped. With
- *  `keepNames` (the iPhone library) a real name stays, and a converted HEIC
- *  photo's extension follows its JPEG bytes. */
+ *  `keepNames` (the iPhone library) a real name stays, with an extension
+ *  that matches its bytes. */
 export function photoNames(assets: readonly { fileName?: string | null; mimeType: string }[], date: Date, keepNames: boolean): string[] {
   let stamped = 0;
   return assets.map(({ fileName, mimeType }) => {
-    if (keepNames && fileName) return mimeType === "image/jpeg" ? fileName.replace(/\.(?:heic|heif)$/i, ".jpg") : fileName;
-    return photoName(date, mimeType, ++stamped);
+    if (!keepNames || !fileName) return photoName(date, mimeType, ++stamped);
+    const extension = PHOTO_EXTENSIONS[mimeType];
+    if (!extension || SAME_EXTENSION[mimeType]!.test(fileName)) return fileName;
+    return fileName.replace(/\.[^./]*$/, "") + extension;
   });
 }
 
@@ -81,8 +89,17 @@ export class AttachmentDraft {
     put: PutFile;
     newId: () => string;
     changed: () => void;
+    /** Deletes a pick's `cleanup` copy. */
+    release?: (path: string) => void;
     now?: () => number;
   }) {}
+
+  private release(files: readonly PickedFile[]) {
+    for (const { cleanup } of files) {
+      if (!cleanup) continue;
+      try { this.deps.release?.(cleanup); } catch { /* The system clears its cache too. */ }
+    }
+  }
 
   /** The opening draft's ID, made on first use. */
   draftId(): string {
@@ -155,6 +172,8 @@ export class AttachmentDraft {
       const rows = picked.map((file) => ({ ...file, key: this.deps.newId(), progress: 0, ready: false, cancel: new AbortController() }));
       this.rows = [...this.rows, ...rows];
       for (const row of rows) this.start(row);
+    } else {
+      this.release(picked);
     }
     this.deps.changed();
     return !error;
@@ -177,6 +196,7 @@ export class AttachmentDraft {
     // flight has no ID yet. Its next step sees the row is gone.
     void (async () => {
       await row.work;
+      this.release([row]);
       if (row.grant) await this.discard(row.grant.id);
     })().catch(() => { /* The server also expires abandoned uploads. */ });
     this.notice = undefined;
@@ -200,24 +220,25 @@ export class AttachmentDraft {
 
   /** The server saved the send: its files leave the draft. */
   accept(send: AttachmentSend) {
-    this.rows = this.rows.filter((row) => !row.grant || !send.attachmentUploadIds.includes(row.grant.id));
+    const sent = (row: DraftFile) => !!row.grant && send.attachmentUploadIds.includes(row.grant.id);
+    this.release(this.rows.filter(sent));
+    this.rows = this.rows.filter((row) => !sent(row));
     this.notice = undefined;
     this.deps.changed();
   }
 
-  /** Mounted again (React's development double mount): accept work once more. */
+  /** Mounted again (a development remount): accept work once more. */
   open() {
-    if (!this.lifetime.signal.aborted) return;
-    this.lifetime = new AbortController();
-    for (const row of this.rows) {
-      if (!row.cancel.signal.aborted) continue;
-      row.cancel = new AbortController();
-      if (!row.ready) row.error ??= "Upload interrupted. Try again.";
-    }
+    if (this.lifetime.signal.aborted) this.lifetime = new AbortController();
   }
 
+  /** The composer closed: stop uploading and delete the draft's copies. The
+   *  server expires the reservations. */
   dispose() {
     this.lifetime.abort();
-    for (const row of this.rows) row.cancel.abort();
+    const rows = this.rows;
+    this.rows = [];
+    for (const row of rows) row.cancel.abort();
+    void Promise.all(rows.map((row) => row.work)).then(() => this.release(rows));
   }
 }

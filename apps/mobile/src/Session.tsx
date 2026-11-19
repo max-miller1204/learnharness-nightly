@@ -248,13 +248,13 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
             </View>
           )}
           {canAttach && attachOpen && !blocked && !busy && !sending && <AttachMenu attachments={attachments} close={() => setAttachOpen(false)} />}
-          {canAttach && <DraftChips attachments={attachments} needsText={!draft.trim()} />}
+          {canAttach && <DraftChips attachments={attachments} needsText={!draft.trim()} locked={sending} />}
           <View style={s.dock}>
             {problem && <View style={{ paddingHorizontal: space.md, paddingTop: space.sm }}><Label>Your thinking</Label></View>}
             <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 6, padding: 6 }}>
               {canAttach && <AttachButton open={attachOpen} setOpen={setAttachOpen} disabled={blocked || busy || sending} />}
               <TextInput accessibilityLabel={thinkingLabel} placeholder={thinkingLabel} placeholderTextColor={c.muted} selectionColor={c.accent}
-                multiline value={draft} onChangeText={setDraft} editable={!blocked && !busy}
+                multiline value={draft} onChangeText={setDraft} editable={!blocked && !busy && !sending}
                 style={{ flex: 1, minHeight: 40, maxHeight: 192, paddingHorizontal: 10, paddingVertical: 10, fontFamily: fonts.prose, fontSize: 16, lineHeight: 20, color: c.text, textAlignVertical: "top" }} />
               <Button primary label={problem ? "Submit thinking" : "Send"} disabled={blocked || busy || sending || !draft.trim()} onPress={() => void sendDraft()}
                 style={{ width: 40, paddingHorizontal: 0, borderRadius: radius.control }}>
