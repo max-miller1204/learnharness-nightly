@@ -1,6 +1,6 @@
 /**
  * One-time backfill: wipe the legacy ledgers and re-extract every chat with
- * the redesigned pipeline (vision §1, commit b07c907). Run from the master
+ * the redesigned pipeline (commit b07c907). Run from the master
  * tree only — data never crosses trees:
  *
  *   npx tsx --env-file=.env.local scripts/backfill-graph.ts

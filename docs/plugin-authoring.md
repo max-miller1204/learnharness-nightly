@@ -152,7 +152,7 @@ built packages in app `core-plugins/<id>/`, loaded directly without a user-data 
 copy. Their writable settings/records live in `<learning data>/core-plugin-data/<id>/`.
 Always use `ctx.directory` for code and `ctx.dataDirectory` for writable records; do not
 infer one from the other. Core plugins update with the app and are managed in
-**Settings → Core plugins**; all four start disabled, existing explicit choices survive
+**Settings → Core plugins**; they start disabled, existing explicit choices survive
 updates, and disabling never deletes data. Their IDs (`flashcards`, `coding-questions`,
 `drawing-pad`, `rich-code-blocks`) are reserved even if a core package is broken/missing.
 Conflicting community folders are skipped with a diagnostic and are not modified.

@@ -74,7 +74,7 @@ export interface QuestionDockProps {
 	/** Collapse state, owned by the DockOverlay (it drives the shell's height morph). */
 	expanded: boolean;
 	/**
-	 * Teach-phase check awaiting its reveal (vision §2, W5): while collapsed,
+	 * Teach-phase check awaiting its reveal (W5): while collapsed,
 	 * the bar is the "Check your understanding" invitation instead of the
 	 * scroll-collapse strip. Owned by the DockOverlay; false once the learner
 	 * has revealed (afterwards the normal collapse machine rules apply).

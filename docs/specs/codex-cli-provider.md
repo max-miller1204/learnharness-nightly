@@ -2,7 +2,7 @@
 
 **Status: Parked, not built (owner decision, 2026-11-17).** The spike below showed the Codex CLI can qualify, but it costs much more to maintain than the Claude Code provider: about 25 flags plus a rewrite of Codex's internal model catalog to keep its tools off, a debug command for model discovery, and no live typing. The models the owner wanted are already offered to the ChatGPT sign-in, so [chatgpt-account-models.md](chatgpt-account-models.md) replaces this provider. This file is the spike record and the starting point if the Codex CLI is revisited.
 
-Roadmap item 20, Codex CLI part only ([fork roadmap](../fork-roadmap.md#20-gemini-cli-and-codex-cli-providers)). The Gemini CLI gets its own later spec.
+Roadmap item 20, Codex CLI part only. The Gemini CLI gets its own later spec.
 
 LearnHarness drives an externally installed **Codex CLI** as a model, the way it already drives Claude Code (`src/agent/claude-code/`). Codex's own tools are off. LearnHarness keeps the agent loop, its tools, and the transcript.
 

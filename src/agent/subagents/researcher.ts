@@ -7,7 +7,7 @@ import type { PiEngine } from "../models.ts";
 import { runSubagent } from "./pi-run.ts";
 
 /**
- * The researcher sub-agent (vision §2.5): a SEPARATE ToolLoopAgent instance
+ * The researcher sub-agent: a SEPARATE ToolLoopAgent instance
  * from the teacher — an isolated loop with only web_search + web_fetch, so
  * raw search/fetch churn never touches the teacher's context window.
  *

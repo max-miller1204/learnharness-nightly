@@ -741,20 +741,22 @@ async function waitForIdle(chatId: string): Promise<void> {
 const SWEEP_THROTTLE_MS = 30_000;
 
 /**
- * Lazy sweep (called off the /api/jobs poll, throttled), LIVENESS-GATED
- * (accuracy wave, 2026-09-19): a "running" record without a live loop
- * registration (subagents/aborts.ts) is an orphan of a process death —
- * re-deliver its stored result (idempotently) or re-spawn the loop, at
- * once (the old 15-minute age heuristic waited on ghosts AND re-ran
- * hung-but-alive loops beside themselves — the figure-maker incident,
- * 2026-09-18). A record WITH a live registration is provably executing
- * in THIS process — never touched, however old: a hung first model call
+ * The stale-job recovery sweep: at most once per SWEEP_THROTTLE_MS, it walks
+ * every chat's jobs and recovers the ones a process death left behind. Its
+ * production callers are the /api/jobs and /api/activity reads, through
+ * listJobs, which skips it under NODE_ENV=test; tests call it directly.
+ *
+ * LIVENESS-GATED (accuracy wave, 2026-09-19): a "running" record without a
+ * live loop registration (subagents/aborts.ts) is an orphan of a process
+ * death. The sweep re-delivers its stored result (idempotently) or re-spawns
+ * the loop, at once. (The old 15-minute age heuristic waited on ghosts AND
+ * re-ran hung-but-alive loops beside themselves: the figure-maker incident,
+ * 2026-09-18.) A record WITH a live registration is provably executing in
+ * THIS process and is never touched, however old: a hung first model call
  * stays honestly running until END kills it. Terminal workers with known
  * pending delivery are restored independently; old terminal records without
  * delivery metadata are never inferred to owe a delivery.
  */
-/** Re-run a job's sub-agent loop — exposed for the sweep's tests (the
- *  /api/jobs poll is its only production caller, disabled under NODE_ENV=test). */
 export function recoverStaleJobs(): void {
 	const s = state();
 	const now = Date.now();
@@ -793,8 +795,27 @@ export function recoverStaleJobs(): void {
 	}
 }
 
-/** The /api/jobs entry: job list for the client poll (+ lazy recovery). */
+/** Full job records for one chat (+ lazy recovery). The /api/jobs route
+ *  trims them with jobStatusOnly; the activity feed, its only other caller,
+ *  keeps the full records. */
 export function listJobs(chatId: string): JobRecord[] {
 	if (process.env.NODE_ENV !== "test") recoverStaleJobs();
 	return stores.jobStore.listJobs(chatId);
+}
+
+/** The /api/jobs wire projection (docs/specs/jobs-payload.md): status only.
+ *  It never carries `result`, `input`, `usage`, `delivery` or `plugin.input`;
+ *  finished results reach clients through the saved transcript's steer
+ *  marker. Only optional fields are left out, so it is still a JobRecord and
+ *  the protocol format is unchanged. `error` stays whole: the refusal cards
+ *  read its start. */
+export function jobStatusOnly(job: JobRecord): JobRecord {
+	const { id, kind, chatId, toolCallId, status, activity, createdAt, updatedAt, error, plugin } = job;
+	const view: JobRecord = { id, kind, chatId, toolCallId, status, activity, createdAt, updatedAt };
+	if (error !== undefined) view.error = error;
+	if (plugin) {
+		const { input: _input, ...pluginStatus } = plugin;
+		view.plugin = pluginStatus;
+	}
+	return view;
 }
