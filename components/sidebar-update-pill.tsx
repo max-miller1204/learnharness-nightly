@@ -13,7 +13,8 @@
  *   downloading    download arrow, disabled
  *   install        "downloaded": the install confirm dialog
  *   dismiss-notice rolled-back notice: dismiss it (per server)
- *   reload         the server runs a newer version than this page: reload
+ *   reload         the server runs a different version than this page: reload
+ *                  (newer: the page also reloads by itself, once per version)
  *
  * Adapted from T3 Code's SidebarUpdateControl and DesktopUpdateStatusIcon
  * (apps/web/src/components/sidebar/SidebarUpdatePill.tsx and
@@ -47,6 +48,39 @@ export type UpdateControlKind = "check" | "checking" | "unavailable" | "download
 export function pageIsStale(state: UpdateState | null, pageVersion: string = APP_VERSION): boolean {
 	const running = state?.runningVersion;
 	return !!running && isExactVersion(running) && isExactVersion(pageVersion) && running !== pageVersion;
+}
+
+/** Owner decision (docs/specs/update-control.md): a page whose server now runs
+ *  a newer version reloads by itself, without asking about unsent text. Only
+ *  newer: after a rollback the button waits for a click. */
+export function autoReloadVersion(state: UpdateState | null, pageVersion: string = APP_VERSION): string | null {
+	return state?.runningVersion && pageIsStale(state, pageVersion) && isNewerVersion(state.runningVersion, pageVersion) ? state.runningVersion : null;
+}
+
+export const AUTO_RELOAD_KEY = "lh-auto-reloaded-versions";
+/** How many versions a tab remembers; the oldest drops off past this. */
+export const AUTO_RELOAD_MEMORY = 50;
+
+/** At most one automatic reload per server version per tab: every version
+ *  the tab reloaded for is kept in sessionStorage (a JSON list) so it
+ *  survives the reload. A page whose code still doesn't match afterwards (a
+ *  stale cache) keeps the button instead of looping, also when the server
+ *  goes back and forth between versions. No usable storage means no
+ *  automatic reload, only the button. */
+export function claimAutoReload(version: string): boolean {
+	try {
+		const storage = window.sessionStorage;
+		if (!storage) return false;
+		let claimed: unknown;
+		try { claimed = JSON.parse(storage.getItem(AUTO_RELOAD_KEY) ?? "[]"); } catch { claimed = []; }
+		const versions = Array.isArray(claimed) ? claimed.filter((item): item is string => typeof item === "string") : [];
+		if (versions.includes(version)) return false;
+		const next = JSON.stringify([...versions, version].slice(-AUTO_RELOAD_MEMORY));
+		storage.setItem(AUTO_RELOAD_KEY, next);
+		return storage.getItem(AUTO_RELOAD_KEY) === next;
+	} catch {
+		return false;
+	}
 }
 
 /** The one place that picks the button's state (T3's resolveSidebarUpdatePresentation order). */
@@ -230,6 +264,10 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 
 	const showCheckIcon = showsCheckIcon(isChecking, latched, reducedMotion);
 	const kind = resolveUpdateControl(state, { showCheckIcon, pageVersion });
+	const autoReloadTo = autoReloadVersion(state, pageVersion);
+	useEffect(() => {
+		if (autoReloadTo && claimAutoReload(autoReloadTo)) reload();
+	}, [autoReloadTo, reload]); // claimAutoReload keeps it to once per version, whatever reruns the effect
 	const notes = state?.releaseNotes ?? [];
 	const showsNotes = (kind === "download" || kind === "install") && notes.length > 0;
 	useEffect(() => { if (!showsNotes) setOpen(false); }, [showsNotes]);

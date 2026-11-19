@@ -23,6 +23,10 @@ import nextConfig from "../next.config.ts";
 const dom = parseHTML("<html><body></body></html>");
 Object.assign(globalThis, { window: dom.window, document: dom.document, Element: dom.window.Element,
 	HTMLElement: dom.window.HTMLElement, CustomEvent: dom.window.CustomEvent });
+// A per-tab sessionStorage (linkedom has none): the automatic reload's once-per-version memory.
+const tabStorage = new Map<string, string>();
+const sessionStorageFake = { getItem: (key: string) => tabStorage.get(key) ?? null, setItem: (key: string, value: string) => { tabStorage.set(key, String(value)); } };
+Object.defineProperty(dom.window, "sessionStorage", { configurable: true, writable: true, value: sessionStorageFake });
 const restoreModalDom = installModalDom(dom);
 after(restoreModalDom);
 const originalFetch = globalThis.fetch;
@@ -80,6 +84,8 @@ afterEach(async () => {
 	await new Promise(resolve => setTimeout(resolve, 5));
 	delete window.lh;
 	globalThis.fetch = originalFetch;
+	tabStorage.clear();
+	Object.defineProperty(dom.window, "sessionStorage", { configurable: true, writable: true, value: sessionStorageFake });
 });
 
 describe("version and contextual copy", () => {
@@ -273,18 +279,22 @@ describe("General update rows", () => {
 		assert.equal(pill().getAttribute("aria-label"), "Check for updates");
 	});
 
-	it("a server newer than the page offers a reload, and unsent text asks first", async () => {
+	it("a server newer than the page reloads it by itself, even with unsent text; the button stays as the fallback and asks first", async () => {
 		const b = bridge(state({ status: "up-to-date", revision: 1, runningVersion: "0.6.1-nightly.20261118.65" }));
-		let reloads = 0;
-		const host = await mount(<SidebarUpdatePill pageVersion="0.6.1-nightly.20261118.64" reload={() => { reloads++; }} />);
-		const pill = () => q(host, "update-pill")!;
-		assert.equal(pill().getAttribute("data-action"), "reload");
-		assert.equal(pill().getAttribute("aria-label"), "Updated to 0.6.1-nightly.20261118.65. Click to reload.");
-		await click(pill()); assert.equal(reloads, 1, "no unsent text: reloads at once");
-
 		const composer = document.createElement("div"); composer.setAttribute("data-testid", "composer");
 		composer.innerHTML = '<div role="textbox" contenteditable="true">half a question</div>'; document.body.append(composer);
+		let reloads = 0;
 		try {
+			const host = await mount(<SidebarUpdatePill pageVersion="0.6.1-nightly.20261118.64" reload={() => { reloads++; }} />);
+			const pill = () => q(host, "update-pill")!;
+			assert.equal(reloads, 1, "reloads by itself, unsent text or not");
+			assert.equal(q(document, "reload-confirm-dialog"), null, "no confirm for the automatic reload");
+			assert.equal(pill().getAttribute("data-action"), "reload");
+			assert.equal(pill().getAttribute("aria-label"), "Updated to 0.6.1-nightly.20261118.65. Click to reload.");
+			await b.push(state({ status: "up-to-date", revision: 2, runningVersion: "0.6.1-nightly.20261118.65" }));
+			assert.equal(reloads, 1, "once per version");
+
+			// The fallback button: unsent text asks first.
 			await click(pill());
 			assert.equal(reloads, 1, "asks first");
 			assert.equal(q(document, "reload-confirm-title")!.textContent, "You have an unsent message. Reload anyway?");
@@ -292,16 +302,64 @@ describe("General update rows", () => {
 			assert.equal(q(document, "reload-confirm-dialog"), null);
 			await click(pill()); await click(q(document, "reload-confirm-reload")); assert.equal(reloads, 2);
 		} finally { composer.remove(); }
+		await click(q(document, "update-pill")); assert.equal(reloads, 3, "no unsent text: the button reloads at once");
 		assert.equal(b.calls.check, 0);
 
-		await b.push(state({ status: "up-to-date", revision: 2, runningVersion: "0.6.1-nightly.20261118.64" }));
-		assert.equal(pill().getAttribute("data-action"), "check", "same version as the page: no reload");
+		await b.push(state({ status: "up-to-date", revision: 3, runningVersion: "0.6.1-nightly.20261118.64" }));
+		assert.equal(q(document, "update-pill")!.getAttribute("data-action"), "check", "same version as the page: no reload");
 	});
 
-	it("after a rollback (server older than the page) it offers a reload too, with its own wording", async () => {
+	it("reloads by itself at most once per server version per tab, so a page that stays stale keeps the button instead of looping", async () => {
+		const b = bridge(state({ status: "up-to-date", revision: 1, runningVersion: "0.6.1-nightly.20261118.65" }));
+		let reloads = 0;
+		await mount(<SidebarUpdatePill pageVersion="0.6.1-nightly.20261118.64" reload={() => { reloads++; }} />);
+		assert.equal(reloads, 1);
+		for (const { root, host } of roots.splice(0)) { await act(async () => { root.unmount(); }); host.remove(); }
+		// The reloaded page still runs .64 code (a stale cache): same tab, same server version.
+		const host = await mount(<SidebarUpdatePill pageVersion="0.6.1-nightly.20261118.64" reload={() => { reloads++; }} />);
+		assert.equal(reloads, 1, "no second automatic reload for .65");
+		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "reload", "the button stays");
+		// A later, newer server version reloads by itself again.
+		await b.push(state({ status: "up-to-date", revision: 2, runningVersion: "0.6.1-nightly.20261118.66" }));
+		assert.equal(reloads, 2);
+	});
+
+	it("a stale tab never reloads twice for a version, even when the server goes back and forth (.73, .74, .73)", async () => {
+		const b = bridge(state({ status: "up-to-date", revision: 1, runningVersion: "0.6.1-nightly.20261118.73" }));
+		let reloads = 0;
+		const host = await mount(<SidebarUpdatePill pageVersion="0.6.1-nightly.20261118.72" reload={() => { reloads++; }} />);
+		assert.equal(reloads, 1, ".73: reloads");
+		await b.push(state({ status: "up-to-date", revision: 2, runningVersion: "0.6.1-nightly.20261118.74" }));
+		assert.equal(reloads, 2, ".74: reloads");
+		await b.push(state({ status: "up-to-date", revision: 3, runningVersion: "0.6.1-nightly.20261118.73" }));
+		assert.equal(reloads, 2, ".73 again: no second automatic reload");
+		await b.push(state({ status: "up-to-date", revision: 4, runningVersion: "0.6.1-nightly.20261118.74" }));
+		assert.equal(reloads, 2, ".74 again: none either");
+		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "reload", "the button stays");
+		assert.deepEqual(JSON.parse(tabStorage.get("lh-auto-reloaded-versions")!), ["0.6.1-nightly.20261118.73", "0.6.1-nightly.20261118.74"]);
+	});
+
+	it("a page without an exact build version never reloads by itself", async () => {
+		bridge(state({ status: "up-to-date", revision: 1, runningVersion: "0.6.1-nightly.20261118.65" }));
+		let reloads = 0;
+		await mount(<SidebarUpdatePill pageVersion="" reload={() => { reloads++; }} />);
+		assert.equal(reloads, 0);
+	});
+
+	it("without usable sessionStorage it never reloads by itself, only on a click", async () => {
+		Object.defineProperty(dom.window, "sessionStorage", { configurable: true, get() { throw new Error("blocked"); } });
+		bridge(state({ status: "up-to-date", revision: 1, runningVersion: "0.6.1-nightly.20261118.65" }));
+		let reloads = 0;
+		const host = await mount(<SidebarUpdatePill pageVersion="0.6.1-nightly.20261118.64" reload={() => { reloads++; }} />);
+		assert.equal(reloads, 0);
+		await click(q(host, "update-pill")); assert.equal(reloads, 1);
+	});
+
+	it("after a rollback (server older than the page) it does not reload by itself; the button offers it with its own wording", async () => {
 		bridge(state({ status: "error", revision: 1, runningVersion: "0.6.1-nightly.20261118.64" }));
 		let reloads = 0;
 		const host = await mount(<SidebarUpdatePill pageVersion="0.6.1-nightly.20261118.65" reload={() => { reloads++; }} />);
+		assert.equal(reloads, 0, "no automatic reload after a rollback");
 		const pill = q(host, "update-pill")!;
 		assert.equal(pill.getAttribute("data-action"), "reload");
 		assert.equal(pill.getAttribute("aria-label"), "Server is on 0.6.1-nightly.20261118.64. Click to reload.");
