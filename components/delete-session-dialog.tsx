@@ -2,9 +2,8 @@
 
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { HostDialog } from "@/components/host-dialog";
-import type { ChatDeleteMode, ChatListItem } from "@/src/core";
+import { DELETE_SESSION_COPY, type ChatDeleteMode, type ChatListItem } from "@/src/core";
 import { beginSessionDelete } from "@/components/session-deletion";
-import { DELETE_SESSION_COPY } from "@/src/core/session-delete-copy";
 
 /** The graph-traces checkbox copy (owner, 2026-09-24 flow rework — was
  *  the delete-nodes option's body in the two-button design): the
