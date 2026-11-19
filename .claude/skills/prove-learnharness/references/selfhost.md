@@ -19,15 +19,15 @@ Guards, in order:
 2. Your real install is fingerprinted before and after, on every exit: `learnharness.service` pid, state and unit path; sha256 of its unit file, `~/.local/bin/lh`, `service-state.json`, `service.env` and `userdata/config.json`; a listing (path, size, mtime) of `~/.learnharness/runtime/` and `userdata/backups/`. Any difference fails the run. Learning data and logs are left out, since your own use changes them (if your real service updated itself during the run, rerun).
 3. Every `lh` call is time-boxed (120 s), and tier B runs once per run folder.
 
-## Tier A (routine)
+## Tier A
 
 `scripts/selfhost-a.sh "$RUN" base|head`: `node --test selfhost/tests/*.test.ts` in that tree, then `lh help|status|versions|update|rollback|use 9.9.9|restore|logs|__selftest-launcher|bogus-command` from source in an empty throwaway home (each must refuse cleanly). Outputs are observations: compare base and head with `compare.mjs`. No build needed beyond the base tree.
 
-## Tier B (hard)
+## Tier B
 
 `scripts/selfhost-b.sh "$RUN"` after `build.sh "$RUN" both`:
 
-1. Packs A (base build, `<base version>-nightly.20000101.1`, cached in `$PROVE_CACHE/base/<sha>/.prove-archive/`), B (head build, `...2`) and C (B with `server/server.js` replaced by `process.exit(3)`, `...3`) with `selfhost/scripts/package-archive.ts` and the host Node 26. B and C are cached in `$PROVE_CACHE/head-archives/<key>/`, keyed by the head build stamp (tree hash and baked version) and arch, so a rerun on an unchanged tree skips packing (the timing table says "cache hit" or "packed"); the newest `HEAD_ARCHIVE_KEEP` pairs are kept. The feed gets hard links to the cached files.
+1. Packs A (base build, `<base version>-nightly.20000101.1`, cached in `$PROVE_CACHE/base/<sha>/.prove-archive/`), B (head build, `...2`) and C (B with `server/server.js` replaced by `process.exit(3)`, `...3`) with `selfhost/scripts/package-archive.ts` and the host Node 26. B and C are cached in `$PROVE_CACHE/head-archives/<key>/`, keyed by the head build stamp (tree hash and baked version) and arch, so a rerun on an unchanged tree skips packing (`pack.log` says "reusing cached B and C archives"); the newest `HEAD_ARCHIVE_KEEP` pairs are kept. The feed gets hard links to the cached files.
 2. `install.sh` from the base tree with `LH_FEED_URL`, `LH_YES=1`, `LH_UP_ARGS`: installs A, writes the unit, starts it.
 3. Seeds a session, then feed -> B, `lh update` (server downloads), `lh update --now`: waits for health on B and `update.status=committed`; checks the session and a backup named after A.
 4. Feed -> C, same: waits for `update.status=rolled-back` for C, health on B, C in `badVersions`, session kept.

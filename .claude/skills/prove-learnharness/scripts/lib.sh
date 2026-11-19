@@ -38,17 +38,9 @@ wait_for() {
 # Is the pid in this file alive?
 pid_alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 
-# Append one row to <RUN>/timings.tsv (same format as timed.sh).
-record_time() { # <RUN> <phase> <start epoch> [exit]
-	local run=$1 phase=$2 start=$3 code=${4:-0}
-	[ -f "$run/timings.tsv" ] || printf 'phase\tstart\tend\tseconds\texit\n' >"$run/timings.tsv"
-	printf '%s\t%s\t%s\t%s\t%s\n' "$phase" "$(date -u -d "@${start%.*}" +%FT%TZ)" "$(date -u +%FT%TZ)" \
-		"$(awk -v a="$start" -v b="$(date +%s.%N)" 'BEGIN{printf "%.1f", b-a}')" "$code" >>"$run/timings.tsv"
-}
-
 # Take one of $MACHINE_BUILD_SLOTS machine-wide build slots on file descriptor
 # <fd> (held until the caller closes it or exits). Waits up to
-# $BUILD_SLOT_WAIT_S; returns 1 if none frees up. Sets BUILD_SLOT.
+# $BUILD_SLOT_WAIT_S; returns 1 if none frees up.
 acquire_build_slot() { # <fd>
 	local fd=$1 i deadline
 	deadline=$(( $(date +%s) + BUILD_SLOT_WAIT_S ))
@@ -56,7 +48,7 @@ acquire_build_slot() { # <fd>
 	while :; do
 		for i in $(seq 1 "$MACHINE_BUILD_SLOTS"); do
 			eval "exec $fd>\"\$PROVE_CACHE/build-slots/slot-$i.lock\""
-			if flock -n "$fd"; then BUILD_SLOT=$i; return 0; fi
+			if flock -n "$fd"; then return 0; fi
 			eval "exec $fd>&-"
 		done
 		[ "$(date +%s)" -lt "$deadline" ] || return 1

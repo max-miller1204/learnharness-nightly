@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # selfhost-a.sh <RUN> head|base
 #
-# Selfhost tier A (routine): the launcher's own tests, then the `lh` CLI run
+# Selfhost tier A: the launcher's own tests, then the `lh` CLI run
 # from source against a throwaway LH_HOME with no install, where every command
 # must refuse cleanly. No build, no systemd unit, no network. Writes
 # <RUN>/<side>/selfhost-a/result.json (compare.mjs format) so head is diffed
