@@ -273,7 +273,7 @@ jobs:
           echo "UDID=$udid" >> "$GITHUB_ENV"
       # The simulator shares the Mac's resolver: no published update can load.
       - name: Block published updates
-        run: echo "0.0.0.0 u.expo.dev" | sudo tee -a /etc/hosts
+        run: printf '\n0.0.0.0 u.expo.dev\n' | sudo tee -a /etc/hosts
       - name: Install AXe
         run: |
           set -euo pipefail
@@ -345,6 +345,8 @@ jobs:
           xcrun simctl install "$UDID" "$APP"
           (cd apps/mobile && nohup npx expo start --port 8081 > "$RUNNER_TEMP/metro.log" 2>&1 &)
           curl -fsS --retry 60 --retry-connrefused --retry-delay 2 http://127.0.0.1:8081/status
+          # Build the bundle once, so the app's own request is served from a warm cache.
+          curl -fsS -o /dev/null --max-time 600 "http://127.0.0.1:8081/.expo/.virtual-metro-entry.bundle?platform=ios&dev=true&hot=false&lazy=true&transform.engine=hermes&transform.bytecode=1&unstable_transformProfile=hermes-stable"
       - name: Drive the app and the web
         run: |
           "$NODE26_BIN/node" scripts/iphone-check/drive.mjs --udid "$UDID" --bundle com.maxmiller.learnharness.nightly --origin "$ORIGIN" \
