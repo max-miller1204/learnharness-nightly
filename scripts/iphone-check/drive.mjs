@@ -65,7 +65,19 @@ const fail = (screen, message) => { throw new Failure(`${screen}: ${message}`); 
 
 // T3 Code's showcase sets this too (scripts/mobile-showcase.ts:1007-1011): HID
 // input sent right after the simulator settles is otherwise dropped. AXe caps it at 1 s.
-const axe = (args) => run(AXE, [...args, "--udid", UDID], { maxBuffer: 64 << 20, env: { ...process.env, AXE_HID_STABILIZATION_MS: "1000" } });
+// AXe itself can crash (a signal, seen as SIGSEGV on a swipe). Reads and scrolls
+// are safe to repeat, so those run again, at most twice; a tap or keys never do.
+const REPEATABLE = new Set(["describe-ui", "displays", "swipe", "drag"]);
+async function axe(args) {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return await run(AXE, [...args, "--udid", UDID], { maxBuffer: 64 << 20, env: { ...process.env, AXE_HID_STABILIZATION_MS: "1000" } });
+		} catch (error) {
+			if (!error.signal || !REPEATABLE.has(args[0]) || attempt === 3) throw error;
+			log(`AXe crashed (${error.signal}) on ${args[0]}; running it again`);
+		}
+	}
+}
 const simctl = (...args) => run("xcrun", ["simctl", ...args], { maxBuffer: 64 << 20 });
 
 function flatten(nodes, out = []) {
