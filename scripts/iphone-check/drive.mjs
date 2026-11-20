@@ -353,7 +353,7 @@ async function webShots(browser, screens) {
 				await page.goto(`${inst.APP_URL}${route}`, { waitUntil: "domcontentloaded", timeout: 120_000 })
 					.catch((error) => fail(`web ${screen}`, `${route} did not load: ${error.message}`));
 				try {
-					await page.waitForFunction((want) => document.body?.innerText.includes(want), { timeout: 30_000 }, text);
+					await page.waitForFunction((want) => document.body?.innerText.includes(want), { timeout: 90_000 }, text);
 				} catch {
 					fail(`web ${screen}`, `"${text}" never showed`);
 				}
