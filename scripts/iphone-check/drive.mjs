@@ -137,44 +137,38 @@ async function tap(screen, find) {
 	await sleep(700);
 }
 
-/** Open a session row. Each row sits in a native long-press menu, and on the
- * simulator a touch at the row's centre may not open it. The ways tried are
- * logged; the first that works is tried first on the next row. */
-const ROW_TOUCHES = [
-	["AXe tap by label", (row) => ["tap", "--label", label(row)]],
-	["tap on the title text", (row) => ["tap", "-x", String(Math.round(frame(row).x + 40)), "-y", String(Math.round(frame(row).y + frame(row).height * 0.3)), "--tap-style", "physical"]],
-	["tap at the centre", (row) => ["tap", "-x", String(center(row).x), "-y", String(center(row).y), "--tap-style", "physical"]],
-	["tap on the right of the row", (row) => ["tap", "-x", String(Math.round(frame(row).x + frame(row).width - 24)), "-y", String(center(row).y), "--tap-style", "physical"]],
-	["touch held 0.15 s at the title", (row) => ["touch", "-x", String(Math.round(frame(row).x + 40)), "-y", String(Math.round(frame(row).y + frame(row).height * 0.3)), "--down", "--up", "--delay", "0.15"]],
-];
-let rowTouch = 0;
+/** Open a session row with a tap on its title. */
 async function openRow(screen, title, reached) {
-	const order = [rowTouch, ...ROW_TOUCHES.keys()].filter((i, n, all) => all.indexOf(i) === n);
-	for (const i of order) {
-		const [name, args] = ROW_TOUCHES[i];
-		const row = (await settled(screen)).find((el) => label(el).startsWith(`${title},`) || label(el) === title);
-		if (!row) fail(screen, `no row for "${title}"`);
-		await axe(args(row)).catch((error) => log(`${name} on "${title}" failed to send: ${String(error.stderr || error.message).trim().split("\n")[0]}`));
-		const deadline = Date.now() + 6000;
-		while (Date.now() < deadline) {
-			await sleep(800);
-			if (reached(await settled(screen))) {
-				log(`opened "${title}" with: ${name}`);
-				rowTouch = i;
-				return;
-			}
-		}
-		log(`${name} did not open "${title}"`);
+	const row = (await settled(screen)).find((el) => label(el).startsWith(`${title},`) || label(el) === title);
+	if (!row) fail(screen, `no row for "${title}"`);
+	await axe(["tap", "-x", String(Math.round(frame(row).x + 40)), "-y", String(Math.round(frame(row).y + frame(row).height * 0.3)), "--tap-style", "physical"]);
+	await waitFor(screen === "sessions" ? `open ${title}` : screen, reached);
+}
+
+/** Does a tap reach the app? Flip the session kind filter to Teaching and back to All. */
+async function tapsReachApp(screen) {
+	const filter = (name) => async () => (await settled(screen)).find((el) => label(el) === name && isChoice(el));
+	for (const name of ["Teaching", "All"]) {
+		const el = await filter(name)();
+		if (!el) fail(screen, `no ${name} filter`);
+		await axe(["tap", "-x", String(center(el).x), "-y", String(center(el).y), "--tap-style", "physical"]);
+		await sleep(1200);
+		if (!/(^|, )checked/.test(String((await filter(name)())?.AXValue ?? ""))) return false;
 	}
-	// Show whether a touch reaches anything on this screen: the kind switch is outside the menu.
-	const kind = (await settled(screen)).find((el) => label(el) === "Teaching" && isChoice(el));
-	if (kind) {
-		await axe(["tap", "-x", String(center(kind).x), "-y", String(center(kind).y), "--tap-style", "physical"]);
-		await sleep(1000);
-		const after = (await settled(screen)).find((el) => label(el) === "Teaching" && isChoice(el));
-		log(`a tap on the Teaching filter left it ${JSON.stringify(after?.AXValue)}`);
-	}
-	fail(screen, `no touch opened the "${title}" row`);
+	return true;
+}
+
+/** After the Pair screen's secure field, iOS offers to save the password in a
+ * system sheet that AXe's tree does not list and that takes every touch. A real
+ * user answers it once; this answers Not Now (where it sits on an iPhone 17). */
+async function dismissSavePassword(screen) {
+	await sleep(6000);
+	if (await tapsReachApp(screen)) return;
+	log("a system sheet takes the taps (iOS's Save Password? offer); answering Not Now");
+	await axe(["tap", "--label", "Not Now"]).catch(() => axe(["tap", "-x", String(Math.round(screenSize.width * 0.315)),
+		"-y", String(Math.round(screenSize.height * 0.626)), "--tap-style", "physical"]));
+	await sleep(1500);
+	if (!(await tapsReachApp(screen))) fail(screen, "a system sheet over the app takes every tap and Not Now did not close it");
 }
 
 /** Type into a text field a few keys at a time, and check what landed: with
@@ -452,6 +446,8 @@ async function phone() {
 	await tap("pair", (el) => label(el) === "Connect");
 
 	const sessionsReached = (elements) => hasMatch(new RegExp(QUIZ.title))(elements) && hasMatch(new RegExp(LESSON.title))(elements);
+	await waitFor("sessions", sessionsReached, 60_000);
+	await dismissSavePassword("sessions");
 	for (const { mode } of MODES) {
 		await setPhoneMode(mode);
 		await waitFor("sessions", sessionsReached, 60_000);
