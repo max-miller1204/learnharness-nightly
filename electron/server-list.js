@@ -18,7 +18,9 @@ function showPair(origin = "") {
 
 function render() {
 	const { servers, active, defaultServer, damaged, busy, removing, problem, notice, signingIn } = state;
-	const firstRun = !defaultServer && !active && !problem && servers.length === 0 && !notice;
+	// Also with This computer open once every saved server and the default are removed:
+	// what is picked on the setup screen then becomes the default.
+	const firstRun = !defaultServer && !problem && servers.length === 0 && !notice;
 	$("welcome").hidden = !firstRun || adding;
 	$("list").hidden = (firstRun || adding) && !problem;
 	$("add-server").hidden = !adding || !!problem;

@@ -89,6 +89,8 @@ async function readJSON(response) {
 function createUpdateEverything(deps) {
 	let run = null; // { target, step: "downloading" | "updating" | "restarting" }
 	let asking = false;
+	// The server a run (or its confirmation) talks to with its bearer.
+	let against = null;
 
 	function status() {
 		const state = deps.updater.state();
@@ -236,6 +238,10 @@ function createUpdateEverything(deps) {
 	async function start(answered) {
 		const selection = deps.selection();
 		if (!selection) return;
+		against = selection.origin;
+		try { await startWith(selection, answered); } finally { against = null; }
+	}
+	async function startWith(selection, answered) {
 		const label = serverLabel(selection.origin);
 		let target;
 		try {
@@ -313,6 +319,8 @@ function createUpdateEverything(deps) {
 		status,
 		/** A run, or its confirmation, is going: the plain install and the menu wait. */
 		running: () => run !== null || asking,
+		/** The origin a run is updating, from its confirmation to its end, or null. */
+		server: () => against,
 		check() {
 			if (!run) deps.updater.check();
 		},

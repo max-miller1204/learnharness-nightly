@@ -110,6 +110,8 @@ async function serverJSON(origin, pathname, { retry = false, ...options } = {}) 
 	try {
 		for (let attempt = 0; ; attempt++) {
 			if (retry && attempt > 0 && rest() <= 0) throw unreachable();
+			// An aborted caller sends nothing more, not even a retry.
+			options.signal?.throwIfAborted();
 			let response;
 			try {
 				response = await requestServer(origin, pathname, { ...options, ...(retry && { timeoutMs: Math.max(rest(), 1) }) });

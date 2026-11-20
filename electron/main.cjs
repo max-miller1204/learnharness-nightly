@@ -1071,6 +1071,7 @@ async function main() {
 			app, BrowserWindow, WebContentsView, ipcMain, session, shell, safeStorage, dialog,
 			startLocal: startLocalServer, stopLocal: killServer, createLocalWindow: () => createWindow(),
 			setLocalMenu: (enabled) => installMenu({ local: enabled }), themeMode: () => appearance.mode,
+			updatingServer: () => updateEverything?.server() ?? null,
 		});
 		installMenu({ local: false });
 		reopenWindow = () => serverList.reopen();
