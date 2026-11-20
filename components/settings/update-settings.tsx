@@ -55,6 +55,9 @@ export type DesktopAppStatus = {
 	error: string | null;
 	/** While this app downloads its update: how far, 0 to 100, or null when unknown. Older apps omit it. */
 	downloadPercent?: number | null;
+	/** The offered version's notes, newest first, as in UpdateState (the sidebar's hover). Older apps omit them. */
+	releaseNotes?: ReleaseNoteGroup[];
+	omittedReleaseCount?: number;
 };
 
 export type DesktopUpdateBridge = {
@@ -178,6 +181,19 @@ export function useUpdateState() {
 const isDesktopAppStatus = (value: unknown): value is DesktopAppStatus =>
 	typeof value === "object" && value !== null && typeof (value as DesktopAppStatus).version === "string" && typeof (value as DesktopAppStatus).phase === "string";
 
+const isReleaseNoteGroup = (value: unknown): value is ReleaseNoteGroup =>
+	typeof value === "object" && value !== null && typeof (value as ReleaseNoteGroup).version === "string"
+	&& Array.isArray((value as ReleaseNoteGroup).items) && (value as ReleaseNoteGroup).items.every((item) => typeof item === "string");
+
+/** Tolerant read of the bridge's status: an app from before the notes field (or a malformed
+ *  group) reads as no notes, never as a broken status. */
+export function readDesktopAppStatus(value: unknown): DesktopAppStatus | null {
+	if (!isDesktopAppStatus(value)) return null;
+	const releaseNotes = Array.isArray(value.releaseNotes) ? value.releaseNotes.filter(isReleaseNoteGroup) : [];
+	const omitted = value.omittedReleaseCount;
+	return { ...value, releaseNotes, omittedReleaseCount: typeof omitted === "number" && Number.isInteger(omitted) && omitted > 0 ? omitted : 0 };
+}
+
 /** How often the page asks the app for its update status (the bridge has no push channel). */
 export const DESKTOP_STATUS_POLL_MS = 5_000;
 
@@ -189,8 +205,8 @@ export function useDesktopAppUpdate() {
 	const refresh = useCallback(async () => {
 		if (!bridge) return;
 		try {
-			const next = await bridge.getStatus();
-			if (isDesktopAppStatus(next)) setStatus(next);
+			const next = readDesktopAppStatus(await bridge.getStatus());
+			if (next) setStatus(next);
 		} catch { /* keep the last status */ }
 	}, [bridge]);
 	useEffect(() => {

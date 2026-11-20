@@ -43,8 +43,8 @@
  * server is behind (useUpdateEverything.ts:104).
  */
 
-import { useCallback, useEffect, useId, useRef, useState, type RefObject } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { createPortal, flushSync } from "react-dom";
 import * as Popper from "@radix-ui/react-popper";
 import { CheckIcon, CircleArrowUpIcon, DownloadIcon, RefreshCwIcon, RotateCwIcon, TriangleAlertIcon } from "lucide-react";
 import { HostDialog } from "@/components/host-dialog";
@@ -54,6 +54,7 @@ import { APP_VERSION, HOMEPAGE, desktopOffer, useDesktopAppUpdate, useUpdateStat
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { isExactVersion, isNewerVersion } from "@/selfhost/src/version-order.ts";
+import type { ReleaseNoteGroup } from "@/src/core";
 
 export type UpdateControlKind = "check" | "checking" | "unavailable" | "download" | "downloading" | "install" | "restarting" | "dismiss-notice" | "reload" | "everything" | "app-download" | "app-install";
 
@@ -173,6 +174,22 @@ export function appUpdateTooltip(desktop: DesktopAppStatus, kind: "app-download"
 	return version ? `Update ${version} downloaded. Click to restart and install.` : "Update ready downloaded. Click to restart and install.";
 }
 
+/** T3's showUpdateDetails (SidebarUpdatePill.tsx:95 at df09ced7): the states about one
+ *  offered update, whose hover shows its release notes when there are any. */
+const DETAIL_KINDS: ReadonlySet<UpdateControlKind> = new Set(["download", "downloading", "install", "restarting", "everything", "app-download", "app-install"]);
+
+/** The notes the hover shows, or null for the plain tooltip. T3's rule
+ *  (SidebarUpdatePill.tsx:58-63, 279-280 at df09ced7): `showUpdateDetails && notes.length > 0`,
+ *  and none while an Update everything run is going. The notes are this app's for its own
+ *  states (everything, app-download, app-install, its own download) and the server's otherwise. */
+export function shownReleaseNotes(state: UpdateState | null, kind: UpdateControlKind | null, desktop: DesktopAppStatus | null = null): { releaseNotes: ReleaseNoteGroup[]; omittedReleaseCount: number } | null {
+	if (!kind || !DETAIL_KINDS.has(kind) || desktop?.phase === "updating") return null;
+	const appOwned = kind === "everything" || kind === "app-download" || kind === "app-install" || (kind === "downloading" && desktop?.phase === "downloading");
+	const source = appOwned ? desktop : state;
+	const releaseNotes = source?.releaseNotes ?? [];
+	return releaseNotes.length > 0 ? { releaseNotes, omittedReleaseCount: source?.omittedReleaseCount ?? 0 } : null;
+}
+
 /** The second tooltip line of "unavailable" (T3's getDesktopUpdateDisabledReason fallback). */
 export const unavailableDetail = (state: UpdateState) => state.message?.trim() || UNAVAILABLE_DETAIL;
 
@@ -206,6 +223,10 @@ export const showsCheckIcon = (checking: boolean, latched: boolean, reducedMotio
 export const continuesCheckSpin = (checking: boolean, reducedMotion: boolean) => checking && !reducedMotion;
 
 const CLOSE_DELAY_MS = 150;
+
+const TABBABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
+const tabbablesIn = (root: ParentNode | null | undefined): HTMLElement[] =>
+	root ? Array.from(root.querySelectorAll<HTMLElement>(TABBABLE)).filter((element) => element.getAttribute("tabindex") !== "-1" && !element.closest("[hidden], [inert]")) : [];
 
 /** Keyboard focus only, as components/ui/tooltip.tsx checks it (a DOM without :focus-visible counts as yes). */
 function focusVisible(element: Element): boolean {
@@ -350,7 +371,7 @@ function ReloadConfirmDialog({ open, onClose, onConfirm }: { open: boolean; onCl
 	);
 }
 
-export function SidebarUpdatePill({ reload = () => window.location.reload(), pageVersion = APP_VERSION }: { reload?: () => void; pageVersion?: string } = {}) {
+export function SidebarUpdatePill({ reload = () => window.location.reload(), pageVersion = APP_VERSION, homepage = HOMEPAGE }: { reload?: () => void; pageVersion?: string; homepage?: string } = {}) {
 	const { state, transport, check, install, download, dismissNotice } = useUpdateState();
 	const desktop = useDesktopAppUpdate();
 	const desktopStatus = desktop?.status ?? null;
@@ -371,6 +392,9 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	}, [isChecking, reducedMotion]);
 	const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const buttonRef = useRef<HTMLButtonElement>(null);
+	const popoverRef = useRef<HTMLDivElement>(null);
+	// Escape from the notes puts focus back on the button without opening them again (T3's suppressReleaseNotesFocusOpen).
+	const suppressFocusOpen = useRef(false);
 	const popoverId = useId();
 	useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
 
@@ -383,8 +407,8 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	useEffect(() => {
 		if (autoReloadTo && claimAutoReload(autoReloadTo)) reload();
 	}, [autoReloadTo, reload]); // claimAutoReload keeps it to once per version, whatever reruns the effect
-	const notes = state?.releaseNotes ?? [];
-	const showsNotes = (kind === "download" || kind === "install") && notes.length > 0;
+	const shownNotes = shownReleaseNotes(state, kind, desktopStatus);
+	const showsNotes = shownNotes !== null;
 	useEffect(() => { if (!showsNotes) setOpen(false); }, [showsNotes]);
 	const onIteration = useCallback(() => setLatched(continuesCheckSpin(isChecking, reducedMotion)), [isChecking, reducedMotion]);
 
@@ -405,7 +429,62 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	const show = () => { cancelClose(); if (showsNotes) setOpen(true); };
 	const hideSoon = () => {
 		cancelClose();
-		closeTimer.current = setTimeout(() => setOpen(false), CLOSE_DELAY_MS);
+		closeTimer.current = setTimeout(() => {
+			// Keyboard focus inside the notes keeps them open when the pointer leaves.
+			if (!popoverRef.current?.contains(document.activeElement)) setOpen(false);
+		}, CLOSE_DELAY_MS);
+	};
+	const closeToButton = () => {
+		cancelClose();
+		suppressFocusOpen.current = true;
+		setOpen(false);
+		buttonRef.current?.focus({ preventScroll: true });
+	};
+	// T3 promotes the hover popover to a focus-managed one on forward Tab (SidebarUpdatePill.tsx:72-80):
+	// Tab moves into the notes' links, Escape closes them back onto the button. LearnHarness has no
+	// native Tab (interaction-layers.tsx prevents it; Tab cycles text fields and Shift+Tab the
+	// thinking level, keyboard-shortcuts.tsx), so the notes move focus themselves and stop the
+	// keys they take from reaching those shortcuts. Escape stops there too: it never aborts a turn.
+	const onButtonKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+		if (!showsNotes || event.metaKey || event.ctrlKey || event.altKey) return;
+		if (event.key === "Escape" && open) {
+			event.preventDefault();
+			event.stopPropagation();
+			cancelClose();
+			setOpen(false);
+			return;
+		}
+		if (event.key !== "Tab" || event.shiftKey) return;
+		cancelClose();
+		flushSync(() => setOpen(true));
+		const first = tabbablesIn(popoverRef.current)[0];
+		if (!first) return;
+		event.preventDefault();
+		event.stopPropagation();
+		first.focus();
+	};
+	const onNotesKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+		if (event.metaKey || event.ctrlKey || event.altKey) return;
+		if (event.key === "Escape") {
+			event.preventDefault();
+			event.stopPropagation();
+			closeToButton();
+			return;
+		}
+		if (event.key !== "Tab") return;
+		event.preventDefault();
+		const inside = tabbablesIn(popoverRef.current);
+		const at = inside.indexOf(event.target as HTMLElement);
+		if (event.shiftKey) {
+			event.stopPropagation();
+			(at > 0 ? inside[at - 1] : buttonRef.current)?.focus({ preventScroll: true });
+		} else if (at >= 0 && at < inside.length - 1) {
+			event.stopPropagation();
+			inside[at + 1]?.focus();
+		} else {
+			// Past the last link the notes close onto the button, and the app's own Tab goes on from there.
+			closeToButton();
+		}
 	};
 
 	const onClick = () => {
@@ -441,8 +520,12 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 			onClick={onClick}
 			onPointerEnter={show}
 			onPointerLeave={hideSoon}
-			onFocus={(event) => { if (focusVisible(event.currentTarget)) show(); }}
-			onBlur={hideSoon}
+			onFocus={(event) => {
+				if (suppressFocusOpen.current) { suppressFocusOpen.current = false; return; }
+				if (focusVisible(event.currentTarget)) show();
+			}}
+			onBlur={() => { suppressFocusOpen.current = false; hideSoon(); }}
+			onKeyDown={onButtonKeyDown}
 			className={cn(
 				"inline-flex size-8 shrink-0 items-center justify-center rounded-full outline-hidden ring-ring transition-colors focus-visible:ring-2 focus-visible:ring-inset",
 				disabled ? "cursor-not-allowed" : "cursor-pointer",
@@ -463,20 +546,24 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 			<TooltipProvider>
 				<Tooltip>
 					<TooltipTrigger asChild>{button}</TooltipTrigger>
-					{showsNotes ? open && createPortal(
+					{shownNotes ? open && createPortal(
 						<Popper.Content side="top" align="center" sideOffset={8} collisionPadding={8} className="z-50">
 							<div
+								ref={popoverRef}
 								id={popoverId}
 								role="dialog"
 								aria-label="Update release notes"
 								data-testid="update-pill-notes"
 								onPointerEnter={cancelClose}
 								onPointerLeave={hideSoon}
+								onFocus={cancelClose}
+								onBlur={hideSoon}
+								onKeyDown={onNotesKeyDown}
 								className="flex max-h-[min(32rem,calc(100vh-6rem))] w-fit max-w-[min(24rem,calc(100vw-2rem))] flex-col rounded-lg border border-border bg-popover p-3 text-left text-pretty text-popover-foreground shadow-lg"
 							>
 								<div className="shrink-0 px-1 text-sm leading-5 font-medium">{tooltip}</div>
 								<div className="min-h-0 overflow-y-auto px-1 pt-3 pb-1">
-									<ReleaseNoteSections groups={notes} omittedReleaseCount={state.omittedReleaseCount ?? 0} homepage={HOMEPAGE} />
+									<ReleaseNoteSections groups={shownNotes.releaseNotes} omittedReleaseCount={shownNotes.omittedReleaseCount} homepage={homepage} />
 								</div>
 							</div>
 						</Popper.Content>,

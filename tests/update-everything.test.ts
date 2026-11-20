@@ -299,9 +299,24 @@ test("a launcher rejection, a rollback and the 32-minute limit fail the server s
 	assert.equal(slow.log.some((entry) => entry.startsWith("install")), false);
 });
 
+test("status passes the offered version's release notes through to the remote page, and reads a state without them as none", () => {
+	const notes = [{ version: V72, items: ["**Cards.** Practice with cards."] }, { version: V71, items: ["Older"] }];
+	let appState: Record<string, unknown> = { status: "available", version: V72, releaseNotes: notes, omittedReleaseCount: 3 };
+	const ue = createUpdateEverything({ appVersion: V71, updater: { state: () => appState } });
+	assert.deepEqual(ue.status(), { version: V71, target: V72, phase: "available", error: null, downloadPercent: null, releaseNotes: notes, omittedReleaseCount: 3 });
+	appState = { status: "downloading", version: V72, downloadPercent: 40, releaseNotes: notes, omittedReleaseCount: 0 };
+	assert.deepEqual(ue.status().releaseNotes, notes);
+	assert.equal(ue.status().downloadPercent, 40);
+	// A state without notes (an updater snapshot before any offer, or a malformed count) reads as none.
+	appState = { status: "up-to-date", version: null, omittedReleaseCount: -2 };
+	assert.deepEqual(ue.status(), { version: V71, target: null, phase: "up-to-date", error: null, downloadPercent: null, releaseNotes: [], omittedReleaseCount: 0 });
+	appState = { status: "available", version: V72, releaseNotes: "not a list", omittedReleaseCount: 1.5 };
+	assert.deepEqual([ue.status().releaseNotes, ue.status().omittedReleaseCount], [[], 0]);
+});
+
 test("status reports the run, and a second click while the dialog is open is ignored", async () => {
 	const f = fixture({ answers: [0, 1] });
-	assert.deepEqual(f.ue.status(), { version: V71, target: V72, phase: "available", error: null, downloadPercent: null });
+	assert.deepEqual(f.ue.status(), { version: V71, target: V72, phase: "available", error: null, downloadPercent: null, releaseNotes: [], omittedReleaseCount: 0 });
 	let phaseWhileUpdating: unknown;
 	f.remote.onInstall = () => {
 		phaseWhileUpdating = f.ue.status().phase;

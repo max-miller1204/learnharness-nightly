@@ -11,8 +11,8 @@ import { InteractionLayersProvider } from "../components/interaction-layers.tsx"
 import { installModalDom } from "./modal-dom.ts";
 import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
-import { UpdateSettings, updateStatusText, MANUAL_UPDATE_HINT, AUTO_UPDATE_HINT, type UpdateState } from "../components/settings/update-settings.tsx";
-import { AUTO_RELOAD_KEY, AUTO_RELOAD_MEMORY, claimAutoReload, downloadingTooltip, downloadRingOffset, hasUnsentMessage, SidebarUpdatePill, updateControlTooltip } from "../components/sidebar-update-pill.tsx";
+import { UpdateSettings, readDesktopAppStatus, updateStatusText, MANUAL_UPDATE_HINT, AUTO_UPDATE_HINT, type UpdateState } from "../components/settings/update-settings.tsx";
+import { AUTO_RELOAD_KEY, AUTO_RELOAD_MEMORY, claimAutoReload, downloadingTooltip, downloadRingOffset, hasUnsentMessage, shownReleaseNotes, SidebarUpdatePill, updateControlTooltip } from "../components/sidebar-update-pill.tsx";
 import { createRequire } from "node:module";
 import { ServerEventsProvider } from "../components/server-events.tsx";
 import { ReleaseNoteSections } from "../components/release-notes-view.tsx";
@@ -75,6 +75,23 @@ async function mount(element: React.ReactElement) {
 async function click(element: HTMLElement | null) {
 	assert.ok(element, "missing click target");
 	await act(async () => { element.click(); });
+}
+
+async function hover(element: HTMLElement) {
+	await act(async () => { element.dispatchEvent(new window.Event("pointerover", { bubbles: true })); element.dispatchEvent(new window.Event("pointerenter")); });
+}
+
+/** A keydown that bubbles from `element` (through React's root to the window). */
+async function key(element: Element, name: string, { shiftKey = false } = {}) {
+	const event = Object.assign(new window.Event("keydown", { bubbles: true, cancelable: true }), { key: name, shiftKey });
+	await act(async () => { element.dispatchEvent(event); });
+}
+
+/** Keyboard focus (linkedom can't match :focus-visible). */
+function keyboardFocusable(element: HTMLElement) {
+	const matches = element.matches.bind(element);
+	element.matches = (selector: string) => selector === ":focus-visible" || matches(selector);
+	return element;
 }
 
 afterEach(async () => {
@@ -624,6 +641,122 @@ describe("General update rows", () => {
 		assert.equal(popover!.querySelector("strong")!.textContent, "Cards.");
 	});
 
+	it("T3's hover rule: every state about an offered update shows its notes when there are any; the others keep the tooltip", async () => {
+		const notes = [{ version: "0.3.8", items: ["A change"] }];
+		const cases: Array<[string, Partial<UpdateState>, boolean]> = [
+			["download", { status: "available", version: "0.3.8" }, true],
+			["downloading", { status: "downloading", version: "0.3.8", downloadPercent: 30 }, true],
+			["install", { status: "downloaded", version: "0.3.8" }, true],
+			["check", { status: "up-to-date" }, false],
+			["unavailable", { status: "disabled" }, false],
+			["dismiss-notice", { status: "up-to-date", notice: { kind: "rolled-back", version: "0.3.8", text: "Rolled back to 0.3.7.", at: 1 } }, false],
+		];
+		for (const [action, over, showsNotes] of cases) {
+			bridge(state({ revision: 1, releaseNotes: notes, ...over }));
+			const host = await mount(<SidebarUpdatePill />);
+			await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+			const pill = q(host, "update-pill")!;
+			assert.equal(pill.getAttribute("data-action"), action);
+			await hover(pill);
+			assert.equal(!!q(document, "update-pill-notes"), showsNotes, `${action}: notes`);
+			const { root } = roots.pop()!; await act(async () => { root.unmount(); }); host.remove();
+		}
+		// The same states with no notes: the plain tooltip, never an empty popover.
+		bridge(state({ status: "available", version: "0.3.8", revision: 1 }));
+		const plain = await mount(<SidebarUpdatePill />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		await hover(q(plain, "update-pill")!);
+		assert.equal(q(document, "update-pill-notes"), null);
+	});
+
+	it("after Install and restart the notes still show on hover, as T3's do while its action is pending", async () => {
+		const notes = [{ version: "0.3.8", items: ["A change"] }];
+		bridge(state({ status: "downloaded", version: "0.3.8", revision: 1, releaseNotes: notes }));
+		const host = await mount(<SidebarUpdatePill />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		await click(q(host, "update-pill"));
+		await click(q(document, "install-update-confirm"));
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+		const pill = q(host, "update-pill")!;
+		assert.equal(pill.getAttribute("data-action"), "restarting");
+		await hover(pill);
+		assert.ok(q(document, "update-pill-notes"));
+		assert.equal(q(document, "update-pill-notes")!.firstElementChild!.textContent, "Restarting to install 0.3.8…");
+	});
+
+	it("from the keyboard: Tab moves into the notes' links and through them, Shift+Tab goes back, Escape closes them onto the button", async () => {
+		const notes = [{ version: "0.3.9", items: ["Newest"] }, { version: "0.3.8", items: ["Older"] }];
+		bridge(state({ status: "downloaded", version: "0.3.9", revision: 1, releaseNotes: notes }));
+		const host = await mount(<SidebarUpdatePill homepage="https://github.com/o/r" />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		// What reaches the window: the app's Tab (cycle text fields), Shift+Tab (thinking) and Escape (abort a turn).
+		const reached: string[] = [];
+		const onWindow = (event: Event) => { reached.push(`${(event as KeyboardEvent).shiftKey ? "Shift+" : ""}${(event as KeyboardEvent).key}`); };
+		window.addEventListener("keydown", onWindow);
+		try {
+			const pill = keyboardFocusable(q(host, "update-pill")!);
+			await act(async () => { pill.focus(); });
+			assert.ok(q(document, "update-pill-notes"), "keyboard focus opens the notes");
+			await key(pill, "Tab");
+			const links = [...q(document, "update-pill-notes")!.querySelectorAll("a")];
+			assert.equal(links.length, 2, "one Read more per release");
+			assert.ok(document.activeElement === links[0], "Tab is on the first link");
+			await key(links[0], "Tab");
+			assert.ok(document.activeElement === links[1], "Tab moves to the next link");
+			await key(links[1], "Tab", { shiftKey: true });
+			assert.ok(document.activeElement === links[0], "Shift+Tab moves back");
+			await key(links[0], "Tab", { shiftKey: true });
+			assert.ok(document.activeElement === pill, "Shift+Tab from the first link is the button");
+			assert.ok(q(document, "update-pill-notes"), "with the notes still open");
+			assert.deepEqual(reached, [], "none of those reached the app's own Tab and Shift+Tab");
+
+			await key(pill, "Tab");
+			await key(links[0], "Escape");
+			await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); });
+			assert.ok(document.activeElement === pill, "Escape returns focus to the button");
+			assert.equal(q(document, "update-pill-notes"), null, "and the notes stay closed");
+			assert.deepEqual(reached, [], "Escape never reaches the turn abort");
+
+			// Escape on the button itself closes notes its focus opened.
+			await act(async () => { pill.blur(); });
+			await act(async () => { pill.focus(); });
+			assert.ok(q(document, "update-pill-notes"));
+			await key(pill, "Escape");
+			assert.equal(q(document, "update-pill-notes"), null);
+			assert.deepEqual(reached, []);
+
+			// Past the last link the notes close onto the button, and the app's Tab goes on.
+			await key(pill, "Tab");
+			const again = [...q(document, "update-pill-notes")!.querySelectorAll("a")];
+			await key(again[0]!, "Tab");
+			await key(again[1]!, "Tab");
+			await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); });
+			assert.equal(q(document, "update-pill-notes"), null);
+			assert.ok(document.activeElement === pill);
+			assert.deepEqual(reached, ["Tab"]);
+		} finally {
+			window.removeEventListener("keydown", onWindow);
+		}
+	});
+
+	it("without notes the pill leaves Tab and Escape to the app", async () => {
+		bridge(state({ status: "downloaded", version: "0.3.9", revision: 1 }));
+		const host = await mount(<SidebarUpdatePill homepage="https://github.com/o/r" />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const reached: string[] = [];
+		const onWindow = (event: Event) => { reached.push((event as KeyboardEvent).key); };
+		window.addEventListener("keydown", onWindow);
+		try {
+			const pill = keyboardFocusable(q(host, "update-pill")!);
+			await act(async () => { pill.focus(); });
+			await key(pill, "Tab");
+			await key(pill, "Escape");
+			assert.deepEqual(reached, ["Tab", "Escape"]);
+		} finally {
+			window.removeEventListener("keydown", onWindow);
+		}
+	});
+
 	it("release note sections link each group's release (Read more) and the older ones", () => {
 		const html = renderToStaticMarkup(<ReleaseNoteSections homepage="https://github.com/o/r" omittedReleaseCount={2}
 			groups={[{ version: "0.3.9", items: ["a"] }, { version: "0.3.8", items: [] }]} />);
@@ -664,7 +797,7 @@ describe("General update rows", () => {
 describe("Update everything in the desktop app's window onto a server (roadmap item 23)", () => {
 	const V71 = "0.6.1-nightly.20261118.71";
 	const V72 = "0.6.1-nightly.20261118.72";
-	type Status = { version: string; target: string | null; phase: string; error: string | null; downloadPercent?: number | null };
+	type Status = { version: string; target: string | null; phase: string; error: string | null; downloadPercent?: number | null; releaseNotes?: unknown; omittedReleaseCount?: unknown };
 	function remote(status: Status, server: UpdateState) {
 		let current = status;
 		const calls = { getStatus: 0, check: 0, download: 0, install: 0, fetches: [] as string[] };
@@ -695,6 +828,70 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		assert.equal(calls.install, 1, "the app opens its own confirmation");
 		assert.equal(calls.download, 0);
 		assert.ok(!calls.fetches.some((url) => url.includes("/install")), "the page never installs anything on the server itself");
+	});
+
+	it("everything's hover shows this app's release notes under T3's summary (the hover bug: it showed nothing)", async () => {
+		const appNotes = [{ version: V72, items: ["**Cards.** Practice with cards."] }];
+		const serverNotes = [{ version: V72, items: ["Server-side copy"] }];
+		const { pill } = await pillIn({ version: V71, target: V72, phase: "available", error: null, releaseNotes: appNotes, omittedReleaseCount: 0 },
+			state({ status: "up-to-date", runningVersion: V71, releaseNotes: serverNotes }));
+		assert.equal(pill().getAttribute("data-action"), "everything");
+		await hover(pill());
+		const popover = q(document, "update-pill-notes");
+		assert.ok(popover, "the notes open");
+		assert.equal(popover!.firstElementChild!.textContent, "Update this app and 1 server", "the popover's header is the summary");
+		assert.equal(popover!.querySelector("strong")!.textContent, "Cards.", "this app's notes, not the server's");
+		assert.ok(!popover!.textContent!.includes("Server-side copy"));
+	});
+
+	it("this app's download, downloading and install states show its notes; a run, or an app without notes, keeps the tooltip", async () => {
+		const appNotes = [{ version: V72, items: ["App change"] }];
+		const cases: Array<[string, Status, boolean]> = [
+			["app-download", { version: V71, target: V72, phase: "available", error: null, releaseNotes: appNotes }, true],
+			["app-install", { version: V71, target: V72, phase: "downloaded", error: null, releaseNotes: appNotes }, true],
+			["downloading", { version: V71, target: V72, phase: "downloading", error: null, downloadPercent: 20, releaseNotes: appNotes }, true],
+			// T3 shows no notes while an Update everything run is going.
+			["restarting", { version: V71, target: V72, phase: "updating", error: null, releaseNotes: appNotes }, false],
+			// An app from before the bridge carried notes.
+			["app-download", { version: V71, target: V72, phase: "available", error: null }, false],
+		];
+		for (const [action, status, showsNotes] of cases) {
+			const server = state({ status: "up-to-date", runningVersion: V72, committed: true });
+			const r = remote(status, server);
+			const host = await mount(<SidebarUpdatePill pageVersion={V72} />);
+			await settle();
+			assert.equal(q(host, "update-pill")!.getAttribute("data-action"), action);
+			await hover(q(host, "update-pill")!);
+			assert.equal(!!q(document, "update-pill-notes"), showsNotes, `${action}: notes`);
+			if (showsNotes) assert.ok(q(document, "update-pill-notes")!.textContent!.includes("App change"));
+			void r;
+			const { root } = roots.pop()!; await act(async () => { root.unmount(); }); host.remove();
+		}
+	});
+
+	it("reads the bridge's notes tolerantly: an older app's status or a malformed group is no notes, never a broken status", () => {
+		assert.equal(readDesktopAppStatus(null), null);
+		assert.equal(readDesktopAppStatus({ version: V71 }), null);
+		assert.deepEqual(readDesktopAppStatus({ version: V71, target: V72, phase: "available", error: null }),
+			{ version: V71, target: V72, phase: "available", error: null, releaseNotes: [], omittedReleaseCount: 0 });
+		const good = { version: V72, items: ["a"] };
+		const read = readDesktopAppStatus({ version: V71, target: V72, phase: "available", error: null, omittedReleaseCount: "2",
+			releaseNotes: [good, { version: 3, items: [] }, { version: V71, items: [1] }, null] });
+		assert.deepEqual(read?.releaseNotes, [good]);
+		assert.equal(read?.omittedReleaseCount, 0);
+	});
+
+	it("shownReleaseNotes picks whose notes: this app's for its own states, the server's otherwise", () => {
+		const app = { version: V71, target: V72, phase: "available" as const, error: null, releaseNotes: [{ version: V72, items: ["app"] }], omittedReleaseCount: 1 };
+		const server = state({ status: "downloaded", version: V72, releaseNotes: [{ version: V72, items: ["server"] }], omittedReleaseCount: 2 });
+		assert.deepEqual(shownReleaseNotes(server, "everything", app), { releaseNotes: app.releaseNotes, omittedReleaseCount: 1 });
+		assert.deepEqual(shownReleaseNotes(server, "install", app), { releaseNotes: server.releaseNotes, omittedReleaseCount: 2 });
+		assert.deepEqual(shownReleaseNotes(server, "downloading", { ...app, phase: "downloading" }), { releaseNotes: app.releaseNotes, omittedReleaseCount: 1 });
+		assert.deepEqual(shownReleaseNotes(server, "downloading", null), { releaseNotes: server.releaseNotes, omittedReleaseCount: 2 });
+		assert.equal(shownReleaseNotes(server, "check", app), null);
+		assert.equal(shownReleaseNotes(server, "reload", app), null);
+		assert.equal(shownReleaseNotes(server, "everything", { ...app, phase: "updating" }), null);
+		assert.equal(shownReleaseNotes(server, "everything", { ...app, releaseNotes: [] }), null);
 	});
 
 	it("this app's own download shows its percent in the ring and label, not the server's", async () => {

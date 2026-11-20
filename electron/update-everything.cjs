@@ -96,13 +96,20 @@ function createUpdateEverything(deps) {
 		const state = deps.updater.state();
 		// The sidebar's progress ring: how far this app's own download is, or null (not downloading, or no size).
 		const downloadPercent = state.status === "downloading" && typeof state.downloadPercent === "number" ? state.downloadPercent : null;
-		if (run) return { version: deps.appVersion, target: run.target, phase: run.step === "downloading" ? "downloading" : "updating", error: null, downloadPercent };
+		// The offered version's notes (main keeps them only while available, downloading or
+		// downloaded): the sidebar's hover shows them for this app's states, as T3's does.
+		const notes = {
+			releaseNotes: Array.isArray(state.releaseNotes) ? state.releaseNotes : [],
+			omittedReleaseCount: Number.isInteger(state.omittedReleaseCount) && state.omittedReleaseCount > 0 ? state.omittedReleaseCount : 0,
+		};
+		if (run) return { version: deps.appVersion, target: run.target, phase: run.step === "downloading" ? "downloading" : "updating", error: null, downloadPercent, ...notes };
 		return {
 			version: deps.appVersion,
 			target: typeof state.version === "string" ? state.version : null,
 			phase: state.status,
 			error: state.status === "error" ? "Couldn’t check for updates. Try again later." : null,
 			downloadPercent,
+			...notes,
 		};
 	}
 

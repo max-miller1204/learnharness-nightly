@@ -1,11 +1,11 @@
 # Spec: update fixes and the sidebar update control
 
-Status: decided by the owner, 2026-11-18. Base: main at bf262b7. Follows [t3-style-updates.md](t3-style-updates.md).
+Status: decided by the owner, 2026-11-18; revised 2026-11-20 to copy T3 exactly (the decisions and PR split are in [t3-style-updates.md](t3-style-updates.md), "Revision, 2026-11-20"). Base: main at bf262b7.
 T3 Code reference: github.com/pingdotgg/t3code at 7e4c429 (MIT), `SidebarUpdateControl` in `apps/web/src/components/sidebar/SidebarUpdatePill.tsx`, `DesktopUpdateStatusIcon.tsx`, `desktopUpdate.logic.ts`.
 
 ## Bugs fixed
 
-1. **Automatic checks never ran after an update.** A server started by an update runs as the launcher's trial, which skips the startup check, so the next automatic check was 4 hours away. Now the server checks 15 s after the launcher commits it (when "Check for updates automatically" is on). Not at once: the launcher deletes leftover `*.tmp` version folders right after a commit, which would delete a download being unpacked (found in the prove run); T3 also checks 15 s after launch. The interval stays 4 hours, like T3 (owner decision). The GitHub "Pre-release" flag is not involved: automatic and manual checks read the same `nightly/latest.json`, never `releases/latest`.
+1. **Automatic checks never ran after an update.** A server started by an update runs as the launcher's trial, which skips the startup check, so the next automatic check was 4 hours away. Now the server checks 15 s after the launcher commits it. Not at once: the launcher deletes leftover `*.tmp` version folders right after a commit, which would delete a download being unpacked (found in the prove run); T3 also checks 15 s after launch. The interval stays 4 hours, like T3 (owner decision). The GitHub "Pre-release" flag is not involved: automatic and manual checks read the same `nightly/latest.json`, never `releases/latest`.
 2. **The update icon stayed after Install until a reload.** Behind Tailscale Serve, the reconnect during the restart gets a 502, and EventSource then closes for good, so the page never heard anything again. The events channel now opens a new EventSource when one closes: after 1 s, doubling per failed try up to 5 min (T3's connection supervisor), never while the tab is hidden, and at once when it shows again. The open refetches as any reconnect does.
 3. **The "Settings (⌘,)" hint stayed up after closing Settings.** The dialog hands focus back to the Settings button, and the tooltip opened on any focus. Tooltips now open on focus only when it is `:focus-visible` (keyboard), as the update pill already did.
 
@@ -20,12 +20,12 @@ One round button (`size-8 rounded-full`, 16 px glyph) at the right end of the si
 | downloading | download arrow in a progress ring that fills with the download (see Download progress below), disabled | "Downloading update (NN%)", or "Downloading update" while the size is unknown; "Preparing update" with a full ring while the server checks and unpacks it | nothing |
 | downloaded | RotateCw with check badge | "Update X downloaded. Click to restart and install." | the install confirm dialog |
 | restarting (Install and restart confirmed, see Restarting below) | RotateCw with check badge, the arrow spinning, at 60% opacity, disabled | "Restarting to install X…" | nothing |
-| available (desktop) | download arrow with a dot | "Update X ready to download" | download |
+| available (the desktop app's; the server's too from revision PR 5) | download arrow with a dot | "Update X ready to download" | download |
 | rolled-back notice | warning triangle | the notice text | dismiss |
 | disabled | RefreshCw at 60% opacity, `aria-disabled` | "Updates unavailable" / "Automatic updates are not available in this build." | nothing |
 | idle, up to date, check failed | RefreshCw | "Check for updates" | the same check as Settings > Check for updates |
 
-The release notes popover opens on hover for downloaded and available when there are notes, as before.
+The release notes popover follows T3's rule (`SidebarUpdatePill.tsx:58-63, 95, 279-280` at df09ced7): it opens on hover, or on keyboard focus, whenever the state is about an offered update (download, downloading, install, restarting, everything, app-download, app-install) and that update has notes, and never while an Update everything run is going. The notes are this app's own (from `window.lh.desktopUpdate`'s `status()`) for everything, app-download, app-install and this app's download, and the server's otherwise. With no notes the plain tooltip shows. Keyboard: see t3-style-updates.md, revision PR 1.
 
 Spin: a click latches the spin and remounts the icon so it starts from zero; it turns at least once and keeps turning while the state is `checking`, then stops at the next turn boundary. `motion-safe` only; paused while the tab is hidden (an inline `animation-play-state`, so the class's `animation` shorthand can't undo it).
 
@@ -54,9 +54,9 @@ Only in the desktop app's window onto a self-hosted server, which gets `window.l
 
 | State | Icon | Tooltip | Click |
 |---|---|---|---|
-| everything (this app has a newer version and the server is behind it, or a run is going and the server is behind or an uncommitted trial) | CircleArrowUp (T3's `DesktopUpdateStatusIcon.tsx:119`) | "Update this app and 1 server" (T3's `updateEverything.logic.ts:765-772`) | this app's native Update everything confirmation; disabled while a run is going |
+| everything (this app has a newer version and the server is behind it, or a run is going and the server is behind or an uncommitted trial; from revision PR 8 also when only the server is behind this app) | CircleArrowUp (T3's `DesktopUpdateStatusIcon.tsx:119`) | "Update this app and 1 server" (T3's `updateEverything.logic.ts:765-772`), with this app's release notes | T3's in-app Update everything dialog (revision PR 7); disabled while a run is going |
 | app-download (the server already runs that version) | download arrow with a dot | "Update X ready to download" | download this app's update |
-| app-install (downloaded, the server already runs it) | RotateCw with check badge | "Update X downloaded. Click to restart and install." | the same native confirmation, which then only restarts the app |
+| app-install (downloaded, the server already runs it) | RotateCw with check badge | "Update X downloaded. Click to restart and install." | the same Update everything confirmation, which then only restarts the app |
 | restarting (a run is going and the server runs exactly this app's version, committed) | as restarting above | "Restarting to install X…" | nothing |
 
 T3 shows "everything" only while a server is behind (`useUpdateEverything.ts:104`), so the plain app states cover the rest. The check button checks the server and this app. The page reads this app's status every 5 s (the bridge has no push channel) and when the tab shows again. A page that sees its server back on a newer version reloads by itself as above, also during a run: it does so under the app's ghost cover, where the app's own rechecks wait until the run ends.
