@@ -106,6 +106,11 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
   /** Set once landing has taken a second: then the scroll may be off the end, but what is on
    * screen must still have its pictures. */
   const landingLate = useRef(false);
+  /** Set by a commit that changes which messages show, until the ScrollView reports the
+   * content size that commit gave it: until then the scroll metrics describe the old content. */
+  const awaitingContent = useRef(false);
+  /** The frames being waited before showing, so the pictures paint before the reveal. */
+  const settling = useRef<number | null>(null);
   /** The message being drawn and how far it has got. */
   const drawing = useRef<{ id: string; queue: DrawQueue } | null>(null);
   const tail = useRef(tailTexts);
@@ -151,9 +156,10 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
   }, [fontScale, clearHeights]);
 
   // Newest first: draw the next messages' math in slices, then add them. While hidden they
-  // join the newest batch; once shown they come in as an older batch, one at a time.
+  // join the newest batch; once shown they come in as an older batch, one at a time. Nothing
+  // is added while landing, so the end it lands on stays the end.
   useEffect(() => {
-    if (!batches || first === 0 || measuring) return;
+    if (!batches || first === 0 || measuring || phase === "landing") return;
     let timer: ReturnType<typeof setTimeout>;
     const step = () => {
       const deadline = performance.now() + (phaseNow.current === "shown" ? SLICE_MS.shown : SLICE_MS.hidden);
@@ -182,7 +188,14 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
     };
     timer = setTimeout(step, 0);
     return () => clearTimeout(timer);
-  }, [batches, first, measuring, settled]);
+  }, [batches, first, measuring, settled, phase]);
+
+  const placedCount = batches?.filter((batch) => batch.placed).length ?? 0;
+  useLayoutEffect(() => {
+    awaitingContent.current = true;
+    const timer = setTimeout(() => { awaitingContent.current = false; }, 500);
+    return () => clearTimeout(timer);
+  }, [first, placedCount]);
 
   // The streaming reply's finished paragraphs, drawn while it streams so the settled reply
   // swaps in with its math already drawn. One timer reads the latest text, since the reply
@@ -220,10 +233,19 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
       phaseNow.current = "landing";
       setPhase("landing");
     }
-    if (phaseNow.current === "landing" && (distance() <= LANDED || landingLate.current) && mathWindow.pendingOnScreen() === 0) {
-      phaseNow.current = "shown";
-      setPhase("shown");
-    }
+    // Shown once landed (or landing has taken a second) with the pictures on screen in,
+    // still so two frames later, so they have painted before the transcript appears.
+    const ready = () => phaseNow.current === "landing" && !awaitingContent.current
+      && (distance() <= LANDED || landingLate.current) && mathWindow.pendingOnScreen() === 0;
+    if (!ready() || settling.current !== null) return;
+    settling.current = requestAnimationFrame(() => {
+      settling.current = requestAnimationFrame(() => {
+        settling.current = null;
+        if (!ready()) return;
+        phaseNow.current = "shown";
+        setPhase("shown");
+      });
+    });
   }, [mathWindow]);
 
   /** Places a measured older batch at the top. The window mounts its first screen in the same
@@ -234,6 +256,10 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
     mathWindow.update();
     setBatches((current) => current?.map((each) => each.id === id ? { ...each, placed: true, height } : each) ?? current);
   }, [mathWindow]);
+
+  useEffect(() => () => {
+    if (settling.current !== null) cancelAnimationFrame(settling.current);
+  }, []);
 
   useEffect(() => mathWindow.subscribe(() => {
     check();
@@ -273,6 +299,7 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
   const onContentSizeChange = useCallback((_width: number, height: number) => {
     metrics.current.content = height;
     metrics.current.measured = true;
+    awaitingContent.current = false;
     mathWindow.setView(metrics.current.offset, metrics.current.viewport, height);
     // Decided once the layouts of the same change have all arrived.
     if (!deciding.current) {
@@ -282,7 +309,8 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
         const now = metrics.current.content - newestTop.current;
         const grew = Math.abs(now - below.current) > 0.5;
         below.current = now;
-        if (nearEnd.current && grew) scroller.current?.scrollToEnd({ animated: false });
+        // While hidden the transcript always keeps to the end it is landing on.
+        if (grew && (nearEnd.current || phaseNow.current !== "shown")) scroller.current?.scrollToEnd({ animated: false });
       });
     }
     check();

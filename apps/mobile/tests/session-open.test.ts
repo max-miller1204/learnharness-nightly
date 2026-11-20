@@ -533,3 +533,45 @@ test("every paragraph shares one screen reader subscription", async () => {
     Object.assign(AccessibilityInfo, { addEventListener: add });
   }
 });
+
+test("nothing joins the newest batch while landing, and it shows two frames after landing with its pictures in", async () => {
+  const session = await opened(coldSession("landing", 30, 12));
+  for (let tries = 0; tries < 250 && session.now().batches[0]?.start === 60; tries++) await wait(20);
+  await session.layout(800);
+  await session.batch("newest", { y: 16, height: 984 });
+  await session.content(1000);
+  // Landing, 50 short of the end.
+  await session.scroll(150, 800, 1000);
+  const start = session.now().batches[0]?.start;
+  await wait(400);
+  assert.equal(session.now().batches[0]?.start, start, "no message is added while landing");
+  assert.equal(session.now().shown, false);
+  // Landed with the pictures on screen already in: shown once two frames have passed.
+  await session.scroll(200, 800, 1000);
+  assert.equal(session.now().shown, false);
+  await wait(100);
+  assert.equal(session.now().shown, true);
+  // Filling goes on once shown, as older batches.
+  let older: Batch | undefined;
+  for (let tries = 0; tries < 250 && !older; tries++) {
+    await wait(20);
+    older = session.now().batches.find((batch) => batch.id !== "newest");
+  }
+  assert.ok(older, "older messages come in once shown");
+  await act(async () => session.tree.unmount());
+});
+
+test("while hidden the transcript keeps to the end even after a scroll said it was far from it", async () => {
+  const session = await opened(coldSession("hidden", 30, 12));
+  for (let tries = 0; tries < 250 && session.now().batches[0]?.start === 60; tries++) await wait(20);
+  await session.layout(800);
+  await session.batch("newest", { y: 16, height: 4984 });
+  await session.content(5000);
+  // A scroll far from the end, as one arriving with new content and an old offset would say.
+  await session.scroll(0, 800, 5000);
+  assert.equal(session.now().shown, false);
+  session.spyScroll();
+  await session.content(5200);
+  assert.equal(session.toEnd.calls, 1);
+  await act(async () => session.tree.unmount());
+});

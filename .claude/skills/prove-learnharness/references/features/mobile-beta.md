@@ -65,3 +65,11 @@ Rerun this whenever a change touches quiz or ask choice rows. Use a pending quiz
 - **Double tap.** Double-tap a focused row. It is selected, and TalkBack reads it as checked. Repeat on the multi-select ask question.
 
 Record each observation, the device screenshot or recording, and the saved server or browser evidence in the run receipt. Keep codes and bearers out of receipts. Mark missing steps as blocked or unproven.
+
+## Session opening (mobile-session-open)
+
+Follow the [spec's Proof section](../../../../../docs/specs/mobile-session-open.md) with the fixtures in `tests/fixtures/mobile-session-open/chats/`. Driving notes for the steps that are hard to reach on the emulator:
+
+- **Reaching the top during fill-in.** Older messages keep arriving above while the long fixture fills in, so a command that scrolls until the top stops moving never settles there and times out. Fling instead. On the Pixel 6a (1080 by 2400 px), `adb shell input swipe 540 700 540 2200 60` is one fast fling toward the top. Repeat it, taking an `adb exec-out screencap -p` after each, until the fixture's first message ("Teach me maximum likelihood and logistic regression.") is at the top. A scroll-to-top command is usable once fill-in has finished, when no new content arrives above.
+- **The Scroll to end threshold.** The threshold is 100 points, 263 px on the Pixel 6a. A slow drag moves the content by the drag distance without a fling: `adb shell input swipe 540 1000 540 1250 1500` moves about 250 px, and `540 1000 540 1300 1500` about 300 px.
+- **The period at the wrap width.** Change the text size until the sentence's equation just fits its line, with `adb shell settings put system font_scale 1.05` (then 1.1, 1.15 and so on), reopening the math cases session each time. Put it back with `adb shell settings put system font_scale 1.0`.
