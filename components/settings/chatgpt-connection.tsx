@@ -189,6 +189,11 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 		// A sign-in already pending on the server (this page reloaded, or another
 		// tab started it) is adopted: the waiting state, paste-back and Cancel.
 		if (statusRef.current.pending) adoptPending(owner);
+		// The desktop app's window onto a server: one click. Its bridge sign-in starts at once,
+		// with the dialog's waiting state, Cancel and failure handling; no Continue step.
+		else if (typeof window !== "undefined" && window.lh?.chatgptSignIn) {
+			void login({ registration: accountId, background: statusRef.current.allowBackgroundUse, backgroundDirty: false });
+		}
 	}
 	/** Takes up a sign-in pending on the server that this page didn't start: the waiting state, paste-back and Cancel. */
 	function adoptPending(owner: Dialog) {
@@ -270,10 +275,11 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 		} catch { if (mounted.current && intent === generation.current) setError(CONTROL_ERROR); }
 		finally { if (intent === generation.current) { operation.current = null; if (mounted.current) setBusy(false); } }
 	}
-	async function login() {
+	/** `draft`: the dialog's choices, or openConnect's own when it starts at once (its state isn't set yet). */
+	async function login(draft = { registration, background, backgroundDirty }) {
 		const owner = dialogRef.current;
 		if (!bridge || operation.current || !status.available || status.pending || owner?.kind !== "connect") return;
-		const attempt: LoginAttempt = { generation: ++generation.current, dialog: owner, registration, background, backgroundDirty, pending: false, phase: "starting" };
+		const attempt: LoginAttempt = { generation: ++generation.current, dialog: owner, ...draft, pending: false, phase: "starting" };
 		loginAttempt.current = attempt; operation.current = "login";
 		const request = ++statusSequence.current;
 		setBusy(true); setError(null); setDismissedError(null);
@@ -283,7 +289,7 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 		if (viaDesktop) setDesktopRunning(true);
 		try {
 			let value: unknown;
-			try { value = await bridge.login(registration || undefined); }
+			try { value = await bridge.login(draft.registration || undefined); }
 			finally { if (viaDesktop && mounted.current && run === desktopRun.current) setDesktopRunning(false); }
 			if (!owns(attempt) || attempt.phase === "consent") return;
 			// This page's desktop sign-in ended without signing in. Another device's attempt may

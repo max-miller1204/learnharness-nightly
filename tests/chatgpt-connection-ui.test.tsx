@@ -930,3 +930,40 @@ test("Cancel of this page's desktop sign-in, with another device's sign-in now p
   assert.equal(byTest("chatgpt-paste-reveal").textContent, CHATGPT_PASTE_COPY.reveal, "paste-back for the phone's attempt at once");
  } finally { page.restore(); }
 });
+
+test("in the desktop app Connect alone starts the sign-in; a browser still asks for Continue first", async () => {
+ let page = webPage("desktop.tail1234.ts.net");
+ let pending = false;
+ globalThis.fetch = async (_input, init) => {
+  if (init?.method) { page.ops.push({ op: JSON.parse(String(init.body)).op }); return Response.json({ value: { ...disconnected(), pending } }); }
+  return Response.json({ chatgpt: { ...disconnected(), pending }, native: [] });
+ };
+ const started: (string | undefined)[] = [];
+ let finish!: (result: { ok: true } | { error: string }) => void;
+ window.lh = { chatgptSignIn: { start: (accountId?: string) => { started.push(accountId); return new Promise((resolve) => { finish = resolve; }); }, cancel: async () => ({ ok: true, ended: true }) } };
+ window.open = () => assert.fail("no tab in the desktop app");
+ try {
+  const events = await mountWithEvents();
+  await click(byTest("chatgpt-login"));
+  assert.deepEqual(started, [undefined], "one click: no Continue step");
+  assert.deepEqual(page.ops, [], "the server's login comes from the desktop, not the page");
+  assert(byTest("chatgpt-account-dialog"), "the dialog shows the attempt");
+  pending = true; await events.fire();
+  assert(document.body.textContent?.includes("Waiting for browser sign-in"));
+  assert(button("Cancel", byTest("chatgpt-account-dialog")), "Cancel stays");
+  pending = false;
+  await act(async () => { finish({ error: "Couldn’t reserve the local ChatGPT callback port." }); await new Promise((resolve) => setTimeout(resolve, 0)); });
+  assert.equal(document.querySelector('[data-testid="chatgpt-account-dialog"] [role="alert"]')?.textContent, "Couldn’t reserve the local ChatGPT callback port.", "the same failure handling");
+ } finally { page.restore(); }
+ await remount();
+ delete window.lh;
+ page = webPage("100.64.0.5");
+ try {
+  await mount(); await click(byTest("chatgpt-login"));
+  assert.equal(page.ops.length, 0, "a browser opens the dialog and waits");
+  assert(byTest("chatgpt-remote-ahead"), "with its paste-back warning");
+  await click(byTest("chatgpt-proceed"));
+  assert.deepEqual(page.ops.map((op) => op.op), ["login"]);
+  assert(byTest("chatgpt-paste"), "and paste-back once pending");
+ } finally { page.restore(); }
+});
