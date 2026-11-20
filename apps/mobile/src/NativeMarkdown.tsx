@@ -1,6 +1,6 @@
-import { Fragment, memo, type ReactElement, type ReactNode, type RefObject } from "react";
+import { Fragment, memo, useMemo, type ReactElement, type ReactNode, type RefObject } from "react";
 import { Text, View, useWindowDimensions, type HostInstance, type LayoutChangeEvent } from "react-native";
-import { drawEquation, equationOf } from "./message-math";
+import { drawingsOf, equationOf } from "./message-math";
 import { useLivePictures } from "./math-window";
 import type { LabelPiece } from "./choice-math";
 import { fit, lineHeightFor, MathPicture, MATH_SCALE, MAX_LINES, useScreenReader, useSpeech, type Size } from "./MathLabel";
@@ -61,6 +61,8 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
   openLink: (url: string) => void;
 }) {
   const { c, s } = useTheme();
+  // Drawn once per text, so a render (or a picture coming or going) never draws again.
+  const pictures = useMemo(() => drawingsOf(tokens), [tokens]);
   const { width: windowWidth, fontScale } = useWindowDimensions();
   const heading = { h1: 25, h2: 20 } as Record<string, number>;
   const maxWidth = Math.max(40, (windowWidth - BESIDE_TEXT) / fontScale);
@@ -73,8 +75,7 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
   /** Each inline equation's drawn size, for a line of text at `fontSize`. */
   function mathSizes(nodes: Node[], fontSize: number, lineHeight: number, width: number, found = new Map<MarkdownToken, Size>()) {
     for (const { token, children } of nodes) {
-      const equation = token.type === "math_inline" ? equationOf(token) : undefined;
-      const drawn = equation && drawEquation(equation);
+      const drawn = token.type === "math_inline" ? pictures.get(token) : undefined;
       if (drawn) found.set(token, fit(drawn, fontSize * MATH_SCALE, width, MAX_LINES * lineHeight));
       mathSizes(children, fontSize, lineHeight, width, found);
     }
@@ -85,7 +86,7 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
   function pieces(nodes: Node[], sizes: Map<MarkdownToken, Size>, found: LabelPiece[] = []): LabelPiece[] {
     for (const { token, children } of nodes) {
       const equation = sizes.has(token) ? equationOf(token) : undefined;
-      const drawn = equation && drawEquation(equation);
+      const drawn = equation && pictures.get(token);
       if (equation && drawn) found.push({ kind: "math", tex: equation.tex, display: false, drawn });
       else if (token.type === "math_inline") found.push({ kind: "text", text: token.markup === "$" ? `$${token.content}$` : `\\(${token.content}\\)` });
       else if (token.type === "softbreak" || token.type === "hardbreak") found.push({ kind: "text", text: " " });
@@ -136,7 +137,7 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
         }
         case "math_inline": {
           const size = math.sizes.get(token);
-          const drawn = size && drawEquation(equationOf(token) as NonNullable<ReturnType<typeof equationOf>>);
+          const drawn = size && pictures.get(token);
           // Math that can't be drawn shows its source.
           if (!size || !drawn) return token.markup === "$" ? `$${token.content}$` : `\\(${token.content}\\)`;
           const picture = <MathPicture key={index} svg={drawn.svg[c.mode]} drawn={drawn} size={size} scale={fontScale} color={c.text} live={math.live} inline />;
@@ -199,8 +200,7 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
             </View>
           );
         case "math_block": {
-          const equation = equationOf(token);
-          const drawn = equation && drawEquation(equation);
+          const drawn = pictures.get(token);
           if (!drawn) return <Text key={index} selectable style={s.prose}>{token.content.trim()}</Text>;
           // Display math is centered as on the web, and scales down to fit the column instead of scrolling.
           return (

@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createElement, type ReactElement } from "react";
-import { AccessibilityInfo, type LayoutChangeEvent, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
+import { AccessibilityInfo, Platform, type LayoutChangeEvent, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import type { LhMessage } from "../../../src/client-protocol/index.ts";
 import { projectView } from "../../../src/core/view.ts";
 import { drawTex } from "../src/choice-math.ts";
 import { Markdown } from "../src/Markdown.tsx";
 import { MathWindow, MathWindowContext } from "../src/math-window.ts";
-import { Capped, drawCount, drawFrom, drawQueue, equationsIn, isDrawn } from "../src/message-math.ts";
-import { followsGrowth, smallSession, transcriptVisibility, useSessionOpening, type Batch } from "../src/session-open.ts";
+import { Capped, drawCount, drawFrom, drawQueue, equationsIn, isDrawn, setEquationCap, EQUATION_CAP } from "../src/message-math.ts";
+import { smallSession, transcriptVisibility, useSessionOpening, type Batch } from "../src/session-open.ts";
 import { markdownTexts, Snapshot, SNAPSHOT_HEIGHT, Transcript } from "../src/Transcript.tsx";
 import type { LhViewMessage } from "../../../src/core/view.ts";
 
@@ -178,13 +178,20 @@ function coldSession(name: string, turns: number, perReply: number): LhViewMessa
 
 type Opening = ReturnType<typeof useSessionOpening>;
 /** The real opening hook over the real transcript, with the ScrollView's events sent by hand. */
-async function opened(settled: LhViewMessage[], loaded = true) {
+async function opened(settled: LhViewMessage[], loaded = true, { deferMeasure = false } = {}) {
   let opening: Opening | undefined;
-  // Blocks sit within the first screen of their batch, so a batch's start holds some.
+  // Blocks sit within the first screen of their batch, so a batch's start holds some. With
+  // `deferMeasure`, measurements wait for flush(), as they would arriving after a layout.
   let next = 0;
+  const queued: (() => void)[] = [];
   const createNodeMock = () => {
     const y = (next++ % 10) * 60;
-    return { measureLayout: (_parent: unknown, done: (x: number, y: number, width: number, height: number) => void) => done(0, y, 300, 50) };
+    return {
+      measureLayout: (_parent: unknown, done: (x: number, y: number, width: number, height: number) => void) => {
+        if (deferMeasure) queued.push(() => done(0, y, 300, 50));
+        else done(0, y, 300, 50);
+      },
+    };
   };
   function Harness({ settled, loaded, tail }: { settled: LhViewMessage[]; loaded: boolean; tail: string[] }) {
     const result = useSessionOpening(settled, loaded, tail);
@@ -194,20 +201,33 @@ async function opened(settled: LhViewMessage[], loaded = true) {
   }
   const tree = await render(createElement(Harness, { settled, loaded, tail: [] }), { createNodeMock });
   const now = () => opening as Opening;
+  /** The ScrollView's events without act, to send several as one change. */
+  const raw = {
+    layout: (height: number) => now().scrollProps.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 360, height } } } as LayoutChangeEvent),
+    content: (height: number) => now().scrollProps.onContentSizeChange(360, height),
+    scroll: (offset: number, viewport: number, content: number) => now().scrollProps.onScroll({
+      nativeEvent: { contentOffset: { x: 0, y: offset }, layoutMeasurement: { width: 360, height: viewport }, contentSize: { width: 360, height: content } },
+    } as NativeSyntheticEvent<NativeScrollEvent>),
+    batch: (id: string, layout: { y: number; height: number; width?: number }) => {
+      const batch = now().batches.find((each) => each.id === id) as Batch;
+      now().onBatchLayout(batch, { x: 0, width: 360, ...layout });
+    },
+  };
+  /** Counts scrollToEnd calls in place of the ScrollView. */
+  const toEnd = { calls: 0 };
   const events = {
     tree,
     now,
+    toEnd,
+    spyScroll: () => { (now().scrollProps.ref as { current: unknown }).current = { scrollToEnd: () => { toEnd.calls++; } }; },
+    flush: () => act(async () => { while (queued.length) (queued.shift() as () => void)(); }),
+    together: (send: (events: typeof raw) => void) => act(async () => { send(raw); }),
     update: (props: { settled?: LhViewMessage[]; loaded?: boolean; tail?: string[] }) =>
       act(async () => { tree.update(createElement(Harness, { settled, loaded, tail: [], ...props })); }),
-    layout: (height: number) => act(async () => { now().scrollProps.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 360, height } } } as LayoutChangeEvent); }),
-    content: (height: number) => act(async () => { now().scrollProps.onContentSizeChange(360, height); }),
-    scroll: (offset: number, viewport: number, content: number) => act(async () => {
-      now().scrollProps.onScroll({ nativeEvent: { contentOffset: { x: 0, y: offset }, layoutMeasurement: { width: 360, height: viewport }, contentSize: { width: 360, height: content } } } as NativeSyntheticEvent<NativeScrollEvent>);
-    }),
-    batch: (id: string, layout: { y: number; height: number; width?: number }) => act(async () => {
-      const batch = now().batches.find((each) => each.id === id) as Batch;
-      now().onBatchLayout(batch, { x: 0, width: 360, ...layout });
-    }),
+    layout: (height: number) => act(async () => { raw.layout(height); }),
+    content: (height: number) => act(async () => { raw.content(height); }),
+    scroll: (offset: number, viewport: number, content: number) => act(async () => { raw.scroll(offset, viewport, content); }),
+    batch: (id: string, layout: { y: number; height: number; width?: number }) => act(async () => { raw.batch(id, layout); }),
   };
   return events;
 }
@@ -284,10 +304,127 @@ test("an older batch lands with its first screen drawn, and placed heights clear
   await act(async () => session.tree.unmount());
 });
 
-test("the end is followed when the reply grows in the same change an older batch lands", () => {
-  assert.equal(followsGrowth(150, 0), true);
-  assert.equal(followsGrowth(900.4, 900), false);
-  assert.equal(followsGrowth(1050, 900), true);
+test("the end is followed when the reply grows, whichever order a landing batch's events arrive in", async () => {
+  const session = await opened(projectView(fixture("chat_zzopenshort").messages));
+  await session.layout(800);
+  await session.batch("newest", { y: 16, height: 1968 });
+  await session.content(2000);
+  await session.scroll(1200, 800, 2000);
+  session.spyScroll();
+  // An older batch lands above: anchoring keeps the screen still, nothing to follow.
+  await session.together((events) => {
+    events.scroll(2116, 800, 2916);
+    events.batch("newest", { y: 932, height: 1968 });
+    events.content(2916);
+  });
+  assert.equal(session.toEnd.calls, 0);
+  // One lands while the reply grows by 30: the anchoring scroll event comes first with the new content.
+  await session.together((events) => {
+    events.scroll(3032, 800, 3862);
+    events.batch("newest", { y: 1848, height: 1968 });
+    events.content(3862);
+  });
+  assert.equal(session.toEnd.calls, 1);
+  // The reply grows by 20 before a landing's own change: both are handled on their own.
+  await session.together((events) => events.content(3882));
+  assert.equal(session.toEnd.calls, 2);
+  await session.together((events) => {
+    events.batch("newest", { y: 2364, height: 1968 });
+    events.content(4398);
+  });
+  assert.equal(session.toEnd.calls, 2);
+  await act(async () => session.tree.unmount());
+});
+
+test("after a second the session shows without landing, but never with on-screen math missing", async () => {
+  const session = await opened(coldSession("fallback", 4, 20));
+  // Every message drawn and in, so blocks are waiting for their batch's place.
+  for (let tries = 0; tries < 250 && session.now().batches[0]?.start !== 0; tries++) await wait(20);
+  assert.equal(session.now().batches[0]?.start, 0);
+  await session.layout(800);
+  await session.content(4000);
+  // Scrolled away from the end, and the newest batch hasn't said where it is.
+  await session.scroll(0, 800, 4000);
+  await wait(1300);
+  assert.equal(session.now().shown, false);
+  await session.batch("newest", { y: 16, height: 3968 });
+  await wait(200);
+  assert.equal(session.now().shown, true);
+  await act(async () => session.tree.unmount());
+});
+
+test("an older batch measured before its blocks waits for them, then lands with its first screen drawn", async () => {
+  const session = await opened(coldSession("deferred", 60, 12), true, { deferMeasure: true });
+  await session.layout(800);
+  await session.content(1600);
+  await session.batch("newest", { y: 16, height: 1568 });
+  await session.flush();
+  await session.scroll(800, 800, 1600);
+  for (let tries = 0; tries < 50 && !session.now().shown; tries++) {
+    await session.flush();
+    await wait(20);
+  }
+  assert.equal(session.now().shown, true);
+  let older: Batch | undefined;
+  for (let tries = 0; tries < 500 && !older; tries++) {
+    await wait(20);
+    older = session.now().batches.find((batch) => !batch.placed);
+  }
+  assert.ok(older, "an older batch is measured");
+  await session.batch(older.id, { y: -1e6, height: 900 });
+  assert.equal(session.now().batches.find((batch) => batch.id === older.id)?.placed, false);
+  await session.flush();
+  const placed = session.now().batches.find((batch) => batch.id === older.id) as Batch;
+  assert.equal(placed.placed, true);
+  const view = session.tree.root.findAll((node) => is(node, "View") && [node.props.style].flat(2).some((style) => style?.minHeight === placed.height))[0];
+  assert.ok(view && all(view, "SvgAst").length > 0, "the new start has its pictures");
+  await act(async () => session.tree.unmount());
+});
+
+test("a message with more distinct equations than the cache holds renders without drawing them again", async () => {
+  setEquationCap(20);
+  try {
+    const text = Array.from({ length: 25 }, (_, index) => `$c_{${run}x${index}}$`).join(" and ");
+    assert.equal(drawFrom(drawQueue([text]), Infinity), true);
+    const before = drawCount();
+    await render(createElement(Markdown, { text }));
+    // Only the five the queue's own drawing pushed out are drawn again, once each.
+    assert.ok(drawCount() - before <= 5, `${drawCount() - before} draws`);
+  } finally {
+    setEquationCap(EQUATION_CAP);
+  }
+});
+
+test("on iOS a small session keeps the loader up until it shows, and shows at once when it fits", async () => {
+  const os = Platform.OS;
+  Object.assign(Platform, { OS: "ios" });
+  try {
+    const fits = await opened(projectView(fixture("chat_zzopenshort").messages));
+    assert.equal(fits.now().shown, false);
+    assert.equal(fits.now().loading, true);
+    await fits.together((events) => {
+      events.layout(800);
+      events.content(300);
+    });
+    await wait(50);
+    assert.equal(fits.now().shown, true);
+    assert.equal(fits.now().loading, false);
+    await act(async () => fits.tree.unmount());
+    const tall = await opened(projectView(fixture("chat_zzopenplain").messages));
+    await tall.together((events) => {
+      events.layout(800);
+      events.content(3000);
+    });
+    await wait(50);
+    assert.equal(tall.now().shown, false);
+    assert.equal(tall.now().loading, true);
+    await tall.scroll(2200, 800, 3000);
+    await wait(50);
+    assert.equal(tall.now().shown, true);
+    await act(async () => tall.tree.unmount());
+  } finally {
+    Object.assign(Platform, { OS: os });
+  }
 });
 
 test("the streaming reply's finished math is drawn while it streams", async () => {

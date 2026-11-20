@@ -25,11 +25,9 @@ const MESSAGES_PER_BATCH = 8;
 const EQUATIONS_PER_BATCH = 120;
 /** A session with at most this many equations is drawn at once and shows whole in its first frame. */
 const SMALL_SESSION_EQUATIONS = 60;
-/** The transcript's content padding and the gap between its children (Session.tsx's
- * contentContainerStyle, s.section with gap space.lg): where an older batch lands, and what
- * placing one adds besides its own height. */
+/** The transcript's content padding (Session.tsx's contentContainerStyle, s.section): where
+ * an older batch lands. */
 const CONTENT_TOP = space.lg;
-const BATCH_GAP = space.lg;
 /** "At the end" is within this of the bottom: the follow rule's and the Scroll to end button's. */
 export const NEAR_END = 100;
 /** Landed means within this of the end (T3 ThreadFeed.tsx's 2 point rule). */
@@ -68,14 +66,6 @@ export function smallSession(settled: readonly LhViewMessage[]) {
   return true;
 }
 
-/** Whether a content size change at the end should scroll to the end. Placing an older batch
- * grows the content by `fromPlacing`, which maintainVisibleContentPosition has already kept
- * still; scrolling for it too moved the view a pixel. Anything more (the streaming reply grew
- * in the same commit) is followed. */
-export function followsGrowth(growth: number, fromPlacing: number): boolean {
-  return fromPlacing === 0 || growth - fromPlacing > 1;
-}
-
 /** The hidden transcript is invisible, takes no touches or scrolling, and is out of the
  * screen reader's reach, until it has landed. */
 export function transcriptVisibility(hidden: boolean) {
@@ -105,8 +95,17 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
   const [width, setWidth] = useState(0);
   const phaseNow = useRef<Phase>(phase);
   const filling = useRef({ loaded: false, all: false });
-  /** Content added by placing older batches since the last content size change. */
-  const placedGrowth = useRef(0);
+  /** Where the newest batch starts, and how much content sat below that at the last size
+   * change. Placing an older batch moves both; only growth below it (the newest messages, the
+   * streaming reply) is followed, since maintainVisibleContentPosition keeps the rest still. */
+  const newestTop = useRef(0);
+  const below = useRef(0);
+  const deciding = useRef(false);
+  /** An older batch measured before its blocks were, placed once they are. */
+  const placing = useRef<{ id: string; height: number } | null>(null);
+  /** Set once landing has taken a second: then the scroll may be off the end, but what is on
+   * screen must still have its pictures. */
+  const landingLate = useRef(false);
   /** The message being drawn and how far it has got. */
   const drawing = useRef<{ id: string; queue: DrawQueue } | null>(null);
   const tail = useRef(tailTexts);
@@ -133,6 +132,8 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
   useLayoutEffect(() => {
     metrics.current = { content: 0, viewport: 0, offset: 0, sized: false, measured: false };
     nearEnd.current = true;
+    newestTop.current = 0;
+    below.current = 0;
     mathWindow.setView(0, 0, 0);
   }, [loaded, mathWindow]);
 
@@ -219,13 +220,29 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
       phaseNow.current = "landing";
       setPhase("landing");
     }
-    if (phaseNow.current === "landing" && distance() <= LANDED && mathWindow.pendingOnScreen() === 0) {
+    if (phaseNow.current === "landing" && (distance() <= LANDED || landingLate.current) && mathWindow.pendingOnScreen() === 0) {
       phaseNow.current = "shown";
       setPhase("shown");
     }
   }, [mathWindow]);
 
-  useEffect(() => mathWindow.subscribe(check), [mathWindow, check]);
+  /** Places a measured older batch at the top. The window mounts its first screen in the same
+   * commit, so a status-bar tap to the new start never meets empty boxes. */
+  const place = useCallback((id: string, height: number) => {
+    mathWindow.setMeasuring(id, false);
+    mathWindow.setBatch(id, { y: CONTENT_TOP, height });
+    mathWindow.update();
+    setBatches((current) => current?.map((each) => each.id === id ? { ...each, placed: true, height } : each) ?? current);
+  }, [mathWindow]);
+
+  useEffect(() => mathWindow.subscribe(() => {
+    check();
+    const waiting = placing.current;
+    if (waiting && mathWindow.measuredAll(waiting.id)) {
+      placing.current = null;
+      place(waiting.id, waiting.height);
+    }
+  }), [mathWindow, check, place]);
 
   // Layout and scroll events move it on too; this catches a commit with no new layout.
   useEffect(() => {
@@ -236,12 +253,12 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
   useEffect(() => {
     if (phase !== "landing") return;
     nearEnd.current = true;
+    landingLate.current = false;
     scroller.current?.scrollToEnd({ animated: false });
     const frame = requestAnimationFrame(check);
     const timer = setTimeout(() => {
-      if (phaseNow.current !== "landing") return;
-      phaseNow.current = "shown";
-      setPhase("shown");
+      landingLate.current = true;
+      check();
     }, SHOW_ANYWAY_MS);
     return () => { cancelAnimationFrame(frame); clearTimeout(timer); };
   }, [phase, check]);
@@ -254,12 +271,20 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
   }, [check, mathWindow]);
 
   const onContentSizeChange = useCallback((_width: number, height: number) => {
-    const growth = height - metrics.current.content;
     metrics.current.content = height;
     metrics.current.measured = true;
     mathWindow.setView(metrics.current.offset, metrics.current.viewport, height);
-    if (nearEnd.current && followsGrowth(growth, placedGrowth.current)) scroller.current?.scrollToEnd({ animated: false });
-    placedGrowth.current = 0;
+    // Decided once the layouts of the same change have all arrived.
+    if (!deciding.current) {
+      deciding.current = true;
+      queueMicrotask(() => {
+        deciding.current = false;
+        const now = metrics.current.content - newestTop.current;
+        const grew = Math.abs(now - below.current) > 0.5;
+        below.current = now;
+        if (nearEnd.current && grew) scroller.current?.scrollToEnd({ animated: false });
+      });
+    }
     check();
   }, [check, mathWindow]);
 
@@ -280,17 +305,15 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
     }
     if (!batch.placed) {
       const height = wholePixels(layout.height);
-      placedGrowth.current += height + BATCH_GAP;
-      // It lands at the top: the window mounts its first screen in the same commit, so a
-      // status-bar tap to the new start never meets empty boxes.
-      mathWindow.setMeasuring(batch.id, false);
-      mathWindow.setBatch(batch.id, { y: CONTENT_TOP, height });
-      mathWindow.update();
-      setBatches((current) => current?.map((each) => each.id === batch.id ? { ...each, placed: true, height } : each) ?? current);
+      if (mathWindow.measuredAll(batch.id)) return place(batch.id, height);
+      // Its blocks' measurements haven't arrived: placed when they have.
+      placing.current = { id: batch.id, height };
+      mathWindow.measureBatch(batch.id);
       return;
     }
+    if (batch.id === "newest") newestTop.current = layout.y;
     mathWindow.setBatch(batch.id, { y: layout.y, height: layout.height });
-  }, [mathWindow, clearHeights]);
+  }, [mathWindow, clearHeights, place]);
 
   const scrollToEnd = useCallback((animated: boolean) => {
     nearEnd.current = true;
@@ -305,8 +328,9 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
     /** Whether a batch's blocks that mount from now on show their pictures at once. */
     eager: (batch: Batch) => small || (batch.id === "newest" ? phase === "shown" : batch.placed),
     shown: phase === "shown",
-    /** "Loading session…" shows while a session too big to show at once is drawn. */
-    loading: !small && phase !== "shown",
+    /** "Loading session…" shows until the transcript does, except for a small session on
+     * Android, whose first frame is already the transcript at its end. */
+    loading: phase !== "shown" && !(small && Platform.OS === "android"),
     awayFromEnd: phase === "shown" && awayFromEnd,
     scrollToEnd,
     mathWindow,

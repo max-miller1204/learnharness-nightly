@@ -87,6 +87,27 @@ export class MathWindow {
     if (block.committed === live) return;
     block.committed = live;
     this.livePictures += live ? block.pictures : -block.pictures;
+    this.notify();
+  }
+
+  /** A block learned where it sits in its batch. */
+  measured() {
+    this.schedule();
+    this.notify();
+  }
+
+  /** Whether every block in a batch knows where it sits in it. */
+  measuredAll(id: string): boolean {
+    for (const block of this.blocks) if (block.batch === id && !block.measured) return false;
+    return true;
+  }
+
+  /** Asks a batch's blocks that don't know where they sit to measure again. */
+  measureBatch(id: string) {
+    for (const block of [...this.blocks]) if (block.batch === id && !block.measured) block.measure();
+  }
+
+  private notify() {
     for (const listener of this.listeners) listener();
   }
 
@@ -211,7 +232,7 @@ export function useLivePictures(pictures: number) {
           entry.y = y;
           entry.height = height;
           entry.measured = true;
-          window.schedule();
+          window.measured();
         }, () => {});
       },
     };

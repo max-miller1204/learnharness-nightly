@@ -11,7 +11,7 @@ export interface Equation {
 /** A map that keeps at most `cap` entries, dropping the least recently used. */
 export class Capped<V> {
   private readonly entries = new Map<string, V>();
-  constructor(private readonly cap: number) {}
+  constructor(public cap: number) {}
   get size() { return this.entries.size; }
   get(key: string): V | undefined {
     const value = this.entries.get(key);
@@ -35,6 +35,8 @@ let draws = 0;
 /** How many times MathJax has drawn an equation, and how many are kept, for tests. */
 export const drawCount = () => draws;
 export const cachedEquations = () => drawn.size;
+/** Sets the cache's cap, for tests. */
+export const setEquationCap = (cap: number) => { drawn.cap = cap; };
 
 const keyOf = ({ tex, display }: Equation) => `${display ? "B" : "I"}${tex}`;
 
@@ -64,6 +66,35 @@ export function markdownOf(text: string): ReturnType<typeof parseMarkdown> {
     parsed.set(text, result);
   }
   return result;
+}
+
+/** Every math token's picture in parsed markdown, undefined where it can't be drawn. Each
+ * equation is looked up once, and every one already drawn is taken before any missing one is
+ * drawn, so drawing the missing ones can't evict another the same text needs (a message with
+ * more distinct equations than the cache holds would otherwise redraw them in turn). */
+export function drawingsOf(tokens: readonly MarkdownToken[]): Map<MarkdownToken, DrawnMath | undefined> {
+  const math: [MarkdownToken, Equation][] = [];
+  const walk = (list: readonly MarkdownToken[]) => {
+    for (const token of list) {
+      const equation = equationOf(token);
+      if (equation) math.push([token, equation]);
+      if (token.children) walk(token.children);
+    }
+  };
+  walk(tokens);
+  const found = new Map<string, DrawnMath | null>();
+  for (const [, equation] of math) {
+    const key = keyOf(equation);
+    const picture = drawn.get(key);
+    if (picture !== undefined) found.set(key, picture);
+  }
+  const pictures = new Map<MarkdownToken, DrawnMath | undefined>();
+  for (const [token, equation] of math) {
+    const key = keyOf(equation);
+    if (!found.has(key)) found.set(key, drawEquation(equation) ?? null);
+    pictures.set(token, found.get(key) ?? undefined);
+  }
+  return pictures;
 }
 
 export function equationOf(token: MarkdownToken): Equation | undefined {
