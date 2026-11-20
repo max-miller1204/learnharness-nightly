@@ -246,10 +246,11 @@ function rowProblems(elements) {
 	for (const row of rows) {
 		if (!label(row)) problems.push("a choice row has no label");
 		if (/[$\\]/.test(label(row))) problems.push(`row "${label(row)}" shows $ or \\ instead of spoken math`);
+		// A row spans the dock's width, so any other item level with it is part of it.
 		const f = frame(row);
-		const inside = elements.filter((el) => el !== row && !el.children?.length && label(el) && (() => {
+		const inside = elements.filter((el) => el !== row && !el.children?.length && label(el) && !/scroll bar/.test(label(el)) && (() => {
 			const c = center(el);
-			return c.x > f.x && c.x < f.x + f.width && c.y > f.y && c.y < f.y + f.height;
+			return c.y > f.y && c.y < f.y + f.height;
 		})());
 		if (inside.length) problems.push(`row "${label(row)}" is split: ${inside.map((el) => JSON.stringify(label(el))).join(", ")} is a separate item inside it`);
 	}
