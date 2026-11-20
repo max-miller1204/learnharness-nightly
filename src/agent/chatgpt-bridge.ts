@@ -171,19 +171,31 @@ export async function refreshChatGPTModels(supported: Model<"openai-responses">[
  const state = bridge();
  if (!runtimeConnected()) { clearCatalog(state); return; }
  const sequence = ++state.catalogRequest;
- try {
-  const value = await checked(state, chatGPTRequest<ModelsValue>("models"));
-  if (sequence !== state.catalogRequest || !validStamp(value)) return;
-  acceptStatus(state, value);
-  if (value.epoch !== state.stamp.epoch || value.authorityRevision !== state.stamp.authorityRevision || value.accountId !== state.status.activeId || !chatGPTConnected()) return;
-  state.catalogAccount = value.accountId;
-  const known = (entry: AccountModelEntry) => supported.find((m) => m.id === entry.id && m.api === "openai-responses");
-  const template = value.models.map(known).find((m) => m !== undefined);
-  state.models = value.models.flatMap((entry) => {
-   const base = known(entry) ?? (template && accountModel(entry, template));
-   return base ? [{ ...base, provider: "chatgpt", name: entry.name, headers: undefined, samplingParams: undefined, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] : [];
-  });
- } catch { if (sequence === state.catalogRequest) clearCatalog(state); }
+ const started = ++state.checks;
+ let value: ModelsValue;
+ try { value = await chatGPTRequest<ModelsValue>("models"); }
+ catch {
+  settleCheck(state, started, true);
+  if (sequence === state.catalogRequest) clearCatalog(state);
+  return;
+ }
+ const failed = !validStamp(value) || !!value.status?.catalogError;
+ // A success a newer refresh superseded installs no catalog, so it must not
+ // clear the outage either: the newer reply settles both together.
+ if (sequence !== state.catalogRequest) { if (failed) settleCheck(state, started, true); return; }
+ if (validStamp(value)) installCatalog(state, value, supported); // a catalogError reply installs its empty list
+ settleCheck(state, started, failed);
+}
+function installCatalog(state: BridgeState, value: ModelsValue, supported: Model<"openai-responses">[]) {
+ acceptStatus(state, value);
+ if (value.epoch !== state.stamp.epoch || value.authorityRevision !== state.stamp.authorityRevision || value.accountId !== state.status.activeId || !chatGPTConnected()) return;
+ state.catalogAccount = value.accountId;
+ const known = (entry: AccountModelEntry) => supported.find((m) => m.id === entry.id && m.api === "openai-responses");
+ const template = value.models.map(known).find((m) => m !== undefined);
+ state.models = value.models.flatMap((entry) => {
+  const base = known(entry) ?? (template && accountModel(entry, template));
+  return base ? [{ ...base, provider: "chatgpt", name: entry.name, headers: undefined, samplingParams: undefined, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] : [];
+ });
 }
 export function chatGPTAbortController(background = true): { controller: AbortController; release: () => void } {
  const state = bridge(); const controller = new AbortController(); state.controllers.set(controller, background);

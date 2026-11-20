@@ -52,6 +52,8 @@ let catalogError: string | null = "The ChatGPT model list could not be loaded.";
 let holdChatGPT = false;
 let revision = 0;
 const held: Ask[] = [];
+let snapshotAsks = 0;
+let slowNative = false; // answer native asks a macrotask later, as real IPC does
 const ipc = (message: unknown) => (process.emit as (event: string, value: unknown) => boolean)("message", message);
 const nativeSnapshot = (connected: boolean) => ({
 	statuses: [{ providerId: "github-copilot", available: true, connected, pending: false, allowBackgroundUse: true, connectionId: "fixture-copilot", epoch: 1, authorityRevision: 1, revision: ++revision }],
@@ -77,7 +79,9 @@ before(() => {
 	Object.defineProperty(process, "connected", { configurable: true, writable: true, value: true });
 	Object.defineProperty(process, "send", { configurable: true, value: (message: Ask, callback?: (error: Error | null) => void) => {
 		callback?.(null);
+		if (message.channel === "lh:subscriptions" && message.op === "snapshot") snapshotAsks++;
 		if ((message.channel === "lh:subscriptions" && native === "hold") || (message.channel === "lh:chatgpt" && holdChatGPT)) held.push(message);
+		else if (slowNative && message.channel === "lh:subscriptions") setTimeout(() => answer(message), 1);
 		else queueMicrotask(() => answer(message));
 		return true;
 	} });
@@ -89,7 +93,7 @@ after(() => {
 	if (marker === undefined) delete process.env.LH_DESKTOP_SERVER; else process.env.LH_DESKTOP_SERVER = marker;
 	if (secret === undefined) delete process.env.LH_DESKTOP_API_SECRET; else process.env.LH_DESKTOP_API_SECRET = secret;
 });
-beforeEach(() => { native = "fails"; catalogError = "The ChatGPT model list could not be loaded."; holdChatGPT = false; held.length = 0; });
+beforeEach(() => { slowNative = false; native = "fails"; catalogError = "The ChatGPT model list could not be loaded."; holdChatGPT = false; held.length = 0; });
 const until = async (ready: () => boolean) => { while (!ready()) await new Promise((resolve) => setImmediate(resolve)); };
 
 // ── the paths ───────────────────────────────────────────────────────────────
@@ -263,6 +267,44 @@ test("an extraction run during an outage defers (retryable), a confirmed disconn
 	} finally {
 		writeSettings({ version: 1 });
 	}
+});
+
+test("two jobs waiting on the same native outage never wake each other", async () => {
+	slowNative = true;
+	const steers: unknown[] = [];
+	const first = researchJob(), second = researchJob();
+	const runs = [jobRunner(copilotEngine("First brief."), steers).runJob(first), jobRunner(copilotEngine("Second brief."), steers).runJob(second)];
+	const waiting = (id: string) => jobStore.getJob(id)!.activity?.startsWith("waiting:") === true;
+	await until(() => waiting(first) && waiting(second));
+	await refreshConnectionCatalog(COPILOT); // another failed check, from a send or the picker
+	const asked = snapshotAsks;
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	assert.equal(snapshotAsks, asked, "a repeat failed check notifies no one, so no wake refreshes again");
+
+	native = "connected";
+	await refreshConnectionCatalog(COPILOT);
+	await Promise.all(runs);
+	assert.equal(jobStore.getJob(first)!.status, "done");
+	assert.equal(jobStore.getJob(second)!.status, "done");
+});
+
+test("a ChatGPT success a newer refresh superseded clears no outage: the newer reply clears it and installs the catalog together", async () => {
+	await refreshConnectionCatalog("chatgpt");
+	assert.equal(connectionUnreachable("chatgpt"), true);
+	holdChatGPT = true;
+	catalogError = null;
+	const older = refreshConnectionCatalog("chatgpt");
+	await until(() => held.length === 1);
+	const newer = refreshConnectionCatalog("chatgpt");
+	await until(() => held.length === 2);
+	answer(held[0]!);
+	await older;
+	assert.equal(connectionUnreachable("chatgpt"), true, "the stale success installed no catalog, so the outage stands");
+	assert.throws(() => piEngineForSpec({ provider: "chatgpt", id: GPT }));
+	answer(held[1]!);
+	await newer;
+	assert.equal(connectionUnreachable("chatgpt"), false);
+	assert.doesNotThrow(() => piEngineForSpec({ provider: "chatgpt", id: GPT }), "cleared together with the catalog");
 });
 
 // Last: the desktop connection closes for the rest of this process.

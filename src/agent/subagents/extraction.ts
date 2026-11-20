@@ -14,7 +14,7 @@ import {
 	type ConnectionRefusal,
 	type ModelSlotName,
 } from "../../core/settings.ts";
-import { ModelUnavailableError, type PiEngine } from "../models.ts";
+import { catalogModelGone, ModelUnavailableError, type PiEngine } from "../models.ts";
 import { runSubagent } from "./pi-run.ts";
 import { processImage } from "../image-processing/index.ts";
 import { workerRequestStream } from "../worker-request-admission.ts";
@@ -935,12 +935,14 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	function refuseIfStagesUnready(withImage = false): Promise<void> | undefined {
 		// A saved subscription model its live catalog lacks may only mean the
 		// catalog check failed: the connection gate decides before it counts
-		// as gone (re-resolved once every gate passes).
+		// as gone. A built-in catalog does not depend on keys, so a model it
+		// dropped is gone at once. Every stage resolves again once the gates
+		// pass, so a model a refresh removed never runs from a stale engine.
 		const resolve = (role: ModelRole, override?: PiEngine): PiEngine | ModelUnavailableError | undefined => {
 			try {
 				return stageEngine(role, override);
 			} catch (error) {
-				if (error instanceof ModelUnavailableError) return error;
+				if (error instanceof ModelUnavailableError && !catalogModelGone(error.provider, error.id)) return error;
 				throw error;
 			}
 		};
@@ -971,7 +973,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		};
 		const check = (i: number): Promise<void> | undefined => {
 			if (i === stages.length) {
-				for (const [role, engine, override] of stages) if (engine instanceof ModelUnavailableError) stageEngine(role, override);
+				for (const [role, , override] of stages) stageEngine(role, override);
 				return undefined;
 			}
 			const [role, engine] = stages[i]!;
@@ -1261,14 +1263,14 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		// error below loses at most the in-flight batch — every earlier
 		// batch stays covered, the rest stays visibly uncovered.
 		try {
-			const record = chatStore.getChat(chatId);
-			if (!record) throw new Error(`Chat not found: ${chatId}`);
 			// BYOK per-need gate (owner, 2026-09-22) + key presence
 			// (2026-09-25): the write channel needs extractor + auditor
 			// engines AND their providers' keys; a refusal lands BEFORE any
 			// stage runs (typed: the trigger skips, routes surface the envelope).
 			const ready = refuseIfStagesUnready();
 			if (ready) await ready;
+			const record = chatStore.getChat(chatId); // read after the gate's await
+			if (!record) throw new Error(`Chat not found: ${chatId}`);
 			const covered = coverageOf(record.messages, graphStore.readCoverage(), chatId);
 			const failedOutputCalls = failedOutputCallIds(record.messages);
 			if (covered.uncovered.length === 0) {
@@ -1479,11 +1481,6 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		const t0 = performance.now();
 		const mergedStats: EmissionStats = { nodes: 0, chains: 0 };
 		try {
-			// BYOK per-need gate (owner, 2026-09-22) + key presence
-			// (2026-09-25): same refusal as the chat front door — no
-			// extractor/auditor engines, or a stage key gone, no run.
-			const ready = refuseIfStagesUnready(input.image !== undefined);
-			if (ready) await ready;
 			// CHUNKED like the chat path (owner, 2026-09-28): each chunk is a
 			// standalone extract → audit → merge, so no single call carries a
 			// whole large file. Abort mid-run keeps earlier chunks merged
@@ -1597,6 +1594,14 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		if (inFlight.has(id)) throw new NotesImportError("busy", { nodes: 0, chains: 0 }, "This file is already being imported. Try again when it finishes.");
 		inFlight.add(id);
 		try {
+			// BYOK per-need gate (owner, 2026-09-22) + key presence
+			// (2026-09-25): same refusal as the chat front door: no
+			// extractor/auditor engines, or a stage key gone, no run. It runs
+			// before the source is written: its check may await, and a source
+			// deleted during that wait must never get nodes (deletion is
+			// blocked only once the run shows in the registry).
+			const ready = refuseIfStagesUnready(input.image !== undefined);
+			if (ready) await ready;
 			const importedAt = new Date().toISOString();
 			graphStore.upsertSource({ id, filePath: input.filePath, importedAt });
 			return await runNotesExtraction({ id, ...input, importedAt });

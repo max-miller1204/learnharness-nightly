@@ -1,4 +1,4 @@
-import { ModelUnavailableError, type PiEngine } from "../models.ts";
+import { catalogModelGone, ModelUnavailableError, type PiEngine } from "../models.ts";
 import type { SearchProvider } from "../../core/search.ts";
 import {
 	accumulateJobUsage,
@@ -278,6 +278,13 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 					await refuse(`${envelope.error} (missing: ${tier})`);
 					return;
 				}
+				// A built-in catalog does not depend on keys or connections: a
+				// model it dropped is gone, never a key to ask for.
+				if (picked instanceof ModelUnavailableError && catalogModelGone(picked.provider, picked.id)) {
+					console.info(`[job ${jobId}] refused: ${picked.message}`);
+					await refuse(picked.message);
+					return;
+				}
 				// Key presence (2026-09-25): the engine exists, but its provider's
 				// key may be gone: refuse the spawn BEFORE the loop, same
 				// convention (the injected check reads the key store; absent in
@@ -301,9 +308,9 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 					await refuse(refusal.error);
 					return;
 				}
-				// The gate refreshed a subscription's catalog: a model it still
-				// lacks is really gone.
-				const current = picked instanceof ModelUnavailableError ? pickOrGone(job.kind) : picked;
+				// The gate refreshed a subscription's catalog: resolve again, so a
+				// model the refresh removed is gone, never run from a stale engine.
+				const current = pickOrGone(job.kind);
 				if (!current) continue; // settings changed: the next pass refuses
 				if (current instanceof ModelUnavailableError) {
 					console.info(`[job ${jobId}] refused: ${current.message}`);

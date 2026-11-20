@@ -26,7 +26,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { after, describe, it } from "node:test";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall, type FauxResponseStep, type ToolCall, type Usage } from "@earendil-works/pi-ai";
-import type { PiEngine } from "../src/agent/models.ts";
+import { ModelUnavailableError, type PiEngine } from "../src/agent/models.ts";
 import type { LhMessage } from "../src/core/native-messages.ts";
 import { newPlanBlockMessage } from "../src/core/native-messages.ts";
 import { projectView as projectNative } from "../src/core/view.ts";
@@ -591,6 +591,32 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 		});
 		assert.equal(calls, 2, "both stages were checked, in order");
 		assert.equal(ledgers.readCoverage().length, 0);
+	});
+
+	it("a stage engine the gate's refresh removed is gone (re-resolved after the gate), not run from the stale engine", async () => {
+		const { chatId } = fixtureChat();
+		const ledgers = memoryLedgers();
+		const engine = fauxEngine([]);
+		let resolved = 0;
+		const pipeline = createExtractionPipeline({
+			chatStore, graphStore: ledgers,
+			engineFor: () => { if (resolved++ < 2) return engine; throw new ModelUnavailableError("chatgpt", "gpt-retired"); },
+			connectionRefusal: async () => null,
+		});
+		await assert.rejects(pipeline.runExtraction(chatId), ModelUnavailableError);
+		assert.equal(ledgers.readCoverage().length, 0);
+	});
+
+	it("a built-in model the catalog dropped is gone at once, never a key to ask for", async () => {
+		const { chatId } = fixtureChat();
+		let checks = 0;
+		const pipeline = createExtractionPipeline({
+			chatStore, graphStore: memoryLedgers(),
+			engineFor: () => { throw new ModelUnavailableError("openai", "gpt-retired-builtin"); },
+			connectionRefusal: () => { checks++; return providerKeyMissing("openai", ["cheap"]); },
+		});
+		await assert.rejects(pipeline.runExtraction(chatId), ModelUnavailableError);
+		assert.equal(checks, 0, "the key gate never runs for a gone built-in model");
 	});
 
 	it("an unreachable subscription defers the run (an outage, not setup); the same pipeline extracts once it answers", async () => {
@@ -2541,6 +2567,21 @@ describe("notes import completion and retry reliability", () => {
 		await assert.rejects(createExtractionPipeline({ chatStore, graphStore: ledgers }).importNotes({ ...input, text: "" }), ModelsNotConfiguredError);
 		await assert.rejects(createExtractionPipeline({ chatStore, graphStore: ledgers, extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT), connectionRefusal: () => providerKeyMissing("openai", ["cheap"]) }).importNotes(input), ProviderKeyMissingError);
 		await assert.rejects(createExtractionPipeline({ chatStore, graphStore: ledgers, extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT), connectionRefusal: async () => subscriptionUnreachable("chatgpt") }).importNotes(input), SubscriptionUnreachableError);
+	});
+
+	it("the connection check runs before the source is written: a source deleted while it waits never gets nodes", async () => {
+		const ledgers = memoryLedgers();
+		const sourcesWhileChecking: number[] = [];
+		let reachable = false;
+		const pipeline = createExtractionPipeline({
+			chatStore, graphStore: ledgers, extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT),
+			connectionRefusal: async () => { sourcesWhileChecking.push(ledgers.readSources().length); await new Promise((resolve) => setTimeout(resolve, 1)); return reachable ? null : subscriptionUnreachable("chatgpt"); },
+		});
+		await assert.rejects(pipeline.importNotes(input), SubscriptionUnreachableError);
+		assert.equal(ledgers.readSources().length, 0, "an import the outage deferred writes no source");
+		reachable = true;
+		assert.deepEqual(await pipeline.importNotes(input), { nodes: 1, chains: 0 });
+		assert.deepEqual(sourcesWhileChecking, [0, 0, 0], "no source exists while any check waits");
 	});
 
 	it("isolates an ordinary failed chunk, reports partial, and keeps earlier/later merges and usage", async () => {

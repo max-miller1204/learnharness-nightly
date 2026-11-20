@@ -1983,6 +1983,31 @@ describe("provider-key job refusal (key-presence interlude)", () => {
 		await third.runner.runJob(gone);
 		assert.equal(jobStore.getJob(gone)!.error, new ModelUnavailableError("chatgpt", "gpt-retired").message);
 		assert.equal(isProviderKeyRefusal(jobStore.getJob(gone)!.error), false);
+
+		// The engine resolved before the gate, but the gate's refresh removed
+		// the model: resolved again, it is gone, never run from the stale engine.
+		const stale = researchJob("call-outage5");
+		let resolved = 0;
+		const cached = fauxEngine([]);
+		const fourth = outageRunner(() => null, () => { if (resolved++ === 0) return cached; throw new ModelUnavailableError("chatgpt", "gpt-removed"); });
+		await fourth.runner.runJob(stale);
+		assert.equal(jobStore.getJob(stale)!.error, new ModelUnavailableError("chatgpt", "gpt-removed").message);
+		assert.equal(resolved, 2);
+	});
+
+	it("a built-in model the catalog dropped refuses as gone at once, never asking for a key", async () => {
+		const jobId = researchJob("call-builtin-gone");
+		let checks = 0;
+		const runner = createJobRunner({
+			chatStore, jobStore, deliver: fakeDeliver().deliver,
+			engineFor: () => { throw new ModelUnavailableError("openai", "gpt-retired-builtin"); },
+			connectionRefusal: (provider, tier) => { checks++; return providerKeyMissing(provider, [tier]); },
+		});
+		await runner.runJob(jobId);
+		const done = jobStore.getJob(jobId)!;
+		assert.equal(done.error, new ModelUnavailableError("openai", "gpt-retired-builtin").message);
+		assert.equal(isProviderKeyRefusal(done.error), false);
+		assert.equal(checks, 0, "the key gate never runs for a gone built-in model");
 	});
 });
 
