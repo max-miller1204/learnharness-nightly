@@ -1078,7 +1078,9 @@ async function main() {
 		reopenWindow = () => serverList.reopen();
 		updateEverything = createUpdateEverything(updateEverythingDeps(serverList));
 		registerDesktopUpdateIPC(ipcMain, { current: () => serverList.current(), updateEverything });
-		registerChatGPTSignInIPC(ipcMain, { current: () => serverList.current(), signIn: (accountId) => serverList.chatgptSignIn(accountId) });
+		registerChatGPTSignInIPC(ipcMain, {
+			current: () => serverList.current(), signIn: (accountId) => serverList.chatgptSignIn(accountId), cancel: () => serverList.chatgptCancel(),
+		});
 		const relaunch = updateEverything.takeLaunch();
 		await serverList.launch({ server: relaunch?.server });
 		// The app update didn't apply: offer the app-only retry of that same version.

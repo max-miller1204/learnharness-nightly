@@ -5,9 +5,10 @@
  * - desktopUpdate: this app's own update, four methods, no arguments. The page
  *   can't name a version, URL or file (electron/update-everything-ipc.cjs), and
  *   main asks in its own native dialog before install() changes anything.
- * - chatgptSignIn: starts this desktop's verified ChatGPT sign-in for this
- *   window's server and resolves { ok: true } or { error }. Its one optional
- *   argument is a saved-account id the server issued (electron/remote-chatgpt-ipc.cjs).
+ * - chatgptSignIn: start() runs this desktop's verified ChatGPT sign-in for this
+ *   window's server and resolves { ok: true } or { error }; its one optional
+ *   argument is a saved-account id the server issued. cancel() ends it
+ *   (electron/remote-chatgpt-ipc.cjs).
  * Nothing else of the local preload (filesystem, providers, zoom, appearance) is exposed here.
  */
 const { contextBridge, ipcRenderer } = require("electron");
@@ -24,6 +25,9 @@ if (location.protocol === "https:") {
 			download: () => ipcRenderer.invoke(CHANNEL, "download"),
 			install: () => ipcRenderer.invoke(CHANNEL, "install"),
 		}),
-		chatgptSignIn: (accountId) => (accountId === undefined ? ipcRenderer.invoke(SIGN_IN) : ipcRenderer.invoke(SIGN_IN, accountId)),
+		chatgptSignIn: Object.freeze({
+			start: (accountId) => (accountId === undefined ? ipcRenderer.invoke(SIGN_IN, "start") : ipcRenderer.invoke(SIGN_IN, "start", accountId)),
+			cancel: () => ipcRenderer.invoke(SIGN_IN, "cancel"),
+		}),
 	}));
 }

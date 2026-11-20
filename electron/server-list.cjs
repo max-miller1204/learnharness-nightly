@@ -418,6 +418,8 @@ async function createServerList({
 			if (!window || window.isDestroyed() || !active?.token || active.server !== origin) return;
 			if (updating) { updating.stop(); updating.cover.reveal(); }
 			const win = window;
+			// The server restarts under the cover: its ChatGPT sign-in ends.
+			chatgpt.abort();
 			const cover = coverWindow(win, { WebContentsView, session, mode: themeMode(), status: text });
 			cover.focus();
 			// The page under the cover reloads itself once the server is back on the new
@@ -480,6 +482,7 @@ async function createServerList({
 		},
 		/** window.lh.chatgptSignIn from the open remote window (electron/remote-chatgpt-ipc.cjs). */
 		chatgptSignIn: (accountId) => (active && held(active.server) ? { error: HELD_BY_UPDATE } : chatgpt.signIn(accountId)),
+		chatgptCancel: () => chatgpt.cancel(),
 	};
 }
 

@@ -8,6 +8,7 @@ const { requestServer, ServerProblem } = require("./remote-server.cjs");
 const CALLBACK_HOST = "127.0.0.1";
 const CALLBACK_PATH = "/auth/callback";
 const LOGIN_PATH = "/api/subscriptions";
+const ENDED = "ChatGPT sign-in ended. Try again.";
 
 // `accountId`: sign in again to that saved account (the server's own `login` id).
 async function remoteChatGPTSignIn(origin, token, {
@@ -35,6 +36,9 @@ async function remoteChatGPTSignIn(origin, token, {
 	let settling;
 	let consumed = false;
 	let pending = false;
+	// The server's id for this attempt: the cancel below ends only it, never a newer sign-in.
+	// An older server sends none, and its cancel ends whatever is pending, as before.
+	let attemptId;
 	try {
 		try { await bind; } catch { throw new ServerProblem("sign-in", "Couldn’t reserve the local ChatGPT callback port."); }
 		lifetime.throwIfAborted();
@@ -46,6 +50,7 @@ async function remoteChatGPTSignIn(origin, token, {
 		const reply = await control("login", { ...(accountId && { id: accountId }), desktopRedirectPort: port }, AbortSignal.timeout(15000));
 		if (!isBrowserAction(reply?.browserAction)) throw new ServerProblem("sign-in", "The server couldn’t start ChatGPT sign-in. Check Providers on the server.");
 		pending = true;
+		if (typeof reply.attemptId === "string" && reply.attemptId.length <= 200) attemptId = reply.attemptId;
 		lifetime.throwIfAborted();
 		const action = await send(reply.browserAction, { method: "POST", headers, redirect: "manual" });
 		let target;
@@ -85,7 +90,7 @@ async function remoteChatGPTSignIn(origin, token, {
 		});
 		const opened = openExternal(target.href).then(() => callback);
 		const exact = await Promise.race([opened, interrupted]);
-		if (!exact) throw new ServerProblem("sign-in", "ChatGPT sign-in ended. Try again.");
+		if (!exact) throw new ServerProblem("sign-in", ENDED);
 		const { value } = await control("complete", { url: exact });
 		pending = false;
 		if (!value?.activeId || value.error) throw new ServerProblem("sign-in", "ChatGPT sign-in did not complete. Check Providers on the server.");
@@ -94,7 +99,7 @@ async function remoteChatGPTSignIn(origin, token, {
 		listener.close();
 		listener.closeAllConnections();
 		if (pending) {
-			await control("cancel", undefined, AbortSignal.timeout(5000)).catch(() => {});
+			await control("cancel", attemptId ? { attemptId } : undefined, AbortSignal.timeout(5000)).catch(() => {});
 		}
 	}
 }
@@ -103,7 +108,8 @@ async function remoteChatGPTSignIn(origin, token, {
  * The open remote window's sign-in (electron/remote-chatgpt-ipc.cjs). One at a time: a new
  * start ends the previous one, after that one's cancel reached its server. The page sees
  * only { ok: true } or a fixed message, never a URL, port or credential.
- * `selection()`: { origin, token } of the open remote window, or null.
+ * `selection()`: { origin, token } of the open remote window, or null while there is none
+ * or its server is being removed or updated.
  */
 function createRemoteChatGPTSignIn({ selection, openExternal, run = remoteChatGPTSignIn, ...options }) {
 	let current = null;
@@ -121,20 +127,31 @@ function createRemoteChatGPTSignIn({ selection, openExternal, run = remoteChatGP
 		try {
 			await previous;
 			operation.signal.throwIfAborted();
+			// Queued behind a slow cancel: the window may have switched, or its server be held, by now.
+			const still = selection();
+			if (!still || still.origin !== selected.origin || still.token !== selected.token) return { error: ENDED };
 			await run(selected.origin, selected.token, { ...options, accountId, openExternal, signal: operation.signal });
 			return { ok: true };
 		} catch (error) {
-			if (operation.signal.aborted) return { error: "ChatGPT sign-in ended. Try again." };
+			if (operation.signal.aborted) return { error: ENDED };
 			return { error: error instanceof ServerProblem ? error.message : "ChatGPT sign-in failed. Try again." };
 		} finally {
 			settled();
 			if (current === operation) current = null;
 		}
 	}
+	function abort() { current?.abort(); current = null; }
 	return {
 		signIn,
-		/** The window closed or switched: its sign-in ends. */
-		abort() { current?.abort(); current = null; },
+		/** The window closed or switched, or an update covers its server: its sign-in ends. */
+		abort,
+		/** Settings' Cancel: ends this window's sign-in, also while its login is in flight, and
+		 *  resolves once that attempt's own cancel reached its server. */
+		async cancel() {
+			abort();
+			await last;
+			return { ok: true };
+		},
 	};
 }
 

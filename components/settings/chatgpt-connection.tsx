@@ -314,8 +314,10 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 			if (owns(attempt)) { setClipboardBlocked(true); pasteField.current?.focus(); }
 		} finally { if (owns(attempt)) setReading(false); }
 	}
-	// The desktop app's window onto a server signs in through its bridge: the callback reaches this computer.
-	const sameMachine = !web || (typeof window !== "undefined" && (!!window.lh?.chatgptSignIn || loopbackHost(window.location?.hostname ?? "")));
+	// The desktop app's window onto a server signs in through its bridge: the callback reaches
+	// this computer, and the bridge's attempt is the only one, so there is no paste-back.
+	const desktopSignIn = typeof window !== "undefined" && !!window.lh?.chatgptSignIn;
+	const sameMachine = !web || desktopSignIn || (typeof window !== "undefined" && loopbackHost(window.location?.hostname ?? ""));
 	const context = {
 		status, busy, error: warning ? null : visibleError, inlineError: dialog || warning ? null : visibleError, warning: dialog?.kind === "warning" ? null : warning,
 		connect: openConnect,
@@ -367,7 +369,7 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 				</div>
 				{!status.available && <p className="mt-3 text-xs text-muted-foreground">ChatGPT sign-in is available only in the desktop app. API-key connections remain available here.</p>}
 				{status.pending && <p role="status" className="mt-3 text-xs text-muted-foreground">Waiting for browser sign-in…</p>}
-				{status.pending && dialog.kind === "connect" && loginAttempt.current && (sameMachine && !pasteOpen
+				{status.pending && dialog.kind === "connect" && loginAttempt.current && !desktopSignIn && (sameMachine && !pasteOpen
 					? <button type="button" data-testid="chatgpt-paste-reveal" className="mt-2 cursor-pointer text-xs text-muted-foreground underline underline-offset-2" onClick={() => setPasteOpen(true)}>{CHATGPT_PASTE_COPY.reveal}</button>
 					: <form data-testid="chatgpt-paste" className="mt-3 flex flex-col gap-2 text-xs text-muted-foreground" onSubmit={(event) => { event.preventDefault(); void submitPaste(); }}>
 						<p className="leading-relaxed">{CHATGPT_PASTE_COPY.remote}</p>

@@ -828,7 +828,7 @@ test("Settings in the desktop app's window onto a server signs in through the de
  const page = webPage("desktop.tail1234.ts.net");
  const calls: (string | undefined)[] = [];
  let finish!: (result: { ok: true } | { error: string }) => void;
- window.lh = { chatgptSignIn: (accountId?: string) => { calls.push(accountId); return new Promise((resolve) => { finish = resolve; }); } };
+ window.lh = { chatgptSignIn: { start: (accountId?: string) => { calls.push(accountId); return new Promise((resolve) => { finish = resolve; }); }, cancel: async () => ({ ok: true }) } };
  window.open = () => assert.fail("no sign-in tab in the desktop app");
  try {
   await mount(); await click(byTest("chatgpt-login"));
@@ -843,14 +843,17 @@ test("Settings in the desktop app's window onto a server signs in through the de
  } finally { page.restore(); }
 });
 
-test("a pending sign-in in the desktop app's window offers paste-back only behind its reveal", async () => {
+test("while the desktop bridge drives a sign-in, Settings offers no paste-back, and Cancel ends the desktop's attempt", async () => {
  const page = webPage("desktop.tail1234.ts.net");
- window.lh = { chatgptSignIn: async () => ({ ok: true }) };
+ const cancels: string[] = [];
+ window.lh = { chatgptSignIn: { start: async () => ({ ok: true }), cancel: async () => { cancels.push("desktop"); return { ok: true }; } } };
  globalThis.fetch = async (_input, init) => init?.method ? Response.json({ value: { ...disconnected(), pending: true } }) : Response.json({ chatgpt: { ...disconnected(), pending: true }, native: [] });
  try {
   await mount(); await click(byTest("chatgpt-login"));
   assert(document.body.textContent?.includes("Waiting for browser sign-in"));
-  assert.equal(byTest("chatgpt-paste-reveal").textContent, CHATGPT_PASTE_COPY.reveal);
+  assert(!document.querySelector('[data-testid="chatgpt-paste-reveal"]'), "no paste-back: the desktop's attempt is the only one");
   assert(!document.querySelector('[data-testid="chatgpt-paste"]'));
+  await click(button("Cancel", byTest("chatgpt-account-dialog")));
+  assert.deepEqual(cancels, ["desktop"]);
  } finally { page.restore(); }
 });

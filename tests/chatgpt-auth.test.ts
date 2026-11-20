@@ -850,9 +850,10 @@ function viaBridge(origin: string, token: string, options: Record<string, unknow
 	const win = { webContents: contents, isDestroyed: () => false };
 	const runner = createRemoteChatGPTSignIn({ ...options, selection: () => ({ origin, token }) });
 	registerChatGPTSignInIPC({ handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => Promise<unknown>) => handlers.set(channel, fn) }, {
-		current: () => ({ win, origin }), signIn: runner.signIn,
+		current: () => ({ win, origin }), signIn: runner.signIn, cancel: runner.cancel,
 	});
-	return { runner, signIn: (...args: unknown[]) => handlers.get("lh:chatgpt-sign-in")!({ sender: contents, senderFrame: mainFrame }, ...args) };
+	const call = (...args: unknown[]) => handlers.get("lh:chatgpt-sign-in")!({ sender: contents, senderFrame: mainFrame }, ...args);
+	return { runner, signIn: (...args: unknown[]) => call("start", ...args), cancel: () => call("cancel") };
 }
 
 test("desktop relay reserves loopback, forwards the exact verified callback once, and exchanges only on the server", async () => {
@@ -1001,4 +1002,126 @@ test("desktop relay cancels an acknowledged attempt on abort and timeout using t
 			assert.equal((await f.service.login()).pending, true, "can retry immediately");
 		} finally { f.service.close(); }
 	}
+});
+
+test("Settings' Cancel ends the desktop's attempt: during login no browser opens, after it the callback listener is gone", async () => {
+	for (const when of ["during-login", "after-browser"]) {
+		const f = fixture();
+		const origin = "https://desktop-cancel.example.test";
+		const calls: { op: string; attemptId?: string }[] = [];
+		let attempt = "";
+		let callback = "";
+		let releaseLogin!: () => void;
+		const loginHeld = new Promise<void>((resolve) => { releaseLogin = resolve; });
+		let bridge!: ReturnType<typeof viaBridge>;
+		let cancelled: Promise<unknown> = Promise.resolve();
+		try {
+			bridge = viaBridge(origin, "fixture-bearer", {
+				timeoutMs: 5000,
+				openExternal: async (url: string) => {
+					assert.equal(when, "after-browser", "no browser after Cancel during login");
+					callback = new URL(url).searchParams.get("redirect_uri")!;
+					cancelled = bridge.cancel();
+				},
+				request: async (input: URL, options: RequestInit) => {
+					if (input.pathname.endsWith("/browser")) return new Response(null, { status: 303, headers: { Location: f.url.href } });
+					const body = JSON.parse(String(options.body));
+					calls.push({ op: body.op, ...(body.attemptId && { attemptId: body.attemptId }) });
+					if (body.op === "login") {
+						const value = await f.service.login(undefined, body.desktopRedirectPort);
+						attempt = f.service.pendingAttempt();
+						if (when === "during-login") { cancelled = bridge.cancel(); await loginHeld; }
+						return Response.json({ value, browserAction: "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001", attemptId: attempt });
+					}
+					return Response.json({ value: f.service.cancelLogin(body.attemptId) });
+				},
+			});
+			const started = bridge.signIn();
+			if (when === "during-login") { await new Promise((resolve) => setTimeout(resolve, 20)); releaseLogin(); }
+			assert.deepEqual(await started, { error: "ChatGPT sign-in ended. Try again." });
+			assert.deepEqual(await cancelled, { ok: true }, "Cancel resolves once the attempt ended");
+			assert.deepEqual(calls, [{ op: "login" }, { op: "cancel", attemptId: attempt }], `${when}: its own, scoped cancel`);
+			assert.equal((await f.service.status()).pending, false);
+			if (callback) await assert.rejects(fetch(`${callback}?state=x&code=y`), "the callback listener is closed");
+		} finally { f.service.close(); }
+	}
+});
+
+test("the desktop's late timeout cancel can't end a sign-in started elsewhere since", async () => {
+	const f = fixture();
+	const origin = "https://desktop-stale.example.test";
+	let attempt = "";
+	const cancels: unknown[] = [];
+	try {
+		const result = await viaBridge(origin, "fixture-bearer", {
+			timeoutMs: 80,
+			openExternal: async () => {
+				// Meanwhile Settings cancelled on the server, and a phone started its own paste-back sign-in.
+				f.service.cancelLogin();
+				await f.service.login();
+			},
+			request: async (input: URL, options: RequestInit) => {
+				if (input.pathname.endsWith("/browser")) return new Response(null, { status: 303, headers: { Location: f.url.href } });
+				const body = JSON.parse(String(options.body));
+				if (body.op === "login") {
+					const value = await f.service.login(undefined, body.desktopRedirectPort);
+					attempt = f.service.pendingAttempt();
+					return Response.json({ value, browserAction: "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001", attemptId: attempt });
+				}
+				cancels.push(body);
+				return Response.json({ value: f.service.cancelLogin(body.attemptId) });
+			},
+		}).signIn();
+		assert.deepEqual(result, { error: "ChatGPT sign-in ended. Try again." });
+		assert.deepEqual(cancels, [{ providerId: "chatgpt", op: "cancel", attemptId: attempt }], "the desktop's cancel names its own attempt");
+		assert.equal((await f.service.status()).pending, true, "the phone's sign-in is still waiting");
+		assert.notEqual(f.service.pendingAttempt(), attempt);
+	} finally { f.service.close(); }
+});
+
+test("a sign-in queued behind a slow cancel checks again that its server is still selected and not held", async () => {
+	const { createRemoteChatGPTSignIn } = require("../electron/remote-chatgpt.cjs");
+	let selected: { origin: string; token: string } | null = { origin: "https://one.example.test", token: "one" };
+	const runs: string[] = [];
+	let releaseCancel!: () => void;
+	const slowCancel = new Promise<void>((resolve) => { releaseCancel = resolve; });
+	const runner = createRemoteChatGPTSignIn({
+		selection: () => selected, openExternal: async () => {},
+		run: async (origin: string, _token: string, { signal }: { signal: AbortSignal }) => {
+			runs.push(origin);
+			await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+			await slowCancel;
+			throw signal.reason;
+		},
+	});
+	const first = runner.signIn();
+	await new Promise((resolve) => setImmediate(resolve));
+	const second = runner.signIn();
+	// While the first's cancel is slow, the server is held (an update or a removal).
+	selected = null;
+	releaseCancel();
+	assert.deepEqual(await first, { error: "ChatGPT sign-in ended. Try again." });
+	assert.deepEqual(await second, { error: "ChatGPT sign-in ended. Try again." });
+	assert.deepEqual(runs, ["https://one.example.test"], "the queued start never ran");
+	// The window switched to another server meanwhile: same.
+	selected = { origin: "https://one.example.test", token: "one" };
+	let again!: () => void;
+	const held = new Promise<void>((resolve) => { again = resolve; });
+	const runner2 = createRemoteChatGPTSignIn({
+		selection: () => selected, openExternal: async () => {},
+		run: async (origin: string, _token: string, { signal }: { signal: AbortSignal }) => {
+			runs.push(origin);
+			await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+			await held;
+			throw signal.reason;
+		},
+	});
+	const a = runner2.signIn();
+	await new Promise((resolve) => setImmediate(resolve));
+	const b = runner2.signIn();
+	selected = { origin: "https://two.example.test", token: "two" };
+	again();
+	await a;
+	assert.deepEqual(await b, { error: "ChatGPT sign-in ended. Try again." });
+	assert.deepEqual(runs, ["https://one.example.test", "https://one.example.test"]);
 });

@@ -470,10 +470,12 @@ test("the remote preload exposes only window.lh.desktopUpdate with four methods 
 	assert.deepEqual(Object.keys(lh.desktopUpdate), ["getStatus", "check", "download", "install"]);
 	lh.desktopUpdate.install!("0.0.1-evil", "https://evil.example");
 	assert.deepEqual(invoked, [["lh:desktop-update", "install"]], "arguments from the page are never forwarded");
-	const signIn = (lh as unknown as { chatgptSignIn: (...args: unknown[]) => unknown }).chatgptSignIn;
-	signIn();
-	signIn("account-id", "https://evil.example", "extra");
-	assert.deepEqual(invoked.slice(1), [["lh:chatgpt-sign-in"], ["lh:chatgpt-sign-in", "account-id"]], "at most the one account id, which main checks");
+	const signIn = (lh as unknown as { chatgptSignIn: Record<string, (...args: unknown[]) => unknown> }).chatgptSignIn;
+	assert.deepEqual(Object.keys(signIn), ["start", "cancel"]);
+	signIn.start!();
+	signIn.start!("account-id", "https://evil.example", "extra");
+	signIn.cancel!("https://evil.example");
+	assert.deepEqual(invoked.slice(1), [["lh:chatgpt-sign-in", "start"], ["lh:chatgpt-sign-in", "start", "account-id"], ["lh:chatgpt-sign-in", "cancel"]], "at most the one account id, which main checks");
 });
 
 test("a run names the server it updates from its confirmation to its end, so the list can hold that server", async () => {

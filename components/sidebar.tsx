@@ -87,8 +87,12 @@ declare global {
 			/** Remote window only: this app's own update (roadmap item 23 Update everything). */
 			desktopUpdate?: DesktopUpdateBridge;
 			/** Remote window only: this desktop's verified ChatGPT sign-in for the window's server
-			 *  (electron/remote-chatgpt-ipc.cjs). `accountId` signs in again to that saved account. */
-			chatgptSignIn?: (accountId?: string) => Promise<{ ok: true } | { error: string }>;
+			 *  (electron/remote-chatgpt-ipc.cjs). `accountId` signs in again to that saved account;
+			 *  cancel() ends the attempt. */
+			chatgptSignIn?: {
+				start: (accountId?: string) => Promise<{ ok: true } | { error: string }>;
+				cancel: () => Promise<unknown>;
+			};
 			/** Native chrome follows the active theme (theme wave): main sets
 			 *  themeSource and repaints the window background / overlay. */
 			setAppearance?: (a: { mode: ThemeMode; background: string }) => void;

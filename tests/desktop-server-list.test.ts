@@ -513,16 +513,16 @@ test("through the Settings bridge, a new ChatGPT sign-in waits for the abandoned
 		startLocal: async () => "http://localhost:3000", stopLocal: async () => {},
 		createLocalWindow: () => { const win = new TestWindow(); return { win, load: (url: string) => win.loadURL(url) }; }, setLocalMenu() {},
 	});
-	registerChatGPTSignInIPC(ipcMain, { current: () => controller.current(), signIn: (accountId?: string) => controller.chatgptSignIn(accountId) });
+	registerChatGPTSignInIPC(ipcMain, { current: () => controller.current(), signIn: (accountId?: string) => controller.chatgptSignIn(accountId), cancel: () => controller.chatgptCancel() });
 	const panel = () => controller.show() as TestWindow;
 	const send = (action: string, value?: unknown) => {
 		const win = panel();
 		return handlers.get("lh:server-list")!({ sender: win.webContents, senderFrame: win.webContents.mainFrame }, action, value);
 	};
-	// What the server's Settings page calls in the remote window: window.lh.chatgptSignIn().
+	// What the server's Settings page calls in the remote window: window.lh.chatgptSignIn.start().
 	const signIn = () => {
 		const win = controller.current()!.win as TestWindow;
-		return handlers.get("lh:chatgpt-sign-in")!({ sender: win.webContents, senderFrame: win.webContents.mainFrame });
+		return handlers.get("lh:chatgpt-sign-in")!({ sender: win.webContents, senderFrame: win.webContents.mainFrame }, "start");
 	};
 	const until = async (ready: () => boolean) => {
 		for (let i = 0; i < 400 && !ready(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
@@ -548,7 +548,8 @@ test("through the Settings bridge, a new ChatGPT sign-in waits for the abandoned
 	assert.deepEqual(await first, { error: "ChatGPT sign-in ended. Try again." }, "switching away ended it");
 	await until(() => opened.length === 2);
 	assert.deepEqual(operations, ["login", "browser", "cancel", "login", "browser"]);
-	controller.close();
+	// Update everything covers the server: its sign-in ends, and its own cancel goes out.
+	controller.coverForUpdate(beta, "Updating two…");
 	await until(() => operations.length === 6);
 	await until(() => second !== "pending");
 	assert.deepEqual(second, { error: "ChatGPT sign-in ended. Try again." });
@@ -1812,30 +1813,37 @@ test("the ChatGPT sign-in bridge answers only the open remote window's main fram
 	registerChatGPTSignInIPC({ handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => Promise<unknown>) => handlers.set(channel, fn) }, {
 		current: () => open,
 		signIn: async (accountId?: string) => { started.push(accountId); return { ok: true }; },
+		cancel: async () => { started.push("cancel"); return { ok: true }; },
 	});
 	assert.deepEqual([...handlers.keys()], ["lh:chatgpt-sign-in"], "one channel");
 	const handle = handlers.get("lh:chatgpt-sign-in")!;
 	const id = "0b0c2a4e-6d8f-4a1b-9c3d-5e7f9a1b3c5d";
-	assert.deepEqual(await handle({ sender: contents, senderFrame: mainFrame }), { ok: true });
-	assert.deepEqual(await handle({ sender: contents, senderFrame: mainFrame }, id), { ok: true });
-	assert.deepEqual(started, [undefined, id]);
+	assert.deepEqual(await handle({ sender: contents, senderFrame: mainFrame }, "start"), { ok: true });
+	assert.deepEqual(await handle({ sender: contents, senderFrame: mainFrame }, "start", id), { ok: true });
+	assert.deepEqual(await handle({ sender: contents, senderFrame: mainFrame }, "cancel"), { ok: true });
+	assert.deepEqual(started, [undefined, id, "cancel"]);
 	const refused: unknown[][] = [
-		[{ sender: {}, senderFrame: mainFrame }],
-		[{ sender: contents, senderFrame: { ...mainFrame } }],
-		[{ sender: contents, senderFrame: mainFrame }, id, "extra"],
-		[{ sender: contents, senderFrame: mainFrame }, "not-an-account-id"],
-		[{ sender: contents, senderFrame: mainFrame }, { id }],
-		[{ sender: contents, senderFrame: mainFrame }, 7],
+		[{ sender: {}, senderFrame: mainFrame }, "start"],
+		[{ sender: {}, senderFrame: mainFrame }, "cancel"],
+		[{ sender: contents, senderFrame: { ...mainFrame } }, "start"],
+		[{ sender: contents, senderFrame: mainFrame }],
+		[{ sender: contents, senderFrame: mainFrame }, "openExternal", "https://evil.example"],
+		[{ sender: contents, senderFrame: mainFrame }, "start", id, "extra"],
+		[{ sender: contents, senderFrame: mainFrame }, "start", "not-an-account-id"],
+		[{ sender: contents, senderFrame: mainFrame }, "start", { id }],
+		[{ sender: contents, senderFrame: mainFrame }, "start", 7],
+		[{ sender: contents, senderFrame: mainFrame }, "cancel", id],
 	];
 	for (const [event, ...args] of refused) await assert.rejects(handle(event, ...args), /Untrusted desktop request/);
 	mainFrame.url = `${beta}/settings`;
-	await assert.rejects(handle({ sender: contents, senderFrame: mainFrame }), /Untrusted/, "another origin");
+	await assert.rejects(handle({ sender: contents, senderFrame: mainFrame }, "start"), /Untrusted/, "another origin");
+	await assert.rejects(handle({ sender: contents, senderFrame: mainFrame }, "cancel"), /Untrusted/, "another origin can't cancel either");
 	mainFrame.url = "https://evil.example/";
-	await assert.rejects(handle({ sender: contents, senderFrame: mainFrame }), /Untrusted/);
+	await assert.rejects(handle({ sender: contents, senderFrame: mainFrame }, "start"), /Untrusted/);
 	mainFrame.url = `${alpha}/settings`;
 	open = null;
-	await assert.rejects(handle({ sender: contents, senderFrame: mainFrame }), /Untrusted/, "no open remote window");
-	assert.deepEqual(started, [undefined, id], "nothing refused ever started");
+	await assert.rejects(handle({ sender: contents, senderFrame: mainFrame }, "start"), /Untrusted/, "no open remote window");
+	assert.deepEqual(started, [undefined, id, "cancel"], "nothing refused ever ran");
 });
 
 test("the server's own sign-in is refused while it is removed or updated, and the list has no ChatGPT button", async (t) => {
@@ -1843,10 +1851,10 @@ test("the server's own sign-in is refused while it is removed or updated, and th
 	const handlers = new Map<string, (event: unknown, ...args: unknown[]) => Promise<unknown>>();
 	const ipcMain = { handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => Promise<unknown>) => handlers.set(channel, fn) };
 	let runs = 0;
-	registerChatGPTSignInIPC(ipcMain, { current: () => list.controller.current(), signIn: (accountId?: string) => { runs++; return list.controller.chatgptSignIn(accountId); } });
+	registerChatGPTSignInIPC(ipcMain, { current: () => list.controller.current(), signIn: (accountId?: string) => { runs++; return list.controller.chatgptSignIn(accountId); }, cancel: () => list.controller.chatgptCancel() });
 	await list.controller.launch();
 	const win = list.controller.current()!.win as TestWindow;
-	const handle = () => handlers.get("lh:chatgpt-sign-in")!({ sender: win.webContents, senderFrame: win.webContents.mainFrame });
+	const handle = () => handlers.get("lh:chatgpt-sign-in")!({ sender: win.webContents, senderFrame: win.webContents.mainFrame }, "start");
 	list.updating = beta;
 	assert.deepEqual(await handle(), { error: "Update everything is running for this server. Try again once it finishes." });
 	list.updating = null;
