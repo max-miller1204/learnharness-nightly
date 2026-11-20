@@ -23,4 +23,4 @@ One recipe per user feature. A recipe says how to reach and drive the feature; t
 
 ## Gaps (no recipe yet: write one, run it, then list it above)
 
-Practice sessions, the knowledge graph (view, import), plan view, side chats, settings pages (providers, models, prompts, themes, file access), plugins (install, enable, plugin views and questions), dictation, local file path chips, research and demo jobs, compaction, session search and markdown export, subscription sign-ins (ChatGPT, Copilot, Grok).
+Practice sessions, the knowledge graph (view, import), plan view, side chats, settings pages (providers, models, prompts, themes, file access), plugins (install, enable, plugin views and questions), dictation, local file path chips, research and demo jobs, compaction, session search and markdown export, subscription sign-ins (ChatGPT, Copilot, Grok), the desktop server list (pairing a remote server, Switch server while the open server is down, Remove, Set as default; without a recipe each check builds its own two-HTTPS-server and keyring harness).

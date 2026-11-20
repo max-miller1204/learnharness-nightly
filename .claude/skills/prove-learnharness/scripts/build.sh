@@ -20,7 +20,20 @@ ensure_deps() { # <dir> <log>
 	if [ ! -d "$dir/node_modules" ] || [ "$dir/package-lock.json" -nt "$dir/node_modules/.package-lock.json" ]; then
 		say "[$(basename "$dir")] npm ci + plugins:setup"
 		(cd "$dir" && npm ci --no-audit --no-fund && npm run plugins:setup) >>"$log" 2>&1
+		return
 	fi
+	# A checkout whose root install was done by hand (a fresh clone, `npm ci`)
+	# still lacks the plugins' own dependencies, and next build then fails
+	# on a plugin import (CodeMirror). Install those alone.
+	local lock
+	for lock in "$dir"/plugins/*/package-lock.json; do
+		[ -f "$lock" ] || continue
+		if [ ! -d "$(dirname "$lock")/node_modules" ]; then
+			say "[$(basename "$dir")] plugins:setup ($(basename "$(dirname "$lock")") has no node_modules)"
+			(cd "$dir" && npm run plugins:setup) >>"$log" 2>&1
+			return
+		fi
+	done
 }
 
 next_build() { # <dir> <version> <log> <slot fd> <side>

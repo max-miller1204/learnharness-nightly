@@ -42,6 +42,8 @@ const inst = Object.fromEntries(fs.readFileSync(instPath, "utf8").split("\n").fi
 const SIDE_DIR = path.dirname(instPath);
 const OUT = path.join(SIDE_DIR, "extract-files", label);
 fs.mkdirSync(OUT, { recursive: true });
+import { signIn, signInPage } from "./sign-in.mjs";
+signIn(inst);
 const APP = inst.APP_URL;
 const REPO = path.resolve(import.meta.dirname, "../../../..");
 const require = createRequire(path.join(REPO, "package.json"));
@@ -64,6 +66,7 @@ fs.writeFileSync(path.join(SIDE_DIR, "chrome-extract-files.pid"), String(browser
 let exitCode = 0;
 try {
 	const page = await browser.newPage();
+	await signInPage(page, inst);
 	await page.setViewport({ width: 1280, height: 900 });
 	page.on("console", (m) => { if (m.type() === "error") result.budgets.consoleErrors.push({ page: new URL(page.url() || APP).pathname, text: m.text().slice(0, 300), url: m.location()?.url ?? null }); });
 	page.on("pageerror", (e) => result.budgets.consoleErrors.push({ page: new URL(page.url() || APP).pathname, text: `uncaught: ${e.message.slice(0, 300)}` }));
