@@ -32,6 +32,8 @@ const { isProviderKeyRefusal, providerKeyMissing, ProviderKeyMissingError, subsc
 const { extraction, handleChatInput, handleChatRequest } = await import("../src/server/chat-handler.ts");
 const { connectionRefusal } = await import("../src/server/connection-refusal.ts");
 const { jobStore } = await import("../src/store/jobs.ts");
+const { extractionInFlight } = await import("../src/agent/subagents/extraction.ts");
+const { POST: manualExtract } = await import("../app/api/graph/coverage/extract/route.ts");
 const { catalogProviders, refreshConnectionCatalog } = await import("../src/server/model-catalog.ts");
 const { productionEngineFor } = await import("../src/server/side-chat.ts");
 const { pluginKeyMissing } = await import("../src/server/plugin-model-refusal.ts");
@@ -353,6 +355,26 @@ test("a ChatGPT success a newer refresh superseded clears no outage: the newer r
 	await Promise.all([older, newer]);
 	assert.equal(connectionUnreachable("chatgpt"), false);
 	assert.doesNotThrow(() => piEngineForSpec({ provider: "chatgpt", id: GPT }), "cleared together with the catalog");
+});
+
+test("a second manual extraction while the first waits on its connection check is a 409, as on main", async () => {
+	writeSettings({ version: 1, models: { cheap: { model: { provider: COPILOT, id: COPILOT_MODEL } } } });
+	try {
+		const chatId = chatStore.createChat("manual extraction").id;
+		const extract = () => manualExtract(new Request("http://test/api/graph/coverage/extract", { method: "POST", body: JSON.stringify({ chatId }) }));
+		native = "hold";
+		assert.equal((await extract()).status, 202);
+		await until(() => held.length === 1); // the first run waits on its snapshot check
+		assert.equal((await extract()).status, 409, "the waiting run is in flight");
+		assert.equal(held.length, 1, "the duplicate started no second check");
+		native = "connected";
+		answer(held[0]!);
+		await until(() => !extractionInFlight(chatId));
+		assert.equal((await extract()).status, 202, "once it finishes, a new run may start");
+		await until(() => !extractionInFlight(chatId));
+	} finally {
+		writeSettings({ version: 1 });
+	}
 });
 
 // Last: the desktop connection closes for the rest of this process.

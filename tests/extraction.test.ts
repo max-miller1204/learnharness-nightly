@@ -2587,19 +2587,25 @@ describe("notes import completion and retry reliability", () => {
 		await assert.rejects(createExtractionPipeline({ chatStore, graphStore: ledgers, extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT), connectionRefusal: async () => subscriptionUnreachable("chatgpt") }).importNotes(input), SubscriptionUnreachableError);
 	});
 
-	it("the connection check runs before the source is written: a source deleted while it waits never gets nodes", async () => {
+	it("a refused import still lists its source, as on main: no models configured, a missing key, an outage", async () => {
+		for (const gate of [undefined, () => providerKeyMissing("openai", ["cheap"]), async () => subscriptionUnreachable("chatgpt")]) {
+			const ledgers = memoryLedgers();
+			const models = gate ? { extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT), connectionRefusal: gate } : {};
+			await assert.rejects(createExtractionPipeline({ chatStore, graphStore: ledgers, ...models }).importNotes(input));
+			assert.deepEqual(ledgers.readSources().map((source) => source.filePath), [input.filePath]);
+			assert.equal(ledgers.readNodes().length, 0);
+		}
+	});
+
+	it("a new import whose source is deleted while the connection check waits writes no nodes", async () => {
 		const ledgers = memoryLedgers();
-		const sourcesWhileChecking: number[] = [];
-		let reachable = false;
 		const pipeline = createExtractionPipeline({
 			chatStore, graphStore: ledgers, extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT),
-			connectionRefusal: async () => { sourcesWhileChecking.push(ledgers.readSources().length); await new Promise((resolve) => setTimeout(resolve, 1)); return reachable ? null : subscriptionUnreachable("chatgpt"); },
+			connectionRefusal: async () => { ledgers.deleteSources(new Set(ledgers.readSources().map((source) => source.id))); return null; },
 		});
-		await assert.rejects(pipeline.importNotes(input), SubscriptionUnreachableError);
-		assert.equal(ledgers.readSources().length, 0, "an import the outage deferred writes no source");
-		reachable = true;
-		assert.deepEqual(await pipeline.importNotes(input), { nodes: 1, chains: 0 });
-		assert.deepEqual(sourcesWhileChecking, [0, 0, 0], "no source exists while any check waits");
+		await assert.rejects(pipeline.importNotes(input), incomplete("aborted", 0));
+		assert.equal(ledgers.readSources().length, 0, "the deletion wins");
+		assert.equal(ledgers.readNodes().length, 0);
 	});
 
 	it("a re-import whose source is deleted while the connection check waits stops instead of bringing it back", async () => {

@@ -807,6 +807,13 @@ export function extractionStatuses(): RunningExtraction[] {
 	return [...runs().running.values()].sort((a, b) => a.startedAt - b.startedAt);
 }
 
+/** Whether a run for this chat or notes source holds its single-flight
+ *  slot. It does from its first line, before its registry row exists, so a
+ *  run waiting on its connection check is in flight too. */
+export function extractionInFlight(id: string): boolean {
+	return runs().inFlight.has(id);
+}
+
 /** True cancellation of the in-flight run for a chat (the dock's abort
  *  button): the pending model call receives the signal — the provider
  *  cancels the request, spend stops — and the run ends like a failure:
@@ -1486,6 +1493,20 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		const t0 = performance.now();
 		const mergedStats: EmissionStats = { nodes: 0, chains: 0 };
 		try {
+			// BYOK per-need gate (owner, 2026-09-22) + key presence
+			// (2026-09-25): same refusal as the chat front door: no
+			// extractor/auditor engines, or a stage key gone, no run. The source
+			// is already listed, so a refused import still shows it. The check
+			// may await, and deletion is blocked only once the run shows in the
+			// registry, so a deletion during the wait wins: the import stops
+			// instead of writing nodes for a source that is gone.
+			const ready = refuseIfStagesUnready(input.image !== undefined);
+			if (ready) {
+				await ready;
+				if (!graphStore.readSources().some((source) => source.id === id)) {
+					throw new NotesImportError("aborted", mergedStats, "This source was deleted while the import waited to start. Import it again to add it back.");
+				}
+			}
 			// CHUNKED like the chat path (owner, 2026-09-28): each chunk is a
 			// standalone extract → audit → merge, so no single call carries a
 			// whole large file. Abort mid-run keeps earlier chunks merged
@@ -1599,21 +1620,6 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		if (inFlight.has(id)) throw new NotesImportError("busy", { nodes: 0, chains: 0 }, "This file is already being imported. Try again when it finishes.");
 		inFlight.add(id);
 		try {
-			// BYOK per-need gate (owner, 2026-09-22) + key presence
-			// (2026-09-25): same refusal as the chat front door: no
-			// extractor/auditor engines, or a stage key gone, no run. Its check
-			// may await, and deletion is blocked only once the run shows in the
-			// registry, so a deletion during the wait wins: a new source is
-			// written only after the gate, and a re-import of a source deleted
-			// meanwhile stops instead of bringing it back.
-			const existed = graphStore.readSources().some((source) => source.id === id);
-			const ready = refuseIfStagesUnready(input.image !== undefined);
-			if (ready) {
-				await ready;
-				if (existed && !graphStore.readSources().some((source) => source.id === id)) {
-					throw new NotesImportError("aborted", { nodes: 0, chains: 0 }, "This source was deleted while the import waited to start. Import it again to add it back.");
-				}
-			}
 			const importedAt = new Date().toISOString();
 			graphStore.upsertSource({ id, filePath: input.filePath, importedAt });
 			return await runNotesExtraction({ id, ...input, importedAt });
