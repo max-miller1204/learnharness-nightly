@@ -37,7 +37,7 @@ function isShell(value) {
 }
 
 async function createServerList({
-	app, BrowserWindow, WebContentsView, ipcMain, session, shell, safeStorage,
+	app, BrowserWindow, WebContentsView, ipcMain, session, shell, safeStorage, dialog,
 	startLocal, stopLocal, createLocalWindow, setLocalMenu, themeMode = () => "dark", platform = process.platform,
 }) {
 	const file = path.join(app.getPath("userData"), "servers.json");
@@ -297,6 +297,25 @@ async function createServerList({
 			publish();
 		}
 	}
+	// T3's "Remove from this device…" (ConnectionsSettings.tsx): confirm, then forget the
+	// pairing. Removing the open server closes its window, as T3 disconnects a removed one.
+	async function remove(server) {
+		const { response } = await dialog.showMessageBox(controls, {
+			type: "warning", noLink: true, buttons: ["Cancel", "Confirm"], defaultId: 0, cancelId: 0,
+			message: `Remove ${server} from this device?`,
+			detail: "This forgets its pairing and saved credential here. Pair again to add it back.",
+		});
+		if (response !== 1 || busy || closing || store.damaged || !store.origins.includes(server)) return;
+		busy = true;
+		publish();
+		try {
+			await store.remove(server);
+			if (active?.server === server) destroyContent();
+			if (problem?.server === server) problem = null;
+			notice = "";
+		} catch { notice = "Couldn’t remove the saved server."; }
+		finally { busy = false; publish(); }
+	}
 	async function signIn() {
 		if (busy || login || !active?.token || !window) return;
 		const selection = active;
@@ -353,12 +372,19 @@ async function createServerList({
 			try { await store.saveDefault(value); }
 			catch { notice = "Couldn’t save the launch default."; }
 			finally { busy = false; publish(); }
+		} else if (action === "remove" && !store.damaged && store.origins.includes(value)) {
+			await remove(value);
 		} else if (action === "sign-in") {
 			void signIn();
 		}
 	});
 	return {
-		show,
+		/** `check`: Switch server… also checks the open server, so one that went away says so. */
+		show({ check = false } = {}) {
+			const panel = show();
+			if (check && window && active?.token && !busy) void recheck(window, active, false);
+			return panel;
+		},
 		/** `server`: the one Update everything restarted from, reopened once instead of the default. */
 		async launch({ server } = {}) {
 			if (ghosting) return this.reopen();

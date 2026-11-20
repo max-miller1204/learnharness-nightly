@@ -844,7 +844,7 @@ function installMenu({ local = true } = {}) {
 				// Connected to a server there is no local Settings page: native dialogs instead,
 				// also the way out when this app is too old to open the server (owner, 2026-11-18).
 				{ label: "Check for Updates…", click: () => (local ? checkForUpdatesFromMenu() : updateActions.checkNatively()) },
-				...(serverList ? [{ label: "Switch server…", click: () => serverList.show() }] : []),
+				...(serverList ? [{ label: "Switch server…", click: () => serverList.show({ check: true }) }] : []),
 				{ type: "separator" },
 				{ role: "hide" },
 				{ role: "hideOthers" },
@@ -1068,7 +1068,7 @@ async function main() {
 			callback({ requestHeaders: desktopAPIHeaders(details, localOrigin, desktopSessionToken, [...trustedAppWindows]) });
 		});
 		serverList = await createServerList({
-			app, BrowserWindow, WebContentsView, ipcMain, session, shell, safeStorage,
+			app, BrowserWindow, WebContentsView, ipcMain, session, shell, safeStorage, dialog,
 			startLocal: startLocalServer, stopLocal: killServer, createLocalWindow: () => createWindow(),
 			setLocalMenu: (enabled) => installMenu({ local: enabled }), themeMode: () => appearance.mode,
 		});

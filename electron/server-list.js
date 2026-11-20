@@ -59,6 +59,18 @@ function render() {
 			button.onclick = () => void (server === active ? api.setDefault(server) : api.connect(server));
 			item.append(button);
 		}
+		if (server !== "local" && !damaged) {
+			const remove = document.createElement("button");
+			remove.type = "button";
+			remove.textContent = "Remove…";
+			remove.setAttribute("aria-label", `Remove ${server} from this device`);
+			remove.onclick = async () => {
+				await api.remove(server);
+				// Its row is gone: keep the focus in the list for the keyboard.
+				if (!document.activeElement || document.activeElement === document.body) $("add").focus();
+			};
+			item.append(remove);
+		}
 		return item;
 	}));
 	$("add").hidden = damaged;

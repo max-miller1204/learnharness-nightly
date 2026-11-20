@@ -77,6 +77,14 @@ async function openServerList(file, safeStorage, platform = process.platform) {
 			const servers = state.servers.filter((saved) => saved.origin !== origin).concat({ origin, credential });
 			await save({ defaultServer: state.defaultServer, servers });
 		},
+		/** Forgets a saved server and its credential. The launch default falls back to none. */
+		async remove(origin) {
+			if (!this.origins.includes(origin)) return;
+			await save({
+				defaultServer: state.defaultServer === origin ? null : state.defaultServer,
+				servers: state.servers.filter((saved) => saved.origin !== origin),
+			});
+		},
 		async readToken(origin) {
 			const saved = state.servers.find((entry) => entry.origin === origin);
 			if (!saved) throw new ServerProblem("pair", "Pair this desktop with the server first.");

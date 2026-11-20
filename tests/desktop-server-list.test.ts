@@ -1187,3 +1187,153 @@ test("Update everything: the relaunch reopens its server once, and a covered res
 	await controller.endUpdate(beta, null);
 	assert.equal(TestWindow.all.length, windows, "Later doesn't switch back");
 });
+
+test("Remove forgets a saved server and its credential with an ordinary write, and old lists stay readable", async (t) => {
+	const directory = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-remove-store-"));
+	t.after(() => fs.rm(directory, { recursive: true, force: true }));
+	const file = path.join(directory, "servers.json");
+	// A list as earlier versions wrote it.
+	const credential = (origin: string, token: string) => fakeSafeStorage.encryptString(JSON.stringify({ origin, token })).toString("base64");
+	await fs.writeFile(file, JSON.stringify({
+		defaultServer: beta, version: 1,
+		servers: [{ origin: alpha, credential: credential(alpha, "alpha-secret") }, { origin: beta, credential: credential(beta, "beta-secret") }],
+	}), { mode: 0o600 });
+	const store = await openServerList(file, fakeSafeStorage);
+	assert.equal(store.damaged, false);
+	assert.deepEqual(store.origins, [alpha, beta]);
+	await store.remove(beta);
+	assert.deepEqual(store.origins, [alpha]);
+	assert.equal(store.defaultServer, null, "removing the default leaves no launch default");
+	await store.remove("https://unknown.example.test");
+	const reopened = await openServerList(file, fakeSafeStorage);
+	assert.equal(reopened.damaged, false);
+	assert.deepEqual(reopened.origins, [alpha]);
+	assert.equal(await reopened.readToken(alpha), "alpha-secret");
+	await assert.rejects(reopened.readToken(beta), { kind: "pair" });
+	assert.deepEqual(Object.keys(JSON.parse(await fs.readFile(file, "utf8"))).sort(), ["defaultServer", "servers", "version"]);
+	await reopened.saveDefault("local");
+	await reopened.remove(alpha);
+	assert.equal(reopened.defaultServer, "local", "another default stays");
+});
+
+test("Remove asks first, closes the open server it forgets, and Switch server says when the open server is gone", async (t) => {
+	const directory = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-remove-"));
+	const originalFetch = globalThis.fetch;
+	t.after(async () => { globalThis.fetch = originalFetch; await fs.rm(directory, { recursive: true, force: true }); });
+	const saved = await openServerList(path.join(directory, "servers.json"), fakeSafeStorage);
+	await saved.savePairing(alpha, "alpha-secret");
+	await saved.savePairing(beta, "beta-secret");
+	await saved.saveDefault(beta);
+	let betaGone = false;
+	globalThis.fetch = async (input) => {
+		const url = new URL(String(input));
+		if (url.origin === beta && betaGone) throw new TypeError("fetch failed", { cause: Object.assign(new Error("refused"), { code: "ECONNREFUSED" }) });
+		if (url.pathname === PROTOCOL_ROUTES.serverInfo) return Response.json({ name: "Test server", protocolVersion: CLIENT_PROTOCOL_VERSION });
+		if (url.pathname === PROTOCOL_ROUTES.session) return Response.json({ authenticated: true });
+		throw new Error("Unexpected request " + url.pathname);
+	};
+	const asked: { parent: unknown; options: { message: string; buttons: string[]; cancelId: number } }[] = [];
+	let answer = 0;
+	type FakeEvent = { sender: TestWindow["webContents"]; senderFrame: { url: string } };
+	let handler!: (event: FakeEvent, action: string, payload?: unknown) => Promise<unknown>;
+	const controller = await createServerList({
+		app: { getPath: () => directory }, BrowserWindow: TestWindow, WebContentsView: TestView, safeStorage: fakeSafeStorage,
+		ipcMain: { handle: (_channel: string, callback: typeof handler) => { handler = callback; } },
+		session: { fromPartition: () => new TestSession() },
+		dialog: { showMessageBox: async (parent: unknown, options: (typeof asked)[number]["options"]) => { asked.push({ parent, options }); return { response: answer }; } },
+		startLocal: async () => "http://localhost:3000", stopLocal: async () => {},
+		createLocalWindow: () => { const win = new TestWindow(); return { win, load: (url: string) => win.loadURL(url) }; },
+		setLocalMenu() {},
+	});
+	const panel = () => controller.show() as TestWindow;
+	const send = (action: string, value?: unknown) => {
+		const win = panel();
+		return handler({ sender: win.webContents, senderFrame: win.webContents.mainFrame }, action, value);
+	};
+	const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+	await controller.launch();
+	const open = controller.current()!.win as TestWindow;
+	assert.equal(open.url, beta);
+
+	// Switch server… on an open server that went away: the list says so and offers Retry.
+	betaGone = true;
+	controller.show();
+	assert.equal(open.destroyed, false, "plain show() leaves the open server alone");
+	const list = controller.show({ check: true }) as TestWindow;
+	await settle();
+	assert.equal(open.destroyed, true);
+	assert.deepEqual(list.snapshot?.problem, { server: beta, kind: "retry", message: "Couldn’t reach the LearnHarness server. Check the address and connection, then retry." });
+
+	// Cancel keeps it; T3's destructive confirm asks first, with Cancel as the default.
+	await send("remove", beta);
+	assert.equal(asked.length, 1);
+	assert.equal(asked[0]!.parent, list);
+	assert.equal(asked[0]!.options.message, `Remove ${beta} from this device?`);
+	assert.deepEqual(asked[0]!.options.buttons, ["Cancel", "Confirm"]);
+	assert.equal(asked[0]!.options.cancelId, 0);
+	assert.deepEqual((await send("state") as { servers: string[] }).servers, [alpha, beta]);
+
+	answer = 1;
+	await send("remove", beta);
+	const state = await send("state") as { servers: string[]; defaultServer: string | null; problem: unknown; busy: boolean };
+	assert.deepEqual(state.servers, [alpha]);
+	assert.equal(state.defaultServer, null);
+	assert.equal(state.problem, null, "the removed server's problem goes with it");
+	assert.equal(state.busy, false);
+
+	// The open server can be removed too: its window closes.
+	betaGone = false;
+	await send("connect", alpha);
+	const alphaWindow = controller.current()!.win as TestWindow;
+	await send("remove", alpha);
+	assert.equal(alphaWindow.destroyed, true);
+	assert.equal(controller.current(), null);
+	assert.deepEqual((await send("state") as { servers: string[]; active: string | null }).servers, []);
+
+	// This computer and unknown origins are never removed or asked about.
+	const before = asked.length;
+	await send("remove", "local");
+	await send("remove", "https://unknown.example.test");
+	assert.equal(asked.length, before);
+	const reopened = await openServerList(path.join(directory, "servers.json"), fakeSafeStorage);
+	assert.deepEqual(reopened.origins, []);
+	assert.equal(reopened.damaged, false);
+});
+
+test("the list offers Remove… for each saved server but not This computer, and hides an empty recovery box", async () => {
+	const shell = path.join(import.meta.dirname, "../electron");
+	assert.match(await fs.readFile(path.join(shell, "server-list.css"), "utf8"), /\[hidden\] \{ display: none !important; \}/, ".alert's display can't show a hidden box");
+	const { window, document } = parseHTML(await fs.readFile(path.join(shell, "server-list.html"), "utf8"));
+	const sent: unknown[][] = [];
+	let listener!: (state: object) => void;
+	const preview = "https://box.tail.ts.net:8444";
+	const base = { servers: [beta, preview], defaultServer: beta, active: beta, busy: false, problem: null, notice: "", signingIn: false, damaged: false };
+	const servers = {
+		state: async () => base,
+		parseLink: async () => null,
+		connect: async (server: string) => { sent.push(["connect", server]); },
+		remove: async (server: string) => { sent.push(["remove", server]); listener({ ...base, servers: [beta] }); },
+		onChange: (next: typeof listener) => { listener = next; },
+	};
+	runInNewContext(await fs.readFile(path.join(shell, "server-list.js"), "utf8"), { window: { servers }, document });
+	const $ = (id: string) => document.getElementById(id) as HTMLElement;
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal($("recovery").hidden, true, "no problem, no recovery box");
+	const rows = () => [...document.querySelectorAll("#servers li")];
+	const removeButtons = () => [...document.querySelectorAll("#servers button")].filter((button) => button.textContent === "Remove…") as HTMLButtonElement[];
+	assert.equal(rows().length, 3);
+	assert.deepEqual(removeButtons().map((button) => button.getAttribute("aria-label")), [`Remove ${beta} from this device`, `Remove ${preview} from this device`]);
+	assert.equal(rows()[0]!.querySelectorAll("button").length, 1, "This computer has no Remove");
+	removeButtons()[1]!.focus();
+	await removeButtons()[1]!.onclick!(new window.Event("click") as PointerEvent);
+	assert.deepEqual(sent, [["remove", preview]]);
+	assert.equal(rows().length, 2);
+	listener({ ...base, problem: { server: preview, kind: "retry", message: "Couldn’t reach the LearnHarness server. Check the address and connection, then retry." } });
+	assert.equal($("recovery").hidden, false);
+	assert.equal($("problem").textContent, "Couldn’t reach the LearnHarness server. Check the address and connection, then retry.");
+	assert.equal($("recover").textContent, "Retry");
+	assert.equal($("recover").hidden, false);
+	listener({ ...base, damaged: true, servers: [] });
+	assert.equal(removeButtons().length, 0);
+});

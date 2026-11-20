@@ -30,6 +30,8 @@
 	--shadow: 0 16px 40px rgb(0 0 0 / .08);
 }
 * { box-sizing: border-box; }
+/* Rules below that set display (.alert) would otherwise show hidden elements. */
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--text); }
 main { min-height: 100vh; display: flex; align-items: safe center; justify-content: center; padding: 32px 16px; }
 .card {
