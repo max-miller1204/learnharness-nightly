@@ -227,7 +227,8 @@ function activate(ctx) {
   async function resolveModel(settings) {
     const catalog = await ctx.inference.catalog(); alive();
     const pin = settings.modelOverride ? { model: settings.modelOverride } : catalog.slots?.cheap;
-    if (!pin?.model) fail('Configure the cheap model slot or choose a Flashcards model override.');
+    // The host answers 422 models_not_configured, the same setup refusal as a turn.
+    if (!pin?.model) throw Object.assign(new Error('Configure the cheap model slot or choose a Flashcards model override.'), { code: 'models_not_configured', missing: ['cheap'] });
     const entry = catalog.models.find(m => m.provider === pin.model.provider && m.id === pin.model.id);
     // The host answers 422 model_unavailable, or asks for the key when only the key is missing.
     if (!entry) throw Object.assign(new Error(`The model ${pin.model.provider}/${pin.model.id} is no longer available. Pick another model in Settings${settings.modelOverride ? ' or as the Flashcards model' : ''}.`),

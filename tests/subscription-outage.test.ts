@@ -27,7 +27,7 @@ const { piModels } = await import("../src/agent/models.ts");
 const { connectionUnreachable } = await import("../src/agent/subscription-connections.ts");
 const { providerKeyMissing, subscriptionUnreachable } = await import("../src/core/settings.ts");
 const { handleChatInput, handleChatRequest } = await import("../src/server/chat-handler.ts");
-const { refreshConnectionCatalog } = await import("../src/server/model-catalog.ts");
+const { catalogProviders, refreshConnectionCatalog } = await import("../src/server/model-catalog.ts");
 const { productionEngineFor } = await import("../src/server/side-chat.ts");
 const { pluginKeyMissing } = await import("../src/server/plugin-model-refusal.ts");
 const { createPluginTransport } = await import("../src/server/plugin-transport.ts");
@@ -140,8 +140,11 @@ test("a failed native snapshot is a retryable 503 on every path; a disconnected 
 	await expect(sideChat(COPILOT, COPILOT_MODEL), 503, unreachable);
 	await expect(plugin(COPILOT, COPILOT_MODEL), 503, unreachable);
 
+	assert.equal(catalogProviders().find((p) => p.id === COPILOT)?.unreachable, true, "the web catalog marks the outage, so the web sends instead of opening setup");
+
 	native = "disconnected";
 	await expect(send(chatId), 422, providerKeyMissing(COPILOT, ["strong"]));
+	assert.equal(catalogProviders().find((p) => p.id === COPILOT)?.unreachable, undefined, "a real disconnect is setup again");
 	await expect(startWithFile(COPILOT, COPILOT_MODEL), 422, providerKeyMissing(COPILOT, ["strong"]));
 	await expect(sideChat(COPILOT, COPILOT_MODEL), 422, providerKeyMissing(COPILOT, ["strong"]));
 	await expect(plugin(COPILOT, COPILOT_MODEL), 422, providerKeyMissing(COPILOT, []));
@@ -157,6 +160,7 @@ test("a ChatGPT catalogError reply is a retryable 503 on every path", async () =
 	await expect(startWithFile("chatgpt", GPT), 503, unreachable);
 	await expect(sideChat("chatgpt", GPT), 503, unreachable);
 	await expect(plugin("chatgpt", GPT), 503, unreachable);
+	assert.equal(catalogProviders().find((p) => p.id === "chatgpt")?.unreachable, true);
 
 	catalogError = null;
 	assert.equal(await sideChat("chatgpt", GPT), null, "the catalog recovers with no settings change");
@@ -199,6 +203,7 @@ test("a lost desktop connection is the 422 setup refusal, not a lasting outage",
 	process.emit("disconnect");
 	assert.equal(connectionUnreachable(COPILOT), false);
 	assert.equal(connectionUnreachable("chatgpt"), false);
+	assert.ok(catalogProviders().every((p) => !p.unreachable), "a lost runtime is setup, not an outage");
 	await expect(send(chatId), 422, providerKeyMissing(COPILOT, ["strong"]));
 	await expect(sideChat(COPILOT, COPILOT_MODEL), 422, providerKeyMissing(COPILOT, ["strong"]));
 });

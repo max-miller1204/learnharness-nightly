@@ -38,6 +38,18 @@ export function hasProviderKey(
 	);
 }
 
+/** A provider row that can run, or might: a present key or connection, or a
+ *  subscription that is only unreachable right now (its outage is the
+ *  server's 503 to report, not a setup step). */
+export function providerUsable(p: ModelCatalogResponse["providers"][number]): boolean {
+	return p.keyPresent || p.unreachable === true;
+}
+
+/** The pre-send zero-keys truth: a loaded catalog with no usable provider. */
+export function noUsableProvider(catalog: ModelCatalogResponse | undefined): boolean {
+	return !!catalog && !catalog.providers.some(providerUsable);
+}
+
 /** Completeness is saved identity, not current provider availability. */
 export function savedSlotsConfigured(slots: ModelCatalogResponse["slots"] | undefined): boolean {
 	return MODEL_SLOTS.every((slot) => !!slots?.[slot]?.model);
@@ -50,14 +62,15 @@ export function useModelSetup(initialConfigured: boolean) {
 	const [lastConfigured, setLastConfigured] = useState(initialConfigured);
 	const configured = catalog ? savedSlotsConfigured(catalog.slots) : lastConfigured;
 	useEffect(() => { if (catalog) setLastConfigured(savedSlotsConfigured(catalog.slots)); }, [catalog]);
-	return { catalog, configured, zeroKeys: catalog ? !catalog.providers.some((p) => p.keyPresent) : false };
+	return { catalog, configured, zeroKeys: noUsableProvider(catalog) };
 }
 
 /** A known unavailable route needs an explicit replacement, never an
  * automatic provider/model substitution. Unknown metadata defers to the
  * server's admission gate instead of declaring a route disconnected. */
 export function selectedModelUnavailable(catalog: ModelCatalogResponse | undefined, selected: string | undefined): boolean {
-	return !!catalog && !!selected && !catalog.models.some((m) => `${m.provider}:${m.id}` === selected);
+	if (!catalog || !selected || catalog.providers.some((p) => p.unreachable && selected.startsWith(`${p.id}:`))) return false;
+	return !catalog.models.some((m) => `${m.provider}:${m.id}` === selected);
 }
 
 /** Reuse the ordinary control (also opened by the existing keyboard action). */
@@ -72,7 +85,7 @@ export function openModelPicker(): void {
  *  leans on). Re-reads on the keys signal. */
 export function useZeroKeys(): boolean {
 	const { catalog } = useModelCatalog();
-	return catalog ? !catalog.providers.some((provider) => provider.keyPresent) : false;
+	return noUsableProvider(catalog);
 }
 
 /** The pill itself — the models CTA's chrome and placement, the keys
@@ -102,7 +115,7 @@ export function ZeroKeysPill({ onOpen, inline = false }: { onOpen: () => void; i
 export function strongKeyless(catalog: ModelCatalogResponse | undefined): boolean {
 	const strong = catalog?.slots.strong;
 	if (!strong) return false;
-	return !catalog.providers.some((p) => p.id === strong.model.provider && p.keyPresent);
+	return !catalog.providers.some((p) => p.id === strong.model.provider && providerUsable(p));
 }
 
 /** The strong-slot keyless truth for the PRE-SEND guard (home / /chat/new):

@@ -72,4 +72,8 @@ export interface CatalogProvider {
 	/** Host credential/connection availability flag, not a remote health check.
 	 * Custom keyless connections can be available without an API key. */
 	keyPresent: boolean;
+	/** A subscription whose latest status or catalog check failed while its
+	 * runtime is still connected: availability is unknown, so clients defer to
+	 * the server's admission gate instead of opening setup. */
+	unreachable?: boolean;
 }

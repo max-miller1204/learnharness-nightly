@@ -1,7 +1,7 @@
 import { isPluginHostError } from "./plugin-host.ts";
 import { authRefusal } from "./auth.ts";
 import { MODEL_UNAVAILABLE } from "../core/model-unavailable.ts";
-import { SUBSCRIPTION_UNREACHABLE_CODE } from "../core/settings.ts";
+import { MODEL_SLOTS, MODELS_NOT_CONFIGURED_CODE, modelsNotConfigured, SUBSCRIPTION_UNREACHABLE_CODE, type ModelSlotName } from "../core/settings.ts";
 import type { PluginFrontendContext, PluginInfo } from "../core/plugins.ts";
 
 /** Thin HTTP adapter, separately injectable so its tests never boot plugins. */
@@ -26,11 +26,16 @@ async function objectBody(request: Request): Promise<Record<string, unknown>> {
  * with code "model_unavailable" and that `model`. The host answers 422 with
  * the message, or its key-missing envelope when the model still exists and
  * only the provider key is gone, or 503 when a subscription's status check
- * just failed. */
+ * just failed. One refused because a slot it needs is unset throws code
+ * "models_not_configured" with the `missing` slots, and the host answers 422
+ * with the same setup envelope as a turn. */
 type KeyMissing = (provider: string, id: string) => object | null | Promise<object | null>;
 export function createPluginTransport(deps: { getHost(): Promise<PluginTransportHost>; directory: string; keyMissing?: KeyMissing }) {
 	const modelRefusal = async (error: unknown): Promise<Response | undefined> => {
-		const refusal = error as { code?: unknown; message?: unknown; model?: { provider?: unknown; id?: unknown } } | null;
+		const refusal = error as { code?: unknown; message?: unknown; model?: { provider?: unknown; id?: unknown }; missing?: unknown } | null;
+		if (refusal && typeof refusal === "object" && refusal.code === MODELS_NOT_CONFIGURED_CODE && Array.isArray(refusal.missing)) {
+			return json(modelsNotConfigured(MODEL_SLOTS.filter((slot: ModelSlotName) => (refusal.missing as unknown[]).includes(slot))), 422);
+		}
 		if (!refusal || typeof refusal !== "object" || refusal.code !== MODEL_UNAVAILABLE || typeof refusal.message !== "string") return undefined;
 		const model = refusal.model;
 		const keyMissing = typeof model?.provider === "string" && typeof model.id === "string" ? await deps.keyMissing?.(model.provider, model.id) : null;

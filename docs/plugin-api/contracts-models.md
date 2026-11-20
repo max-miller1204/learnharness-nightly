@@ -74,6 +74,7 @@ export interface CatalogProvider {
     id: string;
     envVar: string;
     keyPresent: boolean;
+    unreachable?: boolean;
 }
 ```
 
@@ -82,6 +83,7 @@ export interface CatalogProvider {
 - [id](#catalogprovider-id)
 - [envVar](#catalogprovider-envvar)
 - [keyPresent](#catalogprovider-keypresent)
+- [unreachable](#catalogprovider-unreachable)
 
 ### CatalogProvider id
 
@@ -104,6 +106,16 @@ Custom keyless connections can be available without an API key.
 
 ```ts
 keyPresent: boolean;
+```
+
+### CatalogProvider unreachable
+
+A subscription whose latest status or catalog check failed while its
+runtime is still connected: availability is unknown, so clients defer to
+the server's admission gate instead of opening setup.
+
+```ts
+unreachable?: boolean;
 ```
 
 ## ModelCatalogEntry
