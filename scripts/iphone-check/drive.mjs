@@ -2,8 +2,14 @@
 /**
  * drive.mjs: the CI iPhone job's driver (docs/specs/ios-simulator-ci.md).
  *
- *   node scripts/iphone-check/drive.mjs --udid <sim> --bundle <id> --origin https://127.0.0.1:<port>
- *     --instance <instance.env> --out <dir> --axe <path> --chrome <path> --metro-log <file>
+ *   node scripts/iphone-check/drive.mjs --phase web-before|phone|web-after --udid <sim> --bundle <id>
+ *     --origin https://127.0.0.1:<port> --instance <instance.env> --out <dir> --axe <path> --chrome <path>
+ *     --metro-log <file>
+ *
+ * The job runs the three phases in turn, so Chrome never runs beside the
+ * booted simulator: web-before shoots the web's screens while the quiz waits,
+ * phone drives the app and answers the quiz, and web-after shoots the
+ * answered quiz on the web and puts every iPhone and web picture side by side.
  *
  * Pairs the Debug simulator app with the throwaway server through the Pair
  * screen with real taps and typing (AXe), then screenshots the Pair screen,
@@ -17,7 +23,7 @@
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import puppeteer from "puppeteer-core";
@@ -36,6 +42,7 @@ const OUT = path.resolve(arg("out"));
 const AXE = arg("axe");
 const CHROME = arg("chrome");
 const METRO_LOG = arg("metro-log");
+const PHASE = arg("phase");
 const inst = Object.fromEntries(readFileSync(arg("instance"), "utf8").split("\n").filter((line) => line.includes("="))
 	.map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1).replace(/^"|"$/g, "")]));
 
@@ -394,6 +401,13 @@ async function webShots(browser, screens) {
 const SCREENS = ["pair", "sessions", "lesson", "quiz-waiting", "quiz-answered"];
 async function sideBySide(browser) {
 	mkdirSync(path.join(OUT, "pairs"), { recursive: true });
+	// The pictures of every phase, from disk: <screen>-<mode>[-<page>].png.
+	shots.length = 0;
+	for (const side of ["iphone", "web"]) {
+		const named = readdirSync(path.join(OUT, side)).map((name) => ({ name, m: /^(.+)-(light|dark)(?:-(\d+))?\.png$/.exec(name) })).filter(({ m }) => m);
+		named.sort((a, b) => Number(a.m[3] ?? 0) - Number(b.m[3] ?? 0));
+		for (const { name, m } of named) shots.push({ screen: m[1], mode: m[2], side, file: path.join(OUT, side, name) });
+	}
 	const rows = [];
 	for (const screen of SCREENS) {
 		for (const { mode } of MODES) {
@@ -437,19 +451,25 @@ async function withBrowser(work) {
 }
 
 async function main() {
-	await withBrowser((browser) => webShots(browser, [
-		{ screen: "pair", route: "/pair", text: "Pair", signedOut: true },
-		{ screen: "sessions", route: "/", text: QUIZ.title },
-		{ screen: "lesson", route: `/chat/${LESSON.id}`, text: LESSON.title },
-		{ screen: "quiz-waiting", route: `/chat/${QUIZ.id}`, text: "None of these" },
-	]));
-	await phone();
-	await withBrowser(async (browser) => {
-		// The answered card lists both picked answers before the scripted reply.
-		await webShots(browser, [{ screen: "quiz-answered", route: `/chat/${QUIZ.id}`, text: "The first pair fits",
-			shows: [/Pick every pair[^]*?Train:[^]*?test:[^]*?0\.20[^]*?0\.10[^]*?The first pair fits/] }]);
-		await sideBySide(browser);
-	});
+	if (PHASE === "web-before") {
+		await withBrowser((browser) => webShots(browser, [
+			{ screen: "pair", route: "/pair", text: "Pair", signedOut: true },
+			{ screen: "sessions", route: "/", text: QUIZ.title },
+			{ screen: "lesson", route: `/chat/${LESSON.id}`, text: LESSON.title },
+			{ screen: "quiz-waiting", route: `/chat/${QUIZ.id}`, text: "None of these" },
+		]));
+	} else if (PHASE === "phone") {
+		await phone();
+	} else if (PHASE === "web-after") {
+		await withBrowser(async (browser) => {
+			// The answered card lists both picked answers before the scripted reply.
+			await webShots(browser, [{ screen: "quiz-answered", route: `/chat/${QUIZ.id}`, text: "The first pair fits",
+				shows: [/Pick every pair[^]*?Train:[^]*?test:[^]*?0\.20[^]*?0\.10[^]*?The first pair fits/] }]);
+			await sideBySide(browser);
+		});
+	} else {
+		throw new Error(`unknown --phase ${PHASE}`);
+	}
 }
 
 async function readable() {
@@ -582,7 +602,7 @@ async function phone() {
 	await phonePages("quiz-answered", "dark", answered, { from: "bottom" });
 }
 
-main().then(() => log(`done: ${shots.length} screenshots in ${OUT}`), (error) => {
+main().then(() => log(`${PHASE} done: ${shots.length} screenshots in ${OUT}`), (error) => {
 	const escaped = (text) => text.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
 	console.error(error instanceof Failure ? `::error title=iPhone check::${escaped(error.message)}` : error);
 	process.exit(1);

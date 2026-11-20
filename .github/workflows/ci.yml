@@ -348,12 +348,10 @@ jobs:
           key: pods-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/mobile/package-lock.json') }}
       # The prove scripts' fake-model instance, with the lesson and quiz
       # fixtures in its throwaway data folder, behind a throwaway CA that only
-      # this simulator trusts.
-      - name: Start the server, the simulator and Metro
+      # the simulator trusts.
+      - name: Start the server
         run: |
           set -euo pipefail
-          xcrun simctl boot "$UDID"
-          xcrun simctl bootstatus "$UDID" -b
           mkdir -p "$RUN/head/data/chats" "$RUN/head/data/jobs"
           cp tests/fixtures/mobile-lesson/chat_*.json tests/fixtures/mobile-quiz/chat_*.json "$RUN/head/data/chats/"
           cp tests/fixtures/mobile-lesson/job_*.json "$RUN/head/data/jobs/"
@@ -365,6 +363,16 @@ jobs:
           nohup node scripts/iphone-check/tls-front.mjs "$port" "$APP_PORT" "$RUNNER_TEMP/tls/cert.pem" "$RUNNER_TEMP/tls/key.pem" > "$RUN/tls-front.log" 2>&1 &
           echo "ORIGIN=https://127.0.0.1:$port" >> "$GITHUB_ENV"
           curl -fsS --cacert "$RUNNER_TEMP/tls/ca.pem" --retry 10 --retry-connrefused --retry-delay 1 "https://127.0.0.1:$port/api/health" > /dev/null
+          echo "DRIVE=$NODE26_BIN/node scripts/iphone-check/drive.mjs --udid $UDID --bundle com.maxmiller.learnharness.nightly --origin https://127.0.0.1:$port --instance $INST --out $SHOTS --axe $RUNNER_TEMP/axe/axe --metro-log $RUNNER_TEMP/metro.log" >> "$GITHUB_ENV"
+      # Chrome and the booted simulator never run together: beside it, Chrome
+      # stalls at launch on a busy runner.
+      - name: Shoot the web before the answer
+        run: $DRIVE --chrome "$PROVE_CHROME" --phase web-before
+      - name: Start the simulator and Metro
+        run: |
+          set -euo pipefail
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
           xcrun simctl keychain "$UDID" add-root-cert "$RUNNER_TEMP/tls/ca.pem"
           xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4
           xcrun simctl install "$UDID" "$APP"
@@ -374,15 +382,17 @@ jobs:
           curl -fsS --retry 60 --retry-connrefused --retry-delay 2 http://127.0.0.1:8081/status
           # Build the bundle once, so the app's own request is served from a warm cache.
           curl -fsS -o /dev/null --max-time 600 "http://127.0.0.1:8081/.expo/.virtual-metro-entry.bundle?platform=ios&dev=true&hot=false&lazy=true&transform.engine=hermes&transform.bytecode=1&unstable_transformProfile=hermes-stable"
-      - name: Drive the app and the web
+      - name: Drive the app
+        run: $DRIVE --chrome "$PROVE_CHROME" --phase phone
+      - name: Shoot the web after the answer
         run: |
-          "$NODE26_BIN/node" scripts/iphone-check/drive.mjs --udid "$UDID" --bundle com.maxmiller.learnharness.nightly --origin "$ORIGIN" \
-            --instance "$INST" --out "$SHOTS" --axe "$RUNNER_TEMP/axe/axe" --chrome "$PROVE_CHROME" --metro-log "$RUNNER_TEMP/metro.log"
+          xcrun simctl shutdown "$UDID"
+          $DRIVE --chrome "$PROVE_CHROME" --phase web-after
       - name: Job summary and logs
         if: always()
         run: |
           mkdir -p "$SHOTS/logs"
-          if [ -f "$SHOTS/summary.md" ]; then cat "$SHOTS/summary.md" >> "$GITHUB_STEP_SUMMARY"; else echo "No screenshots summary: see the Drive step." >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f "$SHOTS/summary.md" ]; then cat "$SHOTS/summary.md" >> "$GITHUB_STEP_SUMMARY"; else echo "No screenshots summary: see the steps above." >> "$GITHUB_STEP_SUMMARY"; fi
           cp "$RUNNER_TEMP/metro.log" "$SHOTS/logs/" 2>/dev/null || true
           if [ -n "${RUN:-}" ]; then cp "$RUN"/head/*.log "$RUN"/head/*.jsonl "$RUN"/*.log "$SHOTS/logs/" 2>/dev/null || true; fi
       - name: Upload the screenshots
