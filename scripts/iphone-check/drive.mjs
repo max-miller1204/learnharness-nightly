@@ -157,6 +157,31 @@ async function openRow(screen, title, reached) {
 	fail(screen, `touching the "${title}" row did not open it`);
 }
 
+/** Type into a text field a few keys at a time, and check what landed: with
+ * the on-screen keyboard up, keys typed in one burst can be dropped. A secure
+ * field shows one dot per character. */
+async function typeInto(screen, name, text) {
+	const field = (el) => label(el) === name && /text ?field/i.test(`${el.type ?? ""} ${el.role_description ?? ""} ${el.role ?? ""}`);
+	let shown = "";
+	for (let attempt = 1; attempt <= 3; attempt++) {
+		await tap(screen, field);
+		if (attempt > 1) {
+			await axe(["key-combo", "--modifiers", "227", "--key", "4"]);
+			await axe(["key", "42"]);
+		}
+		for (let i = 0; i < text.length; i += 4) {
+			await axe(["type", text.slice(i, i + 4)]);
+			await sleep(250);
+		}
+		const target = (await settled(screen)).find(field);
+		shown = String(target?.AXValue ?? "");
+		const secure = /secure/i.test(`${target?.type ?? ""} ${target?.role_description ?? ""}`);
+		if (secure ? [...shown].length === text.length : shown === text) return;
+		log(`${name} shows ${secure ? `${[...shown].length} characters` : JSON.stringify(shown)} after typing; typing it again`);
+	}
+	fail(screen, `could not type into ${name}: it shows ${JSON.stringify(shown)}`);
+}
+
 async function phoneShot(screen, mode, page) {
 	const file = path.join(OUT, "iphone", `${screen}-${mode}${page ? `-${page}` : ""}.png`);
 	await simctl("io", UDID, "screenshot", file);
@@ -401,11 +426,8 @@ async function phone() {
 	const minted = await api("/api/auth/pairing-token", { method: "POST", body: JSON.stringify({ label: "CI iPhone" }) });
 	const { credential } = await minted.json().catch(() => ({}));
 	if (!minted.ok || !credential) fail("pair", `could not mint a pairing code: ${minted.status}`);
-	const field = (name) => (el) => label(el) === name && /text ?field/i.test(`${el.type ?? ""} ${el.role_description ?? ""} ${el.role ?? ""}`);
-	await tap("pair", field("Server address"));
-	await axe(["type", ORIGIN]);
-	await tap("pair", field("Pairing code"));
-	await axe(["type", credential]);
+	await typeInto("pair", "Server address", ORIGIN);
+	await typeInto("pair", "Pairing code", credential);
 	await tap("pair", (el) => label(el) === "Connect");
 
 	const sessionsReached = (elements) => hasMatch(new RegExp(QUIZ.title))(elements) && hasMatch(new RegExp(LESSON.title))(elements);
