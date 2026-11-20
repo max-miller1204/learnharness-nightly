@@ -131,55 +131,17 @@ async function tap(screen, find) {
 	const target = elements.find(find);
 	if (!target) fail(screen, "the control to tap is missing");
 	const { x, y } = center(target);
-	// A real touch down and up: the session rows sit in a native long-press
-	// menu that a synthesized simulator tap does not press.
+	// A real touch down and up, as a finger sends.
 	await axe(["tap", "-x", String(x), "-y", String(y), "--tap-style", "physical"]);
 	await sleep(700);
 }
 
-/** Open a session row. Each row sits in a native long-press menu, which on
- * the simulator may take a touch held as long as AXe's default tap (0.1 s)
- * for the start of a long press. The touches tried are logged; the first
- * that works is tried first on the next row. */
-const ROW_TOUCHES = [
-	["touch held 0.03 s", 0.03],
-	["touch held 0.01 s", 0.01],
-	["touch held 0.06 s", 0.06],
-	["touch held 0.1 s (AXe's tap)", 0.1],
-];
-let rowTouch = 0;
-async function openRow(screen, title, reached) {
-	const order = [rowTouch, ...ROW_TOUCHES.keys()].filter((i, n, all) => all.indexOf(i) === n);
-	for (const i of order) {
-		const [name, hold] = ROW_TOUCHES[i];
-		const row = (await settled(screen)).find((el) => label(el).startsWith(`${title},`) || label(el) === title);
-		if (!row) fail(screen, `no row for "${title}"`);
-		const x = String(Math.round(frame(row).x + 40)), y = String(Math.round(frame(row).y + frame(row).height * 0.3));
-		await axe(["touch", "-x", x, "-y", y, "--down", "--up", "--delay", String(hold)]);
-		const deadline = Date.now() + 6000;
-		while (Date.now() < deadline) {
-			await sleep(800);
-			if (reached(await settled(screen))) {
-				log(`opened "${title}" with a ${name}`);
-				rowTouch = i;
-				return;
-			}
-		}
-		log(`a ${name} did not open "${title}"`);
-	}
-	fail(screen, `no touch opened the "${title}" row`);
-}
-
-/** Does a tap reach the app? Flip the session kind filter to Teaching and back to All. */
+/** Does a tap reach the app? Open the session's options menu and close it again. */
 async function tapsReachApp(screen) {
-	const filter = (name) => async () => (await settled(screen)).find((el) => label(el) === name && isChoice(el));
-	for (const name of ["Teaching", "All"]) {
-		const el = await filter(name)();
-		if (!el) fail(screen, `no ${name} filter`);
-		await axe(["tap", "-x", String(center(el).x), "-y", String(center(el).y), "--tap-style", "physical"]);
-		await sleep(1200);
-		if (!/(^|, )checked/.test(String((await filter(name)())?.AXValue ?? ""))) return false;
-	}
+	await tap(screen, (el) => label(el) === "Session options");
+	await sleep(800);
+	if (!has("Close menu")(await settled(screen))) return false;
+	await tap(screen, (el) => label(el) === "Close menu");
 	return true;
 }
 
@@ -470,25 +432,28 @@ async function phone() {
 	await typeInto("pair", "Pairing code", credential);
 	await tap("pair", (el) => label(el) === "Connect");
 
+	// The one step not driven: AXe's touches do not reach session rows inside
+	// the long-press menu on the simulator, so the job's Metro bundles with
+	// EXPO_PUBLIC_CI_OPEN_SESSIONS (apps/mobile/src/workspace-view.ts) and each
+	// connection opens the next fixture session instead of a tapped row.
 	const sessionsReached = (elements) => hasMatch(new RegExp(QUIZ.title))(elements) && hasMatch(new RegExp(LESSON.title))(elements);
-	await waitFor("sessions", sessionsReached, 60_000);
-	await dismissSavePassword("sessions");
-	for (const { mode } of MODES) {
-		await setPhoneMode(mode);
-		await waitFor("sessions", sessionsReached, 60_000);
-		await phoneShot("sessions", mode);
-	}
-
 	const inSession = (title) => (elements) => has("Sessions")(elements) && elements.some((el) => label(el) === title);
-	await openRow("sessions", LESSON.title, inSession(LESSON.title));
+	await waitFor("lesson", inSession(LESSON.title), 60_000);
+	await dismissSavePassword("lesson");
 	for (const { mode } of MODES) {
 		await setPhoneMode(mode);
 		await phonePages("lesson", mode, inSession(LESSON.title));
 	}
 	await tap("lesson", (el) => label(el) === "Sessions");
-	await waitFor("sessions", sessionsReached);
+	for (const { mode } of MODES) {
+		await setPhoneMode(mode);
+		await waitFor("sessions", sessionsReached);
+		await phoneShot("sessions", mode);
+	}
 
-	await openRow("sessions", QUIZ.title, inSession(QUIZ.title));
+	await tap("sessions", (el) => label(el) === "Servers");
+	await waitFor("saved servers", has("Open"));
+	await tap("saved servers", (el) => label(el) === "Open");
 	const waiting = (elements) => inSession(QUIZ.title)(elements) && elements.filter(isChoice).length > 0;
 	for (const { mode } of MODES) {
 		await setPhoneMode(mode);

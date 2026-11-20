@@ -82,6 +82,19 @@ test("the query survives opening a session and coming back; a new server's works
   assert.deepEqual(freshView(), { page: { type: "list" }, query: "" });
 });
 
+test("the CI-only open-sessions option is inert when unset, and release and update builds never set it", () => {
+  assert.equal(process.env.EXPO_PUBLIC_CI_OPEN_SESSIONS, undefined);
+  assert.deepEqual(freshView(), { page: { type: "list" }, query: "" });
+  assert.deepEqual(freshView(), { page: { type: "list" }, query: "" });
+  const openNext = ["chat_a", "chat_b"];
+  assert.deepEqual(freshView(openNext).page, { type: "session", id: "chat_a" });
+  assert.deepEqual(freshView(openNext).page, { type: "session", id: "chat_b" });
+  assert.deepEqual(freshView(openNext).page, { type: "list" });
+  for (const file of ["../eas.json", "../app.json", "../../../.github/workflows/mobile-release.yml", "../../../.github/scripts/mobile-release.cjs"]) {
+    assert.doesNotMatch(readFileSync(new URL(file, import.meta.url), "utf8"), /EXPO_PUBLIC_CI_OPEN_SESSIONS/, file);
+  }
+});
+
 test("the release after a hold that opened the menu does not open the session", () => {
   const guard = menuPressGuard();
   guard.pressIn();

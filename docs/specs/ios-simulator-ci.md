@@ -55,7 +55,7 @@ Approved by the owner on 2026-11-19 (playback confirmed, no vetoes). A new requi
 - An AI judge or any model key inside CI. CI jobs run PR code, and the owner's rule keeps secrets out of them.
 - Real VoiceOver speech. The owner's TestFlight VoiceOver hand check (`docs/specs/mobile-quiz-choice-math.md:78,111`) stays.
 - Android, iPad, landscape, larger text sizes or more screens in this job. These are deferred, and the owner can extend the job.
-- Hidden test switches or launch arguments in the app, which T3 uses to jump to scenes. The job drives the real UI.
+- Hidden test switches or launch arguments in the app, which T3 uses to jump to scenes. The job drives the real UI, with one exception the owner chose on 2026-11-20: tapping a session row to open it. AXe's touches never reach rows inside `@react-native-menu`'s long-press MenuView on the iOS Simulator (every touch from 0.01 s to 0.3 s, at the title, centre and edge, also with the app's tap guard bypassed), while a real iPhone opens them with a tap, and AXe can neither press an element through accessibility nor run its custom actions. So only the job's Metro bundles with `EXPO_PUBLIC_CI_OPEN_SESSIONS`, and each new connection opens the next listed session (`apps/mobile/src/workspace-view.ts`). Expo inlines the variable at bundle time, so release and update bundles, which never set it, carry an empty list, and the native fingerprint is unchanged. A test checks the option is inert when unset. The job reaches the session list with the Sessions back button and the second session by reopening the server.
 - Building on Expo (EAS), or a release-style build with its embedded bundle and live updates.
 - Running on paid or larger runners.
 

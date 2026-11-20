@@ -8,7 +8,17 @@ export type Page = { type: "list" } | { type: "new"; kind: ChatKind } | { type: 
  *  connection), which starts from `freshView`. */
 export interface WorkspaceView { page: Page; query: string }
 
-export const freshView = (): WorkspaceView => ({ page: { type: "list" }, query: "" });
+/** For the CI iPhone check only (docs/specs/ios-simulator-ci.md): AXe's touches
+ *  don't reach session rows inside the long-press menu on the simulator, so that
+ *  job's Metro bundles with EXPO_PUBLIC_CI_OPEN_SESSIONS="id,id" and each new
+ *  connection opens the next listed session. Expo inlines the variable at bundle
+ *  time; release and update bundles never set it, so this list is empty there. */
+const ciOpenSessions = (process.env.EXPO_PUBLIC_CI_OPEN_SESSIONS ?? "").split(",").filter(Boolean);
+
+export const freshView = (openNext: string[] = ciOpenSessions): WorkspaceView => {
+  const id = openNext.shift();
+  return { page: id ? { type: "session", id } : { type: "list" }, query: "" };
+};
 
 export type ViewAction = { type: "open"; page: Page } | { type: "back" } | { type: "search"; query: string };
 
