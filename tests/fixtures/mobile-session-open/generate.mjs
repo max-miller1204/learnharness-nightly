@@ -1,7 +1,9 @@
 // Writes the made-up sessions for docs/specs/mobile-session-open.md into chats/.
 // Run with `node tests/fixtures/mobile-session-open/generate.mjs` from the repository root.
 // The output is deterministic, so rerunning it leaves the committed files unchanged.
+import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { deflateSync } from "node:zlib";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -195,8 +197,60 @@ function mathCasesSession() {
   });
 }
 
+/** A solid-color PNG of the given size, for the saved images. */
+function png(width, height, [r, g, b]) {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (bytes) => {
+    let c = 0xffffffff;
+    for (const byte of bytes) c = crcTable[(c ^ byte) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const out = Buffer.alloc(body.length + 8);
+    out.writeUInt32BE(data.length, 0);
+    body.copy(out, 4);
+    out.writeUInt32BE(crc(body), body.length + 4);
+    return out;
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 2, 0, 0, 0], 8);
+  const row = Buffer.concat([Buffer.from([0]), Buffer.from(Array.from({ length: width }, () => [r, g, b]).flat())]);
+  const pixels = deflateSync(Buffer.concat(Array.from({ length: height }, () => row)));
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", header), chunk("IDAT", pixels), chunk("IEND", Buffer.alloc(0))]).toString("base64");
+}
+
+/** Saved show_image results: a wide strip and a tall column, each sized from its saved result. */
+function imagesSession() {
+  const images = [
+    { name: "wide.png", caption: "A wide strip", width: 1200, height: 200, color: [70, 130, 180] },
+    { name: "tall.png", caption: "A tall column", width: 300, height: 2000, color: [180, 120, 70] },
+  ].map((image) => {
+    const data = png(image.width, image.height, image.color);
+    return { ...image, data, snapshotId: createHash("sha256").update(Buffer.from(data, "base64")).digest("hex") };
+  });
+  const record = session("chat_zzopenimages", "Saved images (made up)", (add) => {
+    add.user("u_images", "Show me the two figures.");
+    images.forEach((image, index) => {
+      add.assistant(`a_image${index}`, [{ type: "toolCall", id: `call_image${index}`, name: "show_image", arguments: { path: `/learner/${image.name}`, caption: image.caption } }], "toolUse");
+      add.result(`r_image${index}`, `call_image${index}`, "show_image", `Shown to the learner: /learner/${image.name} (${image.width}×${image.height}).`, {
+        path: `/learner/${image.name}`, caption: image.caption, mimeType: "image/png", snapshotId: image.snapshotId, width: image.width, height: image.height,
+      });
+    });
+    add.assistant("a_images_done", [{ type: "text", text: "Both figures keep their own shape." }]);
+  });
+  record.imageSnapshots = Object.fromEntries(images.map((image) => [image.snapshotId, { mimeType: "image/png", data: image.data, width: image.width, height: image.height }]));
+  return record;
+}
+
 const chats = path.join(here, "chats");
 mkdirSync(chats, { recursive: true });
-for (const record of [longSession(), shortSession(), plainSession(), mathCasesSession()]) {
+for (const record of [longSession(), shortSession(), plainSession(), mathCasesSession(), imagesSession()]) {
   writeFileSync(path.join(chats, `${record.id}.json`), `${JSON.stringify(record, null, "\t")}\n`);
 }

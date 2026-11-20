@@ -17,12 +17,26 @@ import { PlanDiagram } from "./PlanDiagram";
 import { Label } from "./ui";
 import { space, useTheme } from "./theme";
 
+/** A saved image's box when its size isn't known: the whole column, this tall. */
 export const SNAPSHOT_HEIGHT = 360;
+/** The web shows a saved image at most this share of the screen's height (image-card.tsx,
+ * max-h-[60vh]). */
+const SNAPSHOT_MAX_SCREEN = 0.6;
 
-export function Snapshot({ api, chatId, snapshotId, caption }: {
-  api: MobileApi; chatId: string; snapshotId: string; caption?: string;
+/** The box a saved image takes, from the width and height its show_image result carries: its
+ * own shape, as the web shows it, never enlarged and never wider than the column or taller than
+ * 60% of the screen. Undefined when the size is missing or invalid. */
+export function snapshotBox(width: unknown, height: unknown, column: number, screen: number): { width: number; height: number } | undefined {
+  if (typeof width !== "number" || typeof height !== "number" || !(width > 0) || !(height > 0) || !Number.isFinite(width) || !Number.isFinite(height)) return;
+  const scale = Math.min(1, column / width, (screen * SNAPSHOT_MAX_SCREEN) / height);
+  return { width: width * scale, height: height * scale };
+}
+
+export function Snapshot({ api, chatId, snapshotId, caption, width, height }: {
+  api: MobileApi; chatId: string; snapshotId: string; caption?: string; width?: unknown; height?: unknown;
 }) {
   const { s } = useTheme();
+  const window = useWindowDimensions();
   const [image, setImage] = useState<ImageSnapshot>();
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -32,11 +46,13 @@ export function Snapshot({ api, chatId, snapshotId, caption }: {
       .catch(() => { if (!scope.signal.aborted) setFailed(true); });
     return () => scope.abort();
   }, [api, chatId, snapshotId]);
-  // The image's size isn't known until it loads, so it always takes the same box: loading,
-  // shown or failed, nothing around it moves.
+  // Loading, shown or failed, the image takes the same box, so nothing around it moves: its
+  // own shape when the saved result gives its size, otherwise a fixed column-wide box. The
+  // transcript's column is the screen less its padding on each side.
+  const box = snapshotBox(width, height, window.width - 2 * space.lg, window.height);
   return (
     <View style={{ gap: space.xs }}>
-      <View style={{ height: SNAPSHOT_HEIGHT, alignItems: "center", justifyContent: "center" }}>
+      <View style={[{ alignItems: "center", justifyContent: "center" }, box ? { ...box, alignSelf: "center" } : { height: SNAPSHOT_HEIGHT }]}>
         {image
           ? <Image accessibilityLabel={caption || "Session image"} source={{ uri: `data:${image.mimeType};base64,${image.data}` }}
             resizeMode="contain" style={{ width: "100%", height: "100%" }} />
@@ -159,9 +175,9 @@ function Part({ part, context }: { part: LhViewPart; context: PartContext }) {
   if (part.type === "data-practice-next") return <Text style={s.muted}>Next problem</Text>;
   if (part.type === "data-graph-context") return <GraphContextCard data={part.data as Parameters<typeof GraphContextCard>[0]["data"]} />;
   if (part.type === "tool-show_image" && part.state === "output-available") {
-    const image = part.output as { snapshotId?: string; caption?: string } | undefined;
+    const image = part.output as { snapshotId?: string; caption?: string; width?: unknown; height?: unknown } | undefined;
     if (image?.snapshotId && /^[a-f0-9]{64}$/.test(image.snapshotId)) {
-      return <Snapshot api={api} chatId={chatId} snapshotId={image.snapshotId} caption={image.caption} />;
+      return <Snapshot api={api} chatId={chatId} snapshotId={image.snapshotId} caption={image.caption} width={image.width} height={image.height} />;
     }
   }
   if (part.state === "output-available") {

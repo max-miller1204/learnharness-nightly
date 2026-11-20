@@ -11,7 +11,7 @@ import { Markdown } from "../src/Markdown.tsx";
 import { MathWindow, MathWindowContext } from "../src/math-window.ts";
 import { Capped, drawCount, drawFrom, drawQueue, equationsIn, isDrawn, setEquationCap, EQUATION_CAP } from "../src/message-math.ts";
 import { smallSession, transcriptVisibility, useSessionOpening, type Batch } from "../src/session-open.ts";
-import { markdownTexts, Snapshot, SNAPSHOT_HEIGHT, Transcript } from "../src/Transcript.tsx";
+import { markdownTexts, Snapshot, SNAPSHOT_HEIGHT, snapshotBox, Transcript } from "../src/Transcript.tsx";
 import type { LhViewMessage } from "../../../src/core/view.ts";
 
 // Frames run on timers in Node.
@@ -449,14 +449,58 @@ test("while hidden the transcript takes no touches, scrolling or screen reader f
   assert.equal(transcriptVisibility(false).scrollEnabled, true);
 });
 
-test("a saved image takes the same box while loading, shown and failed", async () => {
-  let resolve: (value: unknown) => void = () => {};
-  const api = { get: () => new Promise((done) => { resolve = done; }) } as never;
-  const tree = await render(createElement(Snapshot, { api, chatId: "c", snapshotId: "s", caption: "A figure" }));
-  const box = () => tree.root.find((node) => is(node, "View") && node.props.style?.height === SNAPSHOT_HEIGHT);
-  assert.ok(box());
-  await act(async () => { resolve({ mimeType: "image/png", data: "AAAA", width: 10, height: 1000 }); });
-  assert.equal(all(box(), "Image").length, 1);
+test("a saved image's box takes its own shape, as the web sizes it", () => {
+  // The test screen is 400 by 800, so the column is 368 and the cap is 60% of 800.
+  assert.deepEqual(snapshotBox(1200, 200, 368, 800), { width: 368, height: 200 * (368 / 1200) });
+  assert.deepEqual(snapshotBox(100, 50, 368, 800), { width: 100, height: 50 });
+  assert.deepEqual(snapshotBox(300, 2000, 368, 800), { width: 72, height: 480 });
+  for (const [width, height] of [[undefined, 200], [1200, undefined], [0, 200], [1200, -1], [Number.NaN, 200], [Infinity, 200], ["1200", 200]]) {
+    assert.equal(snapshotBox(width, height, 368, 800), undefined);
+  }
+});
+
+/** The saved image's box in each state: loading, then shown or failed. */
+async function snapshotStates(size: { width?: unknown; height?: unknown }, fail: boolean) {
+  let settle: { resolve: (value: unknown) => void; reject: (error: unknown) => void } = { resolve: () => {}, reject: () => {} };
+  const api = { get: () => new Promise((resolve, reject) => { settle = { resolve, reject }; }) } as never;
+  const tree = await render(createElement(Snapshot, { api, chatId: "c", snapshotId: "s", caption: "A figure", ...size }));
+  const box = () => {
+    const view = tree.root.findAll((node) => is(node, "View"))[1] as ReactTestInstance;
+    const style = Object.assign({}, ...[view.props.style].flat(3).filter(Boolean)) as { width?: number; height?: number };
+    return { view, width: style.width, height: style.height };
+  };
+  const loading = box();
+  assert.equal(strings(loading.view).join(""), "Loading image…");
+  await act(async () => { if (fail) settle.reject(new Error("gone")); else settle.resolve({ mimeType: "image/png", data: "AAAA", width: 1200, height: 200 }); });
+  const after = box();
+  assert.equal(fail ? strings(after.view).join("") : all(after.view, "Image").length, fail ? "Image unavailable" : 1);
+  return [loading, after].map(({ width, height }) => ({ width, height }));
+}
+
+test("a saved image with a known size keeps that box while loading, shown and failed", async () => {
+  for (const fail of [false, true]) {
+    const [loading, after] = await snapshotStates({ width: 1200, height: 200 }, fail);
+    assert.deepEqual(loading, { width: 368, height: 200 * (368 / 1200) });
+    assert.deepEqual(after, loading);
+  }
+});
+
+test("a saved show_image result's own size reaches the transcript's image box", async () => {
+  const api = { get: () => new Promise(() => {}) } as never;
+  const tree = await render(transcript({ settled: projectView(fixture("chat_zzopenimages").messages), api }));
+  const boxes = tree.root.findAll((node) => is(node, "View") && [node.props.style].flat(3).some((style) => style?.alignSelf === "center"))
+    .map((view) => { const style = Object.assign({}, ...[view.props.style].flat(3).filter(Boolean)); return { width: style.width, height: style.height }; });
+  assert.deepEqual(boxes, [{ width: 368, height: 200 * (368 / 1200) }, { width: 72, height: 480 }]);
+});
+
+test("a saved image without a valid size falls back to the fixed box in every state", async () => {
+  for (const size of [{}, { width: 0, height: 200 }]) {
+    for (const fail of [false, true]) {
+      const [loading, after] = await snapshotStates(size, fail);
+      assert.deepEqual(loading, { width: undefined, height: SNAPSHOT_HEIGHT });
+      assert.deepEqual(after, loading);
+    }
+  }
 });
 
 test("a math paragraph's label is right on the first render, before any screen reader check", async () => {

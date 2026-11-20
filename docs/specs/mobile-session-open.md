@@ -47,6 +47,8 @@ T3 references are to github.com/pingdotgg/t3code at `3ce2145864f1e8b822cc8dff9c8
 
 **Owner decision on two iPhone bugs (2026-11-19, reproduced on Android).** Both came from the web page this feature removes (`Markdown.tsx:36`, `:49` on `4a66ecd7`). In `0.1(-1)(-2)` the minus signs had extra space around them. A sentence ending in inline math and a period put the period alone on the next line when the equation just fit. And in messages with math, a two-column table with a short bold first column and a long second column squeezed the first column to one or two letters a line. With native drawing, minus signs match the web, punctuation right after inline math never wraps away from it, and such a table renders readably, like a table in a message without math (`NativeMarkdown.tsx:98`) and the web (proof 8).
 
+**Owner decision on saved images (2026-11-19, "real shape").** A saved `show_image` result carries the image's `width` and `height` (`ShowImageDetails`, `src/core/contracts/chat.ts`, since the tool first shipped in #363), and the phone receives them as the part's `output`. The image's box is sized from them before the image loads, in its own shape, as the web sizes the same image (`components/artifacts/image-card.tsx`): never enlarged, never wider than the transcript column, and never taller than 60% of the screen (the web's `max-h-[60vh]`, which overrides the 360 pt cap the phone had before), centered. Loading, shown and failed all take the same box, so nothing shifts and no blank band is left around a wide image. Only when the size is missing or invalid does the image take the fixed column-wide 360 pt box (proof 9).
+
 ## 2. Goals and non-goals
 
 **Goals.**
@@ -134,6 +136,7 @@ T3 references are to github.com/pingdotgg/t3code at `3ce2145864f1e8b822cc8dff9c8
 - A short session.
 - A session without math.
 - Messages covering inline math, `$$` and `\[...\]` block math, a wide matrix, broken math, a colored command and an excluded command, `0.1(-1)(-2)`, a sentence ending in inline math and a period, and a two-column table with a short bold first column, a long second column and math.
+- A session with two saved images, a wide 1200×200 strip and a tall 300×2000 column (`chat_zzopenimages.json`, its snapshots in the record).
 
 | # | Proves | Surface | Check | Where it runs | Pass signal |
 | --- | --- | --- | --- | --- | --- |
@@ -144,6 +147,7 @@ T3 references are to github.com/pingdotgg/t3code at `3ce2145864f1e8b822cc8dff9c8
 | 5 | Goal 5; keyboard invariant; defaults 3, 4 | "Scroll to end" button | Scroll more than 100 px up, then use the button by touch, by a TalkBack double tap and from a hardware keyboard (focus it, press Enter). Repeat with Reduce Motion (Remove animations) on. | Emulator | The button shows only when scrolled up past 100 px, and each way lands at the end. With Remove animations on, it jumps with no animation. |
 | 6 | Cache, broken-math and math-rules invariants; default 6 | Unit tests | `npm test` in `apps/mobile` | CI Mobile job | All pass, including: each distinct equation is drawn once; the cache stays under its cap; a finished reply swaps streamed text for drawn math in place; no WebView is rendered for math. |
 | 8 | Owner decision on the iPhone bugs | The math cases fixture on the phone | Screenshot `0.1(-1)(-2)`, the sentence ending in math and a period (at a width where the equation just fits the line, by rotating or changing the font size), and the two-column table, next to the web's same session | Emulator and Chrome, same server | The minus signs are spaced as on the web. The period stays on the line of the equation before it. The table's first column reads whole words, as in a table without math and on the web. |
+| 9 | Owner decision on saved images | The saved images fixture on the phone | Record its opening frame by frame and screenshot each image, next to the web's same session | Emulator and Chrome, same server | Each image takes its own shape from the first frame, as on the web: the strip column-wide and about a sixth as tall, the column 60% of the screen tall. No frame moves anything as an image loads, and there is no blank band around either. |
 | 7 | JavaScript-only invariant; build health | CI and the PR | The Mobile job (deps:check, lint, typecheck, test, both exports), plus the native fingerprint of head compared with base, written in the PR | CI | All green, and the fingerprint is unchanged. |
 
 Every check must pass to merge. Pass means every step shows its stated result. Anything else fails the step, and a step that can't run is a failure, not a skip.
