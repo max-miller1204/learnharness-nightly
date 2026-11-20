@@ -2,8 +2,9 @@
  * Catalog resolution is key-independent; no provider dispatch/auth is needed.
  * Never mutate saved native messages: calculateCost mutates its usage.cost.
  */
-import { calculateCost, type Usage } from "@earendil-works/pi-ai";
+import { calculateCost, type Api, type Model, type Usage } from "@earendil-works/pi-ai";
 import { piModels } from "../agent/models.ts";
+import { RETIRED_MODELS } from "./retired-models.ts";
 import { CUSTOM_PROVIDER } from "../core/auth-keys.ts";
 import { CLAUDE_CODE_PROVIDER } from "../core/contracts/claude-code.ts";
 import type { CallUsage, ChatRecord, JobRecord, TurnUsage } from "../core/contracts.ts";
@@ -14,7 +15,8 @@ function catalogModel(id: string) {
 	// Native CLI routing determines billing. Adapter zero-rate placeholders
 	// must never become an apparent $0 estimate or subscription classification.
 	if (colon < 0 || isSubscriptionModel(id) || [CLAUDE_CODE_PROVIDER, CUSTOM_PROVIDER.id].includes(id.slice(0, colon))) return undefined;
-	return piModels().getModel(id.slice(0, colon), id.slice(colon + 1));
+	// History on a model the catalog dropped keeps its estimate.
+	return piModels().getModel(id.slice(0, colon), id.slice(colon + 1)) ?? (Object.hasOwn(RETIRED_MODELS, id) ? RETIRED_MODELS[id] : undefined);
 }
 
 export function callCost(call: Partial<CallUsage>, modelId: string): number | null {
@@ -35,7 +37,7 @@ export function callCost(call: Partial<CallUsage>, modelId: string): number | nu
 		totalTokens: input + output + cacheRead + cacheWrite,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};
-	const total = calculateCost(model, usage).total;
+	const total = calculateCost({ cost: model.cost } as Model<Api>, usage).total;
 	return Number.isFinite(total) && total >= 0 ? total : null;
 }
 

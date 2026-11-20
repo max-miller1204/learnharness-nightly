@@ -14,6 +14,8 @@ import { lazyApi, lazyStream } from "@earendil-works/pi-ai/api/lazy";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type ModelRole } from "../../config.ts";
 import { DEFAULT_THINKING_ORDER } from "../core/settings.ts";
+import { modelUnavailableMessage } from "../core/model-unavailable.ts";
+import { CLAUDE_CODE_PROVIDER } from "../core/contracts/claude-code.ts";
 import packageMetadata from "../../package.json" with { type: "json" };
 import { chatGPTModel } from "./chatgpt-bridge.ts";
 import { chatGPTStream } from "./chatgpt-stream.ts";
@@ -124,6 +126,26 @@ function defaultThinkingLevel(model: Model<Api>): ThinkingLevel {
 	return supported[0] ?? "off";
 }
 
+/** A saved model the catalog no longer has. Its message is for the learner:
+ *  the turn fails rather than silently running on another model. */
+export class ModelUnavailableError extends Error {
+	constructor(readonly provider: string, readonly id: string) {
+		super(modelUnavailableMessage(provider, id));
+		this.name = "ModelUnavailableError";
+	}
+}
+
+/** A saved model a built-in Pi catalog provider no longer lists. That
+ *  catalog does not depend on keys, so every gate checks this before the
+ *  provider key: a model that can't run never asks for a key. ChatGPT,
+ *  subscriptions, Claude Code and custom endpoints list models live and are
+ *  not judged here. */
+export function catalogModelGone(provider: string, id: string): boolean {
+	if (provider === "chatgpt" || provider === CLAUDE_CODE_PROVIDER || nativeSubscriptionId(provider) || providerSource?.isCustom(provider)) return false;
+	const models = piModels();
+	return models.getProviders().some((p) => p.id === provider) && !models.getModel(provider, id);
+}
+
 /** The production engine for a RESOLVED spec (model slots wave,
  *  2026-09-20): provider-aware catalog lookup + thinking clamp. The API
  *  key is resolved by pi-ai itself from the environment per request (the
@@ -139,7 +161,7 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 	const permitImages = (value: Model<Api>): Model<Api> => ({ ...value, input: ["text", "image"] });
 	const model = custom && registeredModel ? permitImages(registeredModel) : registeredModel;
 	if (!model) {
-		throw new Error(`${spec.provider} catalog has no model ${spec.id}`);
+		throw new ModelUnavailableError(spec.provider, spec.id);
 	}
 	// UNSET level → the baked default order (first entry the model
 	// supports); SET level → pi's native nearest-clamp (model swaps keep

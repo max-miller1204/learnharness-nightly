@@ -5,8 +5,8 @@ import {
   type ChatKind, type ChatListResponse, type CreateChatRequest, type CreateChatResponse,
   type GraphContextPick, type PracticePropositionsResponse, type ServerInfo, type StartWithAttachmentsRequest,
 } from "../../../src/client-protocol/index.ts";
-import { ApiError, type MobileApi } from "./protocol";
-import { errorText } from "./use-session";
+import type { MobileApi } from "./protocol";
+import { errorText, refusedByServer } from "./use-session";
 import { Button, Field, Notice } from "./ui";
 import { fonts, radius, space, useTheme } from "./theme";
 import { useAttachments } from "./use-attachments";
@@ -91,7 +91,7 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
       open(id);
     } catch (error) {
       if (signal.aborted || connectionFault(error)) return;
-      const refused = error instanceof ApiError && error.status < 500;
+      const refused = refusedByServer(error);
       unconfirmed = !refused && !!attachments.rows.length;
       setUnconfirmedStart(unconfirmed);
       setError(refused ? errorText(error)
@@ -134,7 +134,7 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
       if (!signal.aborted) open(id, text, true);
     } catch (error) {
       if (signal.aborted || connectionFault(error)) return;
-      if (error instanceof ApiError && error.status < 500) {
+      if (refusedByServer(error)) {
         setError(errorText(error));
         return;
       }

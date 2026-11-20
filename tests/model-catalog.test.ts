@@ -312,7 +312,7 @@ describe("pi thinking truth (pinned against pi-ai upgrades)", () => {
 		assert.equal(over.level, "high");
 		const clamped = piEngineForSpec({ provider: "openrouter", id: "z-ai/glm-5.3-flash", thinkingLevel: "minimal" });
 		assert.equal(clamped.level, "low");
-		assert.throws(() => piEngineForSpec({ provider: "openrouter", id: "nope/nope", thinkingLevel: "low" }), /catalog has no model/);
+		assert.throws(() => piEngineForSpec({ provider: "openrouter", id: "nope/nope", thinkingLevel: "low" }), /is no longer available/);
 	});
 
 	it("UNSET levels resolve from the baked DEFAULT_THINKING_ORDER (owner, 2026-09-22)", () => {
@@ -391,6 +391,18 @@ describe("the claude-code provider (native CLI authentication, no LearnHarness k
 				false,
 			);
 		});
+	});
+
+	it("catalogContextLimits() keeps a retired model's limit for history, only for a connected provider", () => {
+		const saved = process.env.OPENCODE_API_KEY;
+		try {
+			delete process.env.OPENCODE_API_KEY;
+			assert.equal(catalogContextLimits().has("opencode-go:gemini-4-argon-contributor"), false);
+			process.env.OPENCODE_API_KEY = "test-retired-limit";
+			assert.equal(catalogContextLimits().get("opencode-go:gemini-4-argon-contributor"), 1048576);
+		} finally {
+			if (saved === undefined) delete process.env.OPENCODE_API_KEY; else process.env.OPENCODE_API_KEY = saved;
+		}
 	});
 
 	it("catalogContextLimits() never advertises placeholder CLI limits, even when installed", () => {

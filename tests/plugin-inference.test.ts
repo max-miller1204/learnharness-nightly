@@ -127,7 +127,7 @@ test("every model is explicit and available: missing, unknown, removed keys and 
 	await assert.rejects(f.adapter.inference.complete({ ...request(), model: undefined as never }), /explicit model/);
 	await assert.rejects(f.adapter.engineFor({ provider: "", id: "" }, "user"), /explicit model/);
 	await assert.rejects(f.adapter.engineFor({ provider: "unknown", id: spec.id }, "user"), /Unknown model provider/);
-	await assert.rejects(f.adapter.engineFor({ provider: spec.provider, id: "missing" }, "background"), /Selected model unavailable/);
+	await assert.rejects(f.adapter.engineFor({ provider: spec.provider, id: "missing" }, "background"), /is no longer available\. Pick another model in Settings\./);
 	await assert.rejects(f.adapter.engineFor(spec, "automatic" as never), /purpose/);
 	await assert.rejects(f.adapter.engineFor({ ...spec, thinkingLevel: "guess" as never }, "user"), /thinkingLevel/);
 	const fallback = createPluginInference({ signal: f.signal.signal, dataDirectory: f.directory }, { ...f.deps, engineForSpec: () => ({ model: { provider: "another-provider", id: "another-model" } as never, streamFn: () => { throw new Error("must not run"); } }) });
@@ -479,4 +479,13 @@ test("Claude Code explicit pins retain host availability gating without forwardi
 	f.removeKey();
 	await assert.rejects(f.adapter.inference.complete(request(pin)), /Claude Code is unavailable.*Settings/);
 	assert.equal(f.calls.length, 1, "unavailable CLI never dispatches or falls back to an API provider");
+});
+
+test("a model the catalog dropped is refused as model_unavailable before the provider key is checked", async (t) => {
+	const f = fixture(t);
+	f.removeKey();
+	const gone = createPluginInference({ signal: f.signal.signal, dataDirectory: f.directory }, { ...f.deps, modelGone: (provider, id) => provider === spec.provider && id === "retired" });
+	await assert.rejects(gone.engineFor({ provider: spec.provider, id: "retired" }, "background"), (error: Error & { code?: string }) =>
+		error.code === "model_unavailable" && error.message === `The model ${spec.provider}/retired is no longer available. Pick another model in Settings.`);
+	await assert.rejects(gone.engineFor(spec, "background"), /key/i, "a model that still exists keeps the key refusal");
 });

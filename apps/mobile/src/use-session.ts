@@ -8,6 +8,9 @@ import { consumeSse } from "./sse";
 import { inputWasSaved, turnReplay, type SessionInput } from "./live-turn";
 
 export const errorText = (error: unknown) => error instanceof Error ? error.message : "Something went wrong.";
+/** The server answered and refused (below 500, such as a saved model that is
+ *  gone): show its message. A 5xx or a lost response may have been delivered. */
+export const refusedByServer = (error: unknown) => error instanceof ApiError && error.status < 500;
 
 interface UnconfirmedInput {
   input: SessionInput;
@@ -196,7 +199,7 @@ export function useSession(api: MobileApi, id: string, active: boolean, connecti
       if (!signal.aborted) accepted(result);
     } catch (error) {
       if (signal.aborted || connectionFault(error)) return;
-      if (!(error instanceof ApiError) || error.status >= 500) {
+      if (!refusedByServer(error)) {
         pending.current = { input, priorIds: new Set(before.messages.map(({ id }) => id)), failure: errorText(error), accepted };
         setUnconfirmed(true);
         setWriteError("Confirming the request with the server…");

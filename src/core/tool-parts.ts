@@ -27,6 +27,7 @@
  * quiet fallback, never a crash.
  */
 
+import { compile, type CoercingValidator } from "@earendil-works/pi-schema";
 import { Value } from "typebox/value";
 import type { TSchema } from "typebox";
 import { quizDisplayInputSchema, askInputSchema, askOptionProblems, quizInputProblems, explainInputProblems, explainDisplayInputSchema, type AskToolInput, type QuizToolInput, type ExplainToolInput } from "./question-core.ts";
@@ -42,20 +43,32 @@ export function posedPluginQuestionOfPart(part: { pluginQuestion?: unknown }): P
 }
 
 /** The pi-boundary parse step, mirrored here (live-smoke fix, 2026-09-26):
- *  pi-ai's validateToolArguments runs TypeBox's Value.Convert on the model's
- *  raw arguments before Value.Check — a correctAnswer sent as the NUMBER 17
- *  (what the live smoke's model actually emitted) converts to "17" at the
- *  boundary, so the tool poses the quiz fine. But the persisted record keeps
- *  the RAW arguments, so a parse seam that skips Convert would reject the
- *  exact input the boundary accepted — an invisible pending quiz and a
- *  learner lockout. Every display parse converts first, exactly like the
- *  boundary; Convert mutates, so the input is cloned before touching. */
+ *  pi-ai's validateToolArguments coerces the model's raw arguments before
+ *  it checks them, with pi-schema's compile(schema, { coerce: true })
+ *  .parse(). A correctAnswer sent as the NUMBER 17 (what the live smoke's
+ *  model actually emitted) coerces to "17" at the boundary, so the tool
+ *  poses the quiz fine. But the persisted record keeps the RAW arguments,
+ *  so a parse seam that skipped coercion would reject the exact input the
+ *  boundary accepted: an invisible pending quiz and a learner lockout.
+ *  Every display parse therefore runs the boundary's own coercion and
+ *  check, then Value.Clean strips the unknown keys pi lets through, for
+ *  the display shape. Pi also passes its `formats`; no schema here uses
+ *  `format` (tests/tool-parts.test.ts pins that), so they would check
+ *  nothing and only add their code to every client. check() rather than
+ *  parse(), which builds an error list nobody reads. One validator per
+ *  schema, as pi-ai caches them. */
+const boundaryValidators = new WeakMap<TSchema, CoercingValidator<unknown>>();
 function boundaryParse<T>(schema: TSchema, input: unknown): T | undefined {
 	if (typeof input !== "object" || input === null) return undefined;
-	const converted = structuredClone(input);
-	Value.Convert(schema, converted);
-	if (!Value.Check(schema, converted)) return undefined;
-	return Value.Clean(schema, converted) as T;
+	let validator = boundaryValidators.get(schema);
+	if (!validator) {
+		validator = compile(schema, { coerce: true, unresolvedRefs: "reject" });
+		boundaryValidators.set(schema, validator);
+	}
+	const coerced = validator.coerce(input);
+	if (!validator.check(coerced)) return undefined;
+	// coerce() shares unchanged members with the input; Clean mutates.
+	return Value.Clean(schema, structuredClone(coerced)) as T;
 }
 
 /**
@@ -67,12 +80,11 @@ function boundaryParse<T>(schema: TSchema, input: unknown): T | undefined {
  * kept so the display shape stays exactly what the dock always saw). This
  * is deliberately the LENIENT common core — the strict per-agent authoring
  * checks are the boundary's job — but it runs the shared grading
- * refinement (quizInputProblems) after Convert, mirroring the boundary's
- * full chain: pi accepts `correctAnswer: 17` structurally (Convert →
+ * refinement (quizInputProblems) after coercion, mirroring the boundary's
+ * full chain: pi accepts `correctAnswer: 17` structurally (coerced to
  * "17") and execute's refinement is what makes it a posed-or-rejected
  * call. The display parse follows the same order so an input that could
- * never have been posed (e.g. `correctAnswer: undefined`, which Convert
- * widens to "") renders as a quiet fallback, not a broken quiz.
+ * never have been posed renders as a quiet fallback, not a broken quiz.
  */
 /** Shape parsing never repairs authored text. The dock builds its answer
  * data from this source copy; recovery belongs exclusively to presentation

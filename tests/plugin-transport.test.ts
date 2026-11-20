@@ -91,3 +91,22 @@ it("plugin HTTP adapter uses typed host errors and keeps code assets uncached", 
 	host.asset = () => { throw new PluginHostError(404, "Asset unavailable"); };
 	assert.equal((await transport.asset("example", ["data", "private.json"])).status, 404);
 });
+it("a plugin's model_unavailable refusal is 422 with its message, unless only the provider key is missing", async () => {
+	const { host } = fixture();
+	const model = { provider: "opencode-go", id: "retired" };
+	const message = "The model opencode-go/retired is no longer available. Pick another model in Settings or as the Flashcards model.";
+	host.call = async () => { throw Object.assign(new Error(message), { code: "model_unavailable", model }); };
+	const asked: unknown[] = [];
+	const gone = createPluginTransport({ getHost: async () => host, directory: "/temporary/plugins", keyMissing: (provider, id) => { asked.push({ provider, id }); return null; } });
+	const refused = await gone.call("flashcards", request({ operation: "preflight-file", input: {} }));
+	assert.equal(refused.status, 422);
+	assert.deepEqual(await refused.json(), { error: message, code: "model_unavailable" });
+	assert.deepEqual(asked, [model]);
+	const envelope = { code: "provider_key_missing", provider: "opencode-go", slots: [], error: "No OpenCode Go key is set" };
+	const keyless = createPluginTransport({ getHost: async () => host, directory: "/temporary/plugins", keyMissing: () => envelope });
+	const keyRefused = await keyless.call("flashcards", request({ operation: "preflight-file", input: {} }));
+	assert.equal(keyRefused.status, 503);
+	assert.deepEqual(await keyRefused.json(), envelope);
+	host.call = async () => { throw new Error("Plugin operation failed"); };
+	assert.equal((await gone.call("flashcards", request({ operation: "x", input: {} }))).status, 500, "other plugin errors stay 500");
+});

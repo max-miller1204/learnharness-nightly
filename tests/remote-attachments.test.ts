@@ -124,6 +124,30 @@ test("a refused opening creates no chat and leaves its bytes reusable", async ()
 	assert.equal((await uploadAttachmentRequest(request(upload.uploadUrl, "PUT", "test"))).status, 204);
 });
 
+test("an opening on a saved model the catalog dropped is refused as model_unavailable, even without its key", async () => {
+	const { readSettings, writeSettings } = await import("../src/store/settings.ts");
+	const before = readSettings();
+	const savedKey = process.env.OPENCODE_API_KEY;
+	delete process.env.OPENCODE_API_KEY;
+	writeSettings({ version: 1, models: { strong: { model: { provider: "opencode-go", id: "minimax-m3.1-flash-free" } } } });
+	try {
+		const draftId = randomUUID();
+		const upload = await (await reserve(draftId, 4)).json();
+		assert.equal((await uploadAttachmentRequest(request(upload.uploadUrl, "PUT", "test"))).status, 204);
+		const chats = chatStore.listChats().length;
+		const refused = await startAttachmentRequest(request("/api/attachments/start", "POST", JSON.stringify({ draftId, sendId: randomUUID(), title: "Open with a file", attachmentUploadIds: [upload.id] })));
+		assert.equal(refused.status, 422);
+		assert.deepEqual(await refused.json(), {
+			error: "The model opencode-go/minimax-m3.1-flash-free is no longer available. Pick another model in Settings.",
+			code: "model_unavailable",
+		});
+		assert.equal(chatStore.listChats().length, chats, "no chat is created");
+	} finally {
+		writeSettings(before ?? { version: 1 });
+		if (savedKey !== undefined) process.env.OPENCODE_API_KEY = savedKey;
+	}
+});
+
 test("claim scopes, protects the pending source on save failure, and collects only after live references disappear", async () => {
 	const draftId = randomUUID();
 	const { id, uploadUrl } = await (await reserve(draftId, 4)).json();

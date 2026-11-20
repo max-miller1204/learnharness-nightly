@@ -10,6 +10,7 @@ import { createNotesImportQueue, EMPTY_IMPORT_QUEUE, notesPath } from "./notes-i
 import { planFolder, planSummaries, type FolderPlan } from "./notes-import-folder";
 import { HostDialog } from "@/components/host-dialog";
 import type { ImportEstimate } from "@/lib/notes-import-estimate";
+import { modelUnavailableMessage } from "@/src/core";
 
 export { MAX_IMPORT_BYTES } from "@/lib/notes-import-limits.ts";
 export { notesPath } from "./notes-import-queue";
@@ -228,6 +229,7 @@ export function folderReviewLines(review: FolderReview): { title: string; conten
 	const estimateLine = empty ? undefined
 		: estimate === "loading" ? "Estimating the cost..."
 			: estimate === "failed" ? "Could not estimate the cost."
+				: estimate.unavailable ? `About ${count(estimate.tokens)} tokens. ${modelUnavailableMessage(estimate.unavailable.slice(0, estimate.unavailable.indexOf(":")), estimate.unavailable.slice(estimate.unavailable.indexOf(":") + 1))}`
 				: estimate.usd === null ? `About ${count(estimate.tokens)} tokens; cost not estimated for ${estimate.unpriced ?? "this model"}.`
 					: `About ${count(estimate.tokens)} tokens, about ${dollars(estimate.usd)}${estimate.rough ? " (rough)" : ""}`;
 	return {
