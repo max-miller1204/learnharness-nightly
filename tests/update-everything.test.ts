@@ -471,3 +471,20 @@ test("the remote preload exposes only window.lh.desktopUpdate with four methods"
 	lh.desktopUpdate.install!("0.0.1-evil", "https://evil.example");
 	assert.deepEqual(invoked, [["lh:desktop-update", "install"]], "arguments from the page are never forwarded");
 });
+
+test("a run names the server it updates from its confirmation to its end, so the list can hold that server", async () => {
+	const f = fixture({ answers: [0, 1] });
+	assert.equal(f.ue.server(), null);
+	let duringUpdate: unknown;
+	f.remote.onInstall = () => {
+		duringUpdate = f.ue.server();
+		f.remote.running = V72; f.remote.health = V72; f.remote.instance = "new";
+	};
+	await f.ue.install();
+	await f.done;
+	assert.equal(duringUpdate, ORIGIN);
+	await until(() => f.ue.server() === null);
+	const cancelled = fixture({ answers: [1] });
+	await cancelled.ue.install();
+	await until(() => cancelled.ue.server() === null);
+});

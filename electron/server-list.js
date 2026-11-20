@@ -17,12 +17,14 @@ function showPair(origin = "") {
 }
 
 function render() {
-	const { servers, active, defaultServer, damaged, busy, problem, notice, signingIn } = state;
-	const firstRun = !defaultServer && !active && !problem && servers.length === 0 && !notice;
+	const { servers, active, defaultServer, damaged, busy, removing, problem, notice, signingIn } = state;
+	// Also with This computer open once every saved server and the default are removed:
+	// what is picked on the setup screen then becomes the default.
+	const firstRun = !defaultServer && !problem && servers.length === 0 && !notice;
 	$("welcome").hidden = !firstRun || adding;
 	$("list").hidden = (firstRun || adding) && !problem;
 	$("add-server").hidden = !adding || !!problem;
-	$("notice").textContent = busy ? "Connecting…" : signingIn ? "Finish sign-in in your browser." : notice;
+	$("notice").textContent = removing ? "Removing…" : busy ? "Connecting…" : signingIn ? "Finish sign-in in your browser." : notice;
 	$("recovery").hidden = !problem;
 	if (problem) {
 		$("problem").textContent = problem.message;
@@ -59,12 +61,28 @@ function render() {
 			button.onclick = () => void (server === active ? api.setDefault(server) : api.connect(server));
 			item.append(button);
 		}
+		if (server !== "local" && !damaged) {
+			const remove = document.createElement("button");
+			remove.type = "button";
+			remove.textContent = "Remove…";
+			remove.setAttribute("aria-label", `Remove ${server} from this device`);
+			remove.onclick = async () => {
+				await api.remove(server);
+				// Its row is gone: focus Add a server, or the first control when the list
+				// gave way to the setup screen.
+				if (!document.activeElement || document.activeElement === document.body) {
+					const usable = (button) => !button.disabled && !button.closest("[hidden]");
+					(usable($("add")) ? $("add") : [...document.querySelectorAll("main button")].find(usable))?.focus();
+				}
+			};
+			item.append(remove);
+		}
 		return item;
 	}));
 	$("add").hidden = damaged;
 	$("reset").hidden = !damaged;
 	$("sign-in").hidden = !active || active === "local";
-	$("pair-submit").textContent = busy ? "Connecting…" : "Connect";
+	$("pair-submit").textContent = busy && !removing ? "Connecting…" : "Connect";
 	document.querySelectorAll("button, input").forEach((input) => { input.disabled = busy; });
 	$("sign-in").disabled = busy || signingIn;
 }

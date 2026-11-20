@@ -37,8 +37,9 @@ function isShell(value) {
 }
 
 async function createServerList({
-	app, BrowserWindow, WebContentsView, ipcMain, session, shell, safeStorage,
+	app, BrowserWindow, WebContentsView, ipcMain, session, shell, safeStorage, dialog,
 	startLocal, stopLocal, createLocalWindow, setLocalMenu, themeMode = () => "dark", platform = process.platform,
+	updatingServer = () => null,
 }) {
 	const file = path.join(app.getPath("userData"), "servers.json");
 	const store = await openServerList(file, safeStorage);
@@ -47,6 +48,8 @@ async function createServerList({
 	let window = null;
 	let controls = null;
 	let busy = false;
+	// The saved server a confirmed Remove is forgetting, while its write runs.
+	let removing = null;
 	let problem = null;
 	let notice = "";
 	let connecting = null;
@@ -55,16 +58,25 @@ async function createServerList({
 	let login = null;
 	// Settles after the latest attempt, including any cancel it sends.
 	let lastLogin = Promise.resolve();
-	const rechecking = new WeakSet();
+	// The running check of each window: { server, stop, again }.
+	const rechecks = new WeakMap();
+	// Each remote window's lifetime: it ends any check still running for it.
+	const lifetimes = new WeakMap();
 	let closing = false;
 	// Update everything (update-everything.cjs) covers the server's page with the
 	// ghost dashboard while the server restarts. Its errors then are expected.
 	let updating = null;
 
+	// One rule for the races around Remove and Update everything: while a server is being
+	// removed or an update is running against it, nothing starts, reconnects or acts for it.
+	function held(server) {
+		return !!server && (removing === server || updatingServer() === server || updating?.origin === server);
+	}
+	const HELD_BY_UPDATE = "Update everything is running for this server. Try again once it finishes.";
 	function snapshot() {
 		return {
 			servers: store.origins, defaultServer: store.defaultServer, damaged: store.damaged,
-			active: window ? active?.server ?? null : null, busy, problem,
+			active: window ? active?.server ?? null : null, busy: busy || !!removing, removing: !!removing, problem,
 			notice: notice || (store.damaged ? "Couldn’t read the saved server list." : ""), signingIn: !!login,
 		};
 	}
@@ -134,25 +146,45 @@ async function createServerList({
 		show();
 		publish();
 	}
-	async function recheck(win, selection, mainFrame, signal) {
-		if (updating || rechecking.has(win) || busy || win !== window) return;
-		rechecking.add(win);
+	// `retry`: wait out a restarting server first, as a connect does. A page failure or a
+	// Switch server check that arrives while one runs is kept, and runs once that one ends.
+	async function recheck(win, selection, mainFrame, signal, { retry = false } = {}) {
+		if (updating || busy || win !== window || held(selection.server)) return;
+		const running = rechecks.get(win);
+		if (running) {
+			running.again = { mainFrame: mainFrame || !!running.again?.mainFrame, retry: retry || !!running.again?.retry };
+			return;
+		}
+		const check = { server: selection.server, stop: new AbortController(), again: null };
+		rechecks.set(win, check);
+		const options = { signal: signal ? AbortSignal.any([signal, check.stop.signal]) : check.stop.signal, retry };
+		let failure = null;
 		try {
-			await checkDescriptor(selection.server, { signal });
-			await checkSession(selection.server, selection.token, { signal });
+			await checkDescriptor(selection.server, options);
+			await checkSession(selection.server, selection.token, options);
 			if (mainFrame) throw new ServerProblem("retry", "Couldn’t load the server page. Try again.");
-		} catch (error) {
-			if (win === window && !busy) {
-				fail(selection.server, error);
-				destroyContent();
-				publish();
-			}
-		} finally { rechecking.delete(win); }
+		} catch (error) { failure = error; }
+		finally { rechecks.delete(win); }
+		if (options.signal.aborted) return;
+		if (check.again) {
+			return recheck(win, selection, mainFrame || check.again.mainFrame, signal, { retry: retry || check.again.retry });
+		}
+		if (failure && win === window && !busy && !held(selection.server)) {
+			fail(selection.server, failure);
+			destroyContent();
+			publish();
+		}
 	}
 	// Launch, Dock reopen and "This computer" open the app window at once with
 	// the ghost dashboard. Other connects keep "Connecting…" in the list.
+	// Only a connect the user starts in the list (not launch or reopen) finishes first setup.
 	async function connect(server, code, { quiet = false } = {}) {
 		if (busy || closing) return;
+		if (held(server)) {
+			notice = removing === server ? "" : HELD_BY_UPDATE;
+			publish();
+			return;
+		}
 		busy = true;
 		problem = null;
 		notice = "";
@@ -215,7 +247,7 @@ async function createServerList({
 				closeList();
 				const url = await starting;
 				operation.signal.throwIfAborted();
-				if (!store.damaged && !store.defaultServer) await store.saveDefault(server);
+				if (!quiet && !store.damaged && store.firstSetup) await store.saveDefault(server);
 				// As before, the bundled app's own load errors stay in its window.
 				trace("real page load start", "local");
 				await local.load(url).catch(() => {});
@@ -241,6 +273,7 @@ async function createServerList({
 						openExternal: (target) => shell.openExternal(target),
 						onProblem: (mainFrame) => { void recheck(created, selection, mainFrame, lifetime.signal); },
 					});
+					lifetimes.set(created, lifetime.signal);
 					created.once("closed", () => lifetime.abort());
 					registerContent(created);
 					return created;
@@ -268,7 +301,7 @@ async function createServerList({
 					// hidden or under the skeleton, until this check passes.
 					await checkSession(server, token, options);
 					operation.signal.throwIfAborted();
-					if (!store.defaultServer) await store.saveDefault(server);
+					if (!quiet && store.firstSetup) await store.saveDefault(server);
 					operation.signal.throwIfAborted();
 					active = { server, token };
 					trace(skeleton ? "reveal" : "show() call", skeleton ? "remote" : "list connect");
@@ -296,6 +329,39 @@ async function createServerList({
 			busy = false;
 			publish();
 		}
+	}
+	// T3's "Remove from this device…" (ConnectionsSettings.tsx): confirm, then forget the
+	// pairing. Removing the open server closes its window, as T3 disconnects a removed one.
+	async function remove(server) {
+		if (held(server)) {
+			notice = HELD_BY_UPDATE;
+			publish();
+			return;
+		}
+		const { response } = await dialog.showMessageBox(controls, {
+			type: "warning", noLink: true, buttons: ["Cancel", "Confirm"], defaultId: 0, cancelId: 0,
+			message: `Remove ${server} from this device?`,
+			detail: "This forgets its pairing and saved credential here. Pair again to add it back.",
+		});
+		if (response !== 1 || busy || removing || closing || store.damaged || !store.origins.includes(server)) return;
+		if (held(server)) {
+			notice = HELD_BY_UPDATE;
+			publish();
+			return;
+		}
+		// Not busy: a failing check of the open server still shows its problem meanwhile.
+		removing = server;
+		// Its bearer is never sent again: a check still running for it stops now.
+		if (window && rechecks.get(window)?.server === server) rechecks.get(window).stop.abort();
+		publish();
+		try {
+			await store.remove(server);
+			// Its window closes; the list stays in front for the keyboard.
+			if (active?.server === server) { destroyContent(); show(); }
+			if (problem?.server === server) problem = null;
+			notice = "";
+		} catch { notice = "Couldn’t remove the saved server."; }
+		finally { removing = null; publish(); }
 	}
 	async function signIn() {
 		if (busy || login || !active?.token || !window) return;
@@ -332,7 +398,7 @@ async function createServerList({
 		}
 		if (action === "state") return snapshot();
 		if (action === "link") return typeof value === "string" && value.length <= 8192 ? parsePairLink(value) : null;
-		if (busy || closing) return;
+		if (busy || removing || closing) return;
 		if (action === "connect" && (value === "local" || store.origins.includes(value))) return connect(value);
 		if (action === "reset" && store.damaged) {
 			busy = true;
@@ -353,22 +419,29 @@ async function createServerList({
 			try { await store.saveDefault(value); }
 			catch { notice = "Couldn’t save the launch default."; }
 			finally { busy = false; publish(); }
+		} else if (action === "remove" && !store.damaged && store.origins.includes(value)) {
+			await remove(value);
 		} else if (action === "sign-in") {
 			void signIn();
 		}
 	});
 	return {
-		show,
+		/** `check`: Switch server… also checks the open server, so one that went away says so. */
+		show({ check = false } = {}) {
+			const panel = show();
+			if (check && window && active?.token) void recheck(window, active, false, lifetimes.get(window), { retry: true });
+			return panel;
+		},
 		/** `server`: the one Update everything restarted from, reopened once instead of the default. */
 		async launch({ server } = {}) {
 			if (ghosting) return this.reopen();
 			const first = server && !store.damaged && store.origins.includes(server) ? server : store.defaultServer;
-			if (first) return connect(first, undefined, { quiet: true });
+			if (first && !held(first)) return connect(first, undefined, { quiet: true });
 			show();
 		},
 		/** The open window onto a paired server, for Update everything and its bridge. */
 		current() {
-			return window && !window.isDestroyed() && active?.token ? { win: window, origin: active.server, token: active.token } : null;
+			return window && !window.isDestroyed() && active?.token && removing !== active.server ? { win: window, origin: active.server, token: active.token } : null;
 		},
 		/** Only the run's own server: after a switch, another server's page stays uncovered. */
 		coverForUpdate(origin, text) {
@@ -379,7 +452,7 @@ async function createServerList({
 			cover.focus();
 			// The page under the cover reloads itself once the server is back on the new
 			// version (#264). The cover blocks every input, so a page load now is that reload.
-			const state = { win, cover, reloaded: false };
+			const state = { win, origin, cover, reloaded: false };
 			const loaded = (_event, url, code) => { if (code >= 200 && code < 400 && atOrigin(url, origin)) state.reloaded = true; };
 			win.webContents.on("did-navigate", loaded);
 			state.stop = () => { if (!win.isDestroyed()) win.webContents.removeListener("did-navigate", loaded); };
@@ -421,8 +494,13 @@ async function createServerList({
 				if (window && !window.isDestroyed()) window.focus();
 				return window;
 			}
+			if (active && held(active.server)) {
+				if (!window || window.isDestroyed()) return show();
+				window.focus();
+				return window;
+			}
 			if (active) return connect(active.server, undefined, { quiet: true });
-			if (problem || busy) return show();
+			if (problem || busy || removing) return show();
 			return this.launch();
 		},
 		close() {

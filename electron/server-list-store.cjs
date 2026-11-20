@@ -5,7 +5,11 @@ const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { parseOrigin, validToken, ServerProblem } = require("./remote-server.cjs");
 
-const emptyList = () => ({ defaultServer: null, servers: [] });
+// `setUp`: the first setup has saved a default, so a later empty default (the default
+// was removed) stays empty. Lists from before the field have it whenever a default is set.
+// With no saved server and no default left, the list is back at first setup (owner, 2026-11-20).
+const emptyList = () => ({ defaultServer: null, servers: [], setUp: false });
+const settled = (list) => ({ ...list, setUp: list.setUp && (list.servers.length > 0 || list.defaultServer !== null) });
 
 async function openServerList(file, safeStorage, platform = process.platform) {
 	let state = emptyList();
@@ -19,7 +23,7 @@ async function openServerList(file, safeStorage, platform = process.platform) {
 			!(saved.defaultServer === null || saved.defaultServer === "local" || saved.servers.some(({ origin }) => origin === saved.defaultServer))) {
 			throw new Error("Invalid server list.");
 		}
-		state = saved;
+		state = settled({ ...saved, setUp: saved.setUp === true || saved.defaultServer !== null });
 	} catch (error) {
 		damaged = error.code !== "ENOENT";
 	}
@@ -63,10 +67,12 @@ async function openServerList(file, safeStorage, platform = process.platform) {
 			damaged = false;
 		},
 		get defaultServer() { return state.defaultServer; },
+		/** Nothing set up yet, or everything removed since: the next successful setup saves the launch default. */
+		get firstSetup() { return !state.setUp; },
 		get origins() { return state.servers.map(({ origin }) => origin); },
 		async saveDefault(server) {
 			if (server !== "local" && !this.origins.includes(server)) throw new Error("Unknown server.");
-			await save({ ...state, defaultServer: server });
+			await save({ ...state, defaultServer: server, setUp: true });
 		},
 		requireEncryption,
 		async savePairing(origin, token) {
@@ -75,7 +81,16 @@ async function openServerList(file, safeStorage, platform = process.platform) {
 			const encrypted = linux ? safeStorage.encryptString(secret) : await safeStorage.encryptStringAsync(secret);
 			const credential = encrypted.toString("base64");
 			const servers = state.servers.filter((saved) => saved.origin !== origin).concat({ origin, credential });
-			await save({ defaultServer: state.defaultServer, servers });
+			await save({ ...state, servers });
+		},
+		/** Forgets a saved server and its credential. The launch default falls back to none. */
+		async remove(origin) {
+			if (!this.origins.includes(origin)) return;
+			await save(settled({
+				...state,
+				defaultServer: state.defaultServer === origin ? null : state.defaultServer,
+				servers: state.servers.filter((saved) => saved.origin !== origin),
+			}));
 		},
 		async readToken(origin) {
 			const saved = state.servers.find((entry) => entry.origin === origin);
