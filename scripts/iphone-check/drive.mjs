@@ -137,24 +137,44 @@ async function tap(screen, find) {
 	await sleep(700);
 }
 
-/** Open a session row. Rows sit in a native long-press menu; a touch held
- * for a moment, well short of a long press, opens the session. */
+/** Open a session row. Each row sits in a native long-press menu, and on the
+ * simulator a touch at the row's centre may not open it. The ways tried are
+ * logged; the first that works is tried first on the next row. */
+const ROW_TOUCHES = [
+	["AXe tap by label", (row) => ["tap", "--label", label(row)]],
+	["tap on the title text", (row) => ["tap", "-x", String(Math.round(frame(row).x + 40)), "-y", String(Math.round(frame(row).y + frame(row).height * 0.3)), "--tap-style", "physical"]],
+	["tap at the centre", (row) => ["tap", "-x", String(center(row).x), "-y", String(center(row).y), "--tap-style", "physical"]],
+	["tap on the right of the row", (row) => ["tap", "-x", String(Math.round(frame(row).x + frame(row).width - 24)), "-y", String(center(row).y), "--tap-style", "physical"]],
+	["touch held 0.15 s at the title", (row) => ["touch", "-x", String(Math.round(frame(row).x + 40)), "-y", String(Math.round(frame(row).y + frame(row).height * 0.3)), "--down", "--up", "--delay", "0.15"]],
+];
+let rowTouch = 0;
 async function openRow(screen, title, reached) {
-	for (const hold of ["0.15", "0.3"]) {
-		const elements = await settled(screen);
-		const row = elements.find((el) => label(el).startsWith(`${title},`) || label(el) === title);
+	const order = [rowTouch, ...ROW_TOUCHES.keys()].filter((i, n, all) => all.indexOf(i) === n);
+	for (const i of order) {
+		const [name, args] = ROW_TOUCHES[i];
+		const row = (await settled(screen)).find((el) => label(el).startsWith(`${title},`) || label(el) === title);
 		if (!row) fail(screen, `no row for "${title}"`);
-		const { x, y } = center(row);
-		const { stdout } = await axe(["describe-ui", "--point", `${x},${y}`]).catch((error) => ({ stdout: String(error.message) }));
-		log(`touching "${label(row)}" at ${x},${y} for ${hold}s; under it: ${stdout.replace(/\s+/g, " ").slice(0, 200)}`);
-		await axe(["touch", "-x", String(x), "-y", String(y), "--down", "--up", "--delay", hold]);
-		const deadline = Date.now() + 8000;
+		await axe(args(row)).catch((error) => log(`${name} on "${title}" failed to send: ${String(error.stderr || error.message).trim().split("\n")[0]}`));
+		const deadline = Date.now() + 6000;
 		while (Date.now() < deadline) {
-			if (reached(await settled(screen))) return;
 			await sleep(800);
+			if (reached(await settled(screen))) {
+				log(`opened "${title}" with: ${name}`);
+				rowTouch = i;
+				return;
+			}
 		}
+		log(`${name} did not open "${title}"`);
 	}
-	fail(screen, `touching the "${title}" row did not open it`);
+	// Show whether a touch reaches anything on this screen: the kind switch is outside the menu.
+	const kind = (await settled(screen)).find((el) => label(el) === "Teaching" && isChoice(el));
+	if (kind) {
+		await axe(["tap", "-x", String(center(kind).x), "-y", String(center(kind).y), "--tap-style", "physical"]);
+		await sleep(1000);
+		const after = (await settled(screen)).find((el) => label(el) === "Teaching" && isChoice(el));
+		log(`a tap on the Teaching filter left it ${JSON.stringify(after?.AXValue)}`);
+	}
+	fail(screen, `no touch opened the "${title}" row`);
 }
 
 /** Type into a text field a few keys at a time, and check what landed: with
@@ -389,7 +409,8 @@ async function readable() {
 			}
 		}
 		if (boot === 2) fail("simulator", "the accessibility tree never became readable");
-		log("rebooting the simulator");
+		// Setup, not a retry of the check: this happens only before the first screen read.
+		console.log(`::notice title=iPhone simulator reboot::AXe could not read the simulator's screen for 2 minutes; rebooting it (${boot + 1} of 2) before the drive starts.`);
 		await simctl("shutdown", UDID);
 		await simctl("boot", UDID);
 		await simctl("bootstatus", UDID, "-b");

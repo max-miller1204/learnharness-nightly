@@ -90,7 +90,7 @@ Approved by the owner on 2026-11-19 (playback confirmed, no vetoes). A new requi
 5. Taps, typing and the accessibility item list use AXe (T3 installs it at `mobile-showcase-screenshots.yml:79-88`).
 6. The iPhone step goes into the prove-it mobile recipe in the same PR.
 
-**Stopping rules.** The job has a 60-minute timeout and makes no retries of its own. No-runner cancels go through `ci-runner-retry.yml`, which allows at most 3 automatic re-runs per CI run (`docs/specs/ci-runner-retry.md`). After that, the PR waits for a manual re-run.
+**Stopping rules.** The job has a 60-minute timeout and makes no retries of its own. No-runner cancels go through `ci-runner-retry.yml`, which allows at most 3 automatic re-runs per CI run (`docs/specs/ci-runner-retry.md`). After that, the PR waits for a manual re-run. Rebooting the simulator at most twice before the first screen read is setup, not a retry (owner, 2026-11-20): AXe cannot read a simulator whose screens never settle until it reboots. The job logs each reboot and never reboots once the drive has started.
 
 **Promote on merge.** In the same PR, add the iPhone step to `.claude/skills/prove-learnharness/references/features/mobile-beta.md`. Update the "Planned surfaces" line in `.claude/skills/prove-learnharness/SKILL.md:192` so it names the iPhone CI job as the iOS surface. The repo has no numbered invariants list or ADR folder to add to.
 
