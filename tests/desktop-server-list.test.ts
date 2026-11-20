@@ -1227,16 +1227,33 @@ test("Remove forgets a saved server with an ordinary write, a removed default st
 	await reopened.saveDefault("local");
 	await reopened.remove(alpha);
 	assert.equal(reopened.defaultServer, "local", "another default stays");
+	await reopened.remove(beta);
+	assert.equal(reopened.firstSetup, false, "This computer is still the default, so setup stays done");
+
+	// Every saved server and the default gone: back at first setup, also after a restart.
+	await writeOld(alpha);
+	const emptied = await openServerList(file, fakeSafeStorage);
+	await emptied.remove(alpha);
+	assert.equal(emptied.firstSetup, false, "beta is still saved");
+	await emptied.remove(beta);
+	assert.equal(emptied.firstSetup, true);
+	assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), { defaultServer: null, servers: [], setUp: false, version: 1 });
+	assert.equal((await openServerList(file, fakeSafeStorage)).firstSetup, true);
+	await emptied.savePairing(alpha, "alpha-secret");
+	assert.equal(emptied.firstSetup, true, "pairing on the setup screen is still first setup until it connects");
+	// A list that says set up but holds nothing reads as first setup.
+	await fs.writeFile(file, JSON.stringify({ defaultServer: null, servers: [], setUp: true, version: 1 }));
+	assert.equal((await openServerList(file, fakeSafeStorage)).firstSetup, true);
 });
 
 type Published = { busy: boolean; removing: boolean; problem: { server: string; kind: string; message: string } | null; servers: string[] };
 /** A list over saved alpha and beta (default beta), with fetch and the confirm dialog under the test's control. */
-async function removalFixture(t: test.TestContext, { defaultServer = beta as string | null, setUp = true } = {}) {
+async function removalFixture(t: test.TestContext, { defaultServer = beta as string | null, setUp = true, content = "" } = {}) {
 	const directory = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-remove-"));
 	const originalFetch = globalThis.fetch;
 	t.after(async () => { globalThis.fetch = originalFetch; await fs.rm(directory, { recursive: true, force: true }); });
 	const file = path.join(directory, "servers.json");
-	await fs.writeFile(file, JSON.stringify({
+	await fs.writeFile(file, content || JSON.stringify({
 		defaultServer, version: 1, ...(setUp ? {} : { setUp: false }),
 		servers: [{ origin: alpha, credential: savedCredential(alpha, "alpha-secret") }, { origin: beta, credential: savedCredential(beta, "beta-secret") }],
 	}), { mode: 0o600 });
@@ -1264,6 +1281,7 @@ async function removalFixture(t: test.TestContext, { defaultServer = beta as str
 		if (fixture.down.has(url.origin)) throw new TypeError("fetch failed", { cause: Object.assign(new Error("refused"), { code: "ECONNREFUSED" }) });
 		if (url.pathname === PROTOCOL_ROUTES.serverInfo) return Response.json({ name: "Test server", protocolVersion: CLIENT_PROTOCOL_VERSION });
 		if (url.pathname === PROTOCOL_ROUTES.session) return Response.json({ authenticated: true });
+		if (url.pathname === PROTOCOL_ROUTES.token) return Response.json({ access_token: url.origin === alpha ? "alpha-secret" : "beta-secret", token_type: "Bearer" });
 		throw new Error("Unexpected request " + url.pathname);
 	};
 	type FakeEvent = { sender: TestWindow["webContents"]; senderFrame: { url: string } };
@@ -1345,7 +1363,7 @@ test("Remove asks first, forgets the server, and closes the open server it forge
 	assert.deepEqual((await openServerList(list.file, fakeSafeStorage)).origins, [alpha]);
 });
 
-test("a removal shows Removing…, not Connecting…, and a removed default is never replaced by a later connect", async (t) => {
+test("a removal shows Removing…, not Connecting…, and a default removed while other servers remain isn't replaced by a later connect", async (t) => {
 	const list = await removalFixture(t);
 	await list.controller.launch();
 	await list.send("remove", beta);
@@ -1387,6 +1405,39 @@ test("a removal shows Removing…, not Connecting…, and a removed default is n
 	// Set as default still works.
 	await list.send("default", alpha);
 	assert.equal((await list.state()).defaultServer, alpha);
+});
+
+test("once every saved server and the default are removed, the setup screen's pick becomes the default again", async (t) => {
+	for (const pick of ["local", "paired"]) {
+		const list = await removalFixture(t);
+		await list.controller.launch();
+		await list.send("remove", beta);
+		await list.send("connect", "local");
+		assert.equal((await list.state()).defaultServer, null, `${pick}: alpha is still saved, so no default yet`);
+		await list.send("remove", alpha);
+		assert.deepEqual((await list.state()).servers, []);
+		list.controller.close();
+		for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
+
+		// The next launch over the emptied list: no default, so the setup screen shows.
+		const next = await removalFixture(t, { content: await fs.readFile(list.file, "utf8") });
+		const windows = TestWindow.all.length;
+		await next.controller.launch();
+		assert.equal(TestWindow.all.length, windows + 1, "only the list opens");
+		const opened = await next.state();
+		assert.deepEqual([opened.servers, opened.defaultServer, opened.active, opened.problem], [[], null, null, null]);
+		if (pick === "local") {
+			await next.send("connect", "local");
+			assert.equal((await next.state()).defaultServer, "local", "This computer becomes the default");
+		} else {
+			await next.send("pair", { origin: alpha, code });
+			assert.equal(next.controller.current()?.origin, alpha);
+			assert.equal((await next.state()).defaultServer, alpha, "the newly paired server becomes the default");
+		}
+		assert.equal((await openServerList(next.file, fakeSafeStorage)).defaultServer, pick === "local" ? "local" : alpha);
+		next.controller.close();
+		for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
+	}
 });
 
 test("the first setup of an old list paired but never connected still saves its default", async (t) => {
