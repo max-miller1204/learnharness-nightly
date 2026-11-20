@@ -37,7 +37,7 @@ free_port() { node -e 'const s=require("net").createServer();s.listen(0,"127.0.0
 # uses it, so paths written into env, pid checks and unit names always match.
 canon_run() {
 	local run
-	run=$(cd -- "${1:?run folder required}" 2>/dev/null && pwd -P) || die "no run folder $1"
+	run=$(CDPATH= cd -- "${1:?run folder required}" 2>/dev/null && pwd -P) || die "no run folder $1"
 	case "$run" in
 		"$REPO"/.prove-it/runs/[0-9]*T[0-9]*Z-*) ;;
 		*) die "refusing: $run is not a run folder under $REPO/.prove-it/runs/ (make one with new-run.sh)" ;;

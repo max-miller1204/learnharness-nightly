@@ -17,7 +17,7 @@
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import puppeteer from "puppeteer-core";
@@ -44,11 +44,13 @@ const QUIZ = { id: "chat_zzmobilequiz", title: "Splits and gradient steps" };
 // The pending question's choices (tests/fixtures/mobile-quiz), each matched
 // by its spoken label. A label may never show `$` or `\`.
 const CHOICES = [
-	{ label: "Train: $4$; test: $8$", spoken: /train\D*4\D*test\D*8/i, answer: true },
-	{ label: "$(+0.20, -0.10)$", spoken: /0\.20?\D+0\.10?(?!\d)/, answer: true },
-	{ label: "$(-0.10, +0.20)$", spoken: /0\.10?\D+0\.20?(?!\d)/ },
+	{ label: "Train: $4$; test: $8$", spoken: /^Train: 4; test: 8$/, answer: true },
+	{ label: "$(+0.20, -0.10)$", spoken: /^open paren (positive|plus) 0\.20 comma (negative|minus) 0\.10 close paren$/, answer: true },
+	{ label: "$(-0.10, +0.20)$", spoken: /^open paren (negative|minus) 0\.10 comma (positive|plus) 0\.20 close paren$/ },
 	{ label: "None of these", spoken: /^None of these$/ },
 ];
+// The answered card's line: both chosen answers, math spoken, in order.
+const ANSWER_LINE = /^Train: 4; test: 8,\s*open paren (positive|plus) 0\.20 comma (negative|minus) 0\.10 close paren$/;
 const MODES = [
 	{ mode: "light", webTheme: "ivory" },
 	{ mode: "dark", webTheme: "default" },
@@ -71,14 +73,15 @@ const REPEATABLE = new Set(["describe-ui", "displays", "swipe", "drag"]);
 async function axe(args) {
 	for (let attempt = 1; ; attempt++) {
 		try {
-			return await run(AXE, [...args, "--udid", UDID], { maxBuffer: 64 << 20, env: { ...process.env, AXE_HID_STABILIZATION_MS: "1000" } });
+			// No AXe call may hang the job: each is stopped after 2 minutes.
+			return await run(AXE, [...args, "--udid", UDID], { maxBuffer: 64 << 20, timeout: 120_000, env: { ...process.env, AXE_HID_STABILIZATION_MS: "1000" } });
 		} catch (error) {
 			if (!error.signal || !REPEATABLE.has(args[0]) || attempt === 3) throw error;
-			log(`AXe crashed (${error.signal}) on ${args[0]}; running it again`);
+			log(`AXe ${error.killed ? "timed out" : `crashed (${error.signal})`} on ${args[0]}; running it again`);
 		}
 	}
 }
-const simctl = (...args) => run("xcrun", ["simctl", ...args], { maxBuffer: 64 << 20 });
+const simctl = (...args) => run("xcrun", ["simctl", ...args], { maxBuffer: 64 << 20, timeout: 300_000 });
 
 function flatten(nodes, out = []) {
 	for (const node of nodes ?? []) {
@@ -209,27 +212,52 @@ async function setPhoneMode(mode) {
 	await sleep(1500);
 }
 
-/** Screenshot a session: from the top of the transcript down, a page at a time. */
-async function phonePages(screen, mode, marker, { dock = false } = {}) {
+/** Screenshot a session a page at a time, numbered top to bottom. From the
+ * top, it first flicks up until the screen stops changing, then pages down.
+ * From the bottom (where the previous paging left it) it pages up, no flicks. */
+async function phonePages(screen, mode, marker, { dock = false, from = "top" } = {}) {
 	await waitFor(screen, marker);
-	const x = Math.round(screenSize.width / 2);
+	const x = String(Math.round(screenSize.width / 2));
 	// The transcript sits between the top bar and the dock or composer.
-	const top = Math.round(screenSize.height * 0.16);
-	const bottom = Math.round(screenSize.height * (dock ? 0.4 : 0.75));
-	for (let i = 0; i < 12; i++) await axe(["swipe", "--start-x", String(x), "--start-y", String(top), "--end-x", String(x), "--end-y", String(bottom)]);
-	await sleep(1200);
+	const top = String(Math.round(screenSize.height * 0.16));
+	const bottom = String(Math.round(screenSize.height * (dock ? 0.4 : 0.75)));
+	const hashOf = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
+	if (from === "top") {
+		const probe = path.join(OUT, `.probe-${screen}-${mode}.png`);
+		await simctl("io", UDID, "screenshot", probe);
+		for (let flick = 0, before = hashOf(probe); flick < 8; flick++) {
+			await axe(["swipe", "--start-x", x, "--start-y", top, "--end-x", x, "--end-y", bottom]);
+			await sleep(900);
+			await simctl("io", UDID, "screenshot", probe);
+			const now = hashOf(probe);
+			if (now === before) break;
+			before = now;
+		}
+		unlinkSync(probe);
+	}
+	const files = [];
 	let previous = "";
 	for (let page = 1; page <= 10; page++) {
 		await settled(screen);
-		const hash = await phoneShot(screen, mode, page);
+		const file = path.join(OUT, "iphone", `${screen}-${mode}-${from}-${page}.png`);
+		await simctl("io", UDID, "screenshot", file);
+		const hash = hashOf(file);
 		if (hash === previous) {
-			shots.pop();
+			unlinkSync(file);
 			break;
 		}
+		files.push(file);
 		previous = hash;
-		await axe(["drag", "--start-x", String(x), "--start-y", String(bottom), "--end-x", String(x), "--end-y", String(top)]);
+		const [startY, endY] = from === "top" ? [bottom, top] : [top, bottom];
+		await axe(["drag", "--start-x", x, "--start-y", startY, "--end-x", x, "--end-y", endY]);
 		await sleep(900);
 	}
+	if (from === "bottom") files.reverse();
+	files.forEach((file, i) => {
+		const named = path.join(OUT, "iphone", `${screen}-${mode}-${i + 1}.png`);
+		renameSync(file, named);
+		shots.push({ screen, mode, side: "iphone", file: named });
+	});
 }
 
 /** Goal 4: each choice is one accessibility item that speaks its math. The
@@ -259,7 +287,8 @@ async function rowHits(rows) {
 		for (const x of [f.x + 18, f.x + 60, f.x + f.width * 0.6]) {
 			const point = `${Math.round(x)},${Math.round(f.y + f.height / 2)}`;
 			let stdout = "";
-			for (let attempt = 1; !stdout; attempt++) {
+			for (let attempt = 1; !stdout.trim(); attempt++) {
+				if (attempt > 3) fail("quiz-waiting", `could not read the screen at ${point}: AXe returned nothing three times`);
 				try { ({ stdout } = await axe(["describe-ui", "--point", point])); } catch (error) {
 					if (attempt === 3) fail("quiz-waiting", `could not read the screen at ${point}: ${String(error.stderr || error.message).trim().split("\n")[0]}`);
 					await sleep(1500);
@@ -314,7 +343,7 @@ async function setWebTheme(theme) {
 async function webShots(browser, screens) {
 	for (const { mode, webTheme } of MODES) {
 		await setWebTheme(webTheme);
-		for (const { screen, route, text, signedOut } of screens) {
+		for (const { screen, route, text, signedOut, shows = [] } of screens) {
 			const context = await browser.createBrowserContext();
 			try {
 				const page = await context.newPage();
@@ -328,6 +357,8 @@ async function webShots(browser, screens) {
 				} catch {
 					fail(`web ${screen}`, `"${text}" never showed`);
 				}
+				const body = await page.evaluate(() => document.body.innerText);
+				for (const pattern of shows) if (!pattern.test(body)) fail(`web ${screen}`, `the page does not show ${pattern}`);
 				await sleep(2000);
 				// The tallest scrolling element holds the transcript; shoot it a page at a time.
 				const pages = await page.evaluate(() => {
@@ -412,7 +443,9 @@ async function main() {
 	]));
 	await phone();
 	await withBrowser(async (browser) => {
-		await webShots(browser, [{ screen: "quiz-answered", route: `/chat/${QUIZ.id}`, text: "The first pair fits" }]);
+		// The answered card lists both picked answers before the scripted reply.
+		await webShots(browser, [{ screen: "quiz-answered", route: `/chat/${QUIZ.id}`, text: "The first pair fits",
+			shows: [/Pick every pair[^]*?Train:[^]*?test:[^]*?0\.20[^]*?0\.10[^]*?The first pair fits/] }]);
 		await sideBySide(browser);
 	});
 }
@@ -481,12 +514,15 @@ async function phone() {
 	// connection opens the next fixture session instead of a tapped row.
 	const sessionsReached = (elements) => hasMatch(new RegExp(QUIZ.title))(elements) && hasMatch(new RegExp(LESSON.title))(elements);
 	const inSession = (title) => (elements) => has("Sessions")(elements) && elements.some((el) => label(el) === title);
+	// Each screen must show its fixture's own content, not just its title.
+	const lesson = (elements) => inSession(LESSON.title)(elements) && has("Teach me about sets and unions")(elements)
+		&& has("Check your understanding")(elements);
 	await waitFor("lesson", inSession(LESSON.title), 60_000);
 	await dismissSavePassword("lesson");
-	for (const { mode } of MODES) {
-		await setPhoneMode(mode);
-		await phonePages("lesson", mode, inSession(LESSON.title));
-	}
+	await setPhoneMode("light");
+	await phonePages("lesson", "light", lesson);
+	await setPhoneMode("dark");
+	await phonePages("lesson", "dark", lesson, { from: "bottom" });
 	await tap("lesson", (el) => label(el) === "Sessions");
 	for (const { mode } of MODES) {
 		await setPhoneMode(mode);
@@ -497,19 +533,26 @@ async function phone() {
 	await tap("sessions", (el) => label(el) === "Servers");
 	await waitFor("saved servers", has("Open"));
 	await tap("saved servers", (el) => label(el) === "Open");
-	const waiting = (elements) => inSession(QUIZ.title)(elements) && elements.filter(isChoice).length > 0;
-	for (const { mode } of MODES) {
-		await setPhoneMode(mode);
-		await checkChoiceRows("quiz-waiting", waiting);
-		await phonePages("quiz-waiting", mode, waiting, { dock: true });
-	}
+	const waiting = (elements) => inSession(QUIZ.title)(elements) && elements.filter(isChoice).length > 0
+		&& has("Two words before we start:")(elements);
+	await setPhoneMode("light");
+	await checkChoiceRows("quiz-waiting", waiting);
+	await phonePages("quiz-waiting", "light", waiting, { dock: true });
+	await setPhoneMode("dark");
+	await checkChoiceRows("quiz-waiting", waiting);
+	await phonePages("quiz-waiting", "dark", waiting, { dock: true, from: "bottom" });
 
-	// Answer through the dock: pick the two math choices, then submit.
-	const rows = await checkChoiceRows("quiz-waiting", waiting);
-	for (const choice of CHOICES.filter((c) => c.answer)) {
+	// Answer through the dock: pick the two math choices (each tap reads the
+	// screen afresh), check that exactly those two are ticked, then submit.
+	const want = CHOICES.filter((c) => c.answer);
+	for (const choice of want) {
 		await tap("quiz-waiting", (el) => isChoice(el) && choice.spoken.test(label(el)));
 	}
-	log(`picked ${CHOICES.filter((c) => c.answer).map((c) => c.label).join(" and ")} of ${rows.length} rows`);
+	const ticked = (await settled("quiz-waiting")).filter((el) => isChoice(el) && /(^|, )checked/.test(String(el.AXValue ?? ""))).map(label);
+	if (ticked.length !== want.length || !want.every((c) => ticked.some((text) => c.spoken.test(text)))) {
+		fail("quiz-waiting", `the dock shows ${JSON.stringify(ticked)} ticked, expected exactly ${want.map((c) => c.label).join(" and ")}`);
+	}
+	log(`picked ${want.map((c) => c.label).join(" and ")}`);
 	const x = String(Math.round(screenSize.width / 2));
 	for (let i = 0; i < 8; i++) {
 		const elements = await settled("quiz-waiting");
@@ -523,15 +566,22 @@ async function phone() {
 	// The fake model answers the saved quiz answer with one scripted reply.
 	const replied = () => readFileSync(inst.MODEL_LOG, "utf8").includes("quiz-answered");
 	const answered = (elements) => replied() && inSession(QUIZ.title)(elements) && !elements.some(isChoice)
-		&& !has("Reply in progress…")(elements);
+		&& !has("Reply in progress…")(elements) && hasMatch(ANSWER_LINE)(elements) && hasMatch(/The first pair fits/)(elements);
 	await waitFor("quiz-answered", answered, 90_000);
-	for (const { mode } of MODES) {
-		await setPhoneMode(mode);
-		await phonePages("quiz-answered", mode, answered);
+	// The saved answer holds exactly the two picked choices.
+	const record = JSON.parse(readFileSync(path.join(inst.DATA_DIR, "chats", `${QUIZ.id}.json`), "utf8"));
+	const saved = record.messages.find((m) => m.role === "toolResult" && m.toolCallId === "call_q3")?.details?.answers?.map((a) => a.label) ?? [];
+	if (JSON.stringify([...saved].sort()) !== JSON.stringify(want.map((c) => c.label).sort())) {
+		fail("quiz-answered", `the saved answer is ${JSON.stringify(saved)}, expected ${JSON.stringify(want.map((c) => c.label))}`);
 	}
+	await setPhoneMode("light");
+	await phonePages("quiz-answered", "light", answered);
+	await setPhoneMode("dark");
+	await phonePages("quiz-answered", "dark", answered, { from: "bottom" });
 }
 
 main().then(() => log(`done: ${shots.length} screenshots in ${OUT}`), (error) => {
-	console.error(error instanceof Failure ? `::error title=iPhone check::${error.message.replace(/\n/g, "%0A")}` : error);
+	const escaped = (text) => text.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+	console.error(error instanceof Failure ? `::error title=iPhone check::${escaped(error.message)}` : error);
 	process.exit(1);
 });

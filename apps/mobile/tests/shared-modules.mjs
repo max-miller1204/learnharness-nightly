@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 import { appAnchor, fromShared, isBare, MOCKED, mockFile } from "./shared-modules-hooks.mjs";
 
 register("./shared-modules-hooks.mjs", import.meta.url);
+// Metro defines __DEV__; the tests run as a dev bundle would.
+globalThis.__DEV__ = true;
 
 const moduleAt = (filename) => Object.assign(new Module(filename), { filename, paths: Module._nodeModulePaths(path.dirname(filename)) });
 const anchor = moduleAt(appAnchor);

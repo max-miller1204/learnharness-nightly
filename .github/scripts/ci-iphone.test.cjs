@@ -18,7 +18,7 @@ function jobBlock(text, id) {
 
 function secretsProblems(block) {
 	const problems = [];
-	if (/\bsecrets\s*[.[]/.test(block)) problems.push("references secrets");
+	if (/\bsecrets\b/.test(block)) problems.push("references secrets");
 	if (!/\n {4}permissions:\n {6}contents: read\n(?! {6})/.test(block)) problems.push("permissions are not exactly contents: read");
 	return problems;
 }

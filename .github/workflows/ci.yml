@@ -226,7 +226,18 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
-      - run: npm run export:ios
+      # The production export, with the CI iPhone job's session opener set on
+      # purpose: a release or update bundle must never carry it
+      # (apps/mobile/src/workspace-view.ts).
+      - name: export:ios, with the CI-only session opener set
+        env:
+          EXPO_PUBLIC_CI_OPEN_SESSIONS: chat_zzcicanary_a,chat_zzcicanary_b
+        run: |
+          npm run export:ios
+          if grep -rlaE "EXPO_PUBLIC_CI_OPEN_SESSIONS|zzcicanary" dist/ios; then
+            echo "::error::the production iOS bundle carries the CI-only session opener"
+            exit 1
+          fi
       - run: npm run export:android
 
   # The phone app on an iOS Simulator against a throwaway server: iPhone and
@@ -306,6 +317,14 @@ jobs:
           cache-dependency-path: apps/mobile/package-lock.json
       - run: npm ci
         working-directory: apps/mobile
+      # CocoaPods' download cache: restored on every run, saved only from main,
+      # as with the Next.js cache, so a pull request never writes it.
+      - name: Restore the CocoaPods download cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/Library/Caches/CocoaPods
+          key: pods-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/mobile/package-lock.json') }}
+          restore-keys: pods-v1-${{ runner.os }}-${{ runner.arch }}-
       # T3 Code's Debug simulator build (scripts/mobile-native-client.ts:722-766):
       # a clean prebuild, pod install, then one unsigned arm64 build. Debug
       # embeds no bundle, so the app can only run what Metro serves it.
@@ -321,6 +340,12 @@ jobs:
           app="$RUNNER_TEMP/dd/Build/Products/Debug-iphonesimulator/LearnHarnessNightly.app"
           if [ -e "$app/main.jsbundle" ]; then echo "::error::the Debug app embeds a bundle"; exit 1; fi
           echo "APP=$app" >> "$GITHUB_ENV"
+      - name: Save the CocoaPods download cache
+        if: github.event_name == 'push'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/Library/Caches/CocoaPods
+          key: pods-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/mobile/package-lock.json') }}
       # The prove scripts' fake-model instance, with the lesson and quiz
       # fixtures in its throwaway data folder, behind a throwaway CA that only
       # this simulator trusts.
