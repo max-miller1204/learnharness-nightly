@@ -320,7 +320,9 @@ async function webShots(browser, screens) {
 				const page = await context.newPage();
 				await page.setViewport({ width: 1280, height: 860 });
 				if (!signedOut) await page.setCookie({ name: `lh_session_${inst.APP_PORT}`, value: inst.APP_TOKEN, url: inst.APP_URL, httpOnly: true, sameSite: "Lax" });
-				await page.goto(`${inst.APP_URL}${route}`, { waitUntil: "domcontentloaded" });
+				// A cold server on a busy CI Mac can take longer than puppeteer's 30 s default.
+				await page.goto(`${inst.APP_URL}${route}`, { waitUntil: "domcontentloaded", timeout: 120_000 })
+					.catch((error) => fail(`web ${screen}`, `${route} did not load: ${error.message}`));
 				try {
 					await page.waitForFunction((want) => document.body?.innerText.includes(want), { timeout: 30_000 }, text);
 				} catch {
