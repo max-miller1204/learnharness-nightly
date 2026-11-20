@@ -16,7 +16,7 @@ import type { LiteText } from "mathjax-full/js/adaptors/lite/Text.js";
 import { readContentSpans } from "../../../src/core/content-reader.ts";
 import { indented, repairMathForDisplay } from "../../../src/core/math-delims.ts";
 import { resolveTheme, shiftHex } from "../../../src/core/themes.ts";
-import { flattenSvg, type SvgNode } from "./svg-flatten";
+import { flattenSvg, safeMarkup, type SvgNode } from "./svg-flatten";
 
 /** AI-written math is untrusted. `html` makes links, styles and ids; `bussproofs` needs
  * an output that measures boxes; `action` adds event handlers, which the drawing can't
@@ -228,12 +228,14 @@ export function drawTex(tex: string, display: boolean): DrawnMath | undefined {
     for (const name of ["width", "height", "style"]) adaptor.removeAttribute(svg, name);
     const original = adaptor.outerHTML(svg);
     if (/data-mml-node="merror"|data-mjx-error/.test(original) || /\s(?:style|id)=/.test(original)) return;
-    // A few joined paths draw far faster than MathJax's tree of groups (svg-flatten.ts).
+    // The same picture without its groups draws far faster (svg-flatten.ts).
     const markup = (flattening.on && flattenSvg(svg as unknown as SvgNode)) || original;
     if (!(width > 0 && height > 0)) return;
     const found = inks(root, undefined, undefined, []);
     const plain = stripData(withoutColors(markup));
     const colored = stripData(markup);
+    // What is drawn is only drawing: nothing that loads, links or runs.
+    if (!safeMarkup(plain) || !safeMarkup(colored)) return;
     return {
       svg: { dark: readable(found, "dark") ? colored : plain, light: readable(found, "light") ? colored : plain },
       width: width / 1000,

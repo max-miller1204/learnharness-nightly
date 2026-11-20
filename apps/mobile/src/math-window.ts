@@ -52,6 +52,7 @@ export class MathWindow {
   private velocity = 0;
   private movedAt = 0;
   private lastMoved = 0;
+  private still: ReturnType<typeof setTimeout> | undefined;
   /** While held nothing mounts or frees: the scroll position isn't the one that will show. */
   private held = false;
   livePictures = 0;
@@ -87,6 +88,13 @@ export class MathWindow {
     this.velocity = this.velocity * 0.5 + speed * 0.5;
     [this.movedAt, this.lastMoved] = [now, offset];
     this.schedule();
+    // No further scroll event comes once the screen stops, so look again then: the velocity
+    // expires, and what was mounted ahead starts its way to being freed.
+    if (this.still !== undefined) clearTimeout(this.still);
+    this.still = setTimeout(() => {
+      this.still = undefined;
+      this.schedule();
+    }, MOVING_GAP_MS + 10);
   }
 
   /** Whether a batch is being measured out of sight. */

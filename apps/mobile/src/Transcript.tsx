@@ -163,7 +163,10 @@ export function messageSegments(message: LhViewMessage): { items: Item[]; segmen
 /** A text part's top-level blocks `from` up to `to`, each drawn on its own so blocks added
  * above leave those already shown untouched. Laid out as one Markdown would be. */
 function MarkdownBlocks({ text, from = 0, to }: { text: string; from?: number; to?: number }) {
-  const shown = blocksOf(text).slice(from, to);
+  // The parse is cached by text, but the cache can drop it: keep this text's blocks, so the
+  // memoized blocks below keep the same tokens across renders.
+  const blocks = useMemo(() => blocksOf(text), [text]);
+  const shown = blocks.slice(from, to);
   if (!shown.length) return null;
   return (
     <View style={{ gap: space.md }}>

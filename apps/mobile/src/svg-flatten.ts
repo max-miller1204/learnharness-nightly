@@ -1,8 +1,12 @@
 // MathJax draws an equation as nested groups, each glyph its own path: about two dozen SVG
-// elements, and react-native-svg makes a native view for every one. Flattened, the same
-// picture is a few paths: the glyphs' outlines moved into place, joined while they don't
-// overlap (so no glyph's winding can cut a hole in another), one join per color. Anything
-// this doesn't understand keeps MathJax's own picture.
+// elements, and react-native-svg makes a native view for every one, too many to mount while a
+// fling moves through a screen of math. Flattened, the same picture is a few paths: the glyphs'
+// outlines moved into place at full precision, and each joined to the path just before it when
+// that path has its color and nothing in it overlaps (so nothing is drawn in a different order,
+// and no glyph's winding can cut a hole in another). Background boxes stay boxes, in place.
+// The shapes, colors and drawing order are MathJax's; only antialiasing at a few edge pixels
+// can differ. Anything this doesn't understand, and any value outside a strict grammar, keeps
+// MathJax's own picture.
 
 /** An element of MathJax's lite DOM, or any tree of the same shape. */
 export interface SvgNode {
@@ -33,7 +37,11 @@ function parseTransform(value: string): Transform | undefined {
   return rest.trim() ? undefined : result;
 }
 
-const format = (value: number) => String(Math.round(value * 100) / 100);
+/** Coordinates at full precision, so nothing moves by rounding. */
+const format = (value: number) => String(value);
+/** A color MathJax writes: a name, a hex value, currentColor or none. */
+const COLOR = /^(?:[a-zA-Z]{1,30}|#[0-9a-fA-F]{3,8})$/;
+const escape = (value: string) => value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 interface Box { left: number; top: number; right: number; bottom: number }
 
@@ -84,9 +92,9 @@ const allowed = (node: SvgNode, own: string[]) =>
 export function flattenSvg(root: SvgNode): string | undefined {
   if (root.kind !== "svg") return;
   const viewBox = root.attributes.viewBox;
-  if (typeof viewBox !== "string") return;
-  const shapes: Shape[] = [];
-  const backgrounds: string[] = [];
+  if (typeof viewBox !== "string" || !viewBox.trim().split(/\s+/).every((part) => new RegExp(`^${NUMBER}$`).test(part))) return;
+  /** What is drawn, in MathJax's order: a background box, or a shape to join. */
+  const items: (Shape | string)[] = [];
   const visit = (node: SvgNode, at: Transform, fill: string | undefined, stroke: string | undefined, width: string | undefined): boolean => {
     const own = node.attributes;
     const local = own.transform === undefined ? IDENTITY : parseTransform(String(own.transform));
@@ -96,14 +104,14 @@ export function flattenSvg(root: SvgNode): string | undefined {
     stroke = own.stroke === undefined ? stroke : String(own.stroke);
     width = own["stroke-width"] === undefined ? width : String(own["stroke-width"]);
     if (node.kind === "g") return allowed(node, []) && node.children.every((child) => visit(child, transform, fill, stroke, width));
-    if (node.children.length || fill === undefined || stroke === undefined || Number(width) !== 0) return false;
+    if (node.children.length || fill === undefined || stroke === undefined || !COLOR.test(fill) || !COLOR.test(stroke) || Number(width) !== 0) return false;
     if (node.kind === "path") {
       if (!allowed(node, ["d"]) || typeof own.d !== "string") return false;
       // MathJax gives a space an empty path.
       if (!own.d.trim()) return true;
       const moved = movePath(own.d, transform);
       if (!moved) return false;
-      shapes.push({ ...moved, fill, stroke });
+      items.push({ ...moved, fill, stroke });
       return true;
     }
     if (node.kind === "rect") {
@@ -114,21 +122,43 @@ export function flattenSvg(root: SvgNode): string | undefined {
       if (!moved) return false;
       if (own["data-bgcolor"] === "true") {
         const { left, top, right, bottom } = moved.box;
-        backgrounds.push(`<rect data-bgcolor="true" fill="${fill}" x="${format(left)}" y="${format(top)}" width="${format(right - left)}" height="${format(bottom - top)}"></rect>`);
-      } else shapes.push({ ...moved, fill, stroke });
+        items.push(`<rect data-bgcolor="true" fill="${escape(fill)}" x="${format(left)}" y="${format(top)}" width="${format(right - left)}" height="${format(bottom - top)}"></rect>`);
+      } else items.push({ ...moved, fill, stroke });
       return true;
     }
     return false;
   };
   if (!allowed(root, ["viewBox", "xmlns", "role", "focusable"])) return;
   if (!root.children.every((child) => visit(child, IDENTITY, undefined, undefined, undefined))) return;
-  // Each shape joins the first path of its color that it doesn't overlap.
-  const joins: { fill: string; stroke: string; parts: Shape[] }[] = [];
-  for (const shape of shapes) {
-    const join = joins.find(({ fill, stroke, parts }) => fill === shape.fill && stroke === shape.stroke && parts.every(({ box }) => !overlaps(box, shape.box)));
-    if (join) join.parts.push(shape);
-    else joins.push({ fill: shape.fill, stroke: shape.stroke, parts: [shape] });
+  // A shape joins the path just before it when that path is its color and nothing in it
+  // overlaps the shape, so nothing is drawn in a different order (what is drawn later stays on
+  // top) and no shape's winding can cut into another's.
+  const out: (string | { fill: string; stroke: string; parts: Shape[] })[] = [];
+  for (const item of items) {
+    const last = out.at(-1);
+    if (typeof item === "string") out.push(item);
+    else if (last && typeof last !== "string" && last.fill === item.fill && last.stroke === item.stroke && last.parts.every(({ box }) => !overlaps(box, item.box))) last.parts.push(item);
+    else out.push({ fill: item.fill, stroke: item.stroke, parts: [item] });
   }
-  const paths = joins.map(({ fill, stroke, parts }) => `<path fill="${fill}" stroke="${stroke}" stroke-width="0" d="${parts.map(({ d }) => d).join("")}"></path>`);
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">${backgrounds.join("")}${paths.join("")}</svg>`;
+  const drawn = out.map((item) => typeof item === "string" ? item
+    : `<path fill="${escape(item.fill)}" stroke="${escape(item.stroke)}" stroke-width="0" d="${item.parts.map(({ d }) => d).join("")}"></path>`);
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${escape(viewBox)}">${drawn.join("")}</svg>`;
+}
+
+const TAG = /<([a-zA-Z]+)((?:\s+[a-zA-Z][a-zA-Z0-9:-]*="[^"<>]*")*)\s*>|<\/([a-zA-Z]+)>/g;
+/** The elements a drawing is made of; nothing that shows another picture, links or holds code. */
+const SAFE_TAGS = new Set(["svg", "g", "path", "rect", "line", "text"]);
+/** Attributes that load, link, run or style; all others only describe the drawing. */
+const UNSAFE_ATTRIBUTE = /^(?:on|xlink:|xml:)|href|src|style|^id$|^class$/i;
+
+/** Whether a finished picture is only drawing: the elements above, and no attribute that
+ * loads, links, runs or styles. Checked on the markup that is actually drawn. */
+export function safeMarkup(markup: string): boolean {
+  let ok = true;
+  const rest = markup.replace(TAG, (_all, open?: string, attributes?: string, close?: string) => {
+    if (!SAFE_TAGS.has(open ?? close ?? "")) ok = false;
+    for (const [, name] of (attributes ?? "").matchAll(/([a-zA-Z][a-zA-Z0-9:-]*)="/g)) if (UNSAFE_ATTRIBUTE.test(name as string)) ok = false;
+    return "";
+  });
+  return ok && !/[<>]/.test(rest);
 }

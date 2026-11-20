@@ -51,16 +51,50 @@ const SCROLL_IDLE_MS = 250;
 const ORIGIN: Position = { message: 0, item: 0 };
 const same = (one: Position, two: Position) => one.message === two.message && one.item === two.item;
 
-/** The segment that ends at `at`, and where it starts, or undefined at the transcript's start. */
-export function segmentBefore(settled: readonly LhViewMessage[], at: Position): { start: Position; segment: Segment } | undefined {
+/** The segment that ends at `at`, where it starts and whose message it is, or undefined at
+ * the transcript's start or when `at` is past a transcript that has since shrunk (a rewind or
+ * retry removed messages while it filled in). */
+export function segmentBefore(settled: readonly LhViewMessage[], at: Position): { start: Position; segment: Segment; id: string } | undefined {
   if (at.item > 0) {
-    const segment = messageSegments(settled[at.message] as LhViewMessage).segments.findLast(({ from }) => from < at.item);
-    if (segment) return { start: { message: at.message, item: segment.from }, segment };
+    const current = settled[at.message];
+    if (!current) return;
+    const segment = messageSegments(current).segments.findLast(({ from }) => from < at.item);
+    if (segment) return { start: { message: at.message, item: segment.from }, segment, id: current.id };
   }
-  if (at.message === 0) return;
-  const message = at.message - 1;
-  const segment = messageSegments(settled[message] as LhViewMessage).segments.at(-1) as Segment;
-  return { start: { message, item: segment.from }, segment };
+  const message = settled[at.message - 1];
+  if (!message || at.message > settled.length) return;
+  const segment = messageSegments(message).segments.at(-1) as Segment;
+  return { start: { message: at.message - 1, item: segment.from }, segment, id: message.id };
+}
+
+/** Where a batch being gathered has got to: its start so far, and what it holds. */
+export interface Gathered { next: Position; equations: number; count: number }
+
+/** One turn of drawing, newest first: draws the segments before `gathered.next` until the
+ * deadline, moving it back past each one drawn. `full` once the batch can take no more (or
+ * the start is reached), `ended` when nothing is left before it. At least one equation is
+ * drawn a turn, and no new segment starts after the deadline. */
+export function drawTurn(settled: readonly LhViewMessage[], gathered: Gathered, most: number, deadline: number,
+  drawing: { current: { id: string; queue: DrawQueue } | null }, now: () => number = () => performance.now()): { full: boolean; ended: boolean } {
+  let drew = false;
+  while (gathered.count < SEGMENTS_PER_BATCH) {
+    // A turn ends at its deadline between segments too, so short ones can't run on past it.
+    if (drew && now() >= deadline) return { full: false, ended: false };
+    const before = segmentBefore(settled, gathered.next);
+    if (!before) return { full: true, ended: true };
+    const size = before.segment.equations.length;
+    if (gathered.count > 0 && gathered.equations + size > most) return { full: true, ended: false };
+    // Progress is kept by message, so messages added or removed meanwhile can't mix it up.
+    const id = `${before.id}:${before.start.item}`;
+    if (drawing.current?.id !== id) drawing.current = { id, queue: queueOf(before.segment.equations) };
+    drew = true;
+    if (!drawFrom(drawing.current.queue, deadline, now)) return { full: false, ended: false };
+    drawing.current = null;
+    gathered.equations += size;
+    gathered.next = before.start;
+    gathered.count++;
+  }
+  return { full: true, ended: false };
 }
 
 /** The transcript from `start` up to the next batch's start. The newest batch runs to the end
@@ -201,36 +235,18 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
   useEffect(() => {
     if (!batches || same(first, ORIGIN) || measuring || phase === "landing") return;
     let timer: ReturnType<typeof setTimeout>;
-    let next = first;
-    let equations = 0;
-    let count = 0;
+    const gathered: Gathered = { next: first, equations: 0, count: 0 };
     const started = performance.now();
     const step = () => {
       const shown = phaseNow.current === "shown";
       const moving = shown && scrolling.current;
       const deadline = performance.now() + (moving ? SLICE_MS.scrolling : shown ? SLICE_MS.shown : SLICE_MS.hidden);
       const most = shown ? EQUATIONS_PER_BATCH.shown : EQUATIONS_PER_BATCH.hidden;
-      let full = count >= SEGMENTS_PER_BATCH;
-      while (!full) {
-        const before = segmentBefore(settled, next);
-        if (!before) {
-          full = true;
-          break;
-        }
-        const size = before.segment.equations.length;
-        if (count > 0 && equations + size > most) {
-          full = true;
-          break;
-        }
-        const id = `${before.start.message}:${before.start.item}`;
-        if (drawing.current?.id !== id) drawing.current = { id, queue: queueOf(before.segment.equations) };
-        if (!drawFrom(drawing.current.queue, deadline)) break;
-        drawing.current = null;
-        equations += size;
-        next = before.start;
-        full = ++count >= SEGMENTS_PER_BATCH;
-      }
-      const ready = !same(next, first) && (!shown || full || performance.now() - started >= GATHER_MS);
+      const turn = drawTurn(settled, gathered, most, deadline, drawing);
+      // Nothing before it (the transcript shrank under it): wait for the next change.
+      const { next } = gathered;
+      if (turn.ended && same(next, first)) return;
+      const ready = !same(next, first) && (!shown || turn.full || performance.now() - started >= GATHER_MS);
       if (!ready) {
         timer = setTimeout(step, 0);
         return;
@@ -370,6 +386,8 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
   }, [phase, check]);
 
   const onScroll = useCallback(({ nativeEvent: { contentOffset, layoutMeasurement, contentSize, velocity } }: NativeSyntheticEvent<NativeScrollEvent>) => {
+    // The screen's new size can come with a scroll event before onLayout reports it.
+    const resized = metrics.current.sized && Math.abs(layoutMeasurement.height - metrics.current.viewport) >= 0.5;
     metrics.current = { content: contentSize.height, viewport: layoutMeasurement.height, offset: contentOffset.y, sized: true, measured: true };
     mathWindow.setView(contentOffset.y, layoutMeasurement.height, contentSize.height);
     // A scroll that came with new sizes was the layout's (a rotation, content above, a font
@@ -379,6 +397,8 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
     if (sized || scrolling.current) nearEnd.current = distance() < NEAR_END;
     if (scrolling.current) scrollMoving();
     if (sized) mathWindow.moved(contentOffset.y, Platform.OS === "android" ? velocity?.y : undefined);
+    // A rotation or the keyboard changed the screen: at the end it stays at the end.
+    if (resized && nearEnd.current) scroller.current?.scrollToEnd({ animated: false });
     check();
   }, [check, mathWindow, scrollMoving]);
 

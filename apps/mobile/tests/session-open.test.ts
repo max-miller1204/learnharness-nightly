@@ -10,7 +10,7 @@ import { drawTex } from "../src/choice-math.ts";
 import { Markdown } from "../src/Markdown.tsx";
 import { MathWindow, MathWindowContext } from "../src/math-window.ts";
 import { Capped, drawCount, drawFrom, drawQueue, equationsIn, isDrawn, setEquationCap, EQUATION_CAP } from "../src/message-math.ts";
-import { segmentBefore, smallSession, transcriptVisibility, useSessionOpening, type Batch } from "../src/session-open.ts";
+import { drawTurn, segmentBefore, smallSession, transcriptVisibility, useSessionOpening, type Batch } from "../src/session-open.ts";
 import { markdownTexts, messageSegments, Snapshot, SNAPSHOT_HEIGHT, snapshotBox, Transcript, type Position } from "../src/Transcript.tsx";
 import { space } from "../src/theme.ts";
 import type { LhViewMessage } from "../../../src/core/view.ts";
@@ -614,6 +614,9 @@ test("a reply split between two batches shows every paragraph once, spaced as on
     { id: "newest", start: { message: last, item: cut }, placed: true },
   ] }));
   assert.equal(blocks(split), blocks(whole));
+  // Every word and equation in the same order, the split adding or dropping nothing.
+  const reading = (tree: ReactTestRenderer) => strings(tree.root).join("") + tree.root.findAll((node) => typeof node.type === "function" && node.type.name === "MathPicture").map((node) => node.props.svg as string).join("|");
+  assert.equal(reading(split), reading(whole));
   // The rest of the reply sits as close to its start as the reply's own paragraphs do, to the
   // whole pixel, so placing content above can never round it a pixel either way.
   const margins = split.root.findAll((node) => is(node, "View")).flatMap((node) => [node.props.style].flat(3))
@@ -710,4 +713,89 @@ test("the picture window holds while the transcript lands, looks ahead of a flin
   window.setBatch("older", { y: -50000, height: 3000 });
   window.mountBatch("older");
   assert.equal([...live].filter(([key, value]) => key.startsWith("older:") && value).length, 30);
+});
+
+test("a color that tries to break out of its attribute never adds to the picture", () => {
+  for (const tex of [
+    String.raw`\color{red"/><image href="https://example.invalid/x.png" width="9000" height="9000}{x}`,
+    String.raw`\colorbox{red"/><image href="https://example.invalid/x.png"}{x}`,
+    String.raw`\textcolor{red" onload="x}{y}`,
+  ]) {
+    const drawn = drawTex(tex, false);
+    for (const svg of drawn ? [drawn.svg.dark, drawn.svg.light] : []) {
+      assert.doesNotMatch(svg, /<image|href=|onload=/, tex);
+      for (const [, tag] of svg.matchAll(/<([a-zA-Z]+)/g)) assert.ok(["svg", "g", "path", "rect", "text"].includes(tag as string), `${tex}: <${tag}>`);
+    }
+  }
+});
+
+test("drawn math keeps MathJax's drawing order, so what is drawn later stays on top", () => {
+  const drawn = drawTex(String.raw`x\rlap{\color{blue}{x}}x`, false);
+  assert.ok(drawn);
+  const svg = drawn.svg.light;
+  const blue = svg.indexOf('fill="blue"');
+  assert.ok(blue > 0 && blue < svg.lastIndexOf("<path"), "the last x is drawn after the blue one");
+});
+
+test("filling in stops quietly when the transcript shrinks under it", async () => {
+  const view = projectView(fixture("chat_zzopenlong").messages);
+  assert.equal(segmentBefore(view.slice(0, 5), { message: 19, item: 3 }), undefined);
+  assert.equal(segmentBefore(view.slice(0, 5), { message: 12, item: 0 }), undefined);
+  const settled = coldSession("shrink", 30, 12);
+  const session = await opened(settled);
+  for (let tries = 0; tries < 250 && at(session.now().batches[0], 60); tries++) await wait(20);
+  // A rewind removes most of it mid-fill: nothing throws, and filling in carries on or stops.
+  await session.update({ settled: settled.slice(0, 6) });
+  await wait(300);
+  assert.ok(session.now().batches.length > 0);
+  await act(async () => session.tree.unmount());
+});
+
+test("a drawing turn starts no new segment once its deadline has passed", () => {
+  const name = `deadline${run}`;
+  const settled = projectView([user("u0", "Go"), assistant("a0", Array.from({ length: 100 }, (_, index) => `Step $d_{${name}e${index}}^2$.`).join("\n\n"))]);
+  const gathered = { next: { message: 2, item: 0 }, equations: 0, count: 0 };
+  // Each clock reading is 3 ms later, so a 12 ms turn has room for a few equations, not 60.
+  let clock = 0;
+  const turn = drawTurn(settled, gathered, 200, 12, { current: null }, () => (clock += 3));
+  assert.equal(turn.full, false);
+  assert.ok(gathered.equations >= 1 && gathered.equations <= 4, `${gathered.equations} equations in one turn`);
+});
+
+test("a resize keeps the end whichever of its scroll event and layout comes first", async () => {
+  for (const scrollFirst of [false, true]) {
+    const session = await opened(projectView(fixture("chat_zzopenshort").messages));
+    await session.layout(800);
+    await session.content(2000);
+    await session.scroll(1200, 800, 2000);
+    session.spyScroll();
+    await session.together((events) => {
+      if (scrollFirst) events.scroll(1200, 400, 2000);
+      events.layout(400);
+      if (!scrollFirst) events.scroll(1200, 400, 2000);
+    });
+    assert.equal(session.toEnd.calls, 1, scrollFirst ? "scroll event first" : "layout first");
+    assert.equal(session.now().awayFromEnd, false);
+    await act(async () => session.tree.unmount());
+  }
+});
+
+test("pictures mounted ahead of a fling are freed once the scrolling stops", async () => {
+  const window = new MathWindow();
+  const live = new Map<number, boolean>();
+  for (let y = 0; y < 20000; y += 100) {
+    window.add({ batch: "newest", y, height: 50, measured: true, pictures: 1, wanted: false, committed: false, farSince: undefined,
+      setLive: (value: boolean) => { live.set(y, value); }, measure: () => {} } as Parameters<MathWindow["add"]>[0]);
+  }
+  window.setBatch("newest", { y: 0, height: 20000 });
+  window.setView(15000, 1000, 20000);
+  window.moved(15000, -5);
+  for (let frame = 0; frame < 10; frame++) window.update();
+  // Beyond the three screens kept around the screen, the start and the end, so only the
+  // look-ahead mounted them.
+  const ahead = () => [...live].filter(([y, value]) => value && y >= 11000 && y < 11900).length;
+  assert.ok(ahead() > 0, "mounted ahead while moving");
+  // No more scroll events: the screen has stopped.
+  await new Promise((resolve) => setTimeout(resolve, 900));
+  assert.equal(ahead(), 0, "freed once still");
 });
