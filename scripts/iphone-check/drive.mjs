@@ -137,6 +137,26 @@ async function tap(screen, find) {
 	await sleep(700);
 }
 
+/** Open a session row. Rows sit in a native long-press menu; a touch held
+ * for a moment, well short of a long press, opens the session. */
+async function openRow(screen, title, reached) {
+	for (const hold of ["0.15", "0.3"]) {
+		const elements = await settled(screen);
+		const row = elements.find((el) => label(el).startsWith(`${title},`) || label(el) === title);
+		if (!row) fail(screen, `no row for "${title}"`);
+		const { x, y } = center(row);
+		const { stdout } = await axe(["describe-ui", "--point", `${x},${y}`]).catch((error) => ({ stdout: String(error.message) }));
+		log(`touching "${label(row)}" at ${x},${y} for ${hold}s; under it: ${stdout.replace(/\s+/g, " ").slice(0, 200)}`);
+		await axe(["touch", "-x", String(x), "-y", String(y), "--down", "--up", "--delay", hold]);
+		const deadline = Date.now() + 8000;
+		while (Date.now() < deadline) {
+			if (reached(await settled(screen))) return;
+			await sleep(800);
+		}
+	}
+	fail(screen, `touching the "${title}" row did not open it`);
+}
+
 async function phoneShot(screen, mode, page) {
 	const file = path.join(OUT, "iphone", `${screen}-${mode}${page ? `-${page}` : ""}.png`);
 	await simctl("io", UDID, "screenshot", file);
@@ -382,7 +402,7 @@ async function phone() {
 	}
 
 	const inSession = (title) => (elements) => has("Sessions")(elements) && elements.some((el) => label(el) === title);
-	await tap("sessions", (el) => label(el).includes(LESSON.title));
+	await openRow("sessions", LESSON.title, inSession(LESSON.title));
 	for (const { mode } of MODES) {
 		await setPhoneMode(mode);
 		await phonePages("lesson", mode, inSession(LESSON.title));
@@ -390,7 +410,7 @@ async function phone() {
 	await tap("lesson", (el) => label(el) === "Sessions");
 	await waitFor("sessions", sessionsReached);
 
-	await tap("sessions", (el) => label(el).includes(QUIZ.title));
+	await openRow("sessions", QUIZ.title, inSession(QUIZ.title));
 	const waiting = (elements) => inSession(QUIZ.title)(elements) && elements.filter(isChoice).length > 0;
 	for (const { mode } of MODES) {
 		await setPhoneMode(mode);
