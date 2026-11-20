@@ -68,9 +68,11 @@ function render() {
 			remove.setAttribute("aria-label", `Remove ${server} from this device`);
 			remove.onclick = async () => {
 				await api.remove(server);
-				// Its row is gone: keep the focus in the list for the keyboard.
+				// Its row is gone: focus Add a server, or the first control when the list
+				// gave way to the setup screen.
 				if (!document.activeElement || document.activeElement === document.body) {
-					[...document.querySelectorAll("main button")].find((button) => !button.disabled && !button.closest("[hidden]"))?.focus();
+					const usable = (button) => !button.disabled && !button.closest("[hidden]");
+					(usable($("add")) ? $("add") : [...document.querySelectorAll("main button")].find(usable))?.focus();
 				}
 			};
 			item.append(remove);

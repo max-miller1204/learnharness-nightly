@@ -1541,7 +1541,7 @@ test("a check still waiting when its server is removed never sends the removed b
 	}
 });
 
-test("the list offers Remove… for each saved server but not This computer, and focus stays on a visible control", async () => {
+test("the list offers Remove… for each saved server but not This computer, and focus goes to Add a server, or the first tile once the list is empty", async () => {
 	const shell = path.join(import.meta.dirname, "../electron");
 	assert.match(await fs.readFile(path.join(shell, "server-list.css"), "utf8"), /\[hidden\] \{ display: none !important; \}/, ".alert's display can't show a hidden box");
 	const { window, document } = parseHTML(await fs.readFile(path.join(shell, "server-list.html"), "utf8"));
@@ -1584,14 +1584,17 @@ test("the list offers Remove… for each saved server but not This computer, and
 	await removeButtons()[1]!.onclick!(new window.Event("click") as PointerEvent);
 	assert.deepEqual(sent, [["remove", preview]]);
 	assert.equal(rows().length, 2);
-	assert.equal(document.activeElement, rows()[0]!.querySelector("button"), "This computer's Connect");
+	assert.equal(document.activeElement, $("add"), "Add a server");
+	assert.equal($("add").textContent, "Add a server");
+	listener({ ...base, servers: [beta], active: null });
+	assert.equal(document.activeElement, $("add"), "a later update (the removed server's window closing) keeps it there");
 
 	// The last server and the default go: the setup tiles show, and focus lands on the first.
 	next = { ...base, servers: [], defaultServer: null, active: null };
 	removeButtons()[0]!.focus();
 	await removeButtons()[0]!.onclick!(new window.Event("click") as PointerEvent);
 	assert.equal($("list").hidden, true);
-	assert.equal(document.activeElement, $("run-local"));
+	assert.equal(document.activeElement, $("run-local"), "Add a server is hidden with the list: the This computer tile");
 
 	// A cancelled removal keeps focus where it was.
 	listener(base);

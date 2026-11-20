@@ -356,7 +356,8 @@ async function createServerList({
 		publish();
 		try {
 			await store.remove(server);
-			if (active?.server === server) destroyContent();
+			// Its window closes; the list stays in front for the keyboard.
+			if (active?.server === server) { destroyContent(); show(); }
 			if (problem?.server === server) problem = null;
 			notice = "";
 		} catch { notice = "Couldn’t remove the saved server."; }
