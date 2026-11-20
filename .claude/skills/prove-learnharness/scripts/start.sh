@@ -32,6 +32,20 @@ fi
 SD=$RUN/$SIDE
 [ ! -f "$SD/instance.env" ] || die "$SD already has an instance; stop it first (stop.sh $RUN)"
 mkdir -p "$SD/home" "$SD/data"
+# The server prints a one-time pairing link (/pair#token=...) to stdout at
+# boot (src/server/startup-pairing.ts), so app.log can hold a live credential.
+# Blank its token in place (same length, same file, so the server's own
+# writes carry on at their offsets) on every way out of this script. A start
+# that fails stops its server first, so nothing prints a link afterwards.
+blank_pairing() { node -e 'const fs = require("fs"); const f = process.argv[1]; if (!fs.existsSync(f)) process.exit(0); const s = fs.readFileSync(f, "latin1"); const fd = fs.openSync(f, "r+"); for (const m of s.matchAll(/#token=([^\s)]+)/g)) fs.writeSync(fd, "x".repeat(m[1].length), m.index + 7, "latin1"); fs.closeSync(fd);' "$SD/app.log"; }
+STARTED=0
+on_exit() {
+	if [ "$STARTED" != 1 ] && [ -f "$SD/app.pid" ]; then
+		kill -TERM -- "-$(cat "$SD/app.pid")" 2>/dev/null && sleep 1
+	fi
+	blank_pairing
+}
+trap on_exit EXIT
 printf '{}\n' >"$SD/auth.json"
 chmod 600 "$SD/auth.json"
 FIXTURE=$SD/home/zz-prove-it-fixture.txt
@@ -64,11 +78,6 @@ echo $! >"$SD/app.pid"
 APP_URL=http://127.0.0.1:$APP_PORT
 FAKE_URL=http://127.0.0.1:$FAKE_PORT/v1
 wait_for 10 curl -sf "http://127.0.0.1:$FAKE_PORT/__prove/state" || { cat "$SD/fake-model.log" >&2; die "fake model did not start"; }
-# The server prints a one-time pairing link (/pair#token=...) to stdout at
-# boot (src/server/startup-pairing.ts), so app.log holds a live credential.
-# Blank its token in place: same length, same file, so the server's own
-# writes carry on at their offsets. Receipts and tool output stay clean.
-blank_pairing() { node -e 'const fs = require("fs"); const f = process.argv[1]; if (!fs.existsSync(f)) process.exit(0); const s = fs.readFileSync(f, "latin1"); const fd = fs.openSync(f, "r+"); for (const m of s.matchAll(/#token=([^\s)]+)/g)) fs.writeSync(fd, "x".repeat(m[1].length), m.index + 7, "latin1"); fs.closeSync(fd);' "$SD/app.log"; }
 if ! wait_for "$BOOT_TIMEOUT_S" curl -sf "$APP_URL/api/health"; then
 	blank_pairing
 	tail -40 "$SD/app.log" >&2
@@ -101,4 +110,5 @@ APP_LOG=$SD/app.log
 SCENARIO=$SCENARIO
 MODEL=$PROVE_MODEL
 EOF
+STARTED=1
 echo "$SD/instance.env"

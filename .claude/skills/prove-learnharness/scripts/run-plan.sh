@@ -14,7 +14,8 @@
 # 1 a check failed, or the change itself failed to build, start or launch
 # (BROKEN: back to the builder), 2 BLOCKED (base or environment failed,
 # a planned surface, unmapped files), 3 no app surface, 4 every scripted
-# check passed and a manual device step (mobile) is still to do.
+# check passed and a step by hand is still to do (the plan's "# MANUAL:"
+# lines: a mobile device proof, a CI script's CLI).
 #
 # --base <ref> is applied to the whole run (exported as PROVE_BASE_REF), so
 # the scope, the base build and every comparison use the same base.
@@ -70,7 +71,7 @@ for step in "${STEPS[@]}"; do
 		'node scripts/scope.mjs'*)                                         # same scope args as this run
 			node scripts/scope.mjs "$@" >"$RUN/scope.txt" 2>&1; continue ;;
 		*'scripts/stop.sh'*) continue ;;                                   # cleanup() does it
-		'# MANUAL: '*) manual="${step#\# MANUAL: }"; continue ;;           # a device step for the checker: not BLOCKED
+		'# MANUAL: '*) manual="${manual:+$manual / }${step#\# MANUAL: }"; continue ;; # a step for the checker by hand: not BLOCKED
 		'#'*) blocked="${step#\# }"; break ;;                              # a PLANNED surface: BLOCKED
 	esac
 	# A plan line chains commands with "; " (no planned command contains one);
