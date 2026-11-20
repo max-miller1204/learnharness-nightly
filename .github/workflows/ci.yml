@@ -387,7 +387,8 @@ jobs:
           # Each connection opens the next fixture session: AXe's touches don't reach
           # session rows on the simulator (apps/mobile/src/workspace-view.ts).
           (cd apps/mobile && EXPO_PUBLIC_CI_OPEN_SESSIONS=chat_zzmobilelesson,chat_zzmobilequiz nohup npx expo start --port 8081 > "$RUNNER_TEMP/metro.log" 2>&1 &)
-          curl -fsS --retry 60 --retry-connrefused --retry-delay 2 http://127.0.0.1:8081/status
+          # Metro can take minutes to listen on a busy runner.
+          curl -fsS --retry 300 --retry-connrefused --retry-delay 2 --retry-max-time 600 http://127.0.0.1:8081/status
           # Build the bundle once, so the app's own request is served from a warm cache.
           curl -fsS -o /dev/null --max-time 600 "http://127.0.0.1:8081/.expo/.virtual-metro-entry.bundle?platform=ios&dev=true&hot=false&lazy=true&transform.engine=hermes&transform.bytecode=1&unstable_transformProfile=hermes-stable"
       - name: Drive the app
