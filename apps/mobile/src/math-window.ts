@@ -53,6 +53,7 @@ export class MathWindow {
   private movedAt = 0;
   private lastMoved = 0;
   private still: ReturnType<typeof setTimeout> | undefined;
+  private closed = false;
   /** While held nothing mounts or frees: the scroll position isn't the one that will show. */
   private held = false;
   livePictures = 0;
@@ -168,8 +169,16 @@ export class MathWindow {
     return () => { this.listeners.delete(listener); };
   }
 
-  /** Cancels every pending look, for when the transcript goes away. */
+  /** Lets it look again (after dispose, as when StrictMode mounts the transcript twice). */
+  open() {
+    this.closed = false;
+    this.schedule();
+  }
+
+  /** Cancels every pending look, and takes no new ones until opened again: the transcript
+   * went away, and its blocks' own cleanup must not queue more. */
   dispose() {
+    this.closed = true;
     if (this.frame !== undefined) cancelAnimationFrame(this.frame);
     if (this.timer !== undefined) clearTimeout(this.timer);
     if (this.still !== undefined) clearTimeout(this.still);
@@ -177,6 +186,7 @@ export class MathWindow {
   }
 
   schedule() {
+    if (this.closed) return;
     this.frame ??= requestAnimationFrame(() => {
       this.frame = undefined;
       this.update();

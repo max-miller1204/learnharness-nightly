@@ -126,13 +126,26 @@ test("only drawing reaches the screen: nothing that loads, links or runs", () =>
   assert.equal(safeMarkup('<svg><a href="x"></a></svg>'), false);
   // Every value in its grammar: no url(), no stray words where a color or number goes.
   assert.equal(safeMarkup('<svg viewBox="0 0 1 1"><path fill="url(#x)" d="M0 0Z"></path></svg>'), false);
-  assert.equal(safeMarkup('<svg viewBox="0 0 1 1"><path transform="rotate(10)" d="M0 0Z"></path></svg>'), false);
+  assert.equal(safeMarkup('<svg viewBox="0 0 1 1"><path transform="translate(1,2) skew(url(x))" d="M0 0Z"></path></svg>'), false);
   assert.equal(safeMarkup('<svg viewBox="0 0 1 1"><text font-family="url(x)">x</text></svg>'), false);
   // One picture, properly nested.
   assert.equal(safeMarkup('<svg><g></svg></g>'), false);
   assert.equal(safeMarkup('<svg></svg><svg></svg>'), false);
   assert.equal(safeMarkup('<path d="M0 0Z"></path>'), false);
   assert.equal(safeMarkup('<svg><g>'), false);
+});
+
+test("math MathJax draws with rotations, matrices and rgb() colors still draws", () => {
+  for (const tex of [
+    String.raw`\cancelto{0}{x}`, String.raw`\color{rgb(255,0,0)}x`, String.raw`\colorbox{rgb(255,255,0)}{y}`, String.raw`\textcolor{rgba(0,0,255,0.5)}{z}`,
+    String.raw`\boxed{a=b}`, String.raw`\xcancel{x}`, String.raw`\bcancel{x}`, String.raw`\cancel{x}`,
+    String.raw`\begin{pmatrix}1&2\\3&4\end{pmatrix}`, String.raw`\begin{bmatrix}a&b\\c&d\end{bmatrix}`,
+    String.raw`\hat{x}\vec{v}\tilde{y}\dot{z}\ddot{w}\bar{u}\overline{ab}\underline{cd}\widehat{xyz}`,
+  ]) {
+    const picture = drawTex(tex, true);
+    assert.ok(picture, `${tex} draws`);
+    assert.ok(safeMarkup(picture.svg.dark) && safeMarkup(picture.svg.light), tex);
+  }
 });
 
 test("shapes of one color join only while they don't overlap", () => {

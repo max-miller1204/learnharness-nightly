@@ -72,6 +72,29 @@ const beyond = (settled: readonly LhViewMessage[], at: Position) => at.message >
   || (at.message === settled.length && at.item > 0)
   || (at.message < settled.length && at.item > messageSegments(settled[at.message] as LhViewMessage).items.length);
 
+const before = (one: Position, two: Position) => one.message < two.message || (one.message === two.message && one.item < two.item);
+
+/** Batches whose starts fit the transcript as it is now. A start past the end of its message
+ * (a reply that got shorter) or of the transcript moves to the next message's start, and no
+ * start may pass the one after it, so the batches never overlap and stay in order. The same
+ * array when nothing needs to move. */
+export function fitBatches(settled: readonly LhViewMessage[], batches: readonly Batch[]): readonly Batch[] {
+  let changed = false;
+  let limit: Position = { message: settled.length, item: 0 };
+  const fitted = [...batches];
+  for (let index = fitted.length - 1; index >= 0; index--) {
+    const batch = fitted[index] as Batch;
+    let start = beyond(settled, batch.start) ? { message: Math.min(batch.start.message + 1, settled.length), item: 0 } : batch.start;
+    if (before(limit, start)) start = limit;
+    if (!same(start, batch.start)) {
+      fitted[index] = { ...batch, start };
+      changed = true;
+    }
+    limit = start;
+  }
+  return changed ? fitted : batches;
+}
+
 /** Where a batch being gathered has got to: its start so far, and what it holds. */
 export interface Gathered { next: Position; equations: number; count: number }
 
@@ -194,10 +217,11 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
     // Android's first frame is already at the end; iOS lands a frame later.
     if (whole) setPhase(Platform.OS === "android" ? "shown" : "landing");
   }
-  // A rewind or retry that removes messages leaves no batch starting past the new end, so
-  // filling in (and landing) goes on over what is left.
-  if (batches?.some(({ start }) => beyond(settled, start))) {
-    setBatches(batches.map((batch) => beyond(settled, batch.start) ? { ...batch, start: { message: settled.length, item: 0 } } : batch));
+  // A rewind, retry or shorter reply leaves no batch starting past what is there, so filling in
+  // (and landing) goes on over what is left, and no message shows twice.
+  if (batches) {
+    const fitted = fitBatches(settled, batches);
+    if (fitted !== batches) setBatches([...fitted]);
   }
   const end = useMemo(() => ({ message: settled.length, item: 0 }), [settled.length]);
   const first = batches?.[0]?.start ?? end;
@@ -371,9 +395,12 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
     }, SCROLL_IDLE_MS);
   }, []);
 
-  useEffect(() => () => {
-    if (scrollIdle.current !== null) clearTimeout(scrollIdle.current);
-    mathWindow.dispose();
+  useEffect(() => {
+    mathWindow.open();
+    return () => {
+      if (scrollIdle.current !== null) clearTimeout(scrollIdle.current);
+      mathWindow.dispose();
+    };
   }, [mathWindow]);
 
   // Layout and scroll events move it on too; this catches a commit with no new layout.
@@ -403,10 +430,12 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
     mathWindow.setView(contentOffset.y, layoutMeasurement.height, contentSize.height);
     // A scroll that came with new sizes was the layout's (a rotation, content above, a font
     // change), not the learner's: it leaves keeping to the end as it was.
-    const sized = Math.abs(contentSize.height - lastScroll.current.content) < 0.5 && Math.abs(layoutMeasurement.height - lastScroll.current.viewport) < 0.5;
+    const sameScreen = Math.abs(layoutMeasurement.height - lastScroll.current.viewport) < 0.5;
+    const sized = sameScreen && Math.abs(contentSize.height - lastScroll.current.content) < 0.5;
     lastScroll.current = { content: contentSize.height, viewport: layoutMeasurement.height };
-    // Even mid-drag: a size change is the layout's, never the learner scrolling away.
-    if (sized) nearEnd.current = distance() < NEAR_END;
+    // A new screen size is never the learner, even mid-drag. New content is, during a drag:
+    // the finger moved too.
+    if (sized || (sameScreen && scrolling.current)) nearEnd.current = distance() < NEAR_END;
     if (scrolling.current) scrollMoving();
     if (sized) mathWindow.moved(contentOffset.y, Platform.OS === "android" ? velocity?.y : undefined);
     // A rotation or the keyboard changed the screen: at the end it stays at the end.
@@ -428,7 +457,8 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
         const grew = Math.abs(now - below.current) > 0.5;
         below.current = now;
         // While hidden the transcript always keeps to the end it is landing on.
-        if (grew && (nearEnd.current || phaseNow.current !== "shown")) scroller.current?.scrollToEnd({ animated: false });
+        // Never under the learner's finger: a drag or fling decides where it ends up.
+        if (grew && ((nearEnd.current && !scrolling.current) || phaseNow.current !== "shown")) scroller.current?.scrollToEnd({ animated: false });
       });
     }
     check();

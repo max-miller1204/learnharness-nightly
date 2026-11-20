@@ -40,7 +40,7 @@ function parseTransform(value: string): Transform | undefined {
 /** Coordinates at full precision, so nothing moves by rounding. */
 const format = (value: number) => String(value);
 /** A color MathJax writes: a name, a hex value, currentColor or none. */
-const COLOR = /^(?:[a-zA-Z]{1,30}|#[0-9a-fA-F]{3,8})$/;
+const COLOR = new RegExp(String.raw`^(?:[a-zA-Z]{1,30}|#[0-9a-fA-F]{3,8}|rgba?\(\s*${NUMBER}%?(?:\s*,\s*${NUMBER}%?){2,3}\s*\))$`);
 const escape = (value: string) => value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 interface Box { left: number; top: number; right: number; bottom: number }
@@ -154,7 +154,7 @@ const NUMBERS = new RegExp(`^${NUMBER}(?:[\\s,]+${NUMBER})*$`);
 /** The grammar each drawing attribute's value must follow. */
 const VALUES: Record<string, RegExp> = {
   xmlns: /^http:\/\/www\.w3\.org\/2000\/svg$/, role: /^img$/, focusable: /^false$/, viewBox: NUMBERS,
-  fill: COLOR, stroke: COLOR, "stroke-width": NUMBERS, transform: new RegExp(String.raw`^(?:\s*(?:translate|scale)\(\s*${NUMBER}(?:[\s,]+${NUMBER})?\s*\))*\s*$`),
+  fill: COLOR, stroke: COLOR, "stroke-width": NUMBERS, transform: new RegExp(String.raw`^(?:\s*(?:translate|scale|rotate|matrix|skewX|skewY)\(\s*${NUMBER}(?:[\s,]+${NUMBER}){0,5}\s*\))*\s*$`),
   d: /^[MLHVCSQTAZmlhvcsqtaz0-9.eE\s,+-]*$/, x: NUMBERS, y: NUMBERS, width: NUMBERS, height: NUMBERS,
   x1: NUMBERS, y1: NUMBERS, x2: NUMBERS, y2: NUMBERS, "data-bgcolor": /^true$/,
 };

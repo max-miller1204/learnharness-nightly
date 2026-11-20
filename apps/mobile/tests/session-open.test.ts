@@ -10,7 +10,7 @@ import { drawTex } from "../src/choice-math.ts";
 import { Markdown } from "../src/Markdown.tsx";
 import { MathWindow, MathWindowContext } from "../src/math-window.ts";
 import { Capped, drawCount, drawFrom, drawQueue, equationsIn, isDrawn, setEquationCap, EQUATION_CAP } from "../src/message-math.ts";
-import { drawTurn, segmentBefore, smallSession, transcriptVisibility, useSessionOpening, type Batch } from "../src/session-open.ts";
+import { drawTurn, fitBatches, segmentBefore, smallSession, transcriptVisibility, useSessionOpening, type Batch } from "../src/session-open.ts";
 import { markdownTexts, messageSegments, Snapshot, SNAPSHOT_HEIGHT, snapshotBox, Transcript, type Position } from "../src/Transcript.tsx";
 import { space } from "../src/theme.ts";
 import type { LhViewMessage } from "../../../src/core/view.ts";
@@ -808,6 +808,70 @@ test("a closed transcript's picture window leaves nothing pending", async () => 
   window.dispose();
   await new Promise((resolve) => setTimeout(resolve, 400));
   assert.equal(calls, 0, "no frame or timer ran after it closed");
+});
+
+test("a reply that gets shorter never makes batches overlap or show a message twice", async () => {
+  const name = `shrinkreply${run}`;
+  const reply = (paragraphs: number) => assistant("a1", Array.from({ length: paragraphs }, (_, index) => `Part ${index} $s_{${name}${index}}$.`).join("\n\n"));
+  const messages = (paragraphs: number) => [user("u0", "Go"), reply(paragraphs), user("u2", "More"), assistant("a3", "Last $z$ here.")];
+  const long = projectView(messages(50));
+  const short = projectView(messages(35));
+  // An older batch boundary inside the reply at paragraph 40, the newest batch at the next question.
+  const batches: Batch[] = [
+    { id: "oldest", start: { message: 0, item: 0 }, placed: true },
+    { id: "older", start: { message: 1, item: 40 }, placed: true },
+    { id: "newest", start: { message: 2, item: 0 }, placed: true },
+  ];
+  assert.equal(fitBatches(long, batches), batches, "nothing moves while everything fits");
+  const fitted = fitBatches(short, batches);
+  assert.deepEqual(fitted.map(({ start }) => start), [{ message: 0, item: 0 }, { message: 2, item: 0 }, { message: 2, item: 0 }]);
+  // Each message once, in order, as with no batches at all.
+  const reading = (tree: ReactTestRenderer) => strings(tree.root).join("");
+  const whole = await render(transcript({ settled: short }));
+  const split = await render(transcript({ settled: short, batches: [...fitted] }));
+  assert.equal(reading(split), reading(whole));
+  // No start may pass the one after it, whatever was there before.
+  const crossed = fitBatches(short, [
+    { id: "a", start: { message: 0, item: 0 }, placed: true },
+    { id: "b", start: { message: 3, item: 0 }, placed: true },
+    { id: "c", start: { message: 2, item: 0 }, placed: true },
+  ]);
+  assert.deepEqual(crossed.map(({ start }) => start), [{ message: 0, item: 0 }, { message: 2, item: 0 }, { message: 2, item: 0 }]);
+});
+
+test("a drag away while content grows is the learner leaving the end, in either event order", async () => {
+  for (const contentFirst of [false, true]) {
+    const session = await opened(projectView(fixture("chat_zzopenshort").messages));
+    await session.layout(800);
+    await session.content(2000);
+    await session.scroll(1200, 800, 2000);
+    session.spyScroll();
+    await act(async () => { session.now().scrollProps.onScrollBeginDrag(); });
+    // The finger moves 200 up as the reply below grows by 100.
+    await session.together((events) => {
+      if (contentFirst) events.content(2100);
+      events.scroll(1000, 800, 2100);
+      if (!contentFirst) events.content(2100);
+    });
+    await wait(10);
+    assert.equal(session.now().awayFromEnd, true, contentFirst ? "content first" : "scroll first");
+    assert.equal(session.toEnd.calls, 0, "nothing pulls it back under the finger");
+    await act(async () => session.tree.unmount());
+  }
+});
+
+test("closing the transcript leaves its picture window with nothing to do", async () => {
+  const session = await opened(projectView(fixture("chat_zzopenshort").messages));
+  await session.layout(800);
+  await session.content(2000);
+  const window = session.now().mathWindow;
+  let updates = 0;
+  const update = window.update.bind(window);
+  window.update = () => { updates++; update(); };
+  // Unmounting runs every block's cleanup too, each of which would ask for another look.
+  await act(async () => session.tree.unmount());
+  await sleep(300);
+  assert.equal(updates, 0);
 });
 
 test("a transcript cut short while it opens still lands and shows what is left", async () => {
