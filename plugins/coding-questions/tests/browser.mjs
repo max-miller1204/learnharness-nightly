@@ -456,6 +456,35 @@ try {
   await page.waitForFunction(selector=>!document.querySelector(selector), {}, marker);
   assert.deepEqual(await state(), {status:'ready',value:'const value = 2;'});
 
+  // A tooltip first measured under a transformed ancestor (the host dock while
+  // it animates) must stay fixed and unclipped then and afterwards: diagnostic
+  // tooltips live in a body-level host that the editor removes on dispose.
+  const tooltipHosts=()=>page.$$eval('.lh-coding-question__tooltips',nodes=>nodes.length);
+  await page.evaluate(()=>window.host.unmount());
+  const hostsBefore=await tooltipHosts();
+  await page.evaluate(()=>window.host.mount({language:'C',starterCode:' '.repeat(60)+'int main( { return 0; }'}));
+  await page.waitForSelector('#editor .cm-lintRange-error');
+  assert.equal(await tooltipHosts(),hostsBefore+1,'An editable editor adds one body-level tooltip host');
+  const tooltipShown=async label=>{
+    const box=await (await page.$('#editor .cm-lintRange-error')).boundingBox();
+    await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
+    await page.waitForSelector('.cm-tooltip-lint .cm-diagnosticText',{visible:true});
+    const tip=await page.$eval('.cm-tooltip-lint',lint=>{
+      const node=lint.closest('.cm-tooltip'),rect=node.getBoundingClientRect();
+      const top=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);
+      return {position:getComputedStyle(node).position,inEditor:!!node.closest('#editor'),inHost:!!node.closest('.lh-coding-question__tooltips'),visible:node.contains(top),text:node.textContent};
+    });
+    assert.deepEqual(tip,{position:'fixed',inEditor:false,inHost:true,visible:true,text:'Syntax problem.'},label);
+    await page.mouse.move(1050,800);
+    await page.waitForFunction(()=>!document.querySelector('.cm-tooltip-lint'));
+  };
+  await page.$eval('#editor',node=>{node.style.translate='0 1px'});
+  await tooltipShown('A tooltip measured under a transformed ancestor stays fixed and visible');
+  await page.$eval('#editor',node=>{node.style.translate=''});
+  await tooltipShown('The editor keeps fixed, visible tooltips after the transform clears');
+  await page.evaluate(()=>window.host.unmount());
+  assert.equal(await tooltipHosts(),hostsBefore,'Disposing the editor removes its tooltip host');
+
   await page.evaluate(()=>window.host.mount({language:'JavaScript',starterCode:'const broken = ;\n'+'let value = 1;\n'.repeat(16000)}));
   await page.waitForSelector(marker);
   assert.equal(await page.$eval('#editor .cm-scroller',node=>node.scrollTop),0);
@@ -554,7 +583,7 @@ try {
   assert.ok(requests.every(url=>url.startsWith(base + '/') || url.startsWith('data:image/svg+xml,')),"Only local assets and inline CodeMirror diagnostic SVGs may load");
   assert.deepEqual(errors,[]);
   fs.writeFileSync(path.join(evidence,'result.json'),JSON.stringify({passed:true,requests,errors,diagnosticLanguages:diagnosticExamples.map(([name])=>name),diagnosticDelay,practice:{controlledProps:true,retainedEditor:true,multipleAttempts:true,observationsOnly:true,hiddenSolution:true,footerOrder:practiceOrder,bodyFallback:true,abortIsolation:true},disclosures:{transcriptOrder:['question','code','thinking','test-output','model-solution'],whyTypography:true,textOnlyHover:true,silentOutputHidden:true,modelSolutionHelper:'public Markdown spy; real renderer covered by host integration test',independentToggles:true,abortCleanup:true}},null,2));
-  console.log(`PASS: built editor, whitespace, highlighting, readiness, keyboard/history, controlled selection/fold, plain fallback, saved read-only code, nine-language diagnostics/hover/debounce/advisory submission, test-result badges/output/history, quiet Why-matched controls, saved-question/code/thinking/output/model-solution order, silent output hiding, lazy exact model-solution Markdown, independent toggles, practice adapter/retained editor/multiple attempts/hidden solution/footer observations, late-load/unload/abort cleanup. Evidence: ${evidence}`);
+  console.log(`PASS: built editor, whitespace, highlighting, readiness, keyboard/history, controlled selection/fold, plain fallback, saved read-only code, nine-language diagnostics/hover/debounce/advisory submission, body-level tooltips under a transformed host, test-result badges/output/history, quiet Why-matched controls, saved-question/code/thinking/output/model-solution order, silent output hiding, lazy exact model-solution Markdown, independent toggles, practice adapter/retained editor/multiple attempts/hidden solution/footer observations, late-load/unload/abort cleanup. Evidence: ${evidence}`);
 } finally {
   if(browser)await browser.close();
   server.closeAllConnections();await new Promise(resolve=>server.close(resolve));

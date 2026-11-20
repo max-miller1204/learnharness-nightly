@@ -1,5 +1,5 @@
 import { Compartment, EditorState } from "@codemirror/state";
-import { drawSelection, EditorView, keymap, lineNumbers } from "@codemirror/view";
+import { drawSelection, EditorView, keymap, lineNumbers, tooltips } from "@codemirror/view";
 import { standardKeymap, history, historyKeymap, indentMore, insertNewlineAndIndent } from "@codemirror/commands";
 import { bracketMatching, indentUnit, LanguageDescription, syntaxHighlighting } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
@@ -33,6 +33,16 @@ function createCodeView(container: HTMLElement, language: string, code: string, 
   frame.append(header);
   container.append(frame);
 
+  // Diagnostic tooltips live in a body-level host. Inside the editor, one
+  // measured under a transformed ancestor (the host's dock while it animates)
+  // switches the editor to absolute tooltips for good, and the editor's
+  // overflow then clips them.
+  const tooltipHost = onChange ? document.createElement("div") : null;
+  if (tooltipHost) {
+    tooltipHost.className = "lh-coding-question__tooltips";
+    document.body.append(tooltipHost);
+  }
+
   let disposed = false;
   let applyingControlledUpdate = false;
   const editable = new Compartment();
@@ -44,6 +54,7 @@ function createCodeView(container: HTMLElement, language: string, code: string, 
       doc: normalizeLineEndings(code),
       extensions: [
         lineNumbers(),
+        ...(tooltipHost ? [tooltips({ parent: tooltipHost })] : []),
         history(),
         drawSelection(),
         bracketMatching(),
@@ -101,6 +112,7 @@ function createCodeView(container: HTMLElement, language: string, code: string, 
       disposed = true;
       view.destroy();
       frame.remove();
+      tooltipHost?.remove();
     },
   };
 }
