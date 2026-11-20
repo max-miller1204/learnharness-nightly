@@ -1194,7 +1194,8 @@ test('settings validate atomically and model resolution fails explicitly without
     assert.deepEqual(h.state(), before);
   }
   h.catalog.slots = {};
-  await assert.rejects(h.call('preflight', { propositionIds: ['p1'] }), /Configure the cheap model slot/);
+  await assert.rejects(h.call('preflight', { propositionIds: ['p1'] }), error => /Configure the cheap model slot/.test(error.message)
+    && error.code === 'models_not_configured' && JSON.stringify(error.missing) === '["cheap"]');
   assert.equal(h.workers.starts, 0);
   assert.deepEqual(h.state().propositions, []);
 });

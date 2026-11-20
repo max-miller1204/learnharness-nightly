@@ -132,10 +132,11 @@ export function Home({
 		// The pre-send KEY guards (owner interlude, no-orphan-chats): the
 		// models case guards BEFORE creation; the key cases must too — a
 		// refused first send would otherwise leave an orphan error-shell
-		// chat in the sidebar (the 503 lands only after POST /api/chats
-		// already created the record). Zero providers opens connection setup;
-		// an unavailable selection with another provider opens its ordinary
-		// picker. The server's admission gate remains the belt.
+		// chat in the sidebar (the provider_key_missing refusal lands only
+		// after POST /api/chats already created the record). Zero providers
+		// opens connection setup; an unavailable selection with another
+		// provider opens its ordinary picker. The server's admission gate
+		// remains the belt.
 		if (zeroKeys) {
 			setSetupOpen(true);
 			return;

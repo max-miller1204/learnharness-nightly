@@ -32,6 +32,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CacheRetention } from "@earendil-works/pi-ai";
 import { AUTH_PROVIDER_KEYS } from "./auth-keys.ts";
 import { CLAUDE_CODE_PROVIDER } from "./contracts/claude-code.ts";
+import { NATIVE_SUBSCRIPTIONS } from "./contracts/subscriptions.ts";
 import type { ModelRole } from "../../config.ts";
 import type { ChatSettings } from "./contracts/chat.ts";
 import { isSearchAccountSelection, isSearchEngineId, isSubscriptionSearchEngineId, type SearchSettings } from "./search.ts";
@@ -103,8 +104,8 @@ export const DEFAULT_THINKING_ORDER = [
 ] as const satisfies readonly ThinkingLevel[];
 
 /** The machine-readable NOT-CONFIGURED refusal envelope (owner, 2026-09-22):
- *  every per-need gate — the turn gate in chat-handler, a job spawn, a
- *  notes import — refuses with this exact shape. HTTP callers get 503 +
+ *  every per-need gate (the turn gate in chat-handler, a job spawn, a
+ *  notes import) refuses with this exact shape. HTTP callers get 422 +
  *  this JSON; in-band consumers (the job record's error field) carry the
  *  human `error` line. `missing` names the slot TIER(S) the refused
  *  action needs and found unset. */
@@ -133,7 +134,7 @@ export function isModelsRefusal(error: string | undefined): boolean {
 	return !!error && error.startsWith(modelsNotConfigured([]).error);
 }
 /** The typed throw for in-process seams (extraction pipeline): callers
- *  catch it to skip honestly (trigger) or surface the 503 envelope
+ *  catch it to skip honestly (trigger) or surface the 422 envelope
  *  (routes) instead of logging a failure. */
 export class ModelsNotConfiguredError extends Error {
 	readonly envelope: ModelsNotConfigured;
@@ -147,7 +148,7 @@ export class ModelsNotConfiguredError extends Error {
 /** The key-presence refusal (provider-key interlude, owner, 2026-09-25):
  * a PINNED model is not enough — its provider's key must be present, or
  * the action dies mid-stream masked to a generic error. Same envelope
- * family as modelsNotConfigured: HTTP callers get 503 + this JSON;
+ * family as modelsNotConfigured: HTTP callers get 422 + this JSON;
  * in-band consumers (the job record's error field) carry the human
  * `error` line. `provider` names whose key is gone; `slots` names the
  * slot tier(s) the refused action resolves to that provider. */
@@ -184,7 +185,7 @@ export function isProviderKeyRefusal(error: string | undefined): boolean {
 }
 /** The typed throw for in-process seams (extraction pipeline) — the
  * ProviderKeyMissing sibling of ModelsNotConfiguredError: callers catch
- * it to skip honestly (trigger) or surface the 503 envelope (routes). */
+ * it to skip honestly (trigger) or surface the 422 envelope (routes). */
 export class ProviderKeyMissingError extends Error {
 	readonly envelope: ProviderKeyMissing;
 	constructor(provider: string, slots: ModelSlotName[]) {
@@ -193,6 +194,21 @@ export class ProviderKeyMissingError extends Error {
 		this.name = "ProviderKeyMissingError";
 		this.envelope = envelope;
 	}
+}
+
+/** A subscription whose latest status or catalog check failed while its
+ * runtime is still connected: it may still be connected, so nothing needs
+ * setting up. HTTP callers get 503 + this JSON, which clients retry, never the
+ * 422 setup refusal. A lost runtime is not connected (422). */
+export const SUBSCRIPTION_UNREACHABLE_CODE = "subscription_unreachable" as const;
+export interface SubscriptionUnreachable {
+	error: string;
+	code: typeof SUBSCRIPTION_UNREACHABLE_CODE;
+	provider: string;
+}
+export function subscriptionUnreachable(provider: string): SubscriptionUnreachable {
+	const label = provider === "chatgpt" ? "ChatGPT" : NATIVE_SUBSCRIPTIONS.find((p) => p.logicalId === provider)?.label ?? provider;
+	return { error: `${label} could not be reached just now. Try again in a moment.`, code: SUBSCRIPTION_UNREACHABLE_CODE, provider };
 }
 
 export const CACHE_RETENTIONS = ["none", "short", "long"] as const satisfies readonly CacheRetention[];

@@ -13,10 +13,10 @@ import {
 import { collectCitations } from "../core/citations.ts";
 import { COMPACTION_RESERVE_TOKENS } from "../core/compaction.ts";
 import { resolveSideQuestionSpec } from "../core/settings-resolution.ts";
-import { modelsNotConfigured, providerKeyMissing as providerKeyMissingEnvelope } from "../core/settings.ts";
+import { modelsNotConfigured, providerKeyMissing as providerKeyMissingEnvelope, subscriptionUnreachable } from "../core/settings.ts";
 import { catalogModelGone, ModelUnavailableError, piEngineForSpec, type PiEngine } from "../agent/models.ts";
 import { MODEL_UNAVAILABLE, modelUnavailableMessage } from "../core/model-unavailable.ts";
-import { isSubscriptionProvider } from "../agent/subscription-connections.ts";
+import { isSubscriptionProvider, connectionUnreachable } from "../agent/subscription-connections.ts";
 import { usageWasAdmitted } from "../agent/subscription-request-cycle.ts";
 import { composeSideChatInstructions, streamSideAnswer } from "../agent/side-chat.ts";
 import { effectiveSettings, stores } from "./stores.ts";
@@ -267,11 +267,15 @@ export function createSideChatService(deps: SideChatDeps): SideChatService {
 
 export async function productionEngineFor(record: ChatRecord): Promise<SideEngine | Response> {
 	const spec = resolveSideQuestionSpec(record.settings, stores.settingsStore.readSettings());
-	if (!spec) return Response.json(modelsNotConfigured(["strong"]), { status: 503 });
-	if (isSubscriptionProvider(spec.provider)) await refreshConnectionCatalog(spec.provider);
+	if (!spec) return Response.json(modelsNotConfigured(["strong"]), { status: 422 });
+	if (isSubscriptionProvider(spec.provider)) {
+		await refreshConnectionCatalog(spec.provider);
+		// A failed status check is an outage, not missing setup: retryable 503.
+		if (connectionUnreachable(spec.provider)) return Response.json(subscriptionUnreachable(spec.provider), { status: 503 });
+	}
 	// A saved model the catalog dropped wins over a missing key.
 	if (catalogModelGone(spec.provider, spec.id)) return Response.json({ error: modelUnavailableMessage(spec.provider, spec.id), code: MODEL_UNAVAILABLE }, { status: 422 });
-	if (!providerKeyPresent(spec.provider)) return Response.json(providerKeyMissingEnvelope(spec.provider, ["strong"]), { status: 503 });
+	if (!providerKeyPresent(spec.provider)) return Response.json(providerKeyMissingEnvelope(spec.provider, ["strong"]), { status: 422 });
 	try {
 		let denied = false;
 		const engine = piEngineForSpec(spec, false, { captured() {}, beforeDispatch() {}, noDispatch() { denied = true; } },

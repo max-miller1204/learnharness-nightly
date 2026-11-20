@@ -10,7 +10,7 @@ export const isBare = (specifier) => !/^(\.|\/|#|[a-z]+:)/i.test(specifier);
 export const fromShared = (file) => typeof file === "string" && file.startsWith(shared);
 
 /** Native modules the tests replace with the stand-ins in tests/mocks. */
-export const MOCKED = ["react-native", "react-native-svg", "react-native-webview", "expo-clipboard"];
+export const MOCKED = ["react-native", "react-native-svg", "react-native-webview", "expo", "expo-clipboard", "expo-file-system", "expo-image-manipulator", "expo-image-picker"];
 export const mockFile = (name) => path.join(app, "tests/mocks", `${name}.cjs`);
 
 export function resolve(specifier, context, nextResolve) {

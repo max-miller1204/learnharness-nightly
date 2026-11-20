@@ -983,13 +983,14 @@ export class SessionModel {
 			if (!res.ok) {
 				settleDelivery();
 				// Keep model/key refusal envelopes verbatim: the page's refusal
-				// flow parses them. Retry's 400s and a saved model that is gone
-				// are ordinary user-facing guidance, so show their error text
-				// without JSON syntax.
+				// flow parses them. Retry's 400s, a saved model that is gone and an
+				// unreachable subscription are ordinary user-facing guidance, so
+				// show their error text without JSON syntax.
 				let message = (await res.text()) || `The send failed (${res.status}).`;
 				try {
 					const refusal = JSON.parse(message) as { error?: unknown; code?: unknown } | null;
-					const guidance = (attachments && res.status !== 503) || ((input.type === "retry" || input.type === "retry-question") && res.status === 400) || refusal?.code === "model_unavailable";
+					const setup = refusal?.code === "models_not_configured" || refusal?.code === "provider_key_missing";
+					const guidance = !setup && (attachments || ((input.type === "retry" || input.type === "retry-question") && res.status === 400) || refusal?.code === "model_unavailable" || refusal?.code === "subscription_unreachable");
 					if (guidance && typeof refusal?.error === "string" && refusal.error.length > 0) message = refusal.error;
 				} catch { /* Non-envelope failures keep their original text. */ }
 				throw new Error(message);

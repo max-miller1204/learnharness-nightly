@@ -11,7 +11,7 @@ import {
 } from "../agent/teacher-agent.ts";
 import { catalogModelGone, ModelUnavailableError, piEngineForSpec, type PiEngine } from "../agent/models.ts";
 import { MODEL_UNAVAILABLE, modelUnavailableMessage } from "../core/model-unavailable.ts";
-import { connectionBackgroundAllowed as subscriptionBackgroundAllowed, connectionScopeCurrent, isSubscriptionProvider } from "../agent/subscription-connections.ts";
+import { connectionBackgroundAllowed as subscriptionBackgroundAllowed, connectionScopeCurrent, isSubscriptionProvider, connectionUnreachable } from "../agent/subscription-connections.ts";
 import { nativeSubscriptionError } from "../agent/subscription-stream.ts";
 import { chatGPTStreamError } from "../agent/chatgpt-stream.ts";
 import { SubscriptionRequestCycle, type SubscriptionDispatchLifecycle } from "../agent/subscription-request-cycle.ts";
@@ -50,7 +50,7 @@ import {
 	resolveConversationSpec,
 	resolveRoleSpec,
 } from "../core/settings-resolution.ts";
-import { modelsNotConfigured, providerKeyMissing as providerKeyMissingEnvelope, ROLE_SLOT, type ModelSlotName, type ProviderKeyMissing } from "../core/settings.ts";
+import { modelsNotConfigured, providerKeyMissing as providerKeyMissingEnvelope, subscriptionUnreachable, ROLE_SLOT, type ModelSlotName, type ProviderKeyMissing } from "../core/settings.ts";
 import { beginTurn, endTurn, isTurnRunning } from "./turn-liveness.ts";
 import { claimPreparingTurn, type TurnPreparation } from "./turn-preparation.ts";
 import { applyParkedDismissal } from "./dismissal-park.ts";
@@ -126,7 +126,7 @@ const jobRunner = createJobRunner({
 	// Key-presence gate (provider-key interlude, 2026-09-25): the runner
 	// reads the resolved engine's provider and asks THIS check (the agent
 	// layer may not read the key store); a missing key refuses the spawn
-	// with the 503-envelope family instead of dying mid-run.
+	// with the refusal-envelope family instead of dying mid-run.
 	providerKeyMissing: (provider, tier) =>
 		providerKeyPresent(provider) ? null : providerKeyMissingEnvelope(provider, [tier]),
 	// Search port wave (2026-09-20): the researcher's web_search runs on the
@@ -311,7 +311,7 @@ export async function handleChatInput(
 	// THE UNIVERSAL TURN GATE (BYOK, owner, 2026-09-22): a turn needs the
 	// CONVERSATION chain — the chat's own model override over the strong
 	// slot — and there is no factory floor; when both are empty the turn
-	// refuses honestly with the machine-readable 503 envelope (new sessions
+	// refuses honestly with the machine-readable 422 envelope (new sessions
 	// and continuing ones alike — wake-pipeline turns ride this same path).
 	// Placement is deliberate: BEFORE beginTurn (no liveness effects), the
 	// write-ahead persist (nothing durable changes), and every downstream
@@ -321,7 +321,7 @@ export async function handleChatInput(
 	if (!conversation) {
 		const envelope = modelsNotConfigured(["strong"]);
 		console.info(`[chat ${chatId}] turn refused — ${JSON.stringify(envelope)}`);
-		return Response.json(envelope, { status: 503 });
+		return Response.json(envelope, { status: 422 });
 	}
 
 	// THE KEY-PRESENCE GATE (provider-key interlude, owner, 2026-09-25): a
@@ -335,8 +335,19 @@ export async function handleChatInput(
 	// (a chat.model override still resolves through it).
 	if (isSubscriptionProvider(conversation.provider)) {
 		await refreshConnectionCatalog(conversation.provider);
+		// An unreachable connection is an outage, not missing setup. Steers
+		// park on 403 until the connection changes (the job pump would drop
+		// them on a 503); everything else gets a retryable 503.
+		const unreachable = connectionUnreachable(conversation.provider);
+		if (input.type === "steers" && unreachable) {
+			return Response.json({ error: "This connection could not be reached. Automatic follow-up remains deferred in its queue." }, { status: 403 });
+		}
 		if (input.type === "steers" && !connectionBackgroundAllowed(conversation.provider)) {
 			return Response.json({ error: "Background use is off for this connection. Automatic follow-up remains deferred in its queue." }, { status: 403 });
+		}
+		if (unreachable) {
+			console.info(`[chat ${chatId}] turn refused: ${conversation.provider} unreachable`);
+			return Response.json(subscriptionUnreachable(conversation.provider), { status: 503 });
 		}
 	}
 	// A saved model the catalog dropped is refused first: never ask for a
@@ -348,7 +359,7 @@ export async function handleChatInput(
 	if (!providerKeyPresent(conversation.provider)) {
 		const envelope = providerKeyMissingEnvelope(conversation.provider, ["strong"]);
 		console.info(`[chat ${chatId}] turn refused — ${JSON.stringify(envelope)}`);
-		return Response.json(envelope, { status: 503 });
+		return Response.json(envelope, { status: 422 });
 	}
 
 	// THE COMPACTION GATE (owner round 14, 2026-10-05 — the structural

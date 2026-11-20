@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { createPluginTransport, type PluginTransportHost } from "../src/server/plugin-transport.ts";
 import { PluginHostError } from "../src/server/plugin-host.ts";
+import { modelsNotConfigured } from "../src/core/settings.ts";
 
 const request = (body: unknown) => new Request("http://localhost/api/plugins", { method: "POST", body: JSON.stringify(body) });
 function fixture() {
@@ -91,6 +92,14 @@ it("plugin HTTP adapter uses typed host errors and keeps code assets uncached", 
 	host.asset = () => { throw new PluginHostError(404, "Asset unavailable"); };
 	assert.equal((await transport.asset("example", ["data", "private.json"])).status, 404);
 });
+it("a plugin with no model configured is refused with 422 and the same setup envelope as a turn", async () => {
+	const { host } = fixture();
+	host.call = async () => { throw Object.assign(new Error("Configure the cheap model slot or choose a Flashcards model override."), { code: "models_not_configured", missing: ["cheap", "invented"] }); };
+	const transport = createPluginTransport({ getHost: async () => host, directory: "/temporary/plugins" });
+	const refused = await transport.call("flashcards", request({ operation: "preflight-file", input: {} }));
+	assert.equal(refused.status, 422);
+	assert.deepEqual(await refused.json(), modelsNotConfigured(["cheap"]));
+});
 it("a plugin's model_unavailable refusal is 422 with its message, unless only the provider key is missing", async () => {
 	const { host } = fixture();
 	const model = { provider: "opencode-go", id: "retired" };
@@ -105,7 +114,7 @@ it("a plugin's model_unavailable refusal is 422 with its message, unless only th
 	const envelope = { code: "provider_key_missing", provider: "opencode-go", slots: [], error: "No OpenCode Go key is set" };
 	const keyless = createPluginTransport({ getHost: async () => host, directory: "/temporary/plugins", keyMissing: () => envelope });
 	const keyRefused = await keyless.call("flashcards", request({ operation: "preflight-file", input: {} }));
-	assert.equal(keyRefused.status, 503);
+	assert.equal(keyRefused.status, 422);
 	assert.deepEqual(await keyRefused.json(), envelope);
 	host.call = async () => { throw new Error("Plugin operation failed"); };
 	assert.equal((await gone.call("flashcards", request({ operation: "x", input: {} }))).status, 500, "other plugin errors stay 500");

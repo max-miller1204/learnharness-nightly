@@ -32,6 +32,7 @@ const { deleteSources } = await import("../src/server/source-deletion.ts");
 const { stores } = await import("../src/server/stores.ts");
 const { persistTurn } = await import("../src/server/turn-service.ts");
 const { chatStore } = await import("../src/store/chats.ts");
+const { modelsNotConfigured, providerKeyMissing } = await import("../src/core/settings.ts");
 const { reserveAttachmentRequest, uploadAttachmentRequest, discardAttachmentRequest, startAttachmentRequest } = await import("../src/server/attachment-routes.ts");
 
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -118,10 +119,33 @@ test("a refused opening creates no chat and leaves its bytes reusable", async ()
 	const body = JSON.stringify({ draftId, sendId: randomUUID(), title: "Open with a file", attachmentUploadIds: [upload.id] });
 	const before = chatStore.listChats().length;
 	for (let attempt = 0; attempt < 2; attempt++) {
-		assert.equal((await startAttachmentRequest(request("/api/attachments/start", "POST", body))).status, 503);
+		const refused = await startAttachmentRequest(request("/api/attachments/start", "POST", body));
+		assert.equal(refused.status, 422);
+		assert.deepEqual(await refused.json(), modelsNotConfigured(["strong"]));
 	}
 	assert.equal(chatStore.listChats().length, before);
 	assert.equal((await uploadAttachmentRequest(request(upload.uploadUrl, "PUT", "test"))).status, 204);
+});
+
+test("an opening on a pinned model whose provider key is missing is refused with 422 provider_key_missing", async () => {
+	const { readSettings, writeSettings } = await import("../src/store/settings.ts");
+	const before = readSettings();
+	const savedKey = process.env.TOGETHER_API_KEY;
+	delete process.env.TOGETHER_API_KEY;
+	writeSettings({ version: 1, models: { strong: { model: { provider: "together", id: "deepseek-ai/DeepSeek-V4.1-Flash" } } } });
+	try {
+		const draftId = randomUUID();
+		const upload = await (await reserve(draftId, 4)).json();
+		assert.equal((await uploadAttachmentRequest(request(upload.uploadUrl, "PUT", "test"))).status, 204);
+		const chats = chatStore.listChats().length;
+		const refused = await startAttachmentRequest(request("/api/attachments/start", "POST", JSON.stringify({ draftId, sendId: randomUUID(), title: "Open with a file", attachmentUploadIds: [upload.id] })));
+		assert.equal(refused.status, 422);
+		assert.deepEqual(await refused.json(), providerKeyMissing("together", ["strong"]));
+		assert.equal(chatStore.listChats().length, chats, "no chat is created");
+	} finally {
+		writeSettings(before ?? { version: 1 });
+		if (savedKey !== undefined) process.env.TOGETHER_API_KEY = savedKey;
+	}
 });
 
 test("an opening on a saved model the catalog dropped is refused as model_unavailable, even without its key", async () => {

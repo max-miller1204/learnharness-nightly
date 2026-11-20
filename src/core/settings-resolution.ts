@@ -8,7 +8,7 @@
  * absent key resolves to the compiled factory default — EXCEPT MODELS
  * (BYOK all the way down, owner 2026-09-22): no factory pins exist, so a
  * model chain that ends empty resolves to null/undefined and whatever
- * needs it refuses honestly (503 models_not_configured). This module
+ * needs it refuses honestly (422 models_not_configured). This module
  * stays browser-safe/pure, so it imports config TYPES only, never the
  * runtime module (config.ts pulls node:path).
  *
@@ -107,7 +107,7 @@ export interface EffectiveSettings {
 /** The conversation pair's chain (BYOK, owner 2026-09-22): the chat's own
  *  model override over the STRONG slot, each field independent (a bare
  *  chat thinking level rides the strong slot's model). null = no model
- *  anywhere — the turn gate refuses with the 503 models_not_configured
+ *  anywhere: the turn gate refuses with the 422 models_not_configured
  *  envelope. */
 export function resolveConversationSpec(
 	chat: ChatSettings | undefined,

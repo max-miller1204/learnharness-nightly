@@ -323,10 +323,10 @@ describe("send (one input event, verbatim consumption)", () => {
 		assert.equal((final[0] as { id?: string }).id, "saved-reply", "terminal GET replaces the live slot with the canonical server id");
 	});
 
-	it("a 503 refusal surfaces the RAW body text (parseModelsRefusal's contract)", async () => {
+	it("a 422 setup refusal surfaces the RAW body text (parseModelsRefusal's contract)", async () => {
 		globalThis.fetch = (async () =>
 			new Response(JSON.stringify({ code: "models_not_configured", missing: ["strong"] }), {
-				status: 503,
+				status: 422,
 			})) as typeof globalThis.fetch;
 		const m = model();
 		await m.send({ type: "text", text: "q" });
@@ -346,6 +346,31 @@ describe("send (one input event, verbatim consumption)", () => {
 		await m.send({ type: "text", text: "q" });
 		assert.equal(m.getState().status, "error");
 		assert.equal(m.getState().error!.message, error);
+	});
+
+	for (const envelope of [{ error: "No model configured", code: "models_not_configured", missing: ["strong"] }, { error: "No OpenRouter key is set", code: "provider_key_missing", provider: "openrouter", slots: ["strong"] }]) {
+		it(`a send with attachments refused with 422 ${envelope.code} keeps the raw envelope for the setup flow`, async () => {
+			globalThis.fetch = (async () => new Response(JSON.stringify(envelope), { status: 422 })) as typeof globalThis.fetch;
+			const m = model();
+			await m.send({ type: "text", text: "q" }, undefined, undefined, undefined, { attachmentUploadIds: ["upload"], sendId: "send" });
+			assert.equal(m.getState().status, "error");
+			assert.equal(m.getState().error!.message, JSON.stringify(envelope));
+		});
+	}
+
+	it("an unreachable subscription surfaces its plain message, not the JSON envelope", async () => {
+		const error = "GitHub Copilot could not be reached just now. Try again in a moment.";
+		globalThis.fetch = (async () => Response.json({ error, code: "subscription_unreachable", provider: "github-copilot-subscription" }, { status: 503 })) as typeof globalThis.fetch;
+		const m = model();
+		await m.send({ type: "text", text: "q" });
+		assert.equal(m.getState().error!.message, error);
+	});
+
+	it("a send with attachments shows a plain 4xx refusal's message", async () => {
+		globalThis.fetch = (async () => Response.json({ error: "That file is too large." }, { status: 413 })) as typeof globalThis.fetch;
+		const m = model();
+		await m.send({ type: "text", text: "q" }, undefined, undefined, undefined, { attachmentUploadIds: ["upload"], sendId: "send" });
+		assert.equal(m.getState().error!.message, "That file is too large.");
 	});
 
 	it("the optimistic answer result attaches to the pending quiz part at once", async () => {

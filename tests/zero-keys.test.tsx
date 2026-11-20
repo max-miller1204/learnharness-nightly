@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { hasProviderKey, strongKeyless, ZeroKeysPill } from "../components/setup-cta.tsx";
+import { hasProviderKey, noUsableProvider, selectedModelUnavailable, strongKeyless, ZeroKeysPill } from "../components/setup-cta.tsx";
 import type { ModelCatalogResponse } from "../src/core/index.ts";
 import { SetupKeysBody } from "../components/setup-dialog.tsx";
 import { DICTATION_KEYLESS, DEEPGRAM_KEY_ID } from "../components/dictation.tsx";
@@ -162,5 +162,27 @@ describe("strongKeyless — the pre-send guard's truth (owner interlude, no-orph
 	it("no strong pin (the models guard owns that case) or catalog not loaded: false — the server gate remains the belt", () => {
 		assert.equal(strongKeyless(catalog(null, "openrouter")), false);
 		assert.equal(strongKeyless(undefined), false);
+	});
+});
+
+describe("a known subscription outage is not missing setup (the web pre-send guards)", () => {
+	const outage = () => {
+		const value = catalog("github-copilot-subscription");
+		value.providers = [{ id: "github-copilot-subscription", envVar: "", keyPresent: false, unreachable: true }];
+		return value;
+	};
+	it("an unreachable subscription is usable: no zero-keys setup, no keyless strong slot", () => {
+		assert.equal(noUsableProvider(outage()), false);
+		assert.equal(strongKeyless(outage()), false);
+	});
+	it("its saved model is not declared unavailable while its catalog can't be read", () => {
+		assert.equal(selectedModelUnavailable(outage(), "github-copilot-subscription:gpt-5"), false);
+	});
+	it("a subscription that is really not connected still opens setup", () => {
+		const disconnected = outage();
+		disconnected.providers = [{ id: "github-copilot-subscription", envVar: "", keyPresent: false }];
+		assert.equal(noUsableProvider(disconnected), true);
+		assert.equal(strongKeyless(disconnected), true);
+		assert.equal(selectedModelUnavailable(disconnected, "github-copilot-subscription:gpt-5"), true);
 	});
 });

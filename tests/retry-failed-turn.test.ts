@@ -539,7 +539,7 @@ describe("the Retry button's client path", () => {
 		{ status: 400, body: '{"error":"retry input requires a failed turn to retry"}', expected: "retry input requires a failed turn to retry" },
 		{ status: 400, body: "Plain refusal", expected: "Plain refusal" },
 		{ status: 400, body: '{"reason":"not an error envelope"}', expected: '{"reason":"not an error envelope"}' },
-		{ status: 503, body: '{"error":"model gate","code":"models_not_configured"}', expected: '{"error":"model gate","code":"models_not_configured"}' },
+		{ status: 422, body: '{"error":"model gate","code":"models_not_configured"}', expected: '{"error":"model gate","code":"models_not_configured"}' },
 	]) {
 		it(`preserves the appropriate Retry refusal format for ${status}: ${body}`, async () => {
 			const m = new SessionModel({

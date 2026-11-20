@@ -61,7 +61,7 @@ describe("new-session opening delivery acceptance", () => {
 		});
 	}
 
-	for (const failure of ["network", "503"] as const) {
+	for (const failure of ["network", "refusal"] as const) {
 		it(`a teardown racing an opening ${failure} failure restores the bubble/error recovery state`, async () => {
 			const post = deferred<Response>();
 			let notified = 0;
@@ -73,7 +73,7 @@ describe("new-session opening delivery acceptance", () => {
 			const sending = m.send({ type: "text", text: "recover this opening" }, () => { notified++; });
 			m.stop(); // StrictMode's cleanup detaches the consume, NOT this POST.
 			if (failure === "network") post.reject(new TypeError("opening connection lost"));
-			else post.resolve(new Response(envelope, { status: 503 }));
+			else post.resolve(new Response(envelope, { status: 422 }));
 			assert.equal(await sending, false);
 			assert.equal(notified, 0);
 			assert.equal(m.getState().nativeMessages.length, 0, "no stranded optimistic opening bubble");
@@ -94,7 +94,7 @@ describe("new-session opening delivery acceptance", () => {
 			m.stop();
 			const newer = m.send({ type: "text", text: "newer text" });
 			if (failure === "network") first.reject(new TypeError("older lost acknowledgment"));
-			else first.resolve(new Response("older refusal", { status: 503 }));
+			else first.resolve(new Response("older refusal", { status: 422 }));
 			assert.equal(await older, false);
 			assert.equal(m.status, "submitted", "older failure must not settle the newer send");
 			assert.equal(m.getState().error, null);

@@ -16,8 +16,9 @@ export default async function ChatPage({
 	const chat = getChat(id);
 	if (!chat) notFound();
 	// The persistent setup CTA's seed (BYOK, owner 2026-09-22): slotsConfigured
-	// over the settings record, server-read — the same gate home/new read. The
-	// server's 503 stays the truth; this only decides whether the pill rides.
+	// over the settings record, server-read, the same gate home/new read. The
+	// server's models_not_configured refusal stays the truth; this only
+	// decides whether the pill rides.
 	const record = readSettingsRecord();
 	return (
 		<Chat
