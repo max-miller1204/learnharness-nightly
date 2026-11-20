@@ -155,10 +155,20 @@ try {
   assert.deepEqual(await page.evaluate(() => window.host.reserved),["Shift+Tab"]);
   await fillCode("history");
   const mod=process.platform === "darwin" ? "Meta" : "Control";
-  await page.keyboard.down(mod);await page.keyboard.press("z");await page.keyboard.up(mod);
+  // Press the physical key (KeyZ) so Shift makes event.key "Z", as a real
+  // keyboard does. Puppeteer's "z" keeps key "z" under Shift, which CodeMirror
+  // reads as Mod-z (undo) whenever there is still history to undo.
+  const chord=async(mods,key)=>{for(const m of mods)await page.keyboard.down(m);await page.keyboard.press(key);for(const m of [...mods].reverse())await page.keyboard.up(m)};
+  await chord([mod],"KeyZ");
   assert.notEqual((await state()).value,"history");
-  await page.keyboard.down(mod);await page.keyboard.down("Shift");await page.keyboard.press("z");await page.keyboard.up("Shift");await page.keyboard.up(mod);
-  assert.equal((await state()).value,"history");
+  await chord([mod,"Shift"],"KeyZ");
+  assert.equal((await state()).value,"history",'Mod+Shift+Z redoes');
+  if(process.platform !== "darwin") {
+    await chord([mod],"KeyZ");
+    assert.notEqual((await state()).value,"history");
+    await chord([mod],"KeyY");
+    assert.equal((await state()).value,"history",'Ctrl+Y redoes off macOS');
+  }
 
   const beforeUpdate = await page.evaluate(() => {
     const h=window.host,field=document.querySelector('#editor .cm-content');h.handle.focus();
