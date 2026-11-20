@@ -270,6 +270,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		registerJobAbort(jobId, controller);
 		try {
 			let engine: PiEngine;
+			let rechecked = false;
 			for (;;) {
 				const picked = pickOrGone(job.kind);
 				if (!picked) {
@@ -312,7 +313,20 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 				// model the refresh removed is gone, never run from a stale engine.
 				const current = pickOrGone(job.kind);
 				if (!current) continue; // settings changed: the next pass refuses
+				// The pin moved to another provider during the wait: gate the
+				// provider that will actually run.
+				if ((current instanceof ModelUnavailableError ? current.provider : current.model.provider) !== provider) continue;
 				if (current instanceof ModelUnavailableError) {
+					// A live catalog can still be loading right after an outage:
+					// check once more before the model counts as gone.
+					if (!rechecked && !catalogModelGone(current.provider, current.id)) {
+						rechecked = true;
+						console.info(`[job ${jobId}] waiting: ${current.provider} model list not loaded`);
+						jobStore.updateJob(jobId, { activity: `waiting: loading the ${subscriptionConnectionLabel(current.provider)} model list` });
+						await connectionWake(controller.signal);
+						if (controller.signal.aborted || !stillRunning(jobId)) return;
+						continue;
+					}
 					console.info(`[job ${jobId}] refused: ${current.message}`);
 					await refuse(current.message);
 					return;

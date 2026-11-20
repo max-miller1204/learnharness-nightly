@@ -1980,7 +1980,13 @@ describe("provider-key job refusal (key-presence interlude)", () => {
 		// Reachable, but the refreshed catalog still lacks the model: gone.
 		const gone = researchJob("call-outage4");
 		const third = outageRunner(() => null, () => { throw new ModelUnavailableError("chatgpt", "gpt-retired"); });
-		await third.runner.runJob(gone);
+		const goneRun = third.runner.runJob(gone);
+		// A live catalog can still be loading: one recheck, then it is gone.
+		await settle(() => third.listeners.size === 1);
+		assert.equal(jobStore.getJob(gone)!.activity, "waiting: loading the ChatGPT model list");
+		assert.equal(jobStore.getJob(gone)!.error, undefined);
+		third.change();
+		await goneRun;
 		assert.equal(jobStore.getJob(gone)!.error, new ModelUnavailableError("chatgpt", "gpt-retired").message);
 		assert.equal(isProviderKeyRefusal(jobStore.getJob(gone)!.error), false);
 
@@ -1988,11 +1994,32 @@ describe("provider-key job refusal (key-presence interlude)", () => {
 		// the model: resolved again, it is gone, never run from the stale engine.
 		const stale = researchJob("call-outage5");
 		let resolved = 0;
-		const cached = fauxEngine([]);
+		const faux = fauxEngine([]);
+		const cached = { ...faux, model: { ...faux.model, provider: "chatgpt" } };
 		const fourth = outageRunner(() => null, () => { if (resolved++ === 0) return cached; throw new ModelUnavailableError("chatgpt", "gpt-removed"); });
-		await fourth.runner.runJob(stale);
+		const staleRun = fourth.runner.runJob(stale);
+		await settle(() => fourth.listeners.size === 1);
+		fourth.change();
+		await staleRun;
 		assert.equal(jobStore.getJob(stale)!.error, new ModelUnavailableError("chatgpt", "gpt-removed").message);
-		assert.equal(resolved, 2);
+		assert.equal(resolved, 4, "resolved before and after each of the two gates");
+	});
+
+	it("a pin that moved to another provider during the gate's wait is gated again before it runs", async () => {
+		const jobId = researchJob("call-pin-moved");
+		const faux = fauxEngine([]);
+		const before = { ...faux, model: { ...faux.model, provider: "chatgpt" } };
+		const after = { ...faux, model: { ...faux.model, provider: "openai" } };
+		let resolved = 0;
+		const gated: string[] = [];
+		const runner = createJobRunner({
+			chatStore, jobStore, deliver: fakeDeliver().deliver,
+			engineFor: () => (resolved++ === 0 ? before : after),
+			connectionRefusal: async (provider, tier) => { gated.push(provider); return provider === "openai" ? providerKeyMissing("openai", [tier]) : null; },
+		});
+		await runner.runJob(jobId);
+		assert.deepEqual(gated, ["chatgpt", "openai"], "the provider that would run passed the gate first");
+		assert.equal(jobStore.getJob(jobId)!.error, providerKeyMissing("openai", ["cheap"]).error);
 	});
 
 	it("a built-in model the catalog dropped refuses as gone at once, never asking for a key", async () => {

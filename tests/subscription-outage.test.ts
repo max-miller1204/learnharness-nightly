@@ -54,6 +54,11 @@ let revision = 0;
 const held: Ask[] = [];
 let snapshotAsks = 0;
 let slowNative = false; // answer native asks a macrotask later, as real IPC does
+// The ChatGPT owner as Electron runs it: each models() answer comes a macrotask
+// later and is preceded by a state push (electron/chatgpt.cjs pushes after every
+// failed load and on recovery, before the reply).
+let electronChatGPT = false;
+let modelAsks = 0;
 const ipc = (message: unknown) => (process.emit as (event: string, value: unknown) => boolean)("message", message);
 const nativeSnapshot = (connected: boolean) => ({
 	statuses: [{ providerId: "github-copilot", available: true, connected, pending: false, allowBackgroundUse: true, connectionId: "fixture-copilot", epoch: 1, authorityRevision: 1, revision: ++revision }],
@@ -69,6 +74,7 @@ function answer(ask: Ask) {
 	}
 	// The ChatGPT owner never throws for a catalog failure: it answers with
 	// the error in its status and an empty catalog (electron/chatgpt.cjs models()).
+	if (electronChatGPT && ask.op === "models") ipc({ channel: ask.channel, kind: "state", stamp: stamp(), status: chatGPTStatus(), invalidate: "none" });
 	ipc({ channel: ask.channel, id: ask.id, op: ask.op, ok: true, value: { ...stamp(), status: chatGPTStatus(), accountId: "fixture", models: catalogError ? [] : [{ id: GPT, name: "Fixture" }] } });
 }
 const originalSend = Object.getOwnPropertyDescriptor(process, "send");
@@ -80,8 +86,9 @@ before(() => {
 	Object.defineProperty(process, "send", { configurable: true, value: (message: Ask, callback?: (error: Error | null) => void) => {
 		callback?.(null);
 		if (message.channel === "lh:subscriptions" && message.op === "snapshot") snapshotAsks++;
+		if (message.channel === "lh:chatgpt" && message.op === "models") modelAsks++;
 		if ((message.channel === "lh:subscriptions" && native === "hold") || (message.channel === "lh:chatgpt" && holdChatGPT)) held.push(message);
-		else if (slowNative && message.channel === "lh:subscriptions") setTimeout(() => answer(message), 1);
+		else if ((slowNative && message.channel === "lh:subscriptions") || (electronChatGPT && message.channel === "lh:chatgpt")) setTimeout(() => answer(message), 1);
 		else queueMicrotask(() => answer(message));
 		return true;
 	} });
@@ -93,7 +100,7 @@ after(() => {
 	if (marker === undefined) delete process.env.LH_DESKTOP_SERVER; else process.env.LH_DESKTOP_SERVER = marker;
 	if (secret === undefined) delete process.env.LH_DESKTOP_API_SECRET; else process.env.LH_DESKTOP_API_SECRET = secret;
 });
-beforeEach(() => { slowNative = false; native = "fails"; catalogError = "The ChatGPT model list could not be loaded."; holdChatGPT = false; held.length = 0; });
+beforeEach(() => { slowNative = false; electronChatGPT = false; native = "fails"; catalogError = "The ChatGPT model list could not be loaded."; holdChatGPT = false; held.length = 0; });
 const until = async (ready: () => boolean) => { while (!ready()) await new Promise((resolve) => setImmediate(resolve)); };
 
 // ── the paths ───────────────────────────────────────────────────────────────
@@ -206,17 +213,18 @@ test("a ChatGPT steer during a catalog outage parks on 403 even with cached back
 
 // The job runner and extraction pipeline get the same gate chat-handler wires.
 // The engine resolves against the live catalog like production's, then runs scripted.
-const jobRunner = (engine: PiEngine, steers: unknown[]) => createJobRunner({
+const jobRunner = (engine: PiEngine, steers: unknown[], spec = { provider: COPILOT, id: COPILOT_MODEL }) => createJobRunner({
 	chatStore, jobStore, deliver: async (steer) => { steers.push(steer); },
-	engineFor: () => { piEngineForSpec({ provider: COPILOT, id: COPILOT_MODEL }); return engine; },
+	engineFor: () => { piEngineForSpec(spec); return engine; },
 	connectionRefusal: (provider, tier) => connectionRefusal(provider, [tier]),
 	onConnectionChange: onSubscriptionChange,
 });
-function copilotEngine(brief: string): PiEngine {
+function copilotEngine(brief: string, provider = COPILOT): PiEngine {
 	const faux = createFauxCore({ tokenSize: { min: 64, max: 64 } });
 	faux.setResponses([fauxAssistantMessage([fauxText(brief)])]);
-	return { model: { ...faux.getModel(), provider: COPILOT }, streamFn: faux.streamSimple };
+	return { model: { ...faux.getModel(), provider }, streamFn: faux.streamSimple };
 }
+const chatGPTJob = (id: string, brief: string, steers: unknown[]) => jobRunner(copilotEngine(brief, "chatgpt"), steers, { provider: "chatgpt", id: GPT }).runJob(id);
 function researchJob() {
 	const chatId = pinned(COPILOT, COPILOT_MODEL);
 	return jobStore.createJob({ kind: "research", chatId, toolCallId: `call-${randomUUID()}`, input: { question: "What is a monad?" } }).id;
@@ -288,6 +296,43 @@ test("two jobs waiting on the same native outage never wake each other", async (
 	assert.equal(jobStore.getJob(second)!.status, "done");
 });
 
+test("two jobs waiting on a ChatGPT outage never wake each other, though the owner pushes state after every failed load", async () => {
+	electronChatGPT = true;
+	await refreshConnectionCatalog("chatgpt");
+	const steers: unknown[] = [];
+	const first = researchJob(), second = researchJob();
+	const runs = [chatGPTJob(first, "First brief.", steers), chatGPTJob(second, "Second brief.", steers)];
+	const waiting = (id: string) => jobStore.getJob(id)!.activity === "waiting: ChatGPT could not be reached";
+	await until(() => waiting(first) && waiting(second));
+	await refreshConnectionCatalog("chatgpt"); // another failed load, from a send or the picker
+	const asked = modelAsks;
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	assert.equal(modelAsks, asked, "a push that says nothing new notifies no one");
+
+	catalogError = null;
+	await refreshConnectionCatalog("chatgpt");
+	await Promise.all(runs);
+	assert.equal(jobStore.getJob(first)!.status, "done");
+	assert.equal(jobStore.getJob(second)!.status, "done");
+});
+
+test("on ChatGPT recovery the owner's push wakes both waiting jobs before its reply, and neither finds an empty catalog", async () => {
+	electronChatGPT = true;
+	await refreshConnectionCatalog("chatgpt");
+	const steers: unknown[] = [];
+	const first = researchJob(), second = researchJob();
+	const runs = [chatGPTJob(first, "First brief.", steers), chatGPTJob(second, "Second brief.", steers)];
+	await until(() => [first, second].every((id) => jobStore.getJob(id)!.activity?.startsWith("waiting:") === true));
+	catalogError = null;
+	void refreshConnectionCatalog("chatgpt"); // its recovery push wakes both jobs; their refreshes supersede each other
+	await Promise.all(runs);
+	for (const id of [first, second]) {
+		const job = jobStore.getJob(id)!;
+		assert.equal(job.error, undefined, "never refused as model unavailable");
+		assert.equal(job.status, "done");
+	}
+});
+
 test("a ChatGPT success a newer refresh superseded clears no outage: the newer reply clears it and installs the catalog together", async () => {
 	await refreshConnectionCatalog("chatgpt");
 	assert.equal(connectionUnreachable("chatgpt"), true);
@@ -298,11 +343,14 @@ test("a ChatGPT success a newer refresh superseded clears no outage: the newer r
 	const newer = refreshConnectionCatalog("chatgpt");
 	await until(() => held.length === 2);
 	answer(held[0]!);
-	await older;
+	let olderSettled = false;
+	void older.then(() => { olderSettled = true; });
+	for (let tick = 0; tick < 20; tick++) await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(connectionUnreachable("chatgpt"), true, "the stale success installed no catalog, so the outage stands");
 	assert.throws(() => piEngineForSpec({ provider: "chatgpt", id: GPT }));
+	assert.equal(olderSettled, false, "the superseded refresh waits for the newer one");
 	answer(held[1]!);
-	await newer;
+	await Promise.all([older, newer]);
 	assert.equal(connectionUnreachable("chatgpt"), false);
 	assert.doesNotThrow(() => piEngineForSpec({ provider: "chatgpt", id: GPT }), "cleared together with the catalog");
 });

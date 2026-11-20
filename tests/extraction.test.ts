@@ -607,6 +607,24 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 		assert.equal(ledgers.readCoverage().length, 0);
 	});
 
+	it("a stage pin that moved to another provider during the gate's wait is gated again before it runs", async () => {
+		const { chatId } = fixtureChat();
+		const ledgers = memoryLedgers();
+		const faux = fauxEngine([]);
+		const before = { ...faux, model: { ...faux.model, provider: "chatgpt" } };
+		const after = { ...faux, model: { ...faux.model, provider: "openai" } };
+		let resolved = 0;
+		const gated: string[] = [];
+		const pipeline = createExtractionPipeline({
+			chatStore, graphStore: ledgers,
+			engineFor: () => (resolved++ < 2 ? before : after),
+			connectionRefusal: async (provider, tier) => { gated.push(provider); return provider === "openai" ? providerKeyMissing("openai", [tier]) : null; },
+		});
+		await assert.rejects(pipeline.runExtraction(chatId), ProviderKeyMissingError);
+		assert.deepEqual(gated, ["chatgpt", "chatgpt", "openai"]);
+		assert.equal(ledgers.readCoverage().length, 0);
+	});
+
 	it("a built-in model the catalog dropped is gone at once, never a key to ask for", async () => {
 		const { chatId } = fixtureChat();
 		let checks = 0;
@@ -2582,6 +2600,18 @@ describe("notes import completion and retry reliability", () => {
 		reachable = true;
 		assert.deepEqual(await pipeline.importNotes(input), { nodes: 1, chains: 0 });
 		assert.deepEqual(sourcesWhileChecking, [0, 0, 0], "no source exists while any check waits");
+	});
+
+	it("a re-import whose source is deleted while the connection check waits stops instead of bringing it back", async () => {
+		const ledgers = memoryLedgers();
+		assert.deepEqual(await make(ledgers).importNotes(input), { nodes: 1, chains: 0 });
+		const [source] = ledgers.readSources();
+		const pipeline = createExtractionPipeline({
+			chatStore, graphStore: ledgers, extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT),
+			connectionRefusal: async () => { ledgers.deleteSources(new Set([source!.id])); return null; }, // the deletion lands during the wait
+		});
+		await assert.rejects(pipeline.importNotes(input), incomplete("aborted", 0));
+		assert.equal(ledgers.readSources().length, 0, "the deletion wins");
 	});
 
 	it("isolates an ordinary failed chunk, reports partial, and keeps earlier/later merges and usage", async () => {

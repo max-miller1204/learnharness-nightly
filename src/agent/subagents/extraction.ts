@@ -971,13 +971,18 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 				throw new ProviderKeyMissingError(refusal.provider, refusal.slots);
 			}
 		};
+		const providerOf = (engine: PiEngine | ModelUnavailableError) => engine instanceof ModelUnavailableError ? engine.provider : engine.model.provider;
 		const check = (i: number): Promise<void> | undefined => {
 			if (i === stages.length) {
-				for (const [role, , override] of stages) stageEngine(role, override);
+				for (const [role, gated, override] of stages) {
+					const now = stageEngine(role, override); // throws for a model still gone
+					// A pin that moved during the wait is gated again before it runs.
+					if (!now || now.model.provider !== providerOf(gated!)) return refuseIfStagesUnready(withImage);
+				}
 				return undefined;
 			}
 			const [role, engine] = stages[i]!;
-			const provider = engine instanceof ModelUnavailableError ? engine.provider : engine!.model.provider;
+			const provider = providerOf(engine!);
 			const refusal = deps.connectionRefusal?.(provider, ROLE_SLOT[role]);
 			if (refusal instanceof Promise) return refusal.then((settled) => { refuse(settled); return check(i + 1); });
 			refuse(refusal);
@@ -1596,12 +1601,19 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		try {
 			// BYOK per-need gate (owner, 2026-09-22) + key presence
 			// (2026-09-25): same refusal as the chat front door: no
-			// extractor/auditor engines, or a stage key gone, no run. It runs
-			// before the source is written: its check may await, and a source
-			// deleted during that wait must never get nodes (deletion is
-			// blocked only once the run shows in the registry).
+			// extractor/auditor engines, or a stage key gone, no run. Its check
+			// may await, and deletion is blocked only once the run shows in the
+			// registry, so a deletion during the wait wins: a new source is
+			// written only after the gate, and a re-import of a source deleted
+			// meanwhile stops instead of bringing it back.
+			const existed = graphStore.readSources().some((source) => source.id === id);
 			const ready = refuseIfStagesUnready(input.image !== undefined);
-			if (ready) await ready;
+			if (ready) {
+				await ready;
+				if (existed && !graphStore.readSources().some((source) => source.id === id)) {
+					throw new NotesImportError("aborted", { nodes: 0, chains: 0 }, "This source was deleted while the import waited to start. Import it again to add it back.");
+				}
+			}
 			const importedAt = new Date().toISOString();
 			graphStore.upsertSource({ id, filePath: input.filePath, importedAt });
 			return await runNotesExtraction({ id, ...input, importedAt });
