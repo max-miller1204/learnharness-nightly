@@ -43,12 +43,34 @@ async function withBrowser<T>(action: () => Promise<Reply<T>>): Promise<T> {
 		return reply.value;
 	} catch (error) { tab?.close(); throw error; }
 }
+/** In the desktop app's window onto this server, its narrow bridge runs the verified
+ * sign-in (electron/remote-chatgpt.cjs): the callback reaches the desktop, with no tab
+ * or paste-back. It resolves when sign-in ends; the status events carry its progress. */
+type DesktopSignIn = NonNullable<NonNullable<Window["lh"]>["chatgptSignIn"]>;
+async function desktopLogin(desktop: DesktopSignIn, id?: string): Promise<ChatGPTStatus> {
+	const result: unknown = await desktop.start(id);
+	const current = (await status()).chatgpt;
+	if (result && typeof result === "object" && "ok" in result && result.ok === true) return current;
+	const error = result && typeof result === "object" && "error" in result && typeof result.error === "string" ? result.error.slice(0, 300) : "ChatGPT sign-in failed. Try again.";
+	return { ...current, error };
+}
 export function createWebChatGPTBridge(hub: Hub): ChatGPTControlBridge {
 	const call = async (op: string, fields?: Record<string, unknown>) => (await control<ChatGPTStatus>("chatgpt", op, fields)).value;
 	return {
 		status: async () => (await status()).chatgpt,
-		login: (id) => withBrowser(() => control<ChatGPTStatus>("chatgpt", "login", { id })),
-		cancel: () => call("cancel"), complete: (url) => call("complete", { url }), select: (id) => call("select", { id }),
+		login: (id) => {
+			const desktop = window.lh?.chatgptSignIn;
+			return desktop ? desktopLogin(desktop, id) : withBrowser(() => control<ChatGPTStatus>("chatgpt", "login", { id }));
+		},
+		// The desktop's own attempt (its listener, and its browser before it opens) ends with its
+		// own scoped cancel. Only without one does the page cancel whatever is pending (an
+		// attempt adopted from another device), so this window never ends one it didn't start.
+		cancel: async () => {
+			const desktop = window.lh?.chatgptSignIn;
+			const reply: unknown = desktop ? await desktop.cancel().catch(() => null) : null;
+			const ended = !!reply && typeof reply === "object" && "ended" in reply && reply.ended === true;
+			return ended ? (await status()).chatgpt : call("cancel");
+		}, complete: (url) => call("complete", { url }), select: (id) => call("select", { id }),
 		disconnect: (id) => call("disconnect", { id }), logout: (id) => call("logout", { id }),
 		consent: (enabled) => call("consent", { enabled }),
 		onChange: (listener) => onChange(hub, listener),

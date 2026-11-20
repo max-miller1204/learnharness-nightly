@@ -80,6 +80,12 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 	const [pasting, setPasting] = useState(false);
 	const [clipboardBlocked, setClipboardBlocked] = useState(false);
 	const [reading, setReading] = useState(false);
+	// This page's own desktop-bridge sign-in is running: its attempt is the only one, so no
+	// paste-back meanwhile. Adopted attempts, and any left once it ends, keep paste-back.
+	const [desktopRunning, setDesktopRunningState] = useState(false);
+	const desktopRunningRef = useRef(false);
+	function setDesktopRunning(running: boolean) { desktopRunningRef.current = running; setDesktopRunningState(running); }
+	const desktopRun = useRef(0);
 	// Bumped by every edit or submit, so a clipboard read that resolves later never overwrites them.
 	const pasteEdits = useRef(0);
 	const pasteField = useRef<HTMLInputElement>(null);
@@ -182,16 +188,27 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 		showDialog(owner);
 		// A sign-in already pending on the server (this page reloaded, or another
 		// tab started it) is adopted: the waiting state, paste-back and Cancel.
-		if (statusRef.current.pending) {
-			loginAttempt.current = { generation: ++generation.current, dialog: owner, registration: "", background: statusRef.current.allowBackgroundUse, backgroundDirty: false, pending: true, phase: "pending" };
-			operation.current = "login"; setBusy(true);
+		if (statusRef.current.pending) adoptPending(owner);
+		// The desktop app's window onto a server: one click when there is no choice to make (no saved
+		// account to pick, or Sign in again naming one). Its bridge sign-in starts at once, with the
+		// dialog's waiting state, Cancel and failure handling. Otherwise the dialog asks first.
+		else if (typeof window !== "undefined" && window.lh?.chatgptSignIn && (accountId || statusRef.current.accounts.length === 0)) {
+			void login({ registration: accountId, background: statusRef.current.allowBackgroundUse, backgroundDirty: false });
 		}
+	}
+	/** Takes up a sign-in pending on the server that this page didn't start: the waiting state, paste-back and Cancel. */
+	function adoptPending(owner: Dialog) {
+		loginAttempt.current = { generation: ++generation.current, dialog: owner, registration: "", background: statusRef.current.allowBackgroundUse, backgroundDirty: false, pending: true, phase: "pending" };
+		operation.current = "login"; setBusy(true);
 	}
 	function close(): CloseOutcome {
 		if (operation.current === "disconnect" || operation.current === "change" || operation.current === "cancel") return "blocked";
 		const current = dialogRef.current;
 		if (current?.kind === "manage" && current.confirm) { showDialog({ ...current, confirm: false }); setError(null); return "handled-without-close"; }
 		const cancel = loginAttempt.current !== null || statusRef.current.pending;
+		// This page's own desktop sign-in: its cancel ends only that attempt, so one still pending
+		// afterwards is another device's, taken up here rather than reported as a failed cancel.
+		const ownDesktop = desktopRunningRef.current;
 		const intent = ++generation.current;
 		const owner = dialogRef.current;
 		loginAttempt.current = null;
@@ -215,6 +232,9 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 				if (next && !next.pending) {
 					setDismissedError(value.error); // Dismiss only this cancellation's error, not a newer failure.
 					if (dialogRef.current === owner) showDialog(null);
+				} else if (next && ownDesktop) {
+					setDismissedError(value.error);
+					if (owner && dialogRef.current === owner) adoptPending(owner);
 				} else if (next) setError(CONTROL_ERROR);
 			}).catch(() => { if (mounted.current && generation.current === intent) setError(CONTROL_ERROR); }).finally(() => {
 				if (mounted.current && generation.current === intent) { operation.current = null; setBusy(false); }
@@ -256,17 +276,31 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 		} catch { if (mounted.current && intent === generation.current) setError(CONTROL_ERROR); }
 		finally { if (intent === generation.current) { operation.current = null; if (mounted.current) setBusy(false); } }
 	}
-	async function login() {
+	/** `draft`: the dialog's choices, or openConnect's own when it starts at once (its state isn't set yet). */
+	async function login(draft = { registration, background, backgroundDirty }) {
 		const owner = dialogRef.current;
 		if (!bridge || operation.current || !status.available || status.pending || owner?.kind !== "connect") return;
-		const attempt: LoginAttempt = { generation: ++generation.current, dialog: owner, registration, background, backgroundDirty, pending: false, phase: "starting" };
+		const attempt: LoginAttempt = { generation: ++generation.current, dialog: owner, ...draft, pending: false, phase: "starting" };
 		loginAttempt.current = attempt; operation.current = "login";
 		const request = ++statusSequence.current;
 		setBusy(true); setError(null); setDismissedError(null);
 		setPasteOpen(false); setPasted(""); setPasteError(null); setPasting(false); setClipboardBlocked(false); setReading(false);
+		const viaDesktop = typeof window !== "undefined" && !!window.lh?.chatgptSignIn;
+		const run = ++desktopRun.current;
+		if (viaDesktop) setDesktopRunning(true);
 		try {
-			let value: unknown = await bridge.login(registration || undefined);
+			let value: unknown;
+			try { value = await bridge.login(draft.registration || undefined); }
+			finally { if (viaDesktop && mounted.current && run === desktopRun.current) setDesktopRunning(false); }
 			if (!owns(attempt) || attempt.phase === "consent") return;
+			// This page's desktop sign-in ended without signing in. Another device's attempt may
+			// still be pending on the server: take it up at once, with paste-back.
+			if (viaDesktop && isStatus(value) && value.error) {
+				if (request === statusSequence.current) publishStatus(value);
+				setError(value.error); finish(attempt);
+				if (value.pending && dialogRef.current === owner) adoptPending(owner);
+				return;
+			}
 			// Never publish an old acknowledgement over a newer event. If events
 			// coalesced past pending before the acknowledgement arrived, read the
 			// current backend state after it rather than losing that completion.
@@ -314,7 +348,9 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 			if (owns(attempt)) { setClipboardBlocked(true); pasteField.current?.focus(); }
 		} finally { if (owns(attempt)) setReading(false); }
 	}
-	const sameMachine = !web || (typeof window !== "undefined" && loopbackHost(window.location?.hostname ?? ""));
+	// The desktop app's window onto a server signs in through its bridge: the callback reaches this computer.
+	const desktopSignIn = typeof window !== "undefined" && !!window.lh?.chatgptSignIn;
+	const sameMachine = !web || desktopSignIn || (typeof window !== "undefined" && loopbackHost(window.location?.hostname ?? ""));
 	const context = {
 		status, busy, error: warning ? null : visibleError, inlineError: dialog || warning ? null : visibleError, warning: dialog?.kind === "warning" ? null : warning,
 		connect: openConnect,
@@ -366,7 +402,7 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 				</div>
 				{!status.available && <p className="mt-3 text-xs text-muted-foreground">ChatGPT sign-in is available only in the desktop app. API-key connections remain available here.</p>}
 				{status.pending && <p role="status" className="mt-3 text-xs text-muted-foreground">Waiting for browser sign-in…</p>}
-				{status.pending && dialog.kind === "connect" && loginAttempt.current && (sameMachine && !pasteOpen
+				{status.pending && dialog.kind === "connect" && loginAttempt.current && !desktopRunning && (sameMachine && !pasteOpen
 					? <button type="button" data-testid="chatgpt-paste-reveal" className="mt-2 cursor-pointer text-xs text-muted-foreground underline underline-offset-2" onClick={() => setPasteOpen(true)}>{CHATGPT_PASTE_COPY.reveal}</button>
 					: <form data-testid="chatgpt-paste" className="mt-3 flex flex-col gap-2 text-xs text-muted-foreground" onSubmit={(event) => { event.preventDefault(); void submitPaste(); }}>
 						<p className="leading-relaxed">{CHATGPT_PASTE_COPY.remote}</p>
