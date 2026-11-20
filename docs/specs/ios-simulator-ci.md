@@ -85,12 +85,12 @@ Approved by the owner on 2026-11-19 (playback confirmed, no vetoes). A new requi
 
 1. Build like T3: a Debug simulator build with `xcodebuild` (`mobile-native-client.ts:742-760`), with code served by Metro.
 2. Runner `xcode-27`, with Xcode 27.1 chosen explicitly (the version EAS uses for SDK 58), and an iPhone 17 on the newest iOS 27 runtime that Xcode runs.
-3. A 60-minute job time limit, as on T3's iOS dev-client job (`mobile-dev-client.yml:222-223`).
+3. A 60-minute job time limit, as on T3's iOS dev-client job (`mobile-dev-client.yml:222-223`). The owner raised it to 75 minutes on 2026-11-20: on the newer `xcode-27` image (20261111) the simulator and Metro take about 9 minutes to start, and the up to two reboots AXe may need before it can read the screen add about 6 minutes each, so a run that needs them does not fit 60 minutes.
 4. Artifacts are kept 14 days, as T3 keeps its screenshots (`mobile-showcase-screenshots.yml:106`).
 5. Taps, typing and the accessibility item list use AXe (T3 installs it at `mobile-showcase-screenshots.yml:79-88`).
 6. The iPhone step goes into the prove-it mobile recipe in the same PR.
 
-**Stopping rules.** The job has a 60-minute timeout and makes no retries of its own. No-runner cancels go through `ci-runner-retry.yml`, which allows at most 3 automatic re-runs per CI run (`docs/specs/ci-runner-retry.md`). After that, the PR waits for a manual re-run. Rebooting the simulator at most twice before the first screen read is setup, not a retry (owner, 2026-11-20): AXe cannot read a simulator whose screens never settle until it reboots. The job logs each reboot and never reboots once the drive has started.
+**Stopping rules.** The job has a 75-minute timeout (default 3, as raised by the owner) and makes no retries of its own. No-runner cancels go through `ci-runner-retry.yml`, which allows at most 3 automatic re-runs per CI run (`docs/specs/ci-runner-retry.md`). After that, the PR waits for a manual re-run. Rebooting the simulator at most twice before the first screen read is setup, not a retry (owner, 2026-11-20): AXe cannot read a simulator whose screens never settle until it reboots. The job logs each reboot and never reboots once the drive has started.
 
 **Promote on merge.** In the same PR, add the iPhone step to `.claude/skills/prove-learnharness/references/features/mobile-beta.md`. Update the "Planned surfaces" line in `.claude/skills/prove-learnharness/SKILL.md:192` so it names the iPhone CI job as the iOS surface. The repo has no numbered invariants list or ADR folder to add to.
 

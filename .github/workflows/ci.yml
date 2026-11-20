@@ -256,7 +256,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.iphone == 'true'
     runs-on: xcode-27
-    timeout-minutes: 60
+    # 75, not T3's 60 (owner, 2026-11-20): this image's slow simulator boot plus
+    # up to two reboots before AXe can read the screen. See the spec.
+    timeout-minutes: 75
     permissions:
       contents: read
     env:
