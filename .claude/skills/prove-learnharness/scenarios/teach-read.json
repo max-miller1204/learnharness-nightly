@@ -1,5 +1,5 @@
 {
-	"_comment": "Teaching session with one file read and one graded question. Used by web-teach.mjs and the teaching-session recipe. {{env:PROVE_FIXTURE}} is the fixture start.sh writes.",
+	"_comment": "Teaching session with one file read and one graded question. Used by web-teach.mjs and the teaching-session recipe. {{env:PROVE_FIXTURE}} is the fixture start.sh writes. probe-asks-question holds its reply 1.5 s so the question lands outside Chrome's 500 ms input window (web-teach.mjs's dock layout-shift step).",
 	"models": [
 		"prove-strong",
 		"prove-cheap",
@@ -53,7 +53,8 @@
 							"correctAnswer": "blue"
 						}
 					}
-				]
+				],
+				"pauseBeforeDoneMs": 1500
 			}
 		},
 		{
