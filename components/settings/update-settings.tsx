@@ -181,8 +181,14 @@ export function useUpdateState() {
 const isDesktopAppStatus = (value: unknown): value is DesktopAppStatus =>
 	typeof value === "object" && value !== null && typeof (value as DesktopAppStatus).version === "string" && typeof (value as DesktopAppStatus).phase === "string";
 
+// The bridge's caps (electron/release-notes.cjs bridgeNotes), applied again on the page.
+const MAX_NOTE_VERSION_LENGTH = 64;
+const MAX_RELEASED_AT_LENGTH = 40;
+const MAX_OMITTED_RELEASE_COUNT = 1000;
+
 const isReleaseNoteGroup = (value: unknown): value is ReleaseNoteGroup =>
 	typeof value === "object" && value !== null && typeof (value as ReleaseNoteGroup).version === "string"
+	&& (value as ReleaseNoteGroup).version.length <= MAX_NOTE_VERSION_LENGTH
 	&& Array.isArray((value as ReleaseNoteGroup).items) && (value as ReleaseNoteGroup).items.every((item) => typeof item === "string");
 
 /** Tolerant read of the bridge's status: an app from before the notes field (or a malformed
@@ -192,12 +198,12 @@ export function readDesktopAppStatus(value: unknown): DesktopAppStatus | null {
 	if (!isDesktopAppStatus(value)) return null;
 	const groups = (Array.isArray(value.releaseNotes) ? value.releaseNotes.filter(isReleaseNoteGroup) : []).map((group) => ({
 		version: group.version,
-		...(typeof group.releasedAt === "string" ? { releasedAt: group.releasedAt } : {}),
+		...(typeof group.releasedAt === "string" && group.releasedAt.length <= MAX_RELEASED_AT_LENGTH ? { releasedAt: group.releasedAt } : {}),
 		items: group.items,
 	}));
 	const { releaseNotes } = capReleaseNoteGroups(groups);
 	const omitted = value.omittedReleaseCount;
-	return { ...value, releaseNotes, omittedReleaseCount: typeof omitted === "number" && Number.isInteger(omitted) && omitted > 0 ? omitted : 0 };
+	return { ...value, releaseNotes, omittedReleaseCount: typeof omitted === "number" && Number.isInteger(omitted) && omitted > 0 ? Math.min(omitted, MAX_OMITTED_RELEASE_COUNT) : 0 };
 }
 
 /** How often the page asks the app for its update status (the bridge has no push channel). */

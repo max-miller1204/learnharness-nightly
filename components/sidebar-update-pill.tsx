@@ -48,6 +48,8 @@ import { createPortal, flushSync } from "react-dom";
 import * as Popper from "@radix-ui/react-popper";
 import { CheckIcon, CircleArrowUpIcon, DownloadIcon, RefreshCwIcon, RotateCwIcon, TriangleAlertIcon } from "lucide-react";
 import { HostDialog } from "@/components/host-dialog";
+import { useOptionalInteractionLayers } from "@/components/interaction-layers";
+import { hasLegacyInteractionForeground } from "@/components/plugin-input-focus";
 import { InstallUpdateDialog } from "@/components/install-update-dialog";
 import { ReleaseNoteSections } from "@/components/release-notes-view";
 import { APP_VERSION, HOMEPAGE, desktopOffer, useDesktopAppUpdate, useUpdateState, type DesktopAppStatus, type UpdateState } from "@/components/settings/update-settings";
@@ -382,6 +384,9 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	// Confirmed Install in this page: "restarting" until the page reloads, or the state moves on (a failure).
 	const [installing, setInstalling] = useState(false);
 	const [open, setOpen] = useState(false);
+	// The plain tooltip's open state, controlled all the time: switching Radix between controlled and
+	// uncontrolled lost a close made while the notes applied, and the old state came back after.
+	const [plainOpen, setPlainOpen] = useState(false);
 	const [spinKey, setSpinKey] = useState(0);
 	const isChecking = state?.status === "checking" || desktopStatus?.phase === "checking";
 	const [latched, setLatched] = useState(false);
@@ -414,7 +419,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	const showsNotes = shownNotes !== null;
 	// The notes close when they stop applying, and open when they start applying while the
 	// button already holds keyboard focus (T3's SidebarUpdatePill.tsx:282-290).
-	useEffect(() => { setOpen(showsNotes && keyboardOnButton.current); }, [showsNotes]);
+	useEffect(() => { setOpen(showsNotes && keyboardOnButton.current); if (showsNotes) setPlainOpen(false); }, [showsNotes]);
 	const notesOpen = open && showsNotes;
 	// Notes that close with focus inside them hand it back to the button, never to the page.
 	useEffect(() => {
@@ -427,18 +432,27 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	}, [notesOpen]);
 	// T3 closes the notes on Escape wherever focus is. In the capture phase, so neither a field's
 	// own Escape (the composer's dictation) nor the app's turn abort (keyboard-shortcuts.tsx,
-	// chat.tsx) sees it: one Esc, one action.
+	// chat.tsx) sees it: one Esc, one action. Inside the notes they take Escape with any modifier
+	// (Shift+Escape must not abort a turn from there). Outside them only a plain Escape, and only
+	// when no foreground layer (Settings, a dialog, a popover) owns it: that layer closes first.
+	const layers = useOptionalInteractionLayers();
 	useEffect(() => {
 		if (!notesOpen) return;
 		const onEscape = (event: globalThis.KeyboardEvent) => {
-			if (event.key !== "Escape" || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.isComposing) return;
+			if (event.key !== "Escape" || event.isComposing) return;
+			const inside = !!popoverRef.current?.contains(document.activeElement);
+			if (!inside) {
+				if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+				// The provider's own capture listener ran first and snapshotted the owner.
+				if (layers ? layers.isEscapeOwned(event) : hasLegacyInteractionForeground(document)) return;
+			}
 			event.preventDefault();
 			event.stopPropagation();
 			if (closeTimer.current) clearTimeout(closeTimer.current);
 			closeTimer.current = null;
 			// From inside the notes, onto the button; it doesn't open them again (removing a focused
 			// element fires no blur, so don't wait for the effect above to notice).
-			if (popoverRef.current?.contains(document.activeElement)) {
+			if (inside) {
 				focusInNotes.current = false;
 				suppressFocusOpen.current = true;
 				buttonRef.current?.focus({ preventScroll: true });
@@ -447,7 +461,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 		};
 		window.addEventListener("keydown", onEscape, true);
 		return () => window.removeEventListener("keydown", onEscape, true);
-	}, [notesOpen]);
+	}, [notesOpen, layers]);
 	const onIteration = useCallback(() => setLatched(continuesCheckSpin(isChecking, reducedMotion)), [isChecking, reducedMotion]);
 
 	if (!state || !kind) return null;
@@ -573,7 +587,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 			    release notes come and go. The notes anchor on the trigger through the Tooltip's own Popper. */}
 			<TooltipProvider>
 				{/* T3's <Tooltip disabled={showReleaseNotesPopover}>: the notes replace the plain tooltip. */}
-				<Tooltip open={shownNotes ? false : undefined}>
+				<Tooltip open={!shownNotes && plainOpen} onOpenChange={(next) => setPlainOpen(next && !shownNotes)}>
 					<TooltipTrigger asChild>{button}</TooltipTrigger>
 					{shownNotes ? open && createPortal(
 						<Popper.Content side="top" align="center" sideOffset={8} collisionPadding={8} className="z-50">

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { describe, it, after, afterEach } from "node:test";
 import { readFileSync } from "node:fs";
 import { renderWithInteractionLayers as renderToStaticMarkup } from "./interaction-layer-render.tsx";
-import { InteractionLayersProvider } from "../components/interaction-layers.tsx";
+import { InteractionLayersProvider, useInteractionLayer } from "../components/interaction-layers.tsx";
 import { installModalDom } from "./modal-dom.ts";
 import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
@@ -848,6 +848,62 @@ describe("General update rows", () => {
 		assert.ok(q(document, "update-pill-notes")!.textContent!.includes("Newer"));
 	});
 
+	it("Escape belongs to a foreground layer (Settings, a dialog, a popover) over hover-opened notes: the layer closes, the notes stay", async () => {
+		bridge(state({ status: "downloaded", version: "0.3.9", revision: 1, releaseNotes: [{ version: "0.3.9", items: ["Newest"] }] }));
+		const closes: string[] = [];
+		function Foreground() {
+			const rootRef = React.useRef<HTMLDivElement>(null);
+			useInteractionLayer({ kind: "modal", enabled: true, rootRef, onClose: (reason) => { closes.push(reason); return "handled-without-close"; } });
+			return <div ref={rootRef} data-testid="foreground"><button type="button" data-testid="foreground-button">in the dialog</button></div>;
+		}
+		const host = await mount(<><SidebarUpdatePill /><Foreground /></>);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		await hover(q(host, "update-pill")!);
+		assert.ok(q(document, "update-pill-notes"), "the pointer opened the notes");
+		const inDialog = q(host, "foreground-button")!;
+		await act(async () => { inDialog.focus(); });
+		await key(inDialog, "Escape");
+		assert.deepEqual(closes, ["escape"], "the foreground layer got its Escape");
+		assert.ok(q(document, "update-pill-notes"), "the background notes stay open");
+	});
+
+	it("inside the notes Escape with a modifier closes them too, and never reaches the turn abort", async () => {
+		bridge(state({ status: "downloaded", version: "0.3.9", revision: 1, releaseNotes: [{ version: "0.3.9", items: ["Newest"] }] }));
+		const host = await mount(<SidebarUpdatePill homepage="https://github.com/o/r" />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const reached: string[] = [];
+		const onWindow = (event: Event) => { reached.push(`${(event as KeyboardEvent).shiftKey ? "Shift+" : ""}${(event as KeyboardEvent).key}`); };
+		window.addEventListener("keydown", onWindow);
+		try {
+			const pill = keyboardFocusable(q(host, "update-pill")!);
+			await act(async () => { pill.focus(); });
+			await key(pill, "Tab");
+			const link = q(document, "update-pill-notes")!.querySelector("a")!;
+			assert.ok(document.activeElement === link);
+			await key(link, "Escape", { shiftKey: true });
+			assert.ok(!q(document, "update-pill-notes"), "Shift+Escape closed the notes");
+			assert.ok(document.activeElement === pill, "onto the button");
+			assert.deepEqual(reached, [], "the abort shortcut never saw it");
+		} finally {
+			window.removeEventListener("keydown", onWindow);
+		}
+	});
+
+	it("a plain tooltip closed while notes applied stays closed once they stop applying", async () => {
+		const b = bridge(state({ status: "up-to-date", revision: 1 }));
+		const host = await mount(<SidebarUpdatePill />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const pill = q(host, "update-pill")!;
+		await hover(pill);
+		assert.equal(await plainTooltipOpens(pill), true, "the plain tooltip opened");
+		await b.push(state({ status: "available", version: "0.3.9", revision: 2, releaseNotes: [{ version: "0.3.9", items: ["Newest"] }] }));
+		assert.equal(pill.getAttribute("data-state"), "closed", "the notes replace it");
+		const out = Object.assign(new window.Event("pointerout", { bubbles: true, cancelable: true }), { pointerType: "mouse", relatedTarget: document.body });
+		await act(async () => { pill.dispatchEvent(out); await new Promise((resolve) => setTimeout(resolve, 200)); });
+		await b.push(state({ status: "up-to-date", revision: 3 }));
+		assert.equal(q(host, "update-pill")!.getAttribute("data-state"), "closed", "the pointer left: no tooltip comes back");
+	});
+
 	it("without notes the pill leaves Tab and Escape to the app", async () => {
 		bridge(state({ status: "downloaded", version: "0.3.9", revision: 1 }));
 		const host = await mount(<SidebarUpdatePill homepage="https://github.com/o/r" />);
@@ -988,6 +1044,11 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 			releaseNotes: [good, { version: 3, items: [] }, { version: V71, items: [1] }, null] });
 		assert.deepEqual(read?.releaseNotes, [good]);
 		assert.equal(read?.omittedReleaseCount, 0);
+		// The bridge's caps again: a version of at most 64 characters, a date of at most 40, a bounded count.
+		const capped = readDesktopAppStatus({ version: V71, target: V72, phase: "available", error: null, omittedReleaseCount: 1e9,
+			releaseNotes: [{ version: "9".repeat(65), items: ["a"] }, { version: V72, releasedAt: `2026-11-18T00:00:00Z${"0".repeat(30)}`, items: ["b"] }, { version: V71, releasedAt: "2026-11-18", items: ["c"] }] });
+		assert.deepEqual(capped?.releaseNotes, [{ version: V72, items: ["b"] }, { version: V71, releasedAt: "2026-11-18", items: ["c"] }]);
+		assert.equal(capped?.omittedReleaseCount, 1000);
 	});
 
 	it("shownReleaseNotes picks whose notes: this app's for its own states, the server's otherwise", () => {
