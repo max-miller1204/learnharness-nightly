@@ -2676,7 +2676,8 @@ export function DockOverlay({
 	const [sbInset, setSbInset] = useState(0);
 	const stateKey = dockStateKey(mode, ownsDock, expanded);
 	const heightMorphRef = useRef<ReturnType<typeof createDockMorph> | null>(null);
-	if (!heightMorphRef.current) heightMorphRef.current = createDockMorph();
+	const overlayRef = useRef<HTMLDivElement>(null);
+	if (!heightMorphRef.current) heightMorphRef.current = createDockMorph((on) => overlayRef.current?.toggleAttribute("data-morphing", on));
 	const retargetOpening = useCallback(() => heightMorphRef.current?.retarget(stateKey), [stateKey]);
 	useIsoLayoutEffect(() => () => heightMorphRef.current?.dispose(), []);
 	useDockHeight({
@@ -2857,8 +2858,13 @@ export function DockOverlay({
 		heightMorphRef.current?.layout(el, stateKey, ownsDock && expanded, measureBlock);
 	});
 
+	// While the height morph runs (data-morphing, set by createDockMorph) the
+	// overlay is laid out from the column's bottom edge and lifted by its own
+	// height: its layout box holds still, so the upward growth is a transform
+	// and not a layout shift. Settled, it is plain bottom-0 with no transform,
+	// which keeps fixed-position tooltips and popups inside it viewport-based.
 	return (
-		<div className="pointer-events-none absolute inset-x-0 bottom-0" style={{ right: sbInset }}>
+		<div ref={overlayRef} data-testid="dock-overlay" className="pointer-events-none absolute inset-x-0 bottom-0 data-morphing:top-full data-morphing:bottom-auto data-morphing:-translate-y-full" style={{ right: sbInset }}>
 			<div className="h-24 bg-gradient-to-t from-background via-background/85 to-transparent" />
 			<div ref={blockRef} className="relative bg-background pb-5">
 				<div className={DOCK}>

@@ -1,5 +1,9 @@
 /** Private height-only WAAPI owner for DockOverlay. Content fades and plugin
- * animations are deliberately outside this controller's ownership. */
+ * animations are deliberately outside this controller's ownership.
+ * `pin(true)` runs as a height animation starts. `pin(false)` runs when it
+ * is cancelled, or one painted frame after it finishes: a layout shift is
+ * only avoided when the pinned overlay is painted both before and after the
+ * height change, and a slow frame can finish the whole morph at once. */
 const DURATION = 120;
 const EASING = "cubic-bezier(0.2, 0.8, 0.2, 1)";
 const EPSILON = 1;
@@ -19,7 +23,10 @@ export function naturalDockHeight(shell: HTMLElement) {
 	}
 }
 
-export function createDockMorph() {
+export function createDockMorph(
+	pin: (on: boolean) => void = () => {},
+	nextFrame: (run: () => void) => void = (run) => { requestAnimationFrame(run); },
+) {
 	let previous: { shell: HTMLElement; key: string; height: number } | null = null;
 	let owned: {
 		shell: HTMLElement; key: string; animation: Animation; opening: boolean;
@@ -27,8 +34,10 @@ export function createDockMorph() {
 	} | null = null;
 	const live = (animation: Animation) => animation.playState !== "finished" && animation.playState !== "idle";
 	const cancel = () => {
-		owned?.animation.cancel();
+		if (!owned) return;
+		owned.animation.cancel();
 		owned = null;
+		pin(false);
 	};
 	return {
 		/** Offer natural block geometry before starting a transition. Initial
@@ -48,6 +57,13 @@ export function createDockMorph() {
 					{ height: `${previous.height}px` }, { height: `${height}px` },
 				], { duration: DURATION, easing: EASING });
 				owned = { shell, key, animation, opening, target: height, duration: DURATION };
+				pin(true);
+				// Only the animation that still owns the morph may unpin: a cancelled
+				// one settles after its successor pinned. The first frame callback
+				// still runs before the finishing frame paints, so wait for two.
+				const owns = () => owned?.animation === animation;
+				const settle = () => { if (owns()) nextFrame(() => nextFrame(() => { if (owns()) pin(false); })); };
+				animation.finished.then(settle, settle);
 			}
 			previous = { shell, key, height };
 		},

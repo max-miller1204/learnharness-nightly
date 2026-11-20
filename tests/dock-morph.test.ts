@@ -18,7 +18,11 @@ function fixture() {
 	};
 	const animations: ReturnType<typeof makeAnimation>[] = [];
 	function makeAnimation(frames: Keyframe[], options: KeyframeAnimationOptions) {
+		let settle: { resolve: () => void; reject: (error: Error) => void } | undefined;
+		const finished = new Promise<void>((resolve, reject) => { settle = { resolve, reject }; });
+		finished.catch(() => {});
 		const animation = {
+			finished, settle: settle!,
 			frames, duration: options.duration, currentTime: 0 as number | null,
 			playState: "running", pending: false, cancelled: false, retargets: 0,
 			effect: {
@@ -30,7 +34,7 @@ function fixture() {
 					if (typeof timing.duration === "number" && animation.currentTime !== null && animation.currentTime >= timing.duration) animation.playState = "finished";
 				},
 			},
-			cancel() { this.cancelled = true; this.playState = "idle"; },
+			cancel() { this.cancelled = true; this.playState = "idle"; this.settle.reject(new Error("AbortError")); },
 		};
 		return animation;
 	}
@@ -51,7 +55,9 @@ function fixture() {
 		// A height owner must not enumerate/cancel unrelated shell animations.
 		getAnimations() { throw new Error("unrelated animations are not ours"); },
 	} as unknown as HTMLElement;
-	const morph = createDockMorph();
+	const pins: boolean[] = [];
+	let frames: (() => void)[] = [];
+	const morph = createDockMorph((on) => { pins.push(on); }, (run) => { frames.push(run); });
 	let reserves = 0;
 	const layout = (key: string, opening: boolean) => morph.layout(shell, key, opening, () => { reserves++; });
 	const start = () => {
@@ -61,7 +67,10 @@ function fixture() {
 		return animations.at(-1)!;
 	};
 	return {
-		shell, style, morph, animations, layout, start,
+		shell, style, morph, animations, layout, start, pins,
+		/** Run the frame callbacks queued so far (one painted frame). */
+		frame() { const due = frames; frames = []; for (const run of due) run(); },
+		get pinned() { return pins.at(-1) ?? false; },
 		get reserves() { return reserves; },
 		get timeline() { return timeline; },
 		advance(ms: number) {
@@ -69,7 +78,7 @@ function fixture() {
 			for (const animation of animations) {
 				if (animation.playState !== "running" || animation.currentTime === null) continue;
 				animation.currentTime += ms;
-				if (animation.currentTime >= Number(animation.duration)) animation.playState = "finished";
+				if (animation.currentTime >= Number(animation.duration)) { animation.playState = "finished"; animation.settle.resolve(); }
 			}
 		},
 		set natural(value: number) { natural = value; },
@@ -250,6 +259,56 @@ describe("dock opening height retargeting", () => {
 		f.layout("question:true", true);
 		assert.equal(f.animations.length, 1);
 		f.morph.dispose();
+	});
+});
+
+// The overlay holds its layout box still only while a height morph runs:
+// a settled overlay with a transform would re-anchor fixed tooltips and popups.
+describe("overlay pin for the life of the morph", () => {
+	const settled = () => new Promise((resolve) => setImmediate(resolve));
+	it("pins as the opening starts and unpins a painted frame after it finishes, across a retarget", async () => {
+		const f = fixture(); f.start();
+		assert.equal(f.pinned, true);
+		f.advance(30); f.natural = 358;
+		f.morph.retarget("question:true");
+		f.advance(60); await settled(); f.frame(); f.frame();
+		assert.equal(f.pinned, true);
+		f.advance(30); await settled();
+		f.frame();
+		assert.equal(f.pinned, true, "the finishing frame paints pinned");
+		f.frame();
+		assert.equal(f.pinned, false);
+	});
+	it("a morph started while the previous unpin waits for its frame stays pinned", async () => {
+		const f = fixture(); const opening = f.start();
+		f.advance(120); await settled();
+		assert.equal(opening.playState, "finished");
+		f.natural = 44; f.layout("question:false", false);
+		f.frame(); f.frame();
+		assert.equal(f.pinned, true);
+	});
+	it("never pins for the initial appearance or same-key typing growth", () => {
+		const f = fixture();
+		f.layout("question:true", true);
+		f.natural = 380; f.layout("question:true", true);
+		assert.deepEqual(f.pins, []);
+	});
+	it("keeps the pin when a replacement cancels the previous morph", async () => {
+		const f = fixture(); const opening = f.start();
+		f.natural = 300; f.layout("practice:true", true);
+		await settled();
+		assert.equal(opening.cancelled, true);
+		assert.equal(f.pinned, true);
+		f.advance(120); await settled(); f.frame(); f.frame();
+		assert.equal(f.pinned, false);
+	});
+	it("unpins on dispose and a late settle of the cancelled morph changes nothing", async () => {
+		const f = fixture(); f.start();
+		f.morph.dispose();
+		assert.equal(f.pinned, false);
+		const count = f.pins.length;
+		await settled();
+		assert.equal(f.pins.length, count);
 	});
 });
 

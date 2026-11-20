@@ -6,7 +6,8 @@
  * start.sh with scenarios/teach-read.json:
  *   1. /chat/new, type a goal, Enter            -> a session is created
  *   2. the fake prober calls `read` on the fixture, then `probe`
- *                                               -> the question card shows
+ *                                               -> the question card shows,
+ *                                                  with no layout shift from the dock
  *   3. pick "Blue", submit                      -> the answer reaches the model,
  *                                                  its reply shows
  *   4. reload the session                       -> transcript persists
@@ -66,6 +67,7 @@ const browser = attached
 const chromePid = attached ? null : path.join(SIDE_DIR, "chrome-web-teach.pid");
 if (chromePid) fs.writeFileSync(chromePid, String(browser.process().pid));
 let exitCode = 0;
+let cdp = null;
 try {
 	let page;
 	if (attached) {
@@ -94,8 +96,19 @@ try {
 	}
 	await page.evaluateOnNewDocument(() => {
 		window.__proveCLS = 0;
+		window.__proveDockShifts = [];
 		new PerformanceObserver((list) => {
-			for (const e of list.getEntries()) if (!e.hadRecentInput) window.__proveCLS += e.value;
+			for (const e of list.getEntries()) {
+				if (e.hadRecentInput) continue;
+				window.__proveCLS += e.value;
+				// The dock's frame (overlay, gradient, shell) must never be a shift
+				// source; the stats row's live counters inside it are not the dock.
+				const inDock = (node) => {
+					const el = node?.nodeType === 1 ? node : node?.parentElement;
+					return Boolean(el?.closest('[data-testid="dock-overlay"]') && !el.closest('[data-testid="stats-bar"]'));
+				};
+				if (e.sources.some((src) => inDock(src.node))) window.__proveDockShifts.push(Number(e.value.toFixed(4)));
+			}
 		}).observe({ type: "layout-shift", buffered: true });
 	});
 	const http = [];
@@ -142,6 +155,24 @@ try {
 	await shot("01-new-session");
 	await page.click(composer);
 	await page.keyboard.type(GOAL);
+	// 4x CPU while the question arrives: unthrottled, headless Chrome scores the
+	// dock's composer-to-question height morph on some runs and not others.
+	cdp = await page.createCDPSession();
+	await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+	// Shifts within 500 ms of input are marked hadRecentInput and never reach
+	// the dock check, so note when Enter goes in and when the question dock
+	// mounts (the scenario holds the question back for 1.5 s).
+	await page.evaluate(() => {
+		window.__proveDockShifts = [];
+		window.__proveEnterAt = performance.now();
+		window.__proveDockAt = null;
+		const seen = new MutationObserver(() => {
+			if (!document.querySelector('[data-testid="question-dock"]')) return;
+			window.__proveDockAt = performance.now();
+			seen.disconnect();
+		});
+		seen.observe(document.body, { childList: true, subtree: true });
+	});
 	await page.keyboard.press("Enter");
 	await page.waitForFunction(() => /\/chat\/chat_/.test(location.pathname), { timeout: turnMs });
 	const chatId = new URL(page.url()).pathname.split("/").pop();
@@ -163,6 +194,11 @@ try {
 	options.sort();
 	step("question card shows the scenario's options", JSON.stringify(options) === JSON.stringify(["Blue", "Red"]), { note: JSON.stringify(options) });
 	await budgetsHere("/chat/<chat> (question)");
+	await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+	const dock = await page.evaluate(() => ({ shifts: window.__proveDockShifts, afterEnterMs: window.__proveDockAt === null ? null : Math.round(window.__proveDockAt - window.__proveEnterAt) }));
+	// Under 1 s, the morph could fall inside the input window: no verdict.
+	const outsideInput = dock.afterEnterMs !== null && dock.afterEnterMs > 1000;
+	step("no layout shift comes from the dock while the question arrives", outsideInput && dock.shifts.length === 0, { note: `question dock mounted ${dock.afterEnterMs ?? "?"} ms after Enter (needs > 1000); dock shifts ${JSON.stringify(dock.shifts)}` });
 
 	// 3. answer it
 	const radios = await page.$$('[data-testid="question-dock"] [role="radio"]');
@@ -248,6 +284,7 @@ try {
 	step("drive", false, { note: String(error?.stack ?? error).slice(0, 800) });
 	try { const pages = (await browser.pages()).filter((p) => p.url().startsWith(APP)); await pages.at(-1)?.screenshot({ path: path.join(OUT, "failure.png") }); result.evidence.failure = path.join(OUT, "failure.png"); } catch { /* best effort */ }
 } finally {
+	await cdp?.send("Emulation.setCPUThrottlingRate", { rate: 1 }).catch(() => {});
 	result.finishedAt = new Date().toISOString();
 	save();
 	if (attached) await browser.disconnect(); else { await browser.close(); fs.rmSync(chromePid, { force: true }); }
