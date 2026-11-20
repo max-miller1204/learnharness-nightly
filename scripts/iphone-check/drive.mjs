@@ -228,6 +228,7 @@ async function checkChoiceRows(screen, ready) {
 	for (;;) {
 		const elements = await waitFor(screen, ready);
 		const { rows, problems } = rowProblems(elements);
+		if (!problems.length) problems.push(...await rowHits(rows));
 		if (!problems.length) {
 			log(`${screen}: ${rows.length} choice rows, one item each: ${rows.map((row) => JSON.stringify(label(row))).join(", ")}`);
 			return rows;
@@ -235,6 +236,32 @@ async function checkChoiceRows(screen, ready) {
 		if (Date.now() > deadline) fail(screen, `quiz choice rows:\n  - ${problems.join("\n  - ")}`);
 		await sleep(1500);
 	}
+}
+
+/** What the screen itself finds across each row: the box, the label's start and
+ * the label's end must all be that one row, not a separate item inside it. */
+async function rowHits(rows) {
+	const problems = [];
+	for (const row of rows) {
+		const f = frame(row);
+		for (const x of [f.x + 18, f.x + 60, f.x + f.width * 0.6]) {
+			const point = `${Math.round(x)},${Math.round(f.y + f.height / 2)}`;
+			let stdout = "";
+			for (let attempt = 1; !stdout; attempt++) {
+				try { ({ stdout } = await axe(["describe-ui", "--point", point])); } catch (error) {
+					if (attempt === 3) fail("quiz-waiting", `could not read the screen at ${point}: ${String(error.stderr || error.message).trim().split("\n")[0]}`);
+					await sleep(1500);
+				}
+			}
+			const hit = JSON.parse(stdout);
+			const found = (Array.isArray(hit) ? hit[0] : hit) ?? {};
+			if (label(found) !== label(row)) {
+				problems.push(`row "${label(row)}" is split: at ${point} the screen finds a separate item ${JSON.stringify(label(found))}`);
+				break;
+			}
+		}
+	}
+	return problems;
 }
 
 function rowProblems(elements) {
@@ -246,11 +273,10 @@ function rowProblems(elements) {
 	for (const row of rows) {
 		if (!label(row)) problems.push("a choice row has no label");
 		if (/[$\\]/.test(label(row))) problems.push(`row "${label(row)}" shows $ or \\ instead of spoken math`);
-		// A row spans the dock's width, so any other item level with it is part of it.
 		const f = frame(row);
-		const inside = elements.filter((el) => el !== row && !el.children?.length && label(el) && !/scroll bar/.test(label(el)) && (() => {
+		const inside = elements.filter((el) => el !== row && !el.children?.length && label(el) && (() => {
 			const c = center(el);
-			return c.y > f.y && c.y < f.y + f.height;
+			return c.x > f.x && c.x < f.x + f.width && c.y > f.y && c.y < f.y + f.height;
 		})());
 		if (inside.length) problems.push(`row "${label(row)}" is split: ${inside.map((el) => JSON.stringify(label(el))).join(", ")} is a separate item inside it`);
 	}
