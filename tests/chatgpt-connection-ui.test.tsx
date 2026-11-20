@@ -931,12 +931,13 @@ test("Cancel of this page's desktop sign-in, with another device's sign-in now p
  } finally { page.restore(); }
 });
 
-test("in the desktop app Connect alone starts the sign-in; a browser still asks for Continue first", async () => {
+test("in the desktop app, with no saved account to pick, Connect alone starts the sign-in; a browser still asks for Continue first", async () => {
  let page = webPage("desktop.tail1234.ts.net");
  let pending = false;
+ const firstTime = () => ({ ...disconnected(), accounts: [], pending });
  globalThis.fetch = async (_input, init) => {
-  if (init?.method) { page.ops.push({ op: JSON.parse(String(init.body)).op }); return Response.json({ value: { ...disconnected(), pending } }); }
-  return Response.json({ chatgpt: { ...disconnected(), pending }, native: [] });
+  if (init?.method) { page.ops.push({ op: JSON.parse(String(init.body)).op }); return Response.json({ value: firstTime() }); }
+  return Response.json({ chatgpt: firstTime(), native: [] });
  };
  const started: (string | undefined)[] = [];
  let finish!: (result: { ok: true } | { error: string }) => void;
@@ -965,5 +966,25 @@ test("in the desktop app Connect alone starts the sign-in; a browser still asks 
   await click(byTest("chatgpt-proceed"));
   assert.deepEqual(page.ops.map((op) => op.op), ["login"]);
   assert(byTest("chatgpt-paste"), "and paste-back once pending");
+ } finally { page.restore(); }
+});
+
+test("in the desktop app, with saved accounts, Connect keeps the dialog to pick one, and Sign in again is the one click", async () => {
+ const page = webPage("desktop.tail1234.ts.net");
+ const started: (string | undefined)[] = [];
+ window.lh = { chatgptSignIn: { start: async (accountId?: string) => { started.push(accountId); return { error: "ChatGPT sign-in ended. Try again." }; }, cancel: async () => ({ ok: true, ended: true }) } };
+ try {
+  await mount(); await click(byTest("chatgpt-login"));
+  assert.deepEqual(started, [], "a saved account to pick: no sign-in yet");
+  const select = document.querySelector<HTMLSelectElement>('select[aria-label="Saved ChatGPT account"]')!;
+  assert.equal(select.disabled, false, "the saved-account choice stays open");
+  assert.equal((toggle() as HTMLButtonElement).disabled, false, "and the background-use switch");
+  await selectAccount("Saved ChatGPT account", "signed-out-record");
+  await click(button("Manage…", byTest("chatgpt-account-dialog")));
+  await click(button("Sign in again", byTest("chatgpt-account-dialog")));
+  assert.deepEqual(started, ["signed-out-record"], "Sign in again for that account starts at once");
+  await remount();
+  await mount(); await click(byTest("chatgpt-login")); await click(byTest("chatgpt-proceed"));
+  assert.deepEqual(started, ["signed-out-record", undefined], "Continue adds another account");
  } finally { page.restore(); }
 });

@@ -189,9 +189,10 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 		// A sign-in already pending on the server (this page reloaded, or another
 		// tab started it) is adopted: the waiting state, paste-back and Cancel.
 		if (statusRef.current.pending) adoptPending(owner);
-		// The desktop app's window onto a server: one click. Its bridge sign-in starts at once,
-		// with the dialog's waiting state, Cancel and failure handling; no Continue step.
-		else if (typeof window !== "undefined" && window.lh?.chatgptSignIn) {
+		// The desktop app's window onto a server: one click when there is no choice to make (no saved
+		// account to pick, or Sign in again naming one). Its bridge sign-in starts at once, with the
+		// dialog's waiting state, Cancel and failure handling. Otherwise the dialog asks first.
+		else if (typeof window !== "undefined" && window.lh?.chatgptSignIn && (accountId || statusRef.current.accounts.length === 0)) {
 			void login({ registration: accountId, background: statusRef.current.allowBackgroundUse, backgroundDirty: false });
 		}
 	}
