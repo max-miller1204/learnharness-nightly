@@ -1,34 +1,33 @@
 /**
- * A subscription whose status check fails (a failed snapshot, with the account
- * still configured) is an outage, not missing setup: every path that runs the
- * model answers a retryable 503 subscription_unreachable, never the 422
- * provider_key_missing setup refusal. A snapshot that says the subscription is
- * not connected is real missing setup (422), and the same connection recovers
- * with no settings change.
+ * A subscription outage is not missing setup. Over desktop IPC, with the reply
+ * shapes the Electron owners send: a native snapshot request answered
+ * `ok: false`, and a ChatGPT `models` reply whose status carries
+ * `catalogError` with an empty catalog. While the latest check (ordered by
+ * when it started) failed and the runtime is still connected, every path that
+ * runs the model answers a retryable 503 subscription_unreachable. A snapshot
+ * that says "not connected", or a lost runtime, is the 422 setup refusal.
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { after, beforeEach, test } from "node:test";
+import { after, before, beforeEach, test } from "node:test";
 import { issueSession } from "../selfhost/src/auth-store.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "lh-subscription-outage-"));
 process.env.LH_DATA_DIR = path.join(root, "data");
 process.env.LH_AUTH_FILE = path.join(root, "auth.json");
+fs.writeFileSync(process.env.LH_AUTH_FILE, "{}");
 process.env.LH_SELFHOST = "0";
 process.env.LH_IGNORE_ENV_KEYS = "1";
-delete process.env.LH_DESKTOP_SERVER;
-delete process.env.LH_DESKTOP_API_SECRET;
-after(() => fs.rmSync(root, { recursive: true, force: true }));
 
 const { PATHS } = await import("../config.ts");
-const { configureWebSubscriptionRuntime } = await import("../src/agent/subscription-runtime.ts");
 const { piModels } = await import("../src/agent/models.ts");
+const { connectionUnreachable } = await import("../src/agent/subscription-connections.ts");
 const { providerKeyMissing, subscriptionUnreachable } = await import("../src/core/settings.ts");
-const { handleChatRequest } = await import("../src/server/chat-handler.ts");
-const { isTurnRunning } = await import("../src/server/turn-liveness.ts");
+const { handleChatInput, handleChatRequest } = await import("../src/server/chat-handler.ts");
+const { refreshConnectionCatalog } = await import("../src/server/model-catalog.ts");
 const { productionEngineFor } = await import("../src/server/side-chat.ts");
 const { pluginKeyMissing } = await import("../src/server/plugin-model-refusal.ts");
 const { createPluginTransport } = await import("../src/server/plugin-transport.ts");
@@ -36,23 +35,59 @@ const { reserveAttachmentRequest, uploadAttachmentRequest, startAttachmentReques
 const { chatStore } = await import("../src/store/chats.ts");
 const { writeSettings } = await import("../src/store/settings.ts");
 
-const PROVIDER = "github-copilot-subscription";
-const MODEL = piModels().getModels("github-copilot")[0]!.id;
+const COPILOT = "github-copilot-subscription";
+const COPILOT_MODEL = piModels().getModels("github-copilot")[0]!.id;
+const GPT = piModels().getModel("openai", "gpt-5")!.id;
 
-// The web subscription owner: a snapshot that fails, or one that reports the
-// connection as connected or not.
-let snapshot: "fails" | "connected" | "disconnected" = "fails";
+// ── the desktop owner, over IPC ─────────────────────────────────────────────
+type Ask = { channel: string; id: string; op: string };
+type Native = "fails" | "connected" | "disconnected" | "hold";
+let native: Native = "fails";
+let catalogError: string | null = "The ChatGPT model list could not be loaded.";
+let holdChatGPT = false;
 let revision = 0;
-configureWebSubscriptionRuntime(async <T>(channel: string, op: string): Promise<T> => {
-	if (channel === "lh:chatgpt" || op !== "snapshot" || snapshot === "fails") throw new Error("The subscription owner did not answer.");
-	const connected = snapshot === "connected";
-	return {
-		statuses: [{ providerId: "github-copilot", available: true, connected, pending: false, allowBackgroundUse: true, connectionId: connected ? "fixture-copilot" : null, epoch: 1, authorityRevision: 1, revision: ++revision }],
-		models: { "github-copilot": connected ? piModels().getModels("github-copilot") : [] },
-	} as T;
+const held: Ask[] = [];
+const ipc = (message: unknown) => (process.emit as (event: string, value: unknown) => boolean)("message", message);
+const nativeSnapshot = (connected: boolean) => ({
+	statuses: [{ providerId: "github-copilot", available: true, connected, pending: false, allowBackgroundUse: true, connectionId: "fixture-copilot", epoch: 1, authorityRevision: 1, revision: ++revision }],
+	models: { "github-copilot": connected ? piModels().getModels("github-copilot") : [] },
 });
-beforeEach(() => { snapshot = "fails"; });
+const chatGPTStatus = () => ({ available: true, pending: false, allowBackgroundUse: true, activeId: "fixture", accounts: [{ id: "fixture", registration: "oaiapp_fixture", email: "fixture@example.invalid", connected: true, planEnabled: true }], error: null, catalogError });
+const stamp = () => ({ epoch: 1, authorityRevision: 1, revision: ++revision });
+function answer(ask: Ask) {
+	if (ask.channel === "lh:subscriptions") {
+		const mode = native;
+		if (mode === "fails") return ipc({ channel: ask.channel, id: ask.id, op: ask.op, ok: false, error: "Subscription connection failed." });
+		return ipc({ channel: ask.channel, id: ask.id, op: ask.op, ok: true, value: nativeSnapshot(mode === "connected") });
+	}
+	// The ChatGPT owner never throws for a catalog failure: it answers with
+	// the error in its status and an empty catalog (electron/chatgpt.cjs models()).
+	ipc({ channel: ask.channel, id: ask.id, op: ask.op, ok: true, value: { ...stamp(), status: chatGPTStatus(), accountId: "fixture", models: catalogError ? [] : [{ id: GPT, name: "Fixture" }] } });
+}
+const originalSend = Object.getOwnPropertyDescriptor(process, "send");
+const originalConnected = Object.getOwnPropertyDescriptor(process, "connected");
+const marker = process.env.LH_DESKTOP_SERVER, secret = process.env.LH_DESKTOP_API_SECRET;
+before(() => {
+	process.env.LH_DESKTOP_SERVER = "1"; process.env.LH_DESKTOP_API_SECRET = "d".repeat(64);
+	Object.defineProperty(process, "connected", { configurable: true, writable: true, value: true });
+	Object.defineProperty(process, "send", { configurable: true, value: (message: Ask, callback?: (error: Error | null) => void) => {
+		callback?.(null);
+		if ((message.channel === "lh:subscriptions" && native === "hold") || (message.channel === "lh:chatgpt" && holdChatGPT)) held.push(message);
+		else queueMicrotask(() => answer(message));
+		return true;
+	} });
+});
+after(() => {
+	fs.rmSync(root, { recursive: true, force: true });
+	if (originalSend) Object.defineProperty(process, "send", originalSend); else delete process.send;
+	if (originalConnected) Object.defineProperty(process, "connected", originalConnected); else delete (process as { connected?: boolean }).connected;
+	if (marker === undefined) delete process.env.LH_DESKTOP_SERVER; else process.env.LH_DESKTOP_SERVER = marker;
+	if (secret === undefined) delete process.env.LH_DESKTOP_API_SECRET; else process.env.LH_DESKTOP_API_SECRET = secret;
+});
+beforeEach(() => { native = "fails"; catalogError = "The ChatGPT model list could not be loaded."; holdChatGPT = false; held.length = 0; });
+const until = async (ready: () => boolean) => { while (!ready()) await new Promise((resolve) => setImmediate(resolve)); };
 
+// ── the paths ───────────────────────────────────────────────────────────────
 const pinned = (provider: string, id: string) => {
 	const chat = chatStore.createChat(`outage ${provider}`);
 	chatStore.saveSettings(chat.id, { model: { provider, id } });
@@ -60,81 +95,110 @@ const pinned = (provider: string, id: string) => {
 };
 const send = (chatId: string) => handleChatRequest(new Request("http://test/api/chat", { method: "POST", headers: { "Content-Type": "application/json" },
 	body: JSON.stringify({ chatId, input: { type: "text", text: "teach me" } }) }), () => assert.fail("a refused turn builds no agent"));
-
-test("main send: a failed snapshot is a retryable 503, a disconnected subscription is the 422 setup refusal", async () => {
-	const chatId = pinned(PROVIDER, MODEL);
-	const outage = await send(chatId);
-	assert.equal(outage.status, 503);
-	assert.deepEqual(await outage.json(), subscriptionUnreachable(PROVIDER));
-	assert.equal(isTurnRunning(chatId), false);
-	assert.deepEqual(chatStore.getChat(chatId)!.messages, [], "nothing is saved before the gate");
-
-	snapshot = "disconnected";
-	const refused = await send(chatId);
-	assert.equal(refused.status, 422);
-	assert.deepEqual(await refused.json(), providerKeyMissing(PROVIDER, ["strong"]));
-});
-
-test("main send: a failed ChatGPT catalog check is a retryable 503", async () => {
-	const outage = await send(pinned("chatgpt", "gpt-5.5"));
-	assert.equal(outage.status, 503);
-	assert.deepEqual(await outage.json(), subscriptionUnreachable("chatgpt"));
-});
-
-test("start with files: a failed snapshot is a retryable 503 and creates no chat", async () => {
-	const token = issueSession(PATHS.data, { method: "pairing", client: { label: "outage test device", deviceType: "desktop" } }).token;
-	const request = (pathname: string, method: string, body?: string) => new Request(new URL(pathname, "http://attachment.test:3000"),
-		{ method, body, headers: { Authorization: `Bearer ${token}`, "X-LearnHarness-Protocol": "1" } });
-	writeSettings({ version: 1, models: { strong: { model: { provider: PROVIDER, id: MODEL } } } });
+const token = issueSession(PATHS.data, { method: "pairing", client: { label: "outage test device", deviceType: "desktop" } }).token;
+const authed = (pathname: string, method: string, body?: string) => new Request(new URL(pathname, "http://attachment.test:3000"),
+	{ method, body, headers: { Authorization: `Bearer ${token}`, "X-LearnHarness-Protocol": "1" } });
+async function startWithFile(provider: string, id: string) {
+	writeSettings({ version: 1, models: { strong: { model: { provider, id } } } });
 	try {
 		const draftId = randomUUID();
-		const upload = await (await reserveAttachmentRequest(request("/api/attachments", "POST", JSON.stringify({ draftId, name: "fixture.txt", mimeType: "", size: 4 })))).json();
-		assert.equal((await uploadAttachmentRequest(request(upload.uploadUrl, "PUT", "test"))).status, 204);
-		const body = JSON.stringify({ draftId, sendId: randomUUID(), title: "Open with a file", attachmentUploadIds: [upload.id] });
+		const upload = await (await reserveAttachmentRequest(authed("/api/attachments", "POST", JSON.stringify({ draftId, name: "fixture.txt", mimeType: "", size: 4 })))).json();
+		assert.equal((await uploadAttachmentRequest(authed(upload.uploadUrl, "PUT", "test"))).status, 204);
 		const chats = chatStore.listChats().length;
-		const outage = await startAttachmentRequest(request("/api/attachments/start", "POST", body));
-		assert.equal(outage.status, 503);
-		assert.deepEqual(await outage.json(), subscriptionUnreachable(PROVIDER));
-		assert.equal(chatStore.listChats().length, chats, "no chat is created");
-
-		snapshot = "disconnected";
-		const refused = await startAttachmentRequest(request("/api/attachments/start", "POST", body));
-		assert.equal(refused.status, 422);
-		assert.deepEqual(await refused.json(), providerKeyMissing(PROVIDER, ["strong"]));
+		const response = await startAttachmentRequest(authed("/api/attachments/start", "POST", JSON.stringify({ draftId, sendId: randomUUID(), title: "Open with a file", attachmentUploadIds: [upload.id] })));
+		assert.equal(chatStore.listChats().length, chats, "a refused start creates no chat");
+		return response;
 	} finally {
 		writeSettings({ version: 1 });
 	}
-});
-
-test("side chat: a failed snapshot is a retryable 503, and the same connection recovers", async () => {
-	const record = chatStore.getChat(pinned(PROVIDER, MODEL))!;
-	const outage = await productionEngineFor(record);
-	assert.ok(outage instanceof Response);
-	assert.equal(outage.status, 503);
-	assert.deepEqual(await outage.json(), subscriptionUnreachable(PROVIDER));
-
-	snapshot = "connected";
-	assert.ok(!((await productionEngineFor(record)) instanceof Response), "the recovered connection runs with no settings change");
-});
-
-test("plugin model refusal: a failed snapshot is a retryable 503, and the same connection recovers", async () => {
-	const model = { provider: PROVIDER, id: MODEL };
-	const message = `The model ${PROVIDER}/${MODEL} is no longer available. Pick another model in Settings.`;
+}
+async function sideChat(provider: string, id: string) {
+	const engine = await productionEngineFor(chatStore.getChat(pinned(provider, id))!);
+	return engine instanceof Response ? engine : null;
+}
+function plugin(provider: string, id: string) {
 	const host = {
 		list: () => [], conflicts: () => [], refresh: async () => {}, setEnabled: async () => {}, convertDocument: async () => assert.fail("unused"), asset: () => assert.fail("unused"),
-		call: async () => { throw Object.assign(new Error(message), { code: "model_unavailable", model }); },
+		call: async () => { throw Object.assign(new Error(`The model ${provider}/${id} is no longer available. Pick another model in Settings.`), { code: "model_unavailable", model: { provider, id } }); },
 	};
 	const transport = createPluginTransport({ getHost: async () => host, directory: path.join(root, "plugins"), keyMissing: pluginKeyMissing });
-	const call = () => transport.call("flashcards", new Request("http://localhost/api/plugins", { method: "POST", body: JSON.stringify({ operation: "preflight-file", input: {} }) }));
-	const outage = await call();
-	assert.equal(outage.status, 503);
-	assert.deepEqual(await outage.json(), subscriptionUnreachable(PROVIDER));
+	return transport.call("flashcards", new Request("http://localhost/api/plugins", { method: "POST", body: JSON.stringify({ operation: "preflight-file", input: {} }) }));
+}
+async function expect(response: Response | null | Promise<Response | null>, status: number, body: object) {
+	const settled = await response;
+	assert.ok(settled, "refused");
+	assert.equal(settled.status, status);
+	assert.deepEqual(await settled.json(), body);
+}
 
-	snapshot = "disconnected";
-	const refused = await call();
-	assert.equal(refused.status, 422);
-	assert.deepEqual(await refused.json(), providerKeyMissing(PROVIDER, []));
+test("a failed native snapshot is a retryable 503 on every path; a disconnected one is the 422 setup refusal; the same connection recovers", async () => {
+	const unreachable = subscriptionUnreachable(COPILOT);
+	const chatId = pinned(COPILOT, COPILOT_MODEL);
+	await expect(send(chatId), 503, unreachable);
+	assert.deepEqual(chatStore.getChat(chatId)!.messages, [], "nothing is saved before the gate");
+	await expect(startWithFile(COPILOT, COPILOT_MODEL), 503, unreachable);
+	await expect(sideChat(COPILOT, COPILOT_MODEL), 503, unreachable);
+	await expect(plugin(COPILOT, COPILOT_MODEL), 503, unreachable);
 
-	snapshot = "connected";
-	assert.equal(await pluginKeyMissing(PROVIDER, MODEL), null, "the recovered connection needs no key");
+	native = "disconnected";
+	await expect(send(chatId), 422, providerKeyMissing(COPILOT, ["strong"]));
+	await expect(startWithFile(COPILOT, COPILOT_MODEL), 422, providerKeyMissing(COPILOT, ["strong"]));
+	await expect(sideChat(COPILOT, COPILOT_MODEL), 422, providerKeyMissing(COPILOT, ["strong"]));
+	await expect(plugin(COPILOT, COPILOT_MODEL), 422, providerKeyMissing(COPILOT, []));
+
+	native = "connected";
+	assert.equal(await sideChat(COPILOT, COPILOT_MODEL), null, "the recovered connection runs with no settings change");
+	assert.equal(await pluginKeyMissing(COPILOT, COPILOT_MODEL), null);
+});
+
+test("a ChatGPT catalogError reply is a retryable 503 on every path", async () => {
+	const unreachable = subscriptionUnreachable("chatgpt");
+	await expect(send(pinned("chatgpt", GPT)), 503, unreachable);
+	await expect(startWithFile("chatgpt", GPT), 503, unreachable);
+	await expect(sideChat("chatgpt", GPT), 503, unreachable);
+	await expect(plugin("chatgpt", GPT), 503, unreachable);
+
+	catalogError = null;
+	assert.equal(await sideChat("chatgpt", GPT), null, "the catalog recovers with no settings change");
+});
+
+test("a send's ChatGPT catalog failure stays a 503 while a newer picker refresh is pending", async () => {
+	holdChatGPT = true;
+	const sending = send(pinned("chatgpt", GPT));
+	await until(() => held.length === 1);
+	const picker = refreshConnectionCatalog();
+	await until(() => held.some((ask) => ask.channel === "lh:chatgpt" && ask !== held[0]));
+	answer(held[0]!);
+	await expect(sending, 503, subscriptionUnreachable("chatgpt"));
+	for (const ask of held.slice(1)) answer(ask);
+	await picker;
+});
+
+test("a stale native failure never overwrites a newer disconnected snapshot", async () => {
+	native = "hold";
+	const stale = refreshConnectionCatalog(COPILOT);
+	await until(() => held.length === 1);
+	ipc({ channel: "lh:subscriptions", op: "changed", snapshot: nativeSnapshot(false) });
+	ipc({ channel: "lh:subscriptions", id: held[0]!.id, op: held[0]!.op, ok: false, error: "Subscription connection failed." });
+	await stale;
+	assert.equal(connectionUnreachable(COPILOT), false, "the newer snapshot wins: not connected, not unreachable");
+});
+
+test("a ChatGPT steer during a catalog outage parks on 403 even with cached background consent", async () => {
+	ipc({ channel: "lh:chatgpt", kind: "state", stamp: stamp(), status: chatGPTStatus(), invalidate: "none" });
+	const steer = { id: "auto", role: "custom" as const, customType: "subagent-steer" as const, content: "Automatic result", details: { jobId: "fixture-job" }, display: true, timestamp: 2 };
+	const response = await handleChatInput(pinned("chatgpt", GPT), { type: "steers", steers: [steer] } as Parameters<typeof handleChatInput>[1], () => assert.fail("a parked steer builds no agent"));
+	assert.equal(response.status, 403);
+});
+
+// Last: the desktop connection closes for the rest of this process.
+test("a lost desktop connection is the 422 setup refusal, not a lasting outage", async () => {
+	const chatId = pinned(COPILOT, COPILOT_MODEL);
+	await expect(send(chatId), 503, subscriptionUnreachable(COPILOT));
+	(process as { connected?: boolean }).connected = false;
+	process.emit("disconnect");
+	assert.equal(connectionUnreachable(COPILOT), false);
+	assert.equal(connectionUnreachable("chatgpt"), false);
+	await expect(send(chatId), 422, providerKeyMissing(COPILOT, ["strong"]));
+	await expect(sideChat(COPILOT, COPILOT_MODEL), 422, providerKeyMissing(COPILOT, ["strong"]));
 });

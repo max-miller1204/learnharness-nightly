@@ -1,5 +1,5 @@
 import { catalogModelGone } from "../agent/models.ts";
-import { isSubscriptionProvider, subscriptionStatusUnknown } from "../agent/subscription-connections.ts";
+import { isSubscriptionProvider, connectionUnreachable } from "../agent/subscription-connections.ts";
 import { providerKeyMissing, subscriptionUnreachable } from "../core/settings.ts";
 import { providerKeyPresent } from "./keys.ts";
 import { refreshConnectionCatalog } from "./model-catalog.ts";
@@ -12,7 +12,7 @@ export async function pluginKeyMissing(provider: string, id: string): Promise<ob
 	if (catalogModelGone(provider, id)) return null;
 	if (isSubscriptionProvider(provider)) {
 		await refreshConnectionCatalog(provider);
-		if (subscriptionStatusUnknown(provider)) return subscriptionUnreachable(provider);
+		if (connectionUnreachable(provider)) return subscriptionUnreachable(provider);
 	}
 	return providerKeyPresent(provider) ? null : providerKeyMissing(provider, []);
 }

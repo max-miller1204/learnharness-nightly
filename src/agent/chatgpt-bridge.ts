@@ -13,8 +13,8 @@ interface Pending { op: string; resolve: (v: unknown) => void; reject: (e: Error
 interface BridgeState {
  status: ChatGPTStatus; stamp: Stamp; models: Model<"openai-responses">[]; catalogAccount: string | null;
  pending: Map<string, Pending>; controllers: Map<AbortController, boolean>; listeners: Set<() => void>; counter: number; catalogRequest: number;
- /** The last model catalog request failed or the desktop connection closed: whether the account is connected is unknown until a catalog arrives. */
- failed: boolean;
+ /** Status and catalog checks, numbered when they start (see settleCheck). */
+ checks: number; lastCheck: number; unreachable: boolean;
 }
 const key = Symbol.for("lh.chatgpt.bridge");
 const unavailable = (): ChatGPTStatus => ({ available: false, pending: false, allowBackgroundUse: true, activeId: null, accounts: [], error: null });
@@ -29,13 +29,14 @@ function runtimeConnected(): boolean { return desktopIPCConnected() || webSubscr
 function bridge(): BridgeState {
  const global = globalThis as typeof globalThis & { [key]?: BridgeState };
  if (!global[key]) {
-  const state: BridgeState = { status: unavailable(), stamp: { epoch: 0, authorityRevision: 0, revision: 0 }, models: [], catalogAccount: null, pending: new Map(), controllers: new Map(), listeners: new Set(), counter: 0, catalogRequest: 0, failed: false };
+  const state: BridgeState = { status: unavailable(), stamp: { epoch: 0, authorityRevision: 0, revision: 0 }, models: [], catalogAccount: null, pending: new Map(), controllers: new Map(), listeners: new Set(), counter: 0, catalogRequest: 0, checks: 0, lastCheck: 0, unreachable: false };
   global[key] = state;
   const receive = (raw: unknown) => {
    const m = raw as { channel?: string; kind?: string; id?: string; op?: string; ok?: boolean; value?: unknown; stamp: Stamp; status: ChatGPTStatus; invalidate?: string; error?: string };
    if (m?.channel !== "lh:chatgpt") return;
    if (m.kind === "state" && validStamp(m.stamp) && m.stamp.revision >= state.stamp.revision) {
     acceptStatus(state, { ...m.stamp, status: m.status });
+    settleCheck(state, ++state.checks, !!m.status?.catalogError);
     if (m.invalidate === "all") { state.catalogRequest++; clearCatalog(state); }
     if (m.invalidate === "all" || m.invalidate === "background") {
      for (const [controller, background] of state.controllers) if (m.invalidate === "all" || background) controller.abort(m.invalidate === "all" ? "all" : "background");
@@ -54,7 +55,6 @@ function bridge(): BridgeState {
   onWebSubscriptionPacket("lh:chatgpt", (packet) => { if (webSubscriptionsEnabled()) receive(packet); });
   process.on("disconnect", () => {
    if (webSubscriptionsEnabled()) return;
-   state.failed = true;
    state.status = unavailable(); clearCatalog(state); state.catalogRequest++;
    for (const controller of state.controllers.keys()) controller.abort("all");
    for (const call of state.pending.values()) { clearTimeout(call.timer); call.reject(new Error("The desktop connection closed.")); }
@@ -65,6 +65,25 @@ function bridge(): BridgeState {
  return global[key];
 }
 function clearCatalog(state: BridgeState) { state.models = []; state.catalogAccount = null; }
+/** The one rule for "unreachable": the latest completed check, ordered by when
+ * it started, failed or answered with a catalog error. An older answer never
+ * overwrites a newer one. Listeners hear when the answer changes. */
+function settleCheck(state: BridgeState, started: number, unreachable: boolean) {
+ if (started <= state.lastCheck) return;
+ state.lastCheck = started;
+ if (state.unreachable === unreachable) return;
+ state.unreachable = unreachable;
+ for (const listener of state.listeners) listener();
+}
+/** Runs one status or catalog request as a check. */
+async function checked<T extends StatusValue>(state: BridgeState, request: Promise<T>): Promise<T> {
+ const started = ++state.checks;
+ try {
+  const value = await request;
+  settleCheck(state, started, !validStamp(value) || !!value.status?.catalogError);
+  return value;
+ } catch (error) { settleCheck(state, started, true); throw error; }
+}
 function acceptStatus(state: BridgeState, value: StatusValue) {
  if (!validStamp(value) || value.revision < state.stamp.revision) return;
  if (value.epoch !== state.stamp.epoch || value.authorityRevision !== state.stamp.authorityRevision || value.status.activeId !== state.status.activeId) clearCatalog(state);
@@ -87,9 +106,12 @@ export function chatGPTRequest<T>(op: "status" | "models" | "lease", fields: Rec
 export function chatGPTStatus(): ChatGPTStatus { return bridge().status; }
 export async function refreshChatGPTStatus(): Promise<void> {
  if (!runtimeConnected()) return;
- acceptStatus(bridge(), await chatGPTRequest<StatusValue>("status"));
+ const state = bridge();
+ acceptStatus(state, await checked(state, chatGPTRequest<StatusValue>("status")));
 }
-export function chatGPTStatusUnknown(): boolean { return bridge().failed; }
+/** The latest check failed while the runtime is still connected. A lost
+ * runtime is not connected, never unreachable. */
+export function chatGPTUnreachable(): boolean { return runtimeConnected() && bridge().unreachable; }
 export function chatGPTConnected(): boolean { const s = chatGPTStatus(); return runtimeConnected() && s.available && s.accounts.some((a) => a.id === s.activeId && a.connected && a.planEnabled === true); }
 export function chatGPTBackgroundAllowed(): boolean { const s = chatGPTStatus(); return chatGPTConnected() && s.allowBackgroundUse === true; }
 export function onChatGPTChange(listener: () => void): () => void { bridge().listeners.add(listener); return () => { bridge().listeners.delete(listener); }; }
@@ -116,7 +138,7 @@ export async function chatGPTDenial(scope: AdmissionScope | undefined, controlle
  if (!scope || !chatGPTScopeCurrent(scope)) return "other";
  if (controller.signal.reason === "background") return "background";
  if (!background) return "other";
- try { const value = await chatGPTRequest<StatusValue>("status"); acceptStatus(bridge(), value); }
+ try { const state = bridge(); acceptStatus(state, await checked(state, chatGPTRequest<StatusValue>("status"))); }
  catch { return "other"; }
  if (controller.signal.reason === "all" || !chatGPTScopeCurrent(scope)) return "all";
  return !chatGPTBackgroundAllowed() ? "background" : "other";
@@ -150,9 +172,8 @@ export async function refreshChatGPTModels(supported: Model<"openai-responses">[
  if (!runtimeConnected()) { clearCatalog(state); return; }
  const sequence = ++state.catalogRequest;
  try {
-  const value = await chatGPTRequest<ModelsValue>("models");
+  const value = await checked(state, chatGPTRequest<ModelsValue>("models"));
   if (sequence !== state.catalogRequest || !validStamp(value)) return;
-  state.failed = false;
   acceptStatus(state, value);
   if (value.epoch !== state.stamp.epoch || value.authorityRevision !== state.stamp.authorityRevision || value.accountId !== state.status.activeId || !chatGPTConnected()) return;
   state.catalogAccount = value.accountId;
@@ -162,7 +183,7 @@ export async function refreshChatGPTModels(supported: Model<"openai-responses">[
    const base = known(entry) ?? (template && accountModel(entry, template));
    return base ? [{ ...base, provider: "chatgpt", name: entry.name, headers: undefined, samplingParams: undefined, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] : [];
   });
- } catch { if (sequence === state.catalogRequest) { clearCatalog(state); state.failed = true; } }
+ } catch { if (sequence === state.catalogRequest) clearCatalog(state); }
 }
 export function chatGPTAbortController(background = true): { controller: AbortController; release: () => void } {
  const state = bridge(); const controller = new AbortController(); state.controllers.set(controller, background);

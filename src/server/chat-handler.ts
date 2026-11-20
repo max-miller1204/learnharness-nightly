@@ -11,7 +11,7 @@ import {
 } from "../agent/teacher-agent.ts";
 import { catalogModelGone, ModelUnavailableError, piEngineForSpec, type PiEngine } from "../agent/models.ts";
 import { MODEL_UNAVAILABLE, modelUnavailableMessage } from "../core/model-unavailable.ts";
-import { connectionBackgroundAllowed as subscriptionBackgroundAllowed, connectionScopeCurrent, isSubscriptionProvider, subscriptionStatusUnknown } from "../agent/subscription-connections.ts";
+import { connectionBackgroundAllowed as subscriptionBackgroundAllowed, connectionScopeCurrent, isSubscriptionProvider, connectionUnreachable } from "../agent/subscription-connections.ts";
 import { nativeSubscriptionError } from "../agent/subscription-stream.ts";
 import { chatGPTStreamError } from "../agent/chatgpt-stream.ts";
 import { SubscriptionRequestCycle, type SubscriptionDispatchLifecycle } from "../agent/subscription-request-cycle.ts";
@@ -335,13 +335,18 @@ export async function handleChatInput(
 	// (a chat.model override still resolves through it).
 	if (isSubscriptionProvider(conversation.provider)) {
 		await refreshConnectionCatalog(conversation.provider);
+		// An unreachable connection is an outage, not missing setup. Steers
+		// park on 403 until the connection changes (the job pump would drop
+		// them on a 503); everything else gets a retryable 503.
+		const unreachable = connectionUnreachable(conversation.provider);
+		if (input.type === "steers" && unreachable) {
+			return Response.json({ error: "This connection could not be reached. Automatic follow-up remains deferred in its queue." }, { status: 403 });
+		}
 		if (input.type === "steers" && !connectionBackgroundAllowed(conversation.provider)) {
 			return Response.json({ error: "Background use is off for this connection. Automatic follow-up remains deferred in its queue." }, { status: 403 });
 		}
-		// A failed status check is an outage, not missing setup: a retryable
-		// 503. Steers park on the 403 above until the connection changes.
-		if (subscriptionStatusUnknown(conversation.provider)) {
-			console.info(`[chat ${chatId}] turn refused: ${conversation.provider} status unknown`);
+		if (unreachable) {
+			console.info(`[chat ${chatId}] turn refused: ${conversation.provider} unreachable`);
 			return Response.json(subscriptionUnreachable(conversation.provider), { status: 503 });
 		}
 	}

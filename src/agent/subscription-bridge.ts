@@ -11,8 +11,10 @@ interface State {
 	controllers: Map<AbortController, { providerId: NativeSubscriptionProviderId; background: boolean }>;
 	listeners: Set<() => void>;
 	counter: number;
-	/** The last snapshot request failed or the desktop connection closed: whether a subscription is connected is unknown until a snapshot arrives. */
-	failed: boolean;
+	/** Snapshot checks, numbered when they start (see settleCheck). */
+	checks: number;
+	lastCheck: number;
+	unreachable: boolean;
 }
 const KEY = Symbol.for("lh.subscriptions.bridge");
 export function nativeSubscriptionId(logicalId: string): NativeSubscriptionProviderId | undefined {
@@ -30,7 +32,6 @@ function invalidate(state: State, providerId?: NativeSubscriptionProviderId) {
 }
 function accept(state: State, snapshot: NativeSubscriptionSnapshot) {
 	if (!snapshot || !Array.isArray(snapshot.statuses) || !snapshot.models) return;
-	state.failed = false;
 	let changed = false;
 	for (const entry of snapshot.statuses) {
 		if (!NATIVE_SUBSCRIPTIONS.some((p) => p.providerId === entry.providerId) || ![entry.revision, entry.epoch, entry.authorityRevision].every((n) => Number.isSafeInteger(n) && n >= 0)) continue;
@@ -49,15 +50,25 @@ function accept(state: State, snapshot: NativeSubscriptionSnapshot) {
 	}
 	if (changed) notify(state);
 }
+/** The one rule for "unreachable": the latest completed snapshot check, ordered
+ * by when it started, failed. An older answer never overwrites a newer one, so
+ * a stale failure never hides a newer "not connected" snapshot. Returns whether
+ * this check is the latest. */
+function settleCheck(state: State, started: number, unreachable: boolean): boolean {
+	if (started <= state.lastCheck) return false;
+	state.lastCheck = started;
+	state.unreachable = unreachable;
+	return true;
+}
 function bridge(): State {
 	const global = globalThis as typeof globalThis & { [KEY]?: State };
 	if (!global[KEY]) {
-		const state: State = { statuses: new Map(), models: new Map(), pending: new Map(), controllers: new Map(), listeners: new Set(), counter: 0, failed: false };
+		const state: State = { statuses: new Map(), models: new Map(), pending: new Map(), controllers: new Map(), listeners: new Set(), counter: 0, checks: 0, lastCheck: 0, unreachable: false };
 		global[KEY] = state;
 		process.on("message", (raw: unknown) => {
 			const message = raw as { channel?: string; op?: string; id?: string; ok?: boolean; value?: unknown; error?: string; snapshot?: NativeSubscriptionSnapshot };
 			if (!desktopConnected() || message?.channel !== "lh:subscriptions") return;
-			if (message.op === "changed" && message.snapshot) accept(state, message.snapshot);
+			if (message.op === "changed" && message.snapshot) { settleCheck(state, ++state.checks, false); accept(state, message.snapshot); }
 			if (!message.id) return;
 			const pending = state.pending.get(message.id);
 			if (!pending || pending.op !== message.op) return;
@@ -66,11 +77,10 @@ function bridge(): State {
 			else pending.reject(new Error(message.error ?? "Subscription connection failed."));
 		});
 		onWebSubscriptionPacket("lh:subscriptions", (packet) => {
-			if (webSubscriptionsEnabled() && packet.snapshot) accept(state, packet.snapshot as NativeSubscriptionSnapshot);
+			if (webSubscriptionsEnabled() && packet.snapshot) { settleCheck(state, ++state.checks, false); accept(state, packet.snapshot as NativeSubscriptionSnapshot); }
 		});
 		process.on("disconnect", () => {
 			if (webSubscriptionsEnabled()) return;
-			state.failed = true;
 			invalidate(state);
 			for (const pending of state.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error("The desktop connection closed.")); }
 			state.pending.clear(); notify(state);
@@ -94,10 +104,21 @@ export function subscriptionRequest<T>(op: "snapshot" | "lease", fields: Record<
 export async function refreshSubscriptionModels(): Promise<void> {
 	const state = bridge();
 	if (!runtimeConnected()) { invalidate(state); return; }
-	try { accept(state, await subscriptionRequest<NativeSubscriptionSnapshot>("snapshot")); }
-	catch { state.failed = true; invalidate(state); notify(state); }
+	const started = ++state.checks;
+	let snapshot: NativeSubscriptionSnapshot;
+	try { snapshot = await subscriptionRequest<NativeSubscriptionSnapshot>("snapshot"); }
+	catch {
+		if (settleCheck(state, started, true)) { invalidate(state); notify(state); }
+		return;
+	}
+	const wasUnreachable = state.unreachable;
+	const latest = settleCheck(state, started, false);
+	accept(state, snapshot);
+	if (latest && wasUnreachable) notify(state);
 }
-export function nativeSubscriptionStatusUnknown(): boolean { return bridge().failed; }
+/** The latest snapshot check failed while the runtime is still connected. A
+ * lost runtime is not connected, never unreachable. */
+export function nativeSubscriptionUnreachable(): boolean { return runtimeConnected() && bridge().unreachable; }
 export function nativeSubscriptionStatus(providerId: NativeSubscriptionProviderId): NativeSubscriptionStatus | undefined { return bridge().statuses.get(providerId); }
 export function nativeSubscriptionConnected(providerId: NativeSubscriptionProviderId): boolean {
 	const status = nativeSubscriptionStatus(providerId);

@@ -196,10 +196,10 @@ export class ProviderKeyMissingError extends Error {
 	}
 }
 
-/** A subscription whose status or catalog check just failed (a failed
- * snapshot, a closed desktop connection): it may still be connected, so
- * nothing needs setting up. HTTP callers get 503 + this JSON, which clients
- * retry, never the 422 setup refusal. */
+/** A subscription whose latest status or catalog check failed while its
+ * runtime is still connected: it may still be connected, so nothing needs
+ * setting up. HTTP callers get 503 + this JSON, which clients retry, never the
+ * 422 setup refusal. A lost runtime is not connected (422). */
 export const SUBSCRIPTION_UNREACHABLE_CODE = "subscription_unreachable" as const;
 export interface SubscriptionUnreachable {
 	error: string;
@@ -211,7 +211,7 @@ export function subscriptionUnreachable(provider: string): SubscriptionUnreachab
 	return { error: `${label} could not be reached just now. Try again in a moment.`, code: SUBSCRIPTION_UNREACHABLE_CODE, provider };
 }
 
-export const CACHE_RETENTIONS =["none", "short", "long"] as const satisfies readonly CacheRetention[];
+export const CACHE_RETENTIONS = ["none", "short", "long"] as const satisfies readonly CacheRetention[];
 
 /** Stored model-slot preferences. A slot is configured only when model is
  * present; sanitized level-only records can be retained but resolve as unset.

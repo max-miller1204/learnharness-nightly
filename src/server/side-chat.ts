@@ -16,7 +16,7 @@ import { resolveSideQuestionSpec } from "../core/settings-resolution.ts";
 import { modelsNotConfigured, providerKeyMissing as providerKeyMissingEnvelope, subscriptionUnreachable } from "../core/settings.ts";
 import { catalogModelGone, ModelUnavailableError, piEngineForSpec, type PiEngine } from "../agent/models.ts";
 import { MODEL_UNAVAILABLE, modelUnavailableMessage } from "../core/model-unavailable.ts";
-import { isSubscriptionProvider, subscriptionStatusUnknown } from "../agent/subscription-connections.ts";
+import { isSubscriptionProvider, connectionUnreachable } from "../agent/subscription-connections.ts";
 import { usageWasAdmitted } from "../agent/subscription-request-cycle.ts";
 import { composeSideChatInstructions, streamSideAnswer } from "../agent/side-chat.ts";
 import { effectiveSettings, stores } from "./stores.ts";
@@ -271,7 +271,7 @@ export async function productionEngineFor(record: ChatRecord): Promise<SideEngin
 	if (isSubscriptionProvider(spec.provider)) {
 		await refreshConnectionCatalog(spec.provider);
 		// A failed status check is an outage, not missing setup: retryable 503.
-		if (subscriptionStatusUnknown(spec.provider)) return Response.json(subscriptionUnreachable(spec.provider), { status: 503 });
+		if (connectionUnreachable(spec.provider)) return Response.json(subscriptionUnreachable(spec.provider), { status: 503 });
 	}
 	// A saved model the catalog dropped wins over a missing key.
 	if (catalogModelGone(spec.provider, spec.id)) return Response.json({ error: modelUnavailableMessage(spec.provider, spec.id), code: MODEL_UNAVAILABLE }, { status: 422 });

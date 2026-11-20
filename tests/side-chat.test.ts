@@ -12,6 +12,8 @@ import { after, describe, it } from "node:test";
 // ── the seam, BEFORE any config-loading import ─────────────────────────────
 const TMP_DATA = fs.mkdtempSync(path.join(os.tmpdir(), "lh-side-chat-"));
 process.env.LH_DATA_DIR = TMP_DATA;
+process.env.LH_AUTH_FILE = path.join(TMP_DATA, "auth.json");
+process.env.LH_IGNORE_ENV_KEYS = "1";
 
 const { chatStore } = await import("../src/store/chats.ts");
 const { createSideChatService } = await import("../src/server/side-chat.ts");
