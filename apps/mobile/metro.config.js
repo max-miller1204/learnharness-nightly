@@ -5,9 +5,7 @@ const config = getDefaultConfig(__dirname);
 const sharedSource = path.resolve(__dirname, "../../src");
 // The web app's bundled title font (CMU Serif bold) is shared, not copied.
 const sharedFonts = path.resolve(__dirname, "../../public/fonts");
-// The session-open spike reads the made-up sessions it opens (removed with the spike).
-const spikeFixtures = path.resolve(__dirname, "../../tests/fixtures/mobile-session-open");
-config.watchFolders = [...new Set([...config.watchFolders, sharedSource, sharedFonts, spikeFixtures])];
+config.watchFolders = [...new Set([...config.watchFolders, sharedSource, sharedFonts])];
 // The speech engine's Node-only module is swapped for a phone one (src/sre-system-external.js),
 // whose requires resolve from the engine's own folder.
 const speechExternal = require.resolve("speech-rule-engine/js/common/system_external.js");

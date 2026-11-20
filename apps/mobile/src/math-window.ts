@@ -1,27 +1,31 @@
-// Which drawn equations hold a picture view (docs/specs/mobile-session-open.md, owner
-// decision after the first spike). Every equation's box is sized from its drawing up front,
-// so a picture coming or going never moves anything. Only blocks of text and math on or
-// near the screen mount their pictures, and blocks that scroll far away free them, so
-// memory stays bounded however long the session is.
+// Which drawn equations in a session hold a picture view (docs/specs/mobile-session-open.md).
+// Every equation's box is sized from its drawing up front, so a picture coming or going never
+// moves anything. Blocks of text and math on or near the screen mount their pictures, and so
+// do those near the start and the end of the transcript (where a status-bar tap and "Scroll to
+// end" land). Blocks far from all three free theirs, so memory stays bounded however long the
+// session is. Each react-native-svg view draws into its own bitmap on Android.
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import type { HostInstance, LayoutChangeEvent } from "react-native";
+import type { HostInstance } from "react-native";
 
-/** Blocks within this many screens of the visible part mount their pictures. */
+/** Blocks within this many screens of the visible part, the start or the end mount their pictures. */
 const MOUNT_MARGIN = 1;
-/** Blocks further than this many screens away free theirs. */
+/** Blocks further than this many screens from all three free theirs... */
 const FREE_MARGIN = 2;
+/** ...once they have been that far for this long, so a scroll position and block positions
+ * that arrive a frame apart never free what is on screen. */
+const FREE_AFTER_MS = 500;
 /** At most this many pictures off screen mount in one frame, so no commit is long. */
 const PICTURES_PER_FRAME = 24;
 
 interface Block {
-  message: string;
+  batch: string;
   y: number;
   height: number;
   measured: boolean;
   pictures: number;
-  /** What the window asked for and what has been committed with pictures. */
   wanted: boolean;
   committed: boolean;
+  farSince: number | undefined;
   setLive: (live: boolean) => void;
   measure: () => void;
 }
@@ -29,31 +33,28 @@ interface Block {
 export class MathWindow {
   private offset = 0;
   private viewport = 0;
-  private readonly messages = new Map<string, { y: number; height: number }>();
+  private content = 0;
+  private readonly batches = new Map<string, { y: number; height: number }>();
   private readonly blocks = new Set<Block>();
   private frame: number | undefined;
+  private timer: ReturnType<typeof setTimeout> | undefined;
   private readonly listeners = new Set<() => void>();
-  /** Pictures mounted now and the most at once, for the spike's log. */
   livePictures = 0;
-  livePicturesMax = 0;
 
-  setView(offset: number, viewport: number) {
-    if (offset === this.offset && viewport === this.viewport) return;
-    this.offset = offset;
-    this.viewport = viewport;
+  setView(offset: number, viewport: number, content = this.content) {
+    if (offset === this.offset && viewport === this.viewport && content === this.content) return;
+    [this.offset, this.viewport, this.content] = [offset, viewport, content];
     this.schedule();
   }
 
-  setMessage(id: string, y: number, height: number) {
-    const before = this.messages.get(id);
-    this.messages.set(id, { y, height });
-    // A message whose height changed may have moved its blocks inside it.
-    if (before && before.height !== height) for (const block of this.blocks) if (block.message === id) block.measure();
+  /** Where a batch of messages sits in the transcript, or undefined while it isn't placed. */
+  setBatch(id: string, place: { y: number; height: number } | undefined) {
+    const before = this.batches.get(id);
+    if (place) this.batches.set(id, place);
+    else this.batches.delete(id);
+    // A batch whose height changed may have moved the blocks inside it.
+    if (place && before && before.height !== place.height) for (const block of this.blocks) if (block.batch === id) block.measure();
     this.schedule();
-  }
-
-  removeMessage(id: string) {
-    this.messages.delete(id);
   }
 
   add(block: Block) {
@@ -71,17 +72,12 @@ export class MathWindow {
     if (block.committed === live) return;
     block.committed = live;
     this.livePictures += live ? block.pictures : -block.pictures;
-    this.livePicturesMax = Math.max(this.livePicturesMax, this.livePictures);
-    this.notify();
+    for (const listener of this.listeners) listener();
   }
 
   subscribe(listener: () => void) {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
-  }
-
-  private notify() {
-    for (const listener of this.listeners) listener();
   }
 
   schedule() {
@@ -92,39 +88,52 @@ export class MathWindow {
   }
 
   private place(block: Block): { top: number; bottom: number } | undefined {
-    const message = this.messages.get(block.message);
-    if (!message || !block.measured) return;
-    return { top: message.y + block.y, bottom: message.y + block.y + block.height };
+    const batch = this.batches.get(block.batch);
+    if (!batch || !block.measured) return;
+    return { top: batch.y + block.y, bottom: batch.y + block.y + block.height };
   }
 
-  /** Blocks on screen whose pictures aren't drawn yet, or whose place isn't known. */
+  /** Blocks on screen whose pictures aren't in yet, or whose place isn't known yet. */
   pendingOnScreen(): number {
     let pending = 0;
     const [top, bottom] = [this.offset, this.offset + this.viewport];
     for (const block of this.blocks) {
+      if (block.committed) continue;
       const place = this.place(block);
-      const message = this.messages.get(block.message);
-      const onScreen = place ? place.bottom > top && place.top < bottom : !message || (message.y + message.height > top && message.y < bottom);
-      if (onScreen && !block.committed) pending++;
+      const batch = this.batches.get(block.batch);
+      if (place ? place.bottom > top && place.top < bottom : !!batch && batch.y + batch.height > top && batch.y < bottom) pending++;
     }
     return pending;
   }
 
-  /** Mounts what is on or near the screen, nearest first, and frees what is far away. */
+  /** How far a block is from the screen, and from whichever is nearest of the screen, the
+   * start and the end. */
+  private distances({ top, bottom }: { top: number; bottom: number }) {
+    const from = (start: number, end: number) => bottom < start ? start - bottom : top > end ? top - end : 0;
+    const view = from(this.offset, this.offset + this.viewport);
+    return { view, keep: Math.min(view, from(0, this.viewport), from(Math.max(0, this.content - this.viewport), this.content)) };
+  }
+
+  /** Mounts what is near, nearest first, and frees what has been far for a while. */
   update() {
     if (!this.viewport) return;
-    const top = this.offset;
-    const bottom = this.offset + this.viewport;
+    const now = performance.now();
     const near: { block: Block; distance: number }[] = [];
+    let recheck = false;
     for (const block of this.blocks) {
       const place = this.place(block);
       if (!place) continue;
-      const distance = place.bottom < top ? top - place.bottom : place.top > bottom ? place.top - bottom : 0;
-      if (block.wanted && distance > FREE_MARGIN * this.viewport) {
-        block.wanted = false;
-        block.setLive(false);
-      } else if (!block.wanted && distance <= MOUNT_MARGIN * this.viewport) {
-        near.push({ block, distance });
+      const { view, keep } = this.distances(place);
+      if (keep <= FREE_MARGIN * this.viewport) block.farSince = undefined;
+      if (block.wanted && keep > FREE_MARGIN * this.viewport) {
+        block.farSince ??= now;
+        if (now - block.farSince >= FREE_AFTER_MS) {
+          block.wanted = false;
+          block.farSince = undefined;
+          block.setLive(false);
+        } else recheck = true;
+      } else if (!block.wanted && keep <= MOUNT_MARGIN * this.viewport) {
+        near.push({ block, distance: view });
       }
     }
     near.sort((one, two) => one.distance - two.distance);
@@ -139,31 +148,47 @@ export class MathWindow {
       block.wanted = true;
       block.setLive(true);
     }
-    this.notify();
+    if (recheck && this.timer === undefined) {
+      this.timer = setTimeout(() => {
+        this.timer = undefined;
+        this.schedule();
+      }, FREE_AFTER_MS);
+    }
   }
 }
 
 export const MathWindowContext = createContext<MathWindow | null>(null);
-export const MessageScope = createContext<{ id: string; ref: RefObject<HostInstance | null> } | null>(null);
+
+/** A batch of messages: the view its blocks place themselves in, and whether blocks show
+ * their pictures from their first frame. Blocks that mount with their batch while the session
+ * opens or fills in start without, and wait for the window; blocks that mount later (a new
+ * message, an opened row) and every block of a small session start with them. */
+export interface BatchScope {
+  id: string;
+  ref: RefObject<HostInstance | null>;
+  eager: RefObject<boolean>;
+}
+export const BatchContext = createContext<BatchScope | null>(null);
 
 /** Whether a block holding `pictures` drawn equations shows them now. Outside a session's
  * transcript (the question dock, the plan) pictures always show. `ref` and `onLayout` go on
  * the block's own view. */
 export function useLivePictures(pictures: number) {
   const window = useContext(MathWindowContext);
-  const scope = useContext(MessageScope);
-  const lazy = !!window && !!scope && pictures > 0;
-  const [live, setLive] = useState(!lazy);
+  const batch = useContext(BatchContext);
+  const lazy = !!window && !!batch && pictures > 0;
+  const [live, setLive] = useState(() => !lazy || !!batch?.eager.current);
   const ref = useRef<HostInstance | null>(null);
   const block = useRef<Block | null>(null);
+  const startedLive = useRef(live);
 
   useEffect(() => {
-    if (!lazy || !window || !scope) return;
+    if (!lazy || !window || !batch) return;
     const entry: Block = {
-      message: scope.id, y: 0, height: 0, measured: false, pictures, wanted: false, committed: false, setLive,
+      batch: batch.id, y: 0, height: 0, measured: false, pictures, wanted: startedLive.current, committed: false, farSince: undefined, setLive,
       measure: () => {
         const node = ref.current;
-        const parent = scope.ref.current;
+        const parent = batch.ref.current;
         if (!node || !parent) return;
         node.measureLayout(parent, (_x, y, _width, height) => {
           entry.y = y;
@@ -180,12 +205,17 @@ export function useLivePictures(pictures: number) {
       window.remove(entry);
       block.current = null;
     };
-  }, [lazy, window, scope, pictures]);
+  }, [lazy, window, batch, pictures]);
 
   useLayoutEffect(() => {
     if (block.current && window) window.committed(block.current, live);
   }, [live, window]);
 
-  const onLayout = lazy ? (_event: LayoutChangeEvent) => block.current?.measure() : undefined;
+  // The first commit runs before the block is registered, so record a live start once it is.
+  useEffect(() => {
+    if (block.current && window && live) window.committed(block.current, true);
+  }, [window, live]);
+
+  const onLayout = lazy ? () => block.current?.measure() : undefined;
   return { live: !lazy || live, ref, onLayout };
 }

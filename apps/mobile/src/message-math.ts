@@ -8,18 +8,38 @@ export interface Equation {
   display: boolean;
 }
 
-/** Drawn equations, oldest use first. Failed draws are kept too, so broken math isn't retried. */
-const drawn = new Map<string, DrawnMath | null>();
+/** A map that keeps at most `cap` entries, dropping the least recently used. */
+export class Capped<V> {
+  private readonly entries = new Map<string, V>();
+  constructor(private readonly cap: number) {}
+  get size() { return this.entries.size; }
+  get(key: string): V | undefined {
+    const value = this.entries.get(key);
+    if (value !== undefined) {
+      this.entries.delete(key);
+      this.entries.set(key, value);
+    }
+    return value;
+  }
+  set(key: string, value: V) {
+    this.entries.delete(key);
+    if (this.entries.size >= this.cap) this.entries.delete(this.entries.keys().next().value as string);
+    this.entries.set(key, value);
+  }
+}
+
+/** Drawn equations, in memory only. Failed draws are kept too, so broken math isn't retried. */
 export const EQUATION_CAP = 3000;
+const drawn = new Capped<DrawnMath | null>(EQUATION_CAP);
 let draws = 0;
-/** How many times MathJax has drawn an equation, for tests. */
+/** How many times MathJax has drawn an equation, and how many are kept, for tests. */
 export const drawCount = () => draws;
 export const cachedEquations = () => drawn.size;
 
 const keyOf = ({ tex, display }: Equation) => `${display ? "B" : "I"}${tex}`;
 
 export function isDrawn(equation: Equation): boolean {
-  return drawn.has(keyOf(equation));
+  return drawn.get(keyOf(equation)) !== undefined;
 }
 
 /** The equation's picture, drawn now if it hasn't been. Undefined when it can't be drawn. */
@@ -29,22 +49,18 @@ export function drawEquation(equation: Equation): DrawnMath | undefined {
   if (picture === undefined) {
     draws++;
     picture = drawTex(equation.tex, equation.display) ?? null;
-    if (drawn.size >= EQUATION_CAP) drawn.delete(drawn.keys().next().value as string);
-  } else {
-    drawn.delete(key);
+    drawn.set(key, picture);
   }
-  drawn.set(key, picture);
   return picture ?? undefined;
 }
 
-const parsed = new Map<string, ReturnType<typeof parseMarkdown>>();
+const parsed = new Capped<ReturnType<typeof parseMarkdown>>(1000);
 
-/** Markdown parsed once per text, with the same cap rule as the equations. */
+/** Markdown parsed once per text. */
 export function markdownOf(text: string): ReturnType<typeof parseMarkdown> {
   let result = parsed.get(text);
   if (!result) {
     result = parseMarkdown(text);
-    if (parsed.size >= 1000) parsed.delete(parsed.keys().next().value as string);
     parsed.set(text, result);
   }
   return result;

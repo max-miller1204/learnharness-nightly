@@ -10,7 +10,6 @@ import { ApiError, type MobileApi } from "./protocol";
 import { nativeApi } from "./native-api";
 import { errorText } from "./use-session";
 import { Pairing } from "./Pairing";
-import { SessionOpenSpike } from "./SessionOpenSpike";
 import { Workspace } from "./Workspace";
 import { Button, Label, Notice } from "./ui";
 import { fontFiles, space, useTheme } from "./theme";
@@ -208,7 +207,7 @@ export function App() {
             keyboard there: both platforms need padding to keep the docked controls visible. */}
         <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
           {/* A font that fails to load falls back to the system face. */}
-          {(fontsLoaded || fontError) && (process.env.EXPO_PUBLIC_SESSION_OPEN_SPIKE === "1" ? <SessionOpenSpike /> : <Mobile />)}
+          {(fontsLoaded || fontError) && <Mobile />}
         </KeyboardAvoidingView>
       </SafeAreaView>
     </SafeAreaProvider>

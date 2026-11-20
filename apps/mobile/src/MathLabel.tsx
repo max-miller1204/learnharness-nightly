@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Platform, StyleSheet, Text, View, useWindowDimensions, type StyleProp, type TextStyle } from "react-native";
+import { AccessibilityInfo, Platform, StyleSheet, Text, View, useWindowDimensions, type StyleProp, type TextStyle } from "react-native";
 import { parse, SvgAst, type JsxAST } from "react-native-svg";
 import type { DrawnMath, LabelPiece } from "./choice-math";
 import { speechReady, startSpeech } from "./math-speech";
+import { useLivePictures } from "./math-window";
 import { useTheme } from "./theme";
 
 /** The web draws math with KaTeX at 1.21em; MathJax's TeX fonts share its metrics. */
@@ -27,6 +28,27 @@ export function useSpeech(enabled: boolean): boolean {
     return () => { live = false; };
   }, [enabled, ready]);
   return ready;
+}
+
+let screenReaderOn = false;
+
+/** Whether a screen reader (VoiceOver, TalkBack) is on, kept up to date. */
+export function useScreenReader(): boolean {
+  const [on, setOn] = useState(screenReaderOn);
+  useEffect(() => {
+    let live = true;
+    const update = (value: boolean) => {
+      screenReaderOn = value;
+      if (live) setOn(value);
+    };
+    AccessibilityInfo.isScreenReaderEnabled().then(update, () => {});
+    const subscription = AccessibilityInfo.addEventListener("screenReaderChanged", update);
+    return () => {
+      live = false;
+      subscription.remove();
+    };
+  }, []);
+  return on;
 }
 
 export type Size = { width: number; height: number; depth: number };
@@ -66,6 +88,8 @@ export function lineHeightFor(sizes: Size[], fontSize: number, line: number, fon
  * grows later. It is never reachable by a screen reader on its own: whatever holds it
  * carries the spoken label. `style` must set fontSize and lineHeight. */
 export function MathLabel({ pieces, style, color }: { pieces: LabelPiece[]; style: StyleProp<TextStyle>; color: string }) {
+  // In a session's transcript the pictures show only near the screen (math-window.ts).
+  const { live, ref, onLayout } = useLivePictures(pieces.filter((piece) => piece.kind === "math").length);
   const { c } = useTheme();
   const { width: windowWidth, fontScale } = useWindowDimensions();
   const { fontSize = 14, lineHeight = 20 } = StyleSheet.flatten(style) ?? {};
@@ -81,13 +105,13 @@ export function MathLabel({ pieces, style, color }: { pieces: LabelPiece[]; styl
     else blocks.push([piece]);
   }
   return (
-    <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" pointerEvents="none" style={{ flex: 1 }}>
+    <View ref={ref} onLayout={onLayout} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" pointerEvents="none" style={{ flex: 1 }}>
       {blocks.map((block, index) => {
         if (!Array.isArray(block)) {
           return (
             // Block math starts at the left of the row, as on the web's option buttons.
             <View key={index} style={{ alignItems: "flex-start", paddingVertical: 4 }}>
-              <MathPicture svg={block.drawn.svg[c.mode]} drawn={block.drawn} size={fit(block.drawn, em, Infinity, maxHeight)} scale={fontScale} color={color} />
+              <MathPicture svg={block.drawn.svg[c.mode]} drawn={block.drawn} size={fit(block.drawn, em, Infinity, maxHeight)} scale={fontScale} color={color} live={live} />
             </View>
           );
         }
@@ -96,7 +120,7 @@ export function MathLabel({ pieces, style, color }: { pieces: LabelPiece[]; styl
         return (
           <Text key={index} style={[style, { lineHeight: line }]}>
             {block.map((piece, at) => piece.kind === "text" ? piece.text
-              : <MathPicture key={at} svg={piece.drawn.svg[c.mode]} drawn={piece.drawn} size={sizes[at] as Size} scale={fontScale} color={color} inline />)}
+              : <MathPicture key={at} svg={piece.drawn.svg[c.mode]} drawn={piece.drawn} size={sizes[at] as Size} scale={fontScale} color={color} live={live} inline />)}
           </Text>
         );
       })}

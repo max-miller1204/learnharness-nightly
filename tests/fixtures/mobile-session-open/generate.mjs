@@ -188,6 +188,9 @@ function mathCasesSession() {
       "Colored math: $\\color{red}{x + 1}$, and a faint color that switches to the text color: $\\color{#222222}{y}$ and $\\color{#eeeeee}{z}$.",
       "An excluded command stays as its source: $\\ce{H2O}$.",
       "A link beside math: $e^{i\\pi} + 1 = 0$ is in [the notes](https://example.com/euler), and [this one](http://example.com/plain) stays plain text.",
+      "Minus signs: $0.1(-1)(-2)$ and $a - b$.",
+      "A sentence that ends in inline math and a period, so the period must stay with it when the equation just fits the line: the sum is $\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$.",
+      "| Term | Meaning |\n| --- | --- |\n| **MLE** | The value of $\\theta$ that makes the observed data most likely, found by maximizing $\\log p(x \\mid \\theta)$ over every possible setting. |\n| **MAP** | The same, with a prior $p(\\theta)$ multiplied in before maximizing. |",
     ].join("\n\n") }]);
   });
 }

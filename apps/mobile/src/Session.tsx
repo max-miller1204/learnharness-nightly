@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject, type ComponentRef } from "react";
-import { Alert, Keyboard, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { AccessibilityInfo, Alert, Keyboard, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import Svg, { Path } from "react-native-svg";
 import {
   ATTACHMENT_UPLOADS, BROWSER_HANDOFF_ROUTES, BROWSER_HANDOFF_V1, LESSON_VIEW_V1, PRACTICE_CONTROLS_V1, hasCapability,
   type AttachmentReference, type LhMessage, type PairingTokenResponse, type ServerInfo,
@@ -18,8 +19,42 @@ import { PlanScreen } from "./PlanScreen";
 import { useJobs } from "./use-jobs";
 import { useAttachments } from "./use-attachments";
 import { AttachButton, AttachMenu, DraftChips } from "./Attachments";
+import { useSessionOpening } from "./session-open";
+import { MathWindowContext } from "./math-window";
 
 const EMPTY: LhMessage[] = [];
+
+/** Whether the system's Reduce Motion (Android: Remove animations) is on. */
+function useReduceMotion(): boolean {
+  const [reduce, setReduce] = useState(false);
+  useEffect(() => {
+    let live = true;
+    AccessibilityInfo.isReduceMotionEnabled().then((value) => { if (live) setReduce(value); }, () => {});
+    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduce);
+    return () => {
+      live = false;
+      subscription.remove();
+    };
+  }, []);
+  return reduce;
+}
+
+/** T3's round "Scroll to end" button (floating-working-control.tsx), shown while the session
+ * is scrolled away from its end. It scrolls with animation unless Reduce Motion is on
+ * (ThreadDetailScreen.tsx handleScrollToEnd). */
+function ScrollToEnd({ onPress }: { onPress: () => void }) {
+  const { c } = useTheme();
+  return (
+    <View pointerEvents="box-none" style={{ position: "absolute", right: space.lg, bottom: space.md }}>
+      <Button label="Scroll to end" onPress={onPress}
+        style={{ width: 44, height: 44, minHeight: 44, paddingHorizontal: 0, borderRadius: 22, backgroundColor: c.card, boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1)" }}>
+        <Svg width={20} height={20} viewBox="0 0 24 24" accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+          <Path d="M6 9l6 6 6-6" stroke={c.text} strokeWidth={2} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+        </Svg>
+      </Button>
+    </View>
+  );
+}
 
 /** One choice in the top bar's … menu. */
 function MenuItem({ label, onPress, close, disabled = false }: { label: string; onPress: () => void; close: () => void; disabled?: boolean }) {
@@ -52,8 +87,6 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const dockState = useRef({ offset: 0, viewport: 0 });
   const browserScope = useRef<AbortController | null>(null);
   const started = useRef(false);
-  const scroller = useRef<ComponentRef<typeof ScrollView>>(null);
-  const nearBottom = useRef(true);
   const messages = record?.messages ?? EMPTY;
   const problem = activeProblemOf(messages);
   const question = pendingQuestionOf(messages);
@@ -64,6 +97,12 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const assisted = hasCapability(info, BROWSER_HANDOFF_V1);
   const lessonView = hasCapability(info, LESSON_VIEW_V1);
   const settledView = useMemo(() => projectView(messages), [messages]);
+  const tailTexts = useMemo(() => session.tail.flatMap((message) => message.role === "assistant" && Array.isArray(message.content)
+    ? message.content.flatMap((block) => block.type === "text" ? [block.text] : []) : []), [session.tail]);
+  const opening = useSessionOpening(settledView, !!record, tailTexts);
+  const reduceMotion = useReduceMotion();
+  // Until the session has landed at its end, the transcript is hidden (session-open.ts).
+  const hidden = !!record && !opening.shown;
   const hasPlan = useMemo(() => livePlan(settledView) !== null, [settledView]);
   const reveal = !!question && checkNeedsReveal(question, messages);
   // A check that directly follows another question arrives open; one that
@@ -202,38 +241,47 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
           <Text style={[s.ui, { fontSize: 16 }]}>…</Text>
         </Button>}
       </View>
-      <ScrollView ref={scroller} style={{ flex: 1 }} contentContainerStyle={[s.section, { gap: space.lg }]}
-        keyboardShouldPersistTaps="handled" scrollEventThrottle={100}
-        onScroll={({ nativeEvent: { contentOffset, layoutMeasurement, contentSize } }) => {
-          nearBottom.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 100;
-        }}
-        onContentSizeChange={() => { if (nearBottom.current) scroller.current?.scrollToEnd({ animated: false }); }}>
-        {session.loading && <Text style={s.muted}>Loading session…</Text>}
-        <Transcript settled={settledView} tail={session.tail} api={api} chatId={id} jobs={jobs} liveHelpers={lessonView} openPlan={() => setPlanOpen(true)}
-          files={savedFiles} unavailableFiles={unavailableFiles} />
-        {busy && <Text accessibilityLiveRegion="polite" style={s.muted}>Reply in progress…</Text>}
-        {record?.compacting && <Text style={s.muted}>Updating session context…</Text>}
-        <Notice boxed>{session.deleted ? "This session was deleted." : session.refreshError}</Notice>
-        {!!session.refreshError && <View style={s.row}>{session.deleted
-          ? <Button onPress={back}>Back to sessions</Button>
-          : <Button onPress={() => refresh(true)}>Reconnect</Button>}</View>}
-        <Notice boxed>{session.writeError}</Notice>
-        <Notice boxed>{failure}</Notice>
-        {failure && !busy && !pendingPlugin && (
-          <View style={s.row}><Button disabled={blocked} onPress={() => void submit({ type: "retry" })}>Retry reply</Button></View>
+      <View style={{ flex: 1 }}>
+        {/* Mounted again once the record is in, so Android starts it at the end. */}
+        <ScrollView key={record ? "session" : "waiting"} {...opening.scrollProps} style={{ flex: 1, opacity: hidden ? 0 : 1 }}
+          contentContainerStyle={[s.section, { gap: space.lg }]} keyboardShouldPersistTaps="handled"
+          accessibilityElementsHidden={hidden} importantForAccessibility={hidden ? "no-hide-descendants" : "auto"}>
+          <MathWindowContext.Provider value={opening.mathWindow}>
+            <Transcript settled={settledView} batches={opening.batches} eager={opening.eager} batchWidth={opening.width} onBatchLayout={opening.onBatchLayout}
+              tail={session.tail} api={api} chatId={id} jobs={jobs} liveHelpers={lessonView} openPlan={() => setPlanOpen(true)}
+              files={savedFiles} unavailableFiles={unavailableFiles} />
+          </MathWindowContext.Provider>
+          {busy && <Text accessibilityLiveRegion="polite" style={s.muted}>Reply in progress…</Text>}
+          {record?.compacting && <Text style={s.muted}>Updating session context…</Text>}
+          <Notice boxed>{session.deleted ? "This session was deleted." : session.refreshError}</Notice>
+          {!!session.refreshError && <View style={s.row}>{session.deleted
+            ? <Button onPress={back}>Back to sessions</Button>
+            : <Button onPress={() => refresh(true)}>Reconnect</Button>}</View>}
+          <Notice boxed>{session.writeError}</Notice>
+          <Notice boxed>{failure}</Notice>
+          {failure && !busy && !pendingPlugin && (
+            <View style={s.row}><Button disabled={blocked} onPress={() => void submit({ type: "retry" })}>Retry reply</Button></View>
+          )}
+          {malformed && !question && !pendingPlugin && (
+            <View style={s.row}><Button disabled={blocked || busy} onPress={() => void submit({
+              type: "retry-question", messageId: malformed.messageId, contentIndex: malformed.contentIndex, toolCallId: malformed.toolCallId,
+            })}>Retry question</Button></View>
+          )}
+          {record && pendingPlugin && <Text style={s.muted}>Use the browser to complete this interaction. Open it from the … menu above.</Text>}
+          <Notice>{browserError}</Notice>
+        </ScrollView>
+        {(session.loading || (!!record && opening.loading)) && (
+          <View pointerEvents="none" style={[s.section, { position: "absolute", top: 0, left: 0, right: 0 }]}>
+            <Text style={s.muted}>Loading session…</Text>
+          </View>
         )}
-        {malformed && !question && !pendingPlugin && (
-          <View style={s.row}><Button disabled={blocked || busy} onPress={() => void submit({
-            type: "retry-question", messageId: malformed.messageId, contentIndex: malformed.contentIndex, toolCallId: malformed.toolCallId,
-          })}>Retry question</Button></View>
-        )}
-        {record && pendingPlugin && <Text style={s.muted}>Use the browser to complete this interaction. Open it from the … menu above.</Text>}
-        <Notice>{browserError}</Notice>
-      </ScrollView>
+        {opening.awayFromEnd && <ScrollToEnd onPress={() => opening.scrollToEnd(!reduceMotion)} />}
+      </View>
       {question && !pendingPlugin && (
         <View style={{ paddingHorizontal: space.md, paddingBottom: space.md, maxHeight: "55%" }}>
           <View style={[s.dock, { flexShrink: 1, overflow: "hidden" }]}>
-            <ScrollView ref={dock} keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: space.lg }} scrollEventThrottle={16}
+            {/* Only the transcript takes the iOS status-bar tap (T3 thread-work-log.tsx). */}
+            <ScrollView ref={dock} scrollsToTop={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: space.lg }} scrollEventThrottle={16}
               onScroll={({ nativeEvent }) => { dockState.current.offset = nativeEvent.contentOffset.y; }}
               onLayout={({ nativeEvent }) => {
                 const shrank = nativeEvent.layout.height < dockState.current.viewport;

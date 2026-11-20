@@ -1,6 +1,7 @@
-import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Image, Pressable, Text, useWindowDimensions, View, type HostInstance, type LayoutChangeEvent, type StyleProp, type ViewStyle } from "react-native";
-import { MathWindowContext, MessageScope } from "./math-window";
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Image, Pressable, Text, useWindowDimensions, View, type HostInstance, type LayoutRectangle } from "react-native";
+import { BatchContext, MathWindowContext } from "./math-window";
+import type { Batch } from "./session-open";
 import { PROTOCOL_ROUTES, type AttachmentReference, type ImageSnapshot, type JobRecord, type LhMessage } from "../../../src/client-protocol/index.ts";
 import type { PlanBlockData } from "../../../src/core/contracts/chat.ts";
 import { blockLayout, GRAPH_PAD, TEXT_CAP_SCALE } from "../../../src/core/plan-layout.ts";
@@ -82,22 +83,28 @@ export function markdownTexts(message: LhViewMessage): string[] {
   }).filter((text): text is string => typeof text === "string" && text.length > 0);
 }
 
-/** A settled message's own view. Its blocks of math place themselves inside it, and it tells
- * the session's math window where it is (math-window.ts). */
-function MessageFrame({ id, style, children, onMessageLayout }: {
-  id: string; style?: StyleProp<ViewStyle>; children: ReactNode; onMessageLayout?: (id: string, event: LayoutChangeEvent) => void;
+/** A batch of settled messages (session-open.ts), the view its blocks of math place
+ * themselves in (math-window.ts). An older batch is measured far above the content, where
+ * maintainVisibleContentPosition never takes it for what is on screen, then placed at a
+ * whole-pixel height. */
+function BatchView({ batch, eager, width, onBatchLayout, children }: {
+  batch: Batch; eager: boolean; width: number; onBatchLayout?: (batch: Batch, layout: LayoutRectangle) => void; children: ReactNode;
 }) {
   const window = useContext(MathWindowContext);
   const ref = useRef<HostInstance | null>(null);
-  const scope = useMemo(() => ({ id, ref }), [id]);
-  useEffect(() => () => window?.removeMessage(id), [window, id]);
+  const eagerNow = useRef(eager);
+  useLayoutEffect(() => { eagerNow.current = eager; }, [eager]);
+  const scope = useMemo(() => ({ id: batch.id, ref, eager: eagerNow }), [batch.id]);
+  useEffect(() => () => window?.setBatch(batch.id, undefined), [window, batch.id]);
+  const measuring = !batch.placed;
   return (
-    <MessageScope.Provider value={scope}>
-      <View ref={ref} style={style} onLayout={(event) => {
-        window?.setMessage(id, event.nativeEvent.layout.y, event.nativeEvent.layout.height);
-        onMessageLayout?.(id, event);
-      }}>{children}</View>
-    </MessageScope.Provider>
+    <BatchContext.Provider value={scope}>
+      <View ref={ref} onLayout={({ nativeEvent }) => onBatchLayout?.(batch, nativeEvent.layout)}
+        pointerEvents={measuring ? "none" : "auto"} accessibilityElementsHidden={measuring} importantForAccessibility={measuring ? "no-hide-descendants" : "auto"}
+        style={[{ gap: space.lg }, measuring ? { position: "absolute", top: -1e6, left: 0, width, opacity: 0 } : { minHeight: batch.height }]}>
+        {children}
+      </View>
+    </BatchContext.Provider>
   );
 }
 
@@ -171,42 +178,55 @@ function Part({ part, context }: { part: LhViewPart; context: PartContext }) {
   return helper ? <DispatchCard kind={helper.kind} job={helper.job} /> : null;
 }
 
-export function Transcript({ settled, from = 0, tail, api, chatId, jobs, liveHelpers, openPlan, files, unavailableFiles, onMessageLayout }: {
-  /** `from` is the first settled message shown: older ones are still being drawn. */
-  settled: LhViewMessage[]; from?: number; tail: LhMessage[]; api: MobileApi; chatId: string;
-  jobs: readonly JobRecord[]; liveHelpers: boolean; openPlan: () => void;
+export function Transcript({ settled, batches, eager, batchWidth = 0, onBatchLayout, tail, api, chatId, jobs, liveHelpers, openPlan, files, unavailableFiles }: {
+  /** The batches shown, oldest first (session-open.ts); messages before the first are still
+   * being drawn. Without them every settled message shows. */
+  settled: LhViewMessage[]; batches?: readonly Batch[]; eager?: (batch: Batch) => boolean; batchWidth?: number;
+  onBatchLayout?: (batch: Batch, layout: LayoutRectangle) => void;
+  tail: LhMessage[]; api: MobileApi; chatId: string; jobs: readonly JobRecord[]; liveHelpers: boolean; openPlan: () => void;
   /** Saved user messages' uploaded files, by message ID. */
   files: ReadonlyMap<string, readonly AttachmentReference[]>; unavailableFiles: ReadonlySet<string>;
-  /** Spike instrumentation (SessionOpenSpike.tsx). */
-  onMessageLayout?: (id: string, event: LayoutChangeEvent) => void;
 }) {
   const { s } = useTheme();
   const live = useMemo(() => projectView(tail), [tail]);
   const seam = useMemo(() => teachSeam(settled), [settled]);
   const context = { api, chatId, jobs, liveHelpers, openPlan };
+
+  function message(message: LhViewMessage) {
+    if (isSubagentSteer(message)) return <SteerCard key={message.id} message={message} />;
+    if (message.parts.some(({ type }) => type === "data-probe-handoff")) return <SeamDivider key={message.id} label="Planning" />;
+    const teachAt = seam?.messageId === message.id ? seam.stepIndex : null;
+    const parts = message.parts.map((part, index) => index === teachAt && part.type === "step-start"
+      ? <SeamDivider key={part.id ?? index} label="Teaching" />
+      : <Part key={part.id ?? index} part={part} context={context} />);
+    // The learner's words sit in the web's band: card fill, left rail, YOU label.
+    if (message.role === "user" && message.parts.some(({ type }) => type === "text")) {
+      const attached = files.get(message.id);
+      return <View key={message.id} style={s.band}><Label>You</Label>{parts}
+        {attached && <View style={{ paddingVertical: space.xs }}><SavedChips files={attached} unavailable={unavailableFiles} /></View>}</View>;
+    }
+    return (
+      <View key={message.id} style={{ gap: space.sm }}>
+        {teachAt === -1 && <SeamDivider label="Teaching" />}
+        {parts}
+      </View>
+    );
+  }
+
+  // Placed batches in order; one being measured goes last, so it is never the view
+  // maintainVisibleContentPosition keeps still.
+  const ordered = batches ? [...batches.filter((batch) => batch.placed), ...batches.filter((batch) => !batch.placed)] : [];
   return (
     <>
-      {settled.slice(from).map((message) => {
-        const frame = { id: message.id, onMessageLayout };
-        if (isSubagentSteer(message)) return <MessageFrame key={message.id} {...frame}><SteerCard message={message} /></MessageFrame>;
-        if (message.parts.some(({ type }) => type === "data-probe-handoff")) return <MessageFrame key={message.id} {...frame}><SeamDivider label="Planning" /></MessageFrame>;
-        const teachAt = seam?.messageId === message.id ? seam.stepIndex : null;
-        const parts = message.parts.map((part, index) => index === teachAt && part.type === "step-start"
-          ? <SeamDivider key={part.id ?? index} label="Teaching" />
-          : <Part key={part.id ?? index} part={part} context={context} />);
-        // The learner's words sit in the web's band: card fill, left rail, YOU label.
-        if (message.role === "user" && message.parts.some(({ type }) => type === "text")) {
-          const attached = files.get(message.id);
-          return <MessageFrame key={message.id} {...frame} style={s.band}><Label>You</Label>{parts}
-            {attached && <View style={{ paddingVertical: space.xs }}><SavedChips files={attached} unavailable={unavailableFiles} /></View>}</MessageFrame>;
-        }
+      {batches ? ordered.map((batch) => {
+        const next = batches[batches.indexOf(batch) + 1]?.start;
+        if (!batch.placed && !batchWidth) return null;
         return (
-          <MessageFrame key={message.id} {...frame} style={{ gap: space.sm }}>
-            {teachAt === -1 && <SeamDivider label="Teaching" />}
-            {parts}
-          </MessageFrame>
+          <BatchView key={batch.id} batch={batch} eager={eager?.(batch) ?? true} width={batchWidth} onBatchLayout={onBatchLayout}>
+            {settled.slice(batch.start, next).map(message)}
+          </BatchView>
         );
-      })}
+      }) : settled.map(message)}
       {live.map((message, messageIndex) => (
         <View key={message.id} style={{ gap: space.sm }}>
           {message.parts.map((part, index) => {
