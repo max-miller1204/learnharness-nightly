@@ -103,7 +103,33 @@ export function equationOf(token: MarkdownToken): Equation | undefined {
   return tex ? { tex, display: token.type === "math_block" } : undefined;
 }
 
-function collect(tokens: MarkdownToken[], found: Equation[]) {
+const blockCache = new Capped<MarkdownToken[][]>(1000);
+
+/** A markdown text's top-level blocks (paragraphs, lists, block math...), each as its own
+ * tokens, split once per text. */
+export function blocksOf(text: string): MarkdownToken[][] {
+  let blocks = blockCache.get(text);
+  if (!blocks) {
+    const { tokens } = markdownOf(text);
+    const found: MarkdownToken[][] = [];
+    let start = 0;
+    let depth = 0;
+    tokens.forEach((token, index) => {
+      depth += token.nesting;
+      if (depth !== 0) return;
+      found.push(tokens.slice(start, index + 1));
+      start = index + 1;
+    });
+    blocks = found;
+    blockCache.set(text, blocks);
+  }
+  return blocks;
+}
+
+/** Every equation in parsed markdown, in reading order. */
+export const equationsInTokens = (tokens: readonly MarkdownToken[]): Equation[] => collect(tokens, []);
+
+function collect(tokens: readonly MarkdownToken[], found: Equation[]) {
   for (const token of tokens) {
     const equation = equationOf(token);
     if (equation) found.push(equation);
@@ -125,7 +151,8 @@ export interface DrawQueue {
   next: number;
 }
 
-export const drawQueue = (texts: readonly string[]): DrawQueue => ({ equations: texts.flatMap(equationsIn), next: 0 });
+export const drawQueue = (texts: readonly string[]): DrawQueue => queueOf(texts.flatMap(equationsIn));
+export const queueOf = (equations: readonly Equation[]): DrawQueue => ({ equations: [...equations], next: 0 });
 
 /** Draws the queue's equations until `deadline` (a performance.now() time), at least one a
  * call. True once every one has been drawn. */

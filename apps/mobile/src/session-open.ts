@@ -1,28 +1,36 @@
 // Opening a session at its latest message with nothing half-drawn
 // (docs/specs/mobile-session-open.md). A small session shows whole in its first frame.
-// Otherwise messages are added newest first, each once its math is drawn and so sized, while
-// the transcript stays hidden until it has landed at the end with the pictures on screen
-// mounted (T3 ThreadFeed.tsx hides its feed until it has landed). Older messages then fill in
-// above in batches, each measured out of the flow first and placed at a whole number of
-// pixels, so maintainVisibleContentPosition keeps what is on screen exactly still.
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentRef } from "react";
+// Otherwise the transcript is added newest first, a few paragraphs at a time (a long reply is
+// split between its top-level blocks, Transcript.tsx messageSegments), each once its math is
+// drawn and so sized, while the transcript stays hidden until it has landed at the end with
+// the pictures on screen mounted (T3 ThreadFeed.tsx hides its feed until it has landed). So
+// only the last screen's math is drawn before it shows. Older content then fills in above in
+// batches, each measured out of the flow first and placed at a whole number of pixels, so
+// maintainVisibleContentPosition keeps what is on screen exactly still. While the learner
+// drags or flings, drawing takes shorter turns, so the pictures coming into view get the JS
+// thread.
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentRef } from "react";
 import {
   PixelRatio, Platform, useWindowDimensions,
   type LayoutChangeEvent, type LayoutRectangle, type NativeScrollEvent, type NativeSyntheticEvent, type ScrollView,
 } from "react-native";
 import type { LhViewMessage } from "../../../src/core/view.ts";
-import { drawEquation, drawFrom, drawQueue, equationsIn, type DrawQueue } from "./message-math";
+import { drawEquation, drawFrom, equationsIn, queueOf, type DrawQueue } from "./message-math";
 import { MathWindow } from "./math-window";
-import { markdownTexts } from "./Transcript";
+import { markdownTexts, messageSegments, type Position, type Segment } from "./Transcript";
 import { space } from "./theme";
 
 /** How long one drawing step may hold the JS thread, so taps and Back still get through:
- * longer while the session is hidden, shorter once it can be scrolled. */
-const SLICE_MS = { hidden: 100, shown: 40 };
-/** A batch holds at most this many messages, and stops before passing this many equations
- * (a bigger message goes alone), so no single commit is long. */
-const MESSAGES_PER_BATCH = 8;
-const EQUATIONS_PER_BATCH = 120;
+ * longer while the session is hidden, shorter once it can be scrolled, and shortest while the
+ * learner drags or flings it. */
+const SLICE_MS = { hidden: 100, shown: 60, scrolling: 12 };
+/** A batch holds at most this many segments (Transcript.tsx), and stops before passing this
+ * many equations (a bigger segment goes alone), so no single commit is long. While hidden the
+ * newest batch grows by smaller steps, so it stops soon after it fills the screen. */
+const SEGMENTS_PER_BATCH = 60;
+const EQUATIONS_PER_BATCH = { hidden: 40, shown: 80 };
+/** Once shown, an older batch gathers drawn segments for at most this long before it is added. */
+const GATHER_MS = 1500;
 /** A session with at most this many equations is drawn at once and shows whole in its first frame. */
 const SMALL_SESSION_EQUATIONS = 60;
 /** The transcript's content padding (Session.tsx's contentContainerStyle, s.section): where
@@ -36,12 +44,30 @@ const LANDED = 2;
 const SHOW_ANYWAY_MS = 1000;
 /** Android starts a newly mounted ScrollView here, clamped to its end, before its first frame. */
 const AT_END = { x: 0, y: 1e7 };
+/** A drag or fling counts as over once no scroll event has come for this long, even if its
+ * end event never arrives. */
+const SCROLL_IDLE_MS = 250;
 
-/** Messages from `start` up to the next batch's start. The newest batch runs to the end and
- * takes new messages as they arrive. An older batch is measured before it is placed. */
+const ORIGIN: Position = { message: 0, item: 0 };
+const same = (one: Position, two: Position) => one.message === two.message && one.item === two.item;
+
+/** The segment that ends at `at`, and where it starts, or undefined at the transcript's start. */
+export function segmentBefore(settled: readonly LhViewMessage[], at: Position): { start: Position; segment: Segment } | undefined {
+  if (at.item > 0) {
+    const segment = messageSegments(settled[at.message] as LhViewMessage).segments.findLast(({ from }) => from < at.item);
+    if (segment) return { start: { message: at.message, item: segment.from }, segment };
+  }
+  if (at.message === 0) return;
+  const message = at.message - 1;
+  const segment = messageSegments(settled[message] as LhViewMessage).segments.at(-1) as Segment;
+  return { start: { message, item: segment.from }, segment };
+}
+
+/** The transcript from `start` up to the next batch's start. The newest batch runs to the end
+ * and takes new messages as they arrive. An older batch is measured before it is placed. */
 export interface Batch {
   id: string;
-  start: number;
+  start: Position;
   /** The whole-pixel height it is placed at, once measured. */
   height?: number;
   placed: boolean;
@@ -49,7 +75,6 @@ export interface Batch {
 
 type Phase = "drawing" | "landing" | "shown";
 
-const equationCount = (message: LhViewMessage) => markdownTexts(message).reduce((sum, text) => sum + equationsIn(text).length, 0);
 /** A measured height rounded up to whole pixels. Layout reports it rounded to the nearest
  * pixel, so one more pixel always holds the content. */
 const wholePixels = (size: number) => (Math.round(size * PixelRatio.get()) + 1) / PixelRatio.get();
@@ -86,7 +111,14 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
   /** The mounted ScrollView's size and scroll, and whether it has reported its own. */
   const metrics = useRef({ content: 0, viewport: 0, offset: 0, sized: false, measured: false });
   const { fontScale } = useWindowDimensions();
+  /** Whether the transcript keeps to its end. Only the learner's own scrolling changes it, so
+   * a rotation, a font change or content above moving the scroll position never does. */
   const nearEnd = useRef(true);
+  /** The sizes the last scroll event reported: one with other sizes comes from a layout change. */
+  const lastScroll = useRef({ content: 0, viewport: 0 });
+  /** Whether the learner is dragging or flinging the transcript. */
+  const scrolling = useRef(false);
+  const scrollIdle = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [mathWindow] = useState(() => new MathWindow());
   const [batches, setBatches] = useState<Batch[] | null>(null);
   const [phase, setPhase] = useState<Phase>("drawing");
@@ -119,18 +151,23 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
   if (loaded && batches === null) {
     const whole = smallSession(settled);
     setSmall(whole);
-    setBatches([{ id: "newest", start: whole ? 0 : settled.length, placed: true }]);
+    setBatches([{ id: "newest", start: whole ? ORIGIN : { message: settled.length, item: 0 }, placed: true }]);
     // Android's first frame is already at the end; iOS lands a frame later.
     if (whole) setPhase(Platform.OS === "android" ? "shown" : "landing");
   }
-  const first = batches?.[0]?.start ?? settled.length;
+  const end = useMemo(() => ({ message: settled.length, item: 0 }), [settled.length]);
+  const first = batches?.[0]?.start ?? end;
   const measuring = batches?.some((batch) => !batch.placed) ?? false;
 
   useLayoutEffect(() => {
     phaseNow.current = phase;
-    filling.current = { loaded: batches !== null, all: first === 0 };
+    filling.current = { loaded: batches !== null, all: same(first, ORIGIN) };
     tail.current = tailTexts;
     mathWindow.setStartImmediate(phase === "shown");
+    // While the transcript is drawn hidden its scroll position isn't its last one yet, so no
+    // picture mounts until it has landed (check releases it then).
+    if (phase === "drawing") mathWindow.setHold(true);
+    if (phase === "shown" || small) mathWindow.setHold(false);
   });
 
   // The ScrollView mounts again once the record is in: nothing the old one reported counts.
@@ -155,35 +192,53 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
     clearHeights();
   }, [fontScale, clearHeights]);
 
-  // Newest first: draw the next messages' math in slices, then add them. While hidden they
-  // join the newest batch; once shown they come in as an older batch, one at a time. Nothing
-  // is added while landing, so the end it lands on stays the end.
+  // Newest first: draw the next segments' math in slices, then add them. While hidden they
+  // join the newest batch after every slice, so it stops soon after it fills the screen. Once
+  // shown they gather over several slices into an older batch, so fewer batches are measured
+  // and placed. Nothing is added while landing, so the end it lands on stays the end. While the
+  // learner drags or flings, drawing goes on in short slices, so the pictures coming into view
+  // get the JS thread first.
   useEffect(() => {
-    if (!batches || first === 0 || measuring || phase === "landing") return;
+    if (!batches || same(first, ORIGIN) || measuring || phase === "landing") return;
     let timer: ReturnType<typeof setTimeout>;
+    let next = first;
+    let equations = 0;
+    let count = 0;
+    const started = performance.now();
     const step = () => {
-      const deadline = performance.now() + (phaseNow.current === "shown" ? SLICE_MS.shown : SLICE_MS.hidden);
-      let next = first;
-      let equations = 0;
-      while (next > 0 && first - next < MESSAGES_PER_BATCH) {
-        const message = settled[next - 1];
-        if (!message) break;
-        const count = equationCount(message);
-        if (next < first && equations + count > EQUATIONS_PER_BATCH) break;
-        if (drawing.current?.id !== message.id) drawing.current = { id: message.id, queue: drawQueue(markdownTexts(message)) };
+      const shown = phaseNow.current === "shown";
+      const moving = shown && scrolling.current;
+      const deadline = performance.now() + (moving ? SLICE_MS.scrolling : shown ? SLICE_MS.shown : SLICE_MS.hidden);
+      const most = shown ? EQUATIONS_PER_BATCH.shown : EQUATIONS_PER_BATCH.hidden;
+      let full = count >= SEGMENTS_PER_BATCH;
+      while (!full) {
+        const before = segmentBefore(settled, next);
+        if (!before) {
+          full = true;
+          break;
+        }
+        const size = before.segment.equations.length;
+        if (count > 0 && equations + size > most) {
+          full = true;
+          break;
+        }
+        const id = `${before.start.message}:${before.start.item}`;
+        if (drawing.current?.id !== id) drawing.current = { id, queue: queueOf(before.segment.equations) };
         if (!drawFrom(drawing.current.queue, deadline)) break;
         drawing.current = null;
-        equations += count;
-        next--;
+        equations += size;
+        next = before.start;
+        full = ++count >= SEGMENTS_PER_BATCH;
       }
-      if (next === first) {
+      const ready = !same(next, first) && (!shown || full || performance.now() - started >= GATHER_MS);
+      if (!ready) {
         timer = setTimeout(step, 0);
         return;
       }
       setBatches((current) => {
         if (!current) return current;
         if (phaseNow.current !== "shown") return current.map((batch, index) => index === 0 ? { ...batch, start: next } : batch);
-        return [{ id: `older-${next}`, start: next, placed: false }, ...current];
+        return [{ id: `older-${next.message}-${next.item}`, start: next, placed: false }, ...current];
       });
     };
     timer = setTimeout(step, 0);
@@ -195,7 +250,7 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
     awaitingContent.current = true;
     const timer = setTimeout(() => { awaitingContent.current = false; }, 500);
     return () => clearTimeout(timer);
-  }, [first, placedCount]);
+  }, [first.message, first.item, placedCount]);
 
   // The streaming reply's finished paragraphs, drawn while it streams so the settled reply
   // swaps in with its math already drawn. One timer reads the latest text, since the reply
@@ -224,11 +279,20 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
   /** Ready to land once the newest messages fill the screen or every message is in; shown
    * once landed at the end with the pictures on screen mounted. */
   const check = useCallback(() => {
-    const away = distance() > NEAR_END;
+    // Away from the end only by the learner's own scrolling, so content filling in above,
+    // whose scroll event comes a moment after its new size, never flashes the button.
+    const away = !nearEnd.current;
     setAwayFromEnd((current) => current === away ? current : away);
     const { content, viewport, sized, measured } = metrics.current;
     // Only this ScrollView's own size and content size count.
     if (!sized || !measured) return;
+    if (phaseNow.current === "landing") {
+      // Landed (or late): the pictures on screen there may mount. Short of the end, scroll
+      // again, in case a scroll before the last content change didn't reach it.
+      const landed = !awaitingContent.current && distance() <= LANDED;
+      if (landed || landingLate.current) mathWindow.setHold(false);
+      else if (!awaitingContent.current) scroller.current?.scrollToEnd({ animated: false });
+    }
     if (phaseNow.current === "drawing" && filling.current.loaded && (filling.current.all || (viewport > 0 && content >= viewport))) {
       phaseNow.current = "landing";
       setPhase("landing");
@@ -253,6 +317,7 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
   const place = useCallback((id: string, height: number) => {
     mathWindow.setMeasuring(id, false);
     mathWindow.setBatch(id, { y: CONTENT_TOP, height });
+    mathWindow.mountBatch(id);
     mathWindow.update();
     setBatches((current) => current?.map((each) => each.id === id ? { ...each, placed: true, height } : each) ?? current);
   }, [mathWindow]);
@@ -270,6 +335,20 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
     }
   }), [mathWindow, check, place]);
 
+  /** A drag or fling began, or goes on, until the transcript has been still a moment. */
+  const scrollMoving = useCallback(() => {
+    scrolling.current = true;
+    if (scrollIdle.current !== null) clearTimeout(scrollIdle.current);
+    scrollIdle.current = setTimeout(() => {
+      scrollIdle.current = null;
+      scrolling.current = false;
+    }, SCROLL_IDLE_MS);
+  }, []);
+
+  useEffect(() => () => {
+    if (scrollIdle.current !== null) clearTimeout(scrollIdle.current);
+  }, []);
+
   // Layout and scroll events move it on too; this catches a commit with no new layout.
   useEffect(() => {
     const frame = requestAnimationFrame(check);
@@ -284,17 +363,24 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
     const frame = requestAnimationFrame(check);
     const timer = setTimeout(() => {
       landingLate.current = true;
+      scroller.current?.scrollToEnd({ animated: false });
       check();
     }, SHOW_ANYWAY_MS);
     return () => { cancelAnimationFrame(frame); clearTimeout(timer); };
   }, [phase, check]);
 
-  const onScroll = useCallback(({ nativeEvent: { contentOffset, layoutMeasurement, contentSize } }: NativeSyntheticEvent<NativeScrollEvent>) => {
+  const onScroll = useCallback(({ nativeEvent: { contentOffset, layoutMeasurement, contentSize, velocity } }: NativeSyntheticEvent<NativeScrollEvent>) => {
     metrics.current = { content: contentSize.height, viewport: layoutMeasurement.height, offset: contentOffset.y, sized: true, measured: true };
     mathWindow.setView(contentOffset.y, layoutMeasurement.height, contentSize.height);
-    nearEnd.current = distance() < NEAR_END;
+    // A scroll that came with new sizes was the layout's (a rotation, content above, a font
+    // change), not the learner's: it leaves keeping to the end as it was.
+    const sized = Math.abs(contentSize.height - lastScroll.current.content) < 0.5 && Math.abs(layoutMeasurement.height - lastScroll.current.viewport) < 0.5;
+    lastScroll.current = { content: contentSize.height, viewport: layoutMeasurement.height };
+    if (sized || scrolling.current) nearEnd.current = distance() < NEAR_END;
+    if (scrolling.current) scrollMoving();
+    if (sized) mathWindow.moved(contentOffset.y, Platform.OS === "android" ? velocity?.y : undefined);
     check();
-  }, [check, mathWindow]);
+  }, [check, mathWindow, scrollMoving]);
 
   const onContentSizeChange = useCallback((_width: number, height: number) => {
     metrics.current.content = height;
@@ -317,9 +403,12 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
   }, [check, mathWindow]);
 
   const onLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {
+    const resized = metrics.current.sized && Math.abs(nativeEvent.layout.height - metrics.current.viewport) >= 0.5;
     metrics.current.viewport = nativeEvent.layout.height;
     metrics.current.sized = true;
     mathWindow.setView(metrics.current.offset, nativeEvent.layout.height);
+    // A rotation or the keyboard changed the screen: at the end it stays at the end.
+    if (resized && nearEnd.current) scroller.current?.scrollToEnd({ animated: false });
     check();
   }, [check, mathWindow]);
 
@@ -343,9 +432,16 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
     mathWindow.setBatch(batch.id, { y: layout.y, height: layout.height });
   }, [mathWindow, clearHeights, place]);
 
+  /** The Scroll to end button. From far up it first jumps to a screen short of the end, where
+   * the pictures are always in (math-window.ts keeps the end's), and animates only the rest:
+   * flying through the whole session would pass every equation too fast to draw. */
   const scrollToEnd = useCallback((animated: boolean) => {
     nearEnd.current = true;
-    scroller.current?.scrollToEnd({ animated });
+    const { content, viewport } = metrics.current;
+    if (animated && distance() > 2 * viewport) {
+      scroller.current?.scrollTo({ y: Math.max(0, content - 2 * viewport), animated: false });
+      requestAnimationFrame(() => scroller.current?.scrollToEnd({ animated: true }));
+    } else scroller.current?.scrollToEnd({ animated });
   }, []);
 
   return {
@@ -369,6 +465,10 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
       onLayout,
       scrollEventThrottle: 16,
       contentOffset: Platform.OS === "android" ? AT_END : undefined,
+      onScrollBeginDrag: scrollMoving,
+      onMomentumScrollBegin: scrollMoving,
+      // The status-bar tap leaves the end.
+      onScrollToTop: () => { nearEnd.current = false; },
       // Content added above leaves what is on screen where it is.
       maintainVisibleContentPosition: { minIndexForVisible: 0 },
     },

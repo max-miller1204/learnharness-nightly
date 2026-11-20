@@ -21,5 +21,5 @@ module.exports = {
     isReduceMotionEnabled: () => Promise.resolve(globalThis.reduceMotion ?? false),
     addEventListener: () => ({ remove: () => {} }),
   },
-  PixelRatio: { get: () => 2.625 },
+  PixelRatio: { get: () => 2.625, roundToNearestPixel: (size) => Math.round(size * 2.625) / 2.625 },
 };

@@ -1,5 +1,5 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Image, Pressable, Text, useWindowDimensions, View, type HostInstance, type LayoutRectangle } from "react-native";
+import { Image, PixelRatio, Pressable, Text, useWindowDimensions, View, type HostInstance, type LayoutRectangle } from "react-native";
 import { BatchContext, MathWindowContext } from "./math-window";
 import type { Batch } from "./session-open";
 import { PROTOCOL_ROUTES, type AttachmentReference, type ImageSnapshot, type JobRecord, type LhMessage } from "../../../src/client-protocol/index.ts";
@@ -10,7 +10,9 @@ import type { QuestionAnswerData } from "../../../src/core/question-core.ts";
 import type { MobileApi } from "./protocol";
 import { helperCard, isSubagentSteer, teachSeam } from "./lesson";
 import { CompactionCut, CompactionNote, DispatchCard, GraphContextCard, ReasoningRow, SeamDivider, SteerCard, ThinkingRow } from "./LessonParts";
-import { Markdown } from "./Markdown";
+import { confirmExternalLink, Markdown } from "./Markdown";
+import { NativeMarkdown } from "./NativeMarkdown";
+import { blocksOf, equationsIn, equationsInTokens, type Equation } from "./message-math";
 import { AnswerLine } from "./AnswerLine";
 import { SavedChips } from "./Attachments";
 import { PlanDiagram } from "./PlanDiagram";
@@ -84,27 +86,97 @@ function planWidth(data: PlanBlockData) {
   return Math.max(blockLayout(data.nodes, data.edges).width, 1) + 2 * GRAPH_PAD;
 }
 
-/** The texts a message shows through Markdown when it first appears, matching Part, so
- * their math can be drawn before the message is shown. Folded rows (reasoning, briefs)
- * draw theirs when opened. */
+/** The texts a part shows through Markdown when it first appears, matching Part. Folded
+ * rows (reasoning, briefs) draw theirs when opened. */
+function partTexts(part: LhViewPart): (string | undefined)[] {
+  if (part.type === "text") return [part.text];
+  if (part.pluginQuestion?.status === "posed") return [part.pluginQuestion.snapshot.input.question];
+  if (part.pluginProblem || (part.type === "tool-problem" && part.state === "input-available")) return [(part.input as { statement?: string } | undefined)?.statement];
+  if (part.type === "tool-conclude" && part.state === "output-available") {
+    const input = part.input as { outcome?: string; verdict?: string; solutionReveal?: string } | undefined;
+    return [input?.verdict, typeof part.reveal === "string" ? part.reveal : input?.solutionReveal];
+  }
+  if (part.type === "data-practice-thinking") return [(part.data as { text?: string } | undefined)?.text];
+  if (part.state === "output-available") {
+    const answer = part.output as Partial<QuestionAnswerData> | undefined;
+    if (answer?.questionText) return [answer.questionText, answer.explanation, answer.committed];
+  }
+  return [];
+}
+
+const present = (text: string | undefined): text is string => typeof text === "string" && text.length > 0;
+
+/** The texts a message shows through Markdown when it first appears, so their math can be
+ * drawn before the message is shown. */
 export function markdownTexts(message: LhViewMessage): string[] {
   if (isSubagentSteer(message)) return [];
-  return message.parts.flatMap((part): (string | undefined)[] => {
-    if (part.type === "text") return [part.text];
-    if (part.pluginQuestion?.status === "posed") return [part.pluginQuestion.snapshot.input.question];
-    if (part.pluginProblem || (part.type === "tool-problem" && part.state === "input-available")) return [(part.input as { statement?: string } | undefined)?.statement];
-    if (part.type === "tool-conclude" && part.state === "output-available") {
-      const input = part.input as { outcome?: string; verdict?: string; solutionReveal?: string } | undefined;
-      return [input?.verdict, typeof part.reveal === "string" ? part.reveal : input?.solutionReveal];
-    }
-    if (part.type === "data-practice-thinking") return [(part.data as { text?: string } | undefined)?.text];
-    if (part.state === "output-available") {
-      const answer = part.output as Partial<QuestionAnswerData> | undefined;
-      if (answer?.questionText) return [answer.questionText, answer.explanation, answer.committed];
-    }
-    return [];
-  }).filter((text): text is string => typeof text === "string" && text.length > 0);
+  return message.parts.flatMap(partTexts).filter(present);
 }
+
+/** One thing a message shows: a part, or one top-level block of a text part. */
+interface Item { part: number; block?: number }
+/** Items `from` up to `to`, the equations they show, and where a batch may start. */
+export interface Segment { from: number; to: number; equations: Equation[] }
+/** A place in the transcript: a message, and the first of its items there. */
+export interface Position { message: number; item: number }
+
+const segmentsCache = new WeakMap<LhViewMessage, { items: Item[]; segments: Segment[] }>();
+
+/** A message's items and segments. Between batches an assistant's message may be split only
+ * between two top-level blocks of one text part, so a long reply comes in a few paragraphs at
+ * a time; a learner's band, a steer card and a seam stay whole. */
+export function messageSegments(message: LhViewMessage): { items: Item[]; segments: Segment[] } {
+  const cached = segmentsCache.get(message);
+  if (cached) return cached;
+  const items: Item[] = [];
+  const equations: Equation[][] = [];
+  const steer = isSubagentSteer(message);
+  message.parts.forEach((part, index) => {
+    const blocks = part.type === "text" && part.text ? blocksOf(part.text) : [];
+    if (blocks.length) {
+      blocks.forEach((tokens, block) => {
+        items.push({ part: index, block });
+        equations.push(steer ? [] : equationsInTokens(tokens));
+      });
+    } else {
+      items.push({ part: index });
+      equations.push(steer ? [] : partTexts(part).filter(present).flatMap(equationsIn));
+    }
+  });
+  const whole = steer || message.parts.some(({ type }) => type === "data-probe-handoff")
+    || (message.role === "user" && message.parts.some(({ type }) => type === "text"));
+  const segments: Segment[] = [];
+  items.forEach((item, index) => {
+    const last = segments.at(-1);
+    if (!last || (!whole && (item.block ?? 0) > 0)) segments.push({ from: index, to: index + 1, equations: [...(equations[index] ?? [])] });
+    else {
+      last.to = index + 1;
+      last.equations.push(...(equations[index] ?? []));
+    }
+  });
+  if (!segments.length) segments.push({ from: 0, to: 0, equations: [] });
+  const result = { items, segments };
+  segmentsCache.set(message, result);
+  return result;
+}
+
+/** A text part's top-level blocks `from` up to `to`, each drawn on its own so blocks added
+ * above leave those already shown untouched. Laid out as one Markdown would be. */
+function MarkdownBlocks({ text, from = 0, to }: { text: string; from?: number; to?: number }) {
+  const shown = blocksOf(text).slice(from, to);
+  if (!shown.length) return null;
+  return (
+    <View style={{ gap: space.md }}>
+      {shown.map((tokens, index) => <NativeMarkdown key={from + index} tokens={tokens} openLink={confirmExternalLink} />)}
+    </View>
+  );
+}
+
+/** The rest of a message split between batches sits this much closer to its start than the
+ * batches' own gap, so the two halves are spaced as one message's blocks are. Rounded to whole
+ * pixels: on half a pixel (4 points is 10.5 on a 2.625 screen), layout rounding can flip by a
+ * pixel when content is placed above, and everything below it would move. */
+const continued = () => PixelRatio.roundToNearestPixel(space.md - space.lg);
 
 /** A batch of settled messages (session-open.ts), the view its blocks of math place
  * themselves in (math-window.ts). An older batch is measured far above the content, where
@@ -137,10 +209,10 @@ function BatchView({ batch, eager, width, onBatchLayout, children }: {
 
 type PartContext = { api: MobileApi; chatId: string; jobs: readonly JobRecord[]; liveHelpers: boolean; openPlan: () => void };
 
-function Part({ part, context }: { part: LhViewPart; context: PartContext }) {
+function Part({ part, context, blocks }: { part: LhViewPart; context: PartContext; blocks?: [number, number] }) {
   const { c, s } = useTheme();
   const { api, chatId } = context;
-  if (part.type === "text" && part.text) return <Markdown text={part.text} />;
+  if (part.type === "text" && part.text) return <MarkdownBlocks text={part.text} from={blocks?.[0]} to={blocks?.[1]} />;
   if (part.type === "reasoning") return <ReasoningRow text={part.text ?? ""} streaming={false} />;
   if (part.type === "data-plan-block") return <PlanBlock data={part.data as PlanBlockData} openPlan={context.openPlan} />;
   if (part.type === "data-compaction") return <CompactionNote />;
@@ -219,13 +291,25 @@ export function Transcript({ settled, batches, eager, batchWidth = 0, onBatchLay
   const seam = useMemo(() => teachSeam(settled), [settled]);
   const context = { api, chatId, jobs, liveHelpers, openPlan };
 
-  function message(message: LhViewMessage) {
+  /** A message, or its items `from` up to `to` when it is split between batches. */
+  function message(message: LhViewMessage, from = 0, to = Infinity) {
     if (isSubagentSteer(message)) return <SteerCard key={message.id} message={message} />;
     if (message.parts.some(({ type }) => type === "data-probe-handoff")) return <SeamDivider key={message.id} label="Planning" />;
     const teachAt = seam?.messageId === message.id ? seam.stepIndex : null;
-    const parts = message.parts.map((part, index) => index === teachAt && part.type === "step-start"
-      ? <SeamDivider key={part.id ?? index} label="Teaching" />
-      : <Part key={part.id ?? index} part={part} context={context} />);
+    const { items } = messageSegments(message);
+    // Each part shown, with the range of its blocks shown when it is a split text.
+    const shown = new Map<number, [number, number]>();
+    items.slice(from, to).forEach(({ part, block }) => {
+      const range = shown.get(part);
+      shown.set(part, block === undefined ? [0, Infinity] : [range?.[0] ?? block, block + 1]);
+    });
+    const parts = message.parts.flatMap((part, index) => {
+      const blocks = shown.get(index);
+      if (!blocks) return [];
+      return [index === teachAt && part.type === "step-start"
+        ? <SeamDivider key={part.id ?? index} label="Teaching" />
+        : <Part key={part.id ?? index} part={part} context={context} blocks={blocks} />];
+    });
     // The learner's words sit in the web's band: card fill, left rail, YOU label.
     if (message.role === "user" && message.parts.some(({ type }) => type === "text")) {
       const attached = files.get(message.id);
@@ -233,27 +317,37 @@ export function Transcript({ settled, batches, eager, batchWidth = 0, onBatchLay
         {attached && <View style={{ paddingVertical: space.xs }}><SavedChips files={attached} unavailable={unavailableFiles} /></View>}</View>;
     }
     return (
-      <View key={message.id} style={{ gap: space.sm }}>
-        {teachAt === -1 && <SeamDivider label="Teaching" />}
+      <View key={message.id} style={[{ gap: space.sm }, from > 0 && { marginTop: continued() }]}>
+        {from === 0 && teachAt === -1 && <SeamDivider label="Teaching" />}
         {parts}
       </View>
     );
   }
 
+  /** The messages from `start` up to `end`, the first and last perhaps in part. */
+  function between(start: Position, end: Position) {
+    const shown: ReactNode[] = [];
+    for (let index = start.message; index < settled.length && (index < end.message || (index === end.message && end.item > 0)); index++) {
+      shown.push(message(settled[index] as LhViewMessage, index === start.message ? start.item : 0, index === end.message ? end.item : Infinity));
+    }
+    return shown;
+  }
+
   // Placed batches in order; one being measured goes last, so it is never the view
   // maintainVisibleContentPosition keeps still.
   const ordered = batches ? [...batches.filter((batch) => batch.placed), ...batches.filter((batch) => !batch.placed)] : [];
+  const end: Position = { message: settled.length, item: 0 };
   return (
     <>
       {batches ? ordered.map((batch) => {
-        const next = batches[batches.indexOf(batch) + 1]?.start;
+        const next = batches[batches.indexOf(batch) + 1]?.start ?? end;
         if (!batch.placed && !batchWidth) return null;
         return (
           <BatchView key={batch.id} batch={batch} eager={eager?.(batch) ?? true} width={batchWidth} onBatchLayout={onBatchLayout}>
-            {settled.slice(batch.start, next).map(message)}
+            {between(batch.start, next)}
           </BatchView>
         );
-      }) : settled.map(message)}
+      }) : settled.map((each) => message(each))}
       {live.map((message, messageIndex) => (
         <View key={message.id} style={{ gap: space.sm }}>
           {message.parts.map((part, index) => {

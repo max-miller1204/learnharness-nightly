@@ -2,20 +2,27 @@
 // Every equation's box is sized from its drawing up front, so a picture coming or going never
 // moves anything. Blocks of text and math on or near the screen mount their pictures, and so
 // do those near the start and the end of the transcript (where a status-bar tap and "Scroll to
-// end" land). Blocks far from all three free theirs, so memory stays bounded however long the
-// session is. Each react-native-svg view draws into its own bitmap on Android.
+// end" land), and further ahead while a fling carries the screen toward them. Blocks far from
+// all three free theirs, so memory stays bounded however long the session is. Each
+// react-native-svg view draws into its own bitmap on Android.
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import type { HostInstance } from "react-native";
 
 /** Blocks within this many screens of the visible part, the start or the end mount their pictures. */
-const MOUNT_MARGIN = 1;
+const MOUNT_MARGIN = 2;
 /** Blocks further than this many screens from all three free theirs... */
-const FREE_MARGIN = 2;
+const FREE_MARGIN = 3;
 /** ...once they have been that far for this long, so a scroll position and block positions
  * that arrive a frame apart never free what is on screen. */
-const FREE_AFTER_MS = 500;
+const FREE_AFTER_MS = 250;
+/** While the screen moves, blocks the scroll reaches within this long mount too. */
+const LOOKAHEAD_MS = 600;
+/** ...but never more than this many screens ahead, so a hard fling can't mount everything. */
+const MAX_AHEAD = 2;
+/** Scroll events further apart than this mean the screen had stopped. */
+const MOVING_GAP_MS = 200;
 /** At most this many pictures off screen mount in one frame, so no commit is long. */
-const PICTURES_PER_FRAME = 24;
+const PICTURES_PER_FRAME = 48;
 
 interface Block {
   batch: string;
@@ -41,6 +48,12 @@ export class MathWindow {
   private frame: number | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private readonly listeners = new Set<() => void>();
+  /** How fast the screen moves through the content, in points per millisecond. */
+  private velocity = 0;
+  private movedAt = 0;
+  private lastMoved = 0;
+  /** While held nothing mounts or frees: the scroll position isn't the one that will show. */
+  private held = false;
   livePictures = 0;
   /** Once the session shows, blocks on the transcript's first screen mount at once too, so a
    * status-bar tap never lands on empty boxes. */
@@ -50,9 +63,29 @@ export class MathWindow {
     this.startImmediate = value;
   }
 
+  setHold(held: boolean) {
+    if (held === this.held) return;
+    this.held = held;
+    if (!held) this.schedule();
+  }
+
   setView(offset: number, viewport: number, content = this.content) {
     if (offset === this.offset && viewport === this.viewport && content === this.content) return;
     [this.offset, this.viewport, this.content] = [offset, viewport, content];
+    this.schedule();
+  }
+
+  /** A scroll (not a layout's jump, as when content is placed above) has the screen at
+   * `offset`, moving at `velocity` points per millisecond when the platform measured it (Android
+   * does, on its UI thread, so a busy JS thread doesn't skew it): how fast it moves says how
+   * far ahead to mount. */
+  moved(offset: number, velocity?: number) {
+    const now = performance.now();
+    const elapsed = now - this.movedAt;
+    const speed = velocity !== undefined && Number.isFinite(velocity) ? velocity
+      : elapsed >= 4 && elapsed < MOVING_GAP_MS ? (offset - this.lastMoved) / elapsed : 0;
+    this.velocity = this.velocity * 0.5 + speed * 0.5;
+    [this.movedAt, this.lastMoved] = [now, offset];
     this.schedule();
   }
 
@@ -102,6 +135,17 @@ export class MathWindow {
     return true;
   }
 
+  /** Mounts every picture of a batch now, whatever the budget: a batch placed above is drawn
+   * whole before anything can scroll into it. */
+  mountBatch(id: string) {
+    for (const block of this.blocks) {
+      if (block.batch !== id || block.wanted) continue;
+      block.wanted = true;
+      block.farSince = undefined;
+      block.setLive(true);
+    }
+  }
+
   /** Asks a batch's blocks that don't know where they sit to measure again. */
   measureBatch(id: string) {
     for (const block of [...this.blocks]) if (block.batch === id && !block.measured) block.measure();
@@ -145,23 +189,29 @@ export class MathWindow {
 
   /** How far a block is from the screen, and from whichever is nearest of the screen, the
    * start and the end. */
-  private distances({ top, bottom }: { top: number; bottom: number }) {
+  private distances({ top, bottom }: { top: number; bottom: number }, ahead: number) {
     const from = (start: number, end: number) => bottom < start ? start - bottom : top > end ? top - end : 0;
     const view = from(this.offset, this.offset + this.viewport);
+    // A block the screen is moving toward counts as nearer by how far the scroll carries it.
+    const coming = (this.velocity < 0 && bottom <= this.offset) || (this.velocity > 0 && top >= this.offset + this.viewport);
+    const near = coming ? Math.max(0, view - ahead) : view;
     const start = from(0, this.viewport);
-    return { view, start, keep: Math.min(view, start, from(Math.max(0, this.content - this.viewport), this.content)) };
+    return { view, near, start, keep: Math.min(near, start, from(Math.max(0, this.content - this.viewport), this.content)) };
   }
 
   /** Mounts what is near, nearest first, and frees what has been far for a while. */
   update() {
-    if (!this.viewport) return;
+    if (!this.viewport || this.held) return;
     const now = performance.now();
+    // A scroll that has stopped carries nothing further.
+    if (now - this.movedAt > MOVING_GAP_MS) this.velocity = 0;
+    const ahead = Math.min(Math.abs(this.velocity) * LOOKAHEAD_MS, MAX_AHEAD * this.viewport);
     const near: { block: Block; distance: number }[] = [];
     let recheck = false;
     for (const block of this.blocks) {
       const place = this.place(block);
       if (!place) continue;
-      const { view, start, keep } = this.distances(place);
+      const { view, start, keep } = this.distances(place, ahead);
       if (keep <= FREE_MARGIN * this.viewport) block.farSince = undefined;
       if (block.wanted && keep > FREE_MARGIN * this.viewport) {
         block.farSince ??= now;
@@ -171,7 +221,8 @@ export class MathWindow {
           block.setLive(false);
         } else recheck = true;
       } else if (!block.wanted && keep <= MOUNT_MARGIN * this.viewport) {
-        near.push({ block, distance: this.startImmediate && start === 0 ? 0 : view });
+        // Nearest to the screen first, whatever carried it within reach.
+        near.push({ block, distance: (this.startImmediate && start === 0) || view === 0 ? 0 : view });
       }
     }
     near.sort((one, two) => one.distance - two.distance);

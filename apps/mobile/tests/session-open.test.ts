@@ -10,8 +10,9 @@ import { drawTex } from "../src/choice-math.ts";
 import { Markdown } from "../src/Markdown.tsx";
 import { MathWindow, MathWindowContext } from "../src/math-window.ts";
 import { Capped, drawCount, drawFrom, drawQueue, equationsIn, isDrawn, setEquationCap, EQUATION_CAP } from "../src/message-math.ts";
-import { smallSession, transcriptVisibility, useSessionOpening, type Batch } from "../src/session-open.ts";
-import { markdownTexts, Snapshot, SNAPSHOT_HEIGHT, snapshotBox, Transcript } from "../src/Transcript.tsx";
+import { segmentBefore, smallSession, transcriptVisibility, useSessionOpening, type Batch } from "../src/session-open.ts";
+import { markdownTexts, messageSegments, Snapshot, SNAPSHOT_HEIGHT, snapshotBox, Transcript, type Position } from "../src/Transcript.tsx";
+import { space } from "../src/theme.ts";
 import type { LhViewMessage } from "../../../src/core/view.ts";
 
 // Frames run on timers in Node.
@@ -119,7 +120,7 @@ test("with a screen reader on, a paragraph with math is one stop read with the m
 test("in a session, only blocks near the screen, the start or the end mount their pictures", async () => {
   const settled = projectView(fixture("chat_zzopenlong").messages);
   const window = new MathWindow();
-  const batch: Batch = { id: "newest", start: 0, placed: true };
+  const batch: Batch = { id: "newest", start: { message: 0, item: 0 }, placed: true };
   // Each block sits 100 points below the last, in the order it is created.
   let next = 0;
   const createNodeMock = () => {
@@ -158,6 +159,8 @@ test("a finished reply replaces its streamed text with drawn math in place", asy
   assert.equal(all(top().at(-1) as ReactTestInstance, "SvgAst").length, 1);
 });
 
+/** Whether a batch starts at the start of message `index`. */
+const at = (batch: Batch | undefined, index: number) => batch?.start.message === index && batch.start.item === 0;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const wait = (ms: number) => act(async () => { await sleep(ms); });
 /** A unique tag per run, so equations here are never already drawn by another test. */
@@ -339,8 +342,8 @@ test("the end is followed when the reply grows, whichever order a landing batch'
 test("after a second the session shows without landing, but never with on-screen math missing", async () => {
   const session = await opened(coldSession("fallback", 4, 20));
   // Every message drawn and in, so blocks are waiting for their batch's place.
-  for (let tries = 0; tries < 250 && session.now().batches[0]?.start !== 0; tries++) await wait(20);
-  assert.equal(session.now().batches[0]?.start, 0);
+  for (let tries = 0; tries < 250 && !at(session.now().batches[0], 0); tries++) await wait(20);
+  assert.ok(at(session.now().batches[0], 0));
   await session.layout(800);
   await session.content(4000);
   // Scrolled away from the end, and the newest batch hasn't said where it is.
@@ -534,9 +537,9 @@ test("every paragraph shares one screen reader subscription", async () => {
   }
 });
 
-test("nothing joins the newest batch while landing, and it shows two frames after landing with its pictures in", async () => {
+test("nothing joins the newest batch while landing, and its pictures mount only once it has landed", async () => {
   const session = await opened(coldSession("landing", 30, 12));
-  for (let tries = 0; tries < 250 && session.now().batches[0]?.start === 60; tries++) await wait(20);
+  for (let tries = 0; tries < 250 && at(session.now().batches[0], 60); tries++) await wait(20);
   await session.layout(800);
   await session.batch("newest", { y: 16, height: 984 });
   await session.content(1000);
@@ -546,10 +549,12 @@ test("nothing joins the newest batch while landing, and it shows two frames afte
   await wait(400);
   assert.equal(session.now().batches[0]?.start, start, "no message is added while landing");
   assert.equal(session.now().shown, false);
-  // Landed with the pictures on screen already in: shown once two frames have passed.
+  // Short of the end no picture mounts, since the screen there isn't the one that will show.
+  assert.equal(session.now().mathWindow.livePictures, 0);
+  // Landed: the pictures on screen mount, and it shows once they are in.
   await session.scroll(200, 800, 1000);
-  assert.equal(session.now().shown, false);
-  await wait(100);
+  for (let tries = 0; tries < 50 && !session.now().shown; tries++) await wait(20);
+  assert.ok(session.now().mathWindow.livePictures > 0);
   assert.equal(session.now().shown, true);
   // Filling goes on once shown, as older batches.
   let older: Batch | undefined;
@@ -563,7 +568,7 @@ test("nothing joins the newest batch while landing, and it shows two frames afte
 
 test("while hidden the transcript keeps to the end even after a scroll said it was far from it", async () => {
   const session = await opened(coldSession("hidden", 30, 12));
-  for (let tries = 0; tries < 250 && session.now().batches[0]?.start === 60; tries++) await wait(20);
+  for (let tries = 0; tries < 250 && at(session.now().batches[0], 60); tries++) await wait(20);
   await session.layout(800);
   await session.batch("newest", { y: 16, height: 4984 });
   await session.content(5000);
@@ -572,6 +577,137 @@ test("while hidden the transcript keeps to the end even after a scroll said it w
   assert.equal(session.now().shown, false);
   session.spyScroll();
   await session.content(5200);
-  assert.equal(session.toEnd.calls, 1);
+  assert.ok(session.toEnd.calls >= 1);
   await act(async () => session.tree.unmount());
+});
+
+test("a long reply splits between its paragraphs, a learner's band never does, and every equation is in one segment", () => {
+  const view = projectView(fixture("chat_zzopenlong").messages);
+  const last = view.at(-1) as LhViewMessage;
+  const { items, segments } = messageSegments(last);
+  assert.ok(segments.length > 60, `${segments.length} segments`);
+  assert.equal(segments[0]?.from, 0);
+  assert.equal(segments.at(-1)?.to, items.length);
+  segments.forEach((segment, index) => { if (index) assert.equal(segment.from, segments[index - 1]?.to); });
+  assert.equal(segments.flatMap(({ equations }) => equations).length, markdownTexts(last).flatMap(equationsIn).length);
+  const asked = view.findLast((message) => message.role === "user") as LhViewMessage;
+  assert.equal(messageSegments(asked).segments.length, 1);
+  // Walking back segment by segment from the end reaches the start through every message once.
+  let at: Position = { message: view.length, item: 0 };
+  let steps = 0;
+  for (let before = segmentBefore(view, at); before; before = segmentBefore(view, at)) {
+    at = before.start;
+    steps++;
+  }
+  assert.deepEqual(at, { message: 0, item: 0 });
+  assert.equal(steps, view.reduce((sum, message) => sum + messageSegments(message).segments.length, 0));
+});
+
+test("a reply split between two batches shows every paragraph once, spaced as one message", async () => {
+  const settled = projectView(fixture("chat_zzopenlong").messages);
+  const last = settled.length - 1;
+  const cut = (messageSegments(settled[last] as LhViewMessage).segments[30] as { from: number }).from;
+  const blocks = (tree: ReactTestRenderer) => all(tree.root, "NativeMarkdown").length;
+  const whole = await render(transcript({ settled, batches: [{ id: "newest", start: { message: 0, item: 0 }, placed: true }] }));
+  const split = await render(transcript({ settled, batches: [
+    { id: "older", start: { message: 0, item: 0 }, placed: true },
+    { id: "newest", start: { message: last, item: cut }, placed: true },
+  ] }));
+  assert.equal(blocks(split), blocks(whole));
+  // The rest of the reply sits as close to its start as the reply's own paragraphs do, to the
+  // whole pixel, so placing content above can never round it a pixel either way.
+  const margins = split.root.findAll((node) => is(node, "View")).flatMap((node) => [node.props.style].flat(3))
+    .map((style) => style?.marginTop).filter((margin): margin is number => typeof margin === "number" && margin < 0);
+  assert.equal(margins.length, 1);
+  assert.ok(Math.abs((margins[0] as number) - (space.md - space.lg)) < 0.5);
+  assert.equal((margins[0] as number) * 2.625, Math.round((margins[0] as number) * 2.625));
+});
+
+test("a long reply shows from its last paragraphs: the newest batch starts inside it before the rest is drawn", async () => {
+  const name = `tail${run}`;
+  const settled = projectView([user("u0", "Go"), assistant("a0", Array.from({ length: 80 }, (_, index) => `Step $v_{${name}e${index}}^2$ holds.`).join("\n\n"))]);
+  const session = await opened(settled);
+  for (let tries = 0; tries < 250 && at(session.now().batches[0], 2); tries++) await wait(20);
+  const start = session.now().batches[0]?.start;
+  assert.equal(start?.message, 1);
+  assert.ok((start?.item ?? 0) > 0, "only the reply's last paragraphs are in");
+  await act(async () => session.tree.unmount());
+});
+
+test("a rotation or new content never leaves the end: only the learner's own scrolling does", async () => {
+  const session = await opened(projectView(fixture("chat_zzopenshort").messages));
+  await session.layout(800);
+  await session.content(2000);
+  await session.scroll(1200, 800, 2000);
+  session.spyScroll();
+  // Rotated: the screen is shorter and the content taller, and the first scroll event says so far from the end.
+  await session.layout(400);
+  assert.equal(session.toEnd.calls, 1);
+  await session.scroll(1200, 400, 2600);
+  assert.equal(session.now().awayFromEnd, false, "no Scroll to end button");
+  await session.content(2600);
+  assert.equal(session.toEnd.calls, 2);
+  // Content growing above before its scroll event arrives never flashes the button.
+  await session.content(3100);
+  assert.equal(session.now().awayFromEnd, false);
+  await session.scroll(2700, 400, 3100);
+  // The learner drags away: the button shows, and a resize no longer pulls to the end.
+  await act(async () => { session.now().scrollProps.onScrollBeginDrag(); });
+  await session.scroll(1000, 400, 3100);
+  assert.equal(session.now().awayFromEnd, true);
+  const calls = session.toEnd.calls;
+  await session.layout(800);
+  assert.equal(session.toEnd.calls, calls);
+  await act(async () => session.tree.unmount());
+});
+
+test("Scroll to end from far up jumps to a screen short of the end and animates only the rest", async () => {
+  const session = await opened(projectView(fixture("chat_zzopenshort").messages));
+  await session.layout(800);
+  await session.content(20000);
+  await session.scroll(1000, 800, 20000);
+  const calls: string[] = [];
+  (session.now().scrollProps.ref as { current: unknown }).current = {
+    scrollTo: ({ y, animated }: { y: number; animated: boolean }) => calls.push(`to ${y} ${animated}`),
+    scrollToEnd: ({ animated }: { animated: boolean }) => calls.push(`end ${animated}`),
+  };
+  await act(async () => { session.now().scrollToEnd(true); await sleep(30); });
+  assert.deepEqual(calls, ["to 18400 false", "end true"]);
+  calls.length = 0;
+  await session.scroll(19000, 800, 20000);
+  await act(async () => { session.now().scrollToEnd(true); });
+  assert.deepEqual(calls, ["end true"]);
+  await act(async () => session.tree.unmount());
+});
+
+test("the picture window holds while the transcript lands, looks ahead of a fling, and mounts a placed batch whole", async () => {
+  const window = new MathWindow();
+  const live = new Map<string, boolean>();
+  const block = (batch: string, y: number) => {
+    const entry = { batch, y, height: 50, measured: true, pictures: 1, wanted: false, committed: false, farSince: undefined,
+      setLive: (value: boolean) => { live.set(`${batch}:${y}`, value); }, measure: () => {} };
+    window.add(entry as Parameters<MathWindow["add"]>[0]);
+  };
+  for (let y = 0; y < 10000; y += 100) block("newest", y);
+  window.setBatch("newest", { y: 0, height: 10000 });
+  window.setHold(true);
+  window.setView(9000, 1000, 10000);
+  window.update();
+  assert.equal(live.size, 0, "nothing mounts while held");
+  window.setHold(false);
+  window.update();
+  const mounted = () => [...live].filter(([, value]) => value).map(([key]) => Number(key.split(":")[1]));
+  // Within two screens of the screen (here the end) or of the start (where a status-bar tap lands).
+  const between = (low: number, high: number) => mounted().filter((y) => y > low && y < high);
+  assert.deepEqual(between(3000, 6900), [], "nothing far from the screen, the start and the end");
+  // A fast fling toward the start mounts further ahead of the screen than that.
+  window.setView(7000, 1000, 10000);
+  window.moved(7000, -5);
+  for (let frame = 0; frame < 10; frame++) window.update();
+  assert.ok(between(3000, 4900).length > 0, "blocks the fling is heading for mount ahead");
+  // A batch placed above mounts all its pictures at once.
+  for (let y = 0; y < 3000; y += 100) block("older", y);
+  window.setBatch("older", { y: -50000, height: 3000 });
+  window.mountBatch("older");
+  assert.equal([...live].filter(([key, value]) => key.startsWith("older:") && value).length, 30);
 });
