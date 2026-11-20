@@ -76,8 +76,10 @@ const before = (one: Position, two: Position) => one.message < two.message || (o
 
 /** Batches whose starts fit the transcript as it is now. A start past the end of its message
  * (a reply that got shorter) or of the transcript moves to the next message's start, and no
- * start may pass the one after it, so the batches never overlap and stay in order. The same
- * array when nothing needs to move. */
+ * start may pass the one after it, so the batches never overlap and stay in order. A batch
+ * left with nothing goes (the newest stays, as new messages join it), and the rest lose the
+ * heights they were placed at, which held what was there before. The same array when nothing
+ * needs to move. */
 export function fitBatches(settled: readonly LhViewMessage[], batches: readonly Batch[]): readonly Batch[] {
   let changed = false;
   let limit: Position = { message: settled.length, item: 0 };
@@ -92,7 +94,10 @@ export function fitBatches(settled: readonly LhViewMessage[], batches: readonly 
     }
     limit = start;
   }
-  return changed ? fitted : batches;
+  if (!changed) return batches;
+  return fitted
+    .filter((batch, index) => batch.id === "newest" || !same(batch.start, (fitted[index + 1] as Batch | undefined)?.start ?? { message: settled.length, item: 0 }))
+    .map((batch) => batch.height === undefined ? batch : { ...batch, height: undefined });
 }
 
 /** Where a batch being gathered has got to: its start so far, and what it holds. */
@@ -180,6 +185,9 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
   const lastScroll = useRef({ content: 0, viewport: 0 });
   /** Whether the learner is dragging or flinging the transcript. */
   const scrolling = useRef(false);
+  /** Whether a finger is on the transcript, or a fling it started still runs: then it never
+   * moves by itself, however long the finger rests. */
+  const touch = useRef({ down: false, fling: false });
   const scrollIdle = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [mathWindow] = useState(() => new MathWindow());
   const [batches, setBatches] = useState<Batch[] | null>(null);
@@ -435,7 +443,7 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
     lastScroll.current = { content: contentSize.height, viewport: layoutMeasurement.height };
     // A new screen size is never the learner, even mid-drag. New content is, during a drag:
     // the finger moved too.
-    if (sized || (sameScreen && scrolling.current)) nearEnd.current = distance() < NEAR_END;
+    if (sized || (sameScreen && (scrolling.current || touch.current.down || touch.current.fling))) nearEnd.current = distance() < NEAR_END;
     if (scrolling.current) scrollMoving();
     if (sized) mathWindow.moved(contentOffset.y, Platform.OS === "android" ? velocity?.y : undefined);
     // A rotation or the keyboard changed the screen: at the end it stays at the end.
@@ -458,7 +466,8 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
         below.current = now;
         // While hidden the transcript always keeps to the end it is landing on.
         // Never under the learner's finger: a drag or fling decides where it ends up.
-        if (grew && ((nearEnd.current && !scrolling.current) || phaseNow.current !== "shown")) scroller.current?.scrollToEnd({ animated: false });
+        const held = scrolling.current || touch.current.down || touch.current.fling;
+        if (grew && ((nearEnd.current && !held) || phaseNow.current !== "shown")) scroller.current?.scrollToEnd({ animated: false });
       });
     }
     check();
@@ -527,8 +536,10 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
       onLayout,
       scrollEventThrottle: 16,
       contentOffset: Platform.OS === "android" ? AT_END : undefined,
-      onScrollBeginDrag: scrollMoving,
-      onMomentumScrollBegin: scrollMoving,
+      onScrollBeginDrag: () => { touch.current.down = true; scrollMoving(); },
+      onScrollEndDrag: () => { touch.current.down = false; },
+      onMomentumScrollBegin: () => { touch.current.fling = true; scrollMoving(); },
+      onMomentumScrollEnd: () => { touch.current.fling = false; },
       // The status-bar tap leaves the end.
       onScrollToTop: () => { nearEnd.current = false; },
       // Content added above leaves what is on screen where it is.

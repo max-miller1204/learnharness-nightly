@@ -824,7 +824,8 @@ test("a reply that gets shorter never makes batches overlap or show a message tw
   ];
   assert.equal(fitBatches(long, batches), batches, "nothing moves while everything fits");
   const fitted = fitBatches(short, batches);
-  assert.deepEqual(fitted.map(({ start }) => start), [{ message: 0, item: 0 }, { message: 2, item: 0 }, { message: 2, item: 0 }]);
+  // The older batch collapses onto the newest and, holding nothing, goes.
+  assert.deepEqual(fitted.map(({ id, start }) => [id, start]), [["oldest", { message: 0, item: 0 }], ["newest", { message: 2, item: 0 }]]);
   // Each message once, in order, as with no batches at all.
   const reading = (tree: ReactTestRenderer) => strings(tree.root).join("");
   const whole = await render(transcript({ settled: short }));
@@ -836,7 +837,50 @@ test("a reply that gets shorter never makes batches overlap or show a message tw
     { id: "b", start: { message: 3, item: 0 }, placed: true },
     { id: "c", start: { message: 2, item: 0 }, placed: true },
   ]);
-  assert.deepEqual(crossed.map(({ start }) => start), [{ message: 0, item: 0 }, { message: 2, item: 0 }, { message: 2, item: 0 }]);
+  assert.deepEqual(crossed.map(({ id, start }) => [id, start]), [["a", { message: 0, item: 0 }], ["c", { message: 2, item: 0 }]]);
+});
+
+test("a shrink leaves no blank gap where a batch's old height was", async () => {
+  const name = `gap${run}`;
+  const reply = (paragraphs: number) => assistant("a1", Array.from({ length: paragraphs }, (_, index) => `Part ${index} $g_{${name}${index}}$.`).join("\n\n"));
+  const messages = (paragraphs: number) => [user("u0", "Go"), reply(paragraphs), user("u2", "More"), assistant("a3", "Last $z$ here.")];
+  // Placed at the heights their content had: 900 and 600 points.
+  const batches: Batch[] = [
+    { id: "older-0-0", start: { message: 0, item: 0 }, placed: true, height: 900 },
+    { id: "older-1-40", start: { message: 1, item: 40 }, placed: true, height: 600 },
+    { id: "newest", start: { message: 2, item: 0 }, placed: true },
+  ];
+  const short = projectView(messages(35));
+  const fitted = fitBatches(short, batches);
+  // Nothing is left holding a height for content that is gone, and no batch is empty.
+  assert.ok(fitted.every((batch) => batch.height === undefined), "heights go back to what the content takes");
+  const tree = await render(transcript({ settled: short, batches: [...fitted] }));
+  const boxes = tree.root.findAll((node) => is(node, "View") && [node.props.style].flat(3).some((style) => typeof style?.minHeight === "number"));
+  assert.equal(boxes.length, 0, "no box keeps an old height");
+  for (const view of tree.root.children.filter((child): child is ReactTestInstance => typeof child !== "string")) {
+    assert.ok(view.children.length > 0, "every batch shown holds messages");
+  }
+});
+
+test("a resting finger near the end is never pulled to it, however long it rests", async () => {
+  const session = await opened(projectView(fixture("chat_zzopenshort").messages));
+  await session.layout(800);
+  await session.content(2000);
+  await session.scroll(1200, 800, 2000);
+  session.spyScroll();
+  await act(async () => { session.now().scrollProps.onScrollBeginDrag(); });
+  // 50 points up, within the 100 that count as the end, then the finger rests past the idle time.
+  await session.scroll(1150, 800, 2000);
+  await wait(400);
+  await session.content(2100);
+  await wait(10);
+  assert.equal(session.toEnd.calls, 0, "nothing moves under the finger");
+  // Once the finger lifts there, the reply growing is followed again.
+  await act(async () => { session.now().scrollProps.onScrollEndDrag(); });
+  await session.content(2200);
+  await wait(10);
+  assert.equal(session.toEnd.calls, 1);
+  await act(async () => session.tree.unmount());
 });
 
 test("a drag away while content grows is the learner leaving the end, in either event order", async () => {
