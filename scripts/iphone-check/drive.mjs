@@ -327,14 +327,19 @@ async function main() {
 }
 
 async function phone() {
-	// The first accessibility read after boot can overrun AXe's short
-	// bootstrap deadline while its frameworks load cold; a later read works.
+	// The first reads after boot can overrun AXe's short deadlines while its
+	// frameworks load cold, and one try can take minutes on a CI Mac; a later
+	// read works. AXe asks for a displays read before accessibility.
 	const start = Date.now();
 	for (let attempt = 1; ; attempt++) {
-		try { await describe(); break; } catch (error) {
+		try {
+			await axe(["displays"]);
+			await describe();
+			break;
+		} catch (error) {
 			const why = String(error.stderr || error.message).trim().split("\n")[0];
-			log(`accessibility read ${attempt} failed: ${why}`);
-			if (Date.now() - start > 240_000) fail("simulator", `the accessibility tree never became readable: ${why}`);
+			log(`accessibility read ${attempt} failed after ${Math.round((Date.now() - start) / 1000)}s: ${why}`);
+			if (Date.now() - start > 480_000) fail("simulator", `the accessibility tree never became readable: ${why}`);
 			await sleep(5000);
 		}
 	}
