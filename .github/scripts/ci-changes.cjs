@@ -79,9 +79,16 @@ function classify(file) {
 	return "everything";
 }
 
-/** files: changed paths, or null when the diff is unknown. full: run everything. */
+/** files: changed paths, or null when the diff is unknown. full: run every
+ *  job, except that with a known diff (a push to main) the iPhone job still
+ *  follows its own gate, so merges that can't affect it don't wait on it. */
 function decide(files, full = false) {
 	const outputs = Object.fromEntries(GATES.map((gate) => [gate, false]));
+	if (full && files !== null) {
+		const gated = decide(files);
+		for (const gate of GATES) outputs[gate] = gate === "iphone" ? gated.iphone : true;
+		return outputs;
+	}
 	if (full || files === null) {
 		for (const gate of GATES) outputs[gate] = true;
 		return outputs;
@@ -113,7 +120,7 @@ function main() {
 	const full = args.includes("--full");
 	for (const file of files ?? []) console.error(`${classify(file)}: ${file}`);
 	if (files === null) console.error("No diff: running every job.");
-	if (full) console.error("Full run: running every job.");
+	if (full) console.error(files === null ? "Full run: running every job." : "Full run: running every job but iPhone, which follows the diff.");
 	for (const [key, value] of Object.entries(decide(files, full))) console.log(`${key}=${value}`);
 }
 

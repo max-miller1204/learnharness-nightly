@@ -32,7 +32,7 @@ Approved by the owner on 2026-11-19 (playback confirmed, no vetoes). A new requi
 
 **Goals**
 
-1. A CI job named `iPhone` runs whenever the existing `Mobile` job's gate is on (`changes.outputs.mobile`), and also whenever its own fixtures or scripts change. It is in `Check`'s `needs`, so a phone PR can't merge unless it passes.
+1. A CI job named `iPhone` runs whenever the existing `Mobile` job's gate is on (`changes.outputs.mobile`), and also whenever its own fixtures or scripts change. It is in `Check`'s `needs`, so a phone PR can't merge unless it passes. On a push to main, where every other job runs, it runs only when the merge touches the same paths (owner, 2026-11-20), so unrelated merges and the nightly don't wait on it; `Check` passes with it skipped through its gate. Manual runs run it.
 2. The job builds the app for the iOS Simulator with no signing and no secrets, and starts a throwaway LearnHarness server on the same runner. The server uses the fake model, made-up fixtures only, and HTTPS with a throwaway certificate trusted only inside that simulator. The job pairs the app through the Pair screen with real input, the way a user does.
 3. It screenshots these screens on the iPhone, in light and dark mode, and the same screens in the web app on the same server:
    - the Pair screen;

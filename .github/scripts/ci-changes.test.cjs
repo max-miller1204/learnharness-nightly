@@ -61,8 +61,16 @@ test("one non-inert file in a docs change runs its gates", () => {
 });
 
 test("--full and an unknown diff fail open", () => {
-	assert.deepEqual(decide(["docs/self-hosting.md"], true), { ...all, mobile: true, iphone: true });
+	assert.deepEqual(decide(null, true), { ...all, mobile: true, iphone: true });
 	assert.deepEqual(decide(null), { ...all, mobile: true, iphone: true });
+});
+
+test("a push to main runs every job, and the iPhone job only when the merge reaches it", () => {
+	assert.deepEqual(decide(["docs/self-hosting.md"], true), { ...all, mobile: true, iphone: false });
+	assert.deepEqual(decide(["app/page.tsx"], true), { ...all, mobile: true, iphone: false });
+	for (const file of ["apps/mobile/src/App.tsx", "tests/fixtures/mobile-quiz/scenario.json", "scripts/iphone-check/drive.mjs", ".github/workflows/ci.yml"]) {
+		assert.deepEqual(decide([file], true), { ...all, mobile: true, iphone: true }, file);
+	}
 });
 
 test("the command line prints one gate per line for GITHUB_OUTPUT", () => {
@@ -73,7 +81,8 @@ test("the command line prints one gate per line for GITHUB_OUTPUT", () => {
 		const script = path.join(__dirname, "ci-changes.cjs");
 		const run = (...args) => execFileSync(process.execPath, [script, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
 		assert.equal(run("--paths", list), "typecheck=true\ntest=true\nselfhost=false\nstandalone=false\nmobile=false\niphone=false\n");
-		assert.equal(run("--paths", list, "--full"), "typecheck=true\ntest=true\nselfhost=true\nstandalone=true\nmobile=true\niphone=true\n");
+		assert.equal(run("--paths", list, "--full"), "typecheck=true\ntest=true\nselfhost=true\nstandalone=true\nmobile=true\niphone=false\n");
+		assert.equal(run("--full"), "typecheck=true\ntest=true\nselfhost=true\nstandalone=true\nmobile=true\niphone=true\n");
 		assert.equal(run(), "typecheck=true\ntest=true\nselfhost=true\nstandalone=true\nmobile=true\niphone=true\n");
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });

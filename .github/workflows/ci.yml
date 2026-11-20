@@ -23,9 +23,11 @@ env:
 
 jobs:
   # Skips jobs a pull request cannot affect: docs-only changes run only lint,
-  # and test-only changes skip the standalone builds. Pushes to main and
-  # manual runs run everything. Detection fails open: if the diff cannot be
-  # read, everything runs. .github/scripts/ci-changes.cjs holds the rules.
+  # and test-only changes skip the standalone builds. Manual runs run
+  # everything; pushes to main run everything but the iPhone job, which runs
+  # only when the merge reaches the phone app or its check. Detection fails
+  # open: if the diff cannot be read, everything runs.
+  # .github/scripts/ci-changes.cjs holds the rules.
   changes:
     name: Changes
     runs-on: ubuntu-24.04
@@ -52,6 +54,10 @@ jobs:
             node .github/scripts/ci-changes.cjs "$@" | tee -a "$GITHUB_OUTPUT"
             exit "${PIPESTATUS[0]}"
           }
+          # A push to main is one squash merge: its first parent is main before it.
+          if [[ "$EVENT_NAME" == push ]] && git diff --name-only --no-renames HEAD^1 HEAD > "$RUNNER_TEMP/changed-paths"; then
+            decide --full --paths "$RUNNER_TEMP/changed-paths"
+          fi
           if [[ "$EVENT_NAME" != pull_request ]]; then
             decide --full
           fi
