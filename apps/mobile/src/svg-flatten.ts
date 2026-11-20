@@ -150,15 +150,38 @@ const TAG = /<([a-zA-Z]+)((?:\s+[a-zA-Z][a-zA-Z0-9:-]*="[^"<>]*")*)\s*>|<\/([a-z
 const SAFE_TAGS = new Set(["svg", "g", "path", "rect", "line", "text"]);
 /** Attributes that load, link, run or style; all others only describe the drawing. */
 const UNSAFE_ATTRIBUTE = /^(?:on|xlink:|xml:)|href|src|style|^id$|^class$/i;
+const NUMBERS = new RegExp(`^${NUMBER}(?:[\\s,]+${NUMBER})*$`);
+/** The grammar each drawing attribute's value must follow. */
+const VALUES: Record<string, RegExp> = {
+  xmlns: /^http:\/\/www\.w3\.org\/2000\/svg$/, role: /^img$/, focusable: /^false$/, viewBox: NUMBERS,
+  fill: COLOR, stroke: COLOR, "stroke-width": NUMBERS, transform: new RegExp(String.raw`^(?:\s*(?:translate|scale)\(\s*${NUMBER}(?:[\s,]+${NUMBER})?\s*\))*\s*$`),
+  d: /^[MLHVCSQTAZmlhvcsqtaz0-9.eE\s,+-]*$/, x: NUMBERS, y: NUMBERS, width: NUMBERS, height: NUMBERS,
+  x1: NUMBERS, y1: NUMBERS, x2: NUMBERS, y2: NUMBERS, "data-bgcolor": /^true$/,
+};
+/** Any other attribute MathJax writes holds a plain word or number: no parentheses, colons
+ * or anything else a link or a style would need. */
+const PLAIN = /^[a-zA-Z0-9 .,#%_-]*$/;
 
-/** Whether a finished picture is only drawing: the elements above, and no attribute that
- * loads, links, runs or styles. Checked on the markup that is actually drawn. */
+/** Whether a finished picture is only drawing: one svg of the elements above, properly nested,
+ * every value in its grammar, and no attribute that loads, links, runs or styles. Checked on
+ * the markup that is actually drawn. */
 export function safeMarkup(markup: string): boolean {
   let ok = true;
-  const rest = markup.replace(TAG, (_all, open?: string, attributes?: string, close?: string) => {
-    if (!SAFE_TAGS.has(open ?? close ?? "")) ok = false;
-    for (const [, name] of (attributes ?? "").matchAll(/([a-zA-Z][a-zA-Z0-9:-]*)="/g)) if (UNSAFE_ATTRIBUTE.test(name as string)) ok = false;
+  const open: string[] = [];
+  let roots = 0;
+  const rest = markup.replace(TAG, (_all, opening?: string, attributes?: string, closing?: string) => {
+    if (closing !== undefined) {
+      if (open.pop() !== closing) ok = false;
+      return "";
+    }
+    const tag = opening as string;
+    if (!SAFE_TAGS.has(tag) || (open.length === 0 && (tag !== "svg" || ++roots > 1))) ok = false;
+    open.push(tag);
+    for (const [, name, value] of (attributes ?? "").matchAll(/([a-zA-Z][a-zA-Z0-9:-]*)="([^"]*)"/g)) {
+      const grammar = VALUES[name as string];
+      if (UNSAFE_ATTRIBUTE.test(name as string) || !(grammar ?? PLAIN).test((value as string).trim())) ok = false;
+    }
     return "";
   });
-  return ok && !/[<>]/.test(rest);
+  return ok && open.length === 0 && roots === 1 && !/[<>]/.test(rest);
 }

@@ -780,6 +780,52 @@ test("a resize keeps the end whichever of its scroll event and layout comes firs
   }
 });
 
+test("a resize mid-drag is still the layout's, not the learner scrolling away", async () => {
+  const session = await opened(projectView(fixture("chat_zzopenshort").messages));
+  await session.layout(800);
+  await session.content(2000);
+  await session.scroll(1200, 800, 2000);
+  session.spyScroll();
+  // A finger is down at the end when the screen shrinks, and its scroll event comes first.
+  await act(async () => { session.now().scrollProps.onScrollBeginDrag(); });
+  await session.together((events) => {
+    events.scroll(1200, 400, 2000);
+    events.layout(400);
+  });
+  assert.equal(session.toEnd.calls, 1);
+  assert.equal(session.now().awayFromEnd, false, "no Scroll to end button");
+  await act(async () => session.tree.unmount());
+});
+
+test("a closed transcript's picture window leaves nothing pending", async () => {
+  const window = new MathWindow();
+  let calls = 0;
+  window.add({ batch: "newest", y: 0, height: 50, measured: true, pictures: 1, wanted: false, committed: false, farSince: undefined,
+    setLive: () => { calls++; }, measure: () => {} } as Parameters<MathWindow["add"]>[0]);
+  window.setBatch("newest", { y: 0, height: 50 });
+  window.setView(0, 800, 50);
+  window.moved(0, -5);
+  window.dispose();
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(calls, 0, "no frame or timer ran after it closed");
+});
+
+test("a transcript cut short while it opens still lands and shows what is left", async () => {
+  const settled = projectView(fixture("chat_zzopenlong").messages);
+  const session = await opened(settled);
+  await session.layout(800);
+  // A rewind leaves only the first message before the opening has landed.
+  await session.update({ settled: settled.slice(0, 1) });
+  for (let tries = 0; tries < 100 && !at(session.now().batches[0], 0); tries++) await wait(20);
+  assert.ok(at(session.now().batches[0], 0), "the newest batch starts within what is left");
+  await session.batch("newest", { y: 16, height: 100 });
+  await session.content(132);
+  await session.scroll(0, 800, 132);
+  for (let tries = 0; tries < 100 && !session.now().shown; tries++) await wait(20);
+  assert.equal(session.now().shown, true);
+  await act(async () => session.tree.unmount());
+});
+
 test("pictures mounted ahead of a fling are freed once the scrolling stops", async () => {
   const window = new MathWindow();
   const live = new Map<number, boolean>();

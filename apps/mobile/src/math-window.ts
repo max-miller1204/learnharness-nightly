@@ -168,6 +168,14 @@ export class MathWindow {
     return () => { this.listeners.delete(listener); };
   }
 
+  /** Cancels every pending look, for when the transcript goes away. */
+  dispose() {
+    if (this.frame !== undefined) cancelAnimationFrame(this.frame);
+    if (this.timer !== undefined) clearTimeout(this.timer);
+    if (this.still !== undefined) clearTimeout(this.still);
+    this.frame = this.timer = this.still = undefined;
+  }
+
   schedule() {
     this.frame ??= requestAnimationFrame(() => {
       this.frame = undefined;

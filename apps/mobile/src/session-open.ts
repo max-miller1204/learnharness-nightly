@@ -67,6 +67,11 @@ export function segmentBefore(settled: readonly LhViewMessage[], at: Position): 
   return { start: { message: at.message - 1, item: segment.from }, segment, id: message.id };
 }
 
+/** Whether a position is past the end of the transcript, or past the items of its message. */
+const beyond = (settled: readonly LhViewMessage[], at: Position) => at.message > settled.length
+  || (at.message === settled.length && at.item > 0)
+  || (at.message < settled.length && at.item > messageSegments(settled[at.message] as LhViewMessage).items.length);
+
 /** Where a batch being gathered has got to: its start so far, and what it holds. */
 export interface Gathered { next: Position; equations: number; count: number }
 
@@ -188,6 +193,11 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
     setBatches([{ id: "newest", start: whole ? ORIGIN : { message: settled.length, item: 0 }, placed: true }]);
     // Android's first frame is already at the end; iOS lands a frame later.
     if (whole) setPhase(Platform.OS === "android" ? "shown" : "landing");
+  }
+  // A rewind or retry that removes messages leaves no batch starting past the new end, so
+  // filling in (and landing) goes on over what is left.
+  if (batches?.some(({ start }) => beyond(settled, start))) {
+    setBatches(batches.map((batch) => beyond(settled, batch.start) ? { ...batch, start: { message: settled.length, item: 0 } } : batch));
   }
   const end = useMemo(() => ({ message: settled.length, item: 0 }), [settled.length]);
   const first = batches?.[0]?.start ?? end;
@@ -363,7 +373,8 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
 
   useEffect(() => () => {
     if (scrollIdle.current !== null) clearTimeout(scrollIdle.current);
-  }, []);
+    mathWindow.dispose();
+  }, [mathWindow]);
 
   // Layout and scroll events move it on too; this catches a commit with no new layout.
   useEffect(() => {
@@ -394,7 +405,8 @@ export function useSessionOpening(settled: readonly LhViewMessage[], loaded: boo
     // change), not the learner's: it leaves keeping to the end as it was.
     const sized = Math.abs(contentSize.height - lastScroll.current.content) < 0.5 && Math.abs(layoutMeasurement.height - lastScroll.current.viewport) < 0.5;
     lastScroll.current = { content: contentSize.height, viewport: layoutMeasurement.height };
-    if (sized || scrolling.current) nearEnd.current = distance() < NEAR_END;
+    // Even mid-drag: a size change is the layout's, never the learner scrolling away.
+    if (sized) nearEnd.current = distance() < NEAR_END;
     if (scrolling.current) scrollMoving();
     if (sized) mathWindow.moved(contentOffset.y, Platform.OS === "android" ? velocity?.y : undefined);
     // A rotation or the keyboard changed the screen: at the end it stays at the end.

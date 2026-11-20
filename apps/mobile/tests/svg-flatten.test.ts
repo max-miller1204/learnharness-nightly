@@ -124,6 +124,25 @@ test("only drawing reaches the screen: nothing that loads, links or runs", () =>
   assert.equal(safeMarkup('<svg><g fill="red"/><image href="x"></g></svg>'), false);
   assert.equal(safeMarkup('<svg><path onload="x" d=""></path></svg>'), false);
   assert.equal(safeMarkup('<svg><a href="x"></a></svg>'), false);
+  // Every value in its grammar: no url(), no stray words where a color or number goes.
+  assert.equal(safeMarkup('<svg viewBox="0 0 1 1"><path fill="url(#x)" d="M0 0Z"></path></svg>'), false);
+  assert.equal(safeMarkup('<svg viewBox="0 0 1 1"><path transform="rotate(10)" d="M0 0Z"></path></svg>'), false);
+  assert.equal(safeMarkup('<svg viewBox="0 0 1 1"><text font-family="url(x)">x</text></svg>'), false);
+  // One picture, properly nested.
+  assert.equal(safeMarkup('<svg><g></svg></g>'), false);
+  assert.equal(safeMarkup('<svg></svg><svg></svg>'), false);
+  assert.equal(safeMarkup('<path d="M0 0Z"></path>'), false);
+  assert.equal(safeMarkup('<svg><g>'), false);
+});
+
+test("shapes of one color join only while they don't overlap", () => {
+  const node = (kind: string, attributes: SvgNode["attributes"] = {}, children: SvgNode[] = []): SvgNode => ({ kind, attributes, children });
+  const box = (x: number) => node("path", { d: `M${x} 0H${x + 10}V10H${x}Z` });
+  const flat = flattenSvg(node("svg", { viewBox: "0 0 100 10" }, [
+    node("g", { fill: "currentColor", stroke: "currentColor", "stroke-width": "0" }, [box(0), box(20), box(25), box(40)]),
+  ])) ?? "";
+  // 0 and 20 join; 25 overlaps 20 and starts its own path, which 40 then joins.
+  assert.deepEqual([...flat.matchAll(/ d="([^"]*)"/g)].map(([, d]) => d), ["M0 0H10V10H0ZM20 0H30V10H20Z", "M25 0H35V10H25ZM40 0H50V10H40Z"]);
 });
 
 test("math that tries to break out of a color shows its source instead of a picture", async () => {
