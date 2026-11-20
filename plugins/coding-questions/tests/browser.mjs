@@ -159,15 +159,14 @@ try {
   // keyboard does. Puppeteer's "z" keeps key "z" under Shift, which CodeMirror
   // reads as Mod-z (undo) whenever there is still history to undo.
   const chord=async(mods,key)=>{for(const m of mods)await page.keyboard.down(m);await page.keyboard.press(key);for(const m of [...mods].reverse())await page.keyboard.up(m)};
-  await chord([mod],"KeyZ");
-  assert.notEqual((await state()).value,"history");
-  await chord([mod,"Shift"],"KeyZ");
-  assert.equal((await state()).value,"history",'Mod+Shift+Z redoes');
-  if(process.platform !== "darwin") {
+  // CodeMirror's standard history keymap: Mod+Shift+Z redoes on macOS and
+  // Linux, Ctrl+Y on Windows and Linux.
+  const redoChords=[...(process.platform === "win32" ? [] : [[[mod,"Shift"],"KeyZ","Mod+Shift+Z"]]),...(process.platform === "darwin" ? [] : [[[mod],"KeyY","Ctrl+Y"]])];
+  for(const [mods,key,label] of redoChords) {
     await chord([mod],"KeyZ");
     assert.notEqual((await state()).value,"history");
-    await chord([mod],"KeyY");
-    assert.equal((await state()).value,"history",'Ctrl+Y redoes off macOS');
+    await chord(mods,key);
+    assert.equal((await state()).value,"history",`${label} redoes`);
   }
 
   const beforeUpdate = await page.evaluate(() => {
