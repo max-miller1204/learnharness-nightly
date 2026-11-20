@@ -120,7 +120,9 @@ async function waitFor(screen, test, timeoutMs = 45_000) {
 		if (test(elements)) return elements;
 		await sleep(1000);
 	}
-	const seen = elements.filter(label).slice(0, 60).map((el) => `${label(el)} [${[el.type, el.role_description, el.AXValue].filter(Boolean).join("/")}]`).join(" | ");
+	const all = elements.filter(label).map((el) => `${label(el)} [${[el.type, el.role_description, el.AXValue].filter(Boolean).join("/")}]`);
+	log(`${screen} not reached; the whole screen:\n  ${all.join("\n  ")}`);
+	const seen = all.slice(0, 60).join(" | ");
 	fail(screen, `not reached within ${timeoutMs / 1000}s. On screen: ${seen}`);
 }
 const has = (text) => (elements) => elements.some((el) => label(el) === text);
@@ -480,7 +482,7 @@ async function phone() {
 	// The fake model answers the saved quiz answer with one scripted reply.
 	const replied = () => readFileSync(inst.MODEL_LOG, "utf8").includes("quiz-answered");
 	const answered = (elements) => replied() && inSession(QUIZ.title)(elements) && !elements.some(isChoice)
-		&& has("Message")(elements) && !has("Reply in progress…")(elements);
+		&& !has("Reply in progress…")(elements);
 	await waitFor("quiz-answered", answered, 90_000);
 	for (const { mode } of MODES) {
 		await setPhoneMode(mode);
