@@ -395,6 +395,9 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	const popoverRef = useRef<HTMLDivElement>(null);
 	// Escape from the notes puts focus back on the button without opening them again (T3's suppressReleaseNotesFocusOpen).
 	const suppressFocusOpen = useRef(false);
+	// The button holds keyboard focus (T3's releaseNotesTriggerFocusVisible), and focus is in the notes.
+	const keyboardOnButton = useRef(false);
+	const focusInNotes = useRef(false);
 	const popoverId = useId();
 	useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
 
@@ -409,7 +412,42 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	}, [autoReloadTo, reload]); // claimAutoReload keeps it to once per version, whatever reruns the effect
 	const shownNotes = shownReleaseNotes(state, kind, desktopStatus);
 	const showsNotes = shownNotes !== null;
-	useEffect(() => { if (!showsNotes) setOpen(false); }, [showsNotes]);
+	// The notes close when they stop applying, and open when they start applying while the
+	// button already holds keyboard focus (T3's SidebarUpdatePill.tsx:282-290).
+	useEffect(() => { setOpen(showsNotes && keyboardOnButton.current); }, [showsNotes]);
+	const notesOpen = open && showsNotes;
+	// Notes that close with focus inside them hand it back to the button, never to the page.
+	useEffect(() => {
+		if (notesOpen || !focusInNotes.current) return;
+		focusInNotes.current = false;
+		const active = document.activeElement;
+		if (active && active !== document.body && active.isConnected) return;
+		suppressFocusOpen.current = true;
+		buttonRef.current?.focus({ preventScroll: true });
+	}, [notesOpen]);
+	// T3 closes the notes on Escape wherever focus is. In the capture phase, so neither a field's
+	// own Escape (the composer's dictation) nor the app's turn abort (keyboard-shortcuts.tsx,
+	// chat.tsx) sees it: one Esc, one action.
+	useEffect(() => {
+		if (!notesOpen) return;
+		const onEscape = (event: globalThis.KeyboardEvent) => {
+			if (event.key !== "Escape" || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.isComposing) return;
+			event.preventDefault();
+			event.stopPropagation();
+			if (closeTimer.current) clearTimeout(closeTimer.current);
+			closeTimer.current = null;
+			// From inside the notes, onto the button; it doesn't open them again (removing a focused
+			// element fires no blur, so don't wait for the effect above to notice).
+			if (popoverRef.current?.contains(document.activeElement)) {
+				focusInNotes.current = false;
+				suppressFocusOpen.current = true;
+				buttonRef.current?.focus({ preventScroll: true });
+			}
+			setOpen(false);
+		};
+		window.addEventListener("keydown", onEscape, true);
+		return () => window.removeEventListener("keydown", onEscape, true);
+	}, [notesOpen]);
 	const onIteration = useCallback(() => setLatched(continuesCheckSpin(isChecking, reducedMotion)), [isChecking, reducedMotion]);
 
 	if (!state || !kind) return null;
@@ -430,8 +468,11 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	const hideSoon = () => {
 		cancelClose();
 		closeTimer.current = setTimeout(() => {
-			// Keyboard focus inside the notes keeps them open when the pointer leaves.
-			if (!popoverRef.current?.contains(document.activeElement)) setOpen(false);
+			// Keyboard focus inside the notes keeps them open when the pointer leaves; a link a
+			// mouse click focused does not.
+			const active = document.activeElement;
+			if (active && popoverRef.current?.contains(active) && focusVisible(active)) return;
+			setOpen(false);
 		}, CLOSE_DELAY_MS);
 	};
 	const closeToButton = () => {
@@ -441,19 +482,12 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 		buttonRef.current?.focus({ preventScroll: true });
 	};
 	// T3 promotes the hover popover to a focus-managed one on forward Tab (SidebarUpdatePill.tsx:72-80):
-	// Tab moves into the notes' links, Escape closes them back onto the button. LearnHarness has no
-	// native Tab (interaction-layers.tsx prevents it; Tab cycles text fields and Shift+Tab the
-	// thinking level, keyboard-shortcuts.tsx), so the notes move focus themselves and stop the
-	// keys they take from reaching those shortcuts. Escape stops there too: it never aborts a turn.
+	// Tab moves into the notes' links; Escape (above) closes them, onto the button when focus was in
+	// them. LearnHarness has no native Tab (interaction-layers.tsx prevents it; Tab cycles text fields
+	// and Shift+Tab the thinking level, keyboard-shortcuts.tsx), so the notes move focus themselves
+	// and stop the keys they take from reaching those shortcuts.
 	const onButtonKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
 		if (!showsNotes || event.metaKey || event.ctrlKey || event.altKey) return;
-		if (event.key === "Escape" && open) {
-			event.preventDefault();
-			event.stopPropagation();
-			cancelClose();
-			setOpen(false);
-			return;
-		}
 		if (event.key !== "Tab" || event.shiftKey) return;
 		cancelClose();
 		flushSync(() => setOpen(true));
@@ -464,14 +498,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 		first.focus();
 	};
 	const onNotesKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-		if (event.metaKey || event.ctrlKey || event.altKey) return;
-		if (event.key === "Escape") {
-			event.preventDefault();
-			event.stopPropagation();
-			closeToButton();
-			return;
-		}
-		if (event.key !== "Tab") return;
+		if (event.metaKey || event.ctrlKey || event.altKey || event.key !== "Tab") return;
 		event.preventDefault();
 		const inside = tabbablesIn(popoverRef.current);
 		const at = inside.indexOf(event.target as HTMLElement);
@@ -521,10 +548,11 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 			onPointerEnter={show}
 			onPointerLeave={hideSoon}
 			onFocus={(event) => {
+				keyboardOnButton.current = focusVisible(event.currentTarget);
 				if (suppressFocusOpen.current) { suppressFocusOpen.current = false; return; }
-				if (focusVisible(event.currentTarget)) show();
+				if (keyboardOnButton.current) show();
 			}}
-			onBlur={() => { suppressFocusOpen.current = false; hideSoon(); }}
+			onBlur={() => { keyboardOnButton.current = false; suppressFocusOpen.current = false; hideSoon(); }}
 			onKeyDown={onButtonKeyDown}
 			className={cn(
 				"inline-flex size-8 shrink-0 items-center justify-center rounded-full outline-hidden ring-ring transition-colors focus-visible:ring-2 focus-visible:ring-inset",
@@ -544,7 +572,8 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 			{/* One tree for every state, so the button stays mounted (and keeps keyboard focus) when the
 			    release notes come and go. The notes anchor on the trigger through the Tooltip's own Popper. */}
 			<TooltipProvider>
-				<Tooltip>
+				{/* T3's <Tooltip disabled={showReleaseNotesPopover}>: the notes replace the plain tooltip. */}
+				<Tooltip open={shownNotes ? false : undefined}>
 					<TooltipTrigger asChild>{button}</TooltipTrigger>
 					{shownNotes ? open && createPortal(
 						<Popper.Content side="top" align="center" sideOffset={8} collisionPadding={8} className="z-50">
@@ -556,8 +585,8 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 								data-testid="update-pill-notes"
 								onPointerEnter={cancelClose}
 								onPointerLeave={hideSoon}
-								onFocus={cancelClose}
-								onBlur={hideSoon}
+								onFocus={() => { focusInNotes.current = true; cancelClose(); }}
+								onBlur={() => { focusInNotes.current = false; hideSoon(); }}
 								onKeyDown={onNotesKeyDown}
 								className="flex max-h-[min(32rem,calc(100vh-6rem))] w-fit max-w-[min(24rem,calc(100vw-2rem))] flex-col rounded-lg border border-border bg-popover p-3 text-left text-pretty text-popover-foreground shadow-lg"
 							>

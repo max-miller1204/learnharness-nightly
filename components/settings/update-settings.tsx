@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { BrailleSpinner } from "@/components/braille-spinner";
 import { useNotifyHub } from "@/components/server-events";
 import { InstallUpdateDialog } from "@/components/install-update-dialog";
-import type { ReleaseNoteGroup } from "@/src/core";
+import { capReleaseNoteGroups, type ReleaseNoteGroup } from "@/src/core";
 import { SettingsRow, Toggle } from "./controls.tsx";
 import { isNewerVersion } from "@/selfhost/src/version-order.ts";
 
@@ -186,10 +186,16 @@ const isReleaseNoteGroup = (value: unknown): value is ReleaseNoteGroup =>
 	&& Array.isArray((value as ReleaseNoteGroup).items) && (value as ReleaseNoteGroup).items.every((item) => typeof item === "string");
 
 /** Tolerant read of the bridge's status: an app from before the notes field (or a malformed
- *  group) reads as no notes, never as a broken status. */
+ *  group) reads as no notes, never as a broken status. Groups keep only what the page renders,
+ *  within the UI's limits (the app bounds them too, electron/release-notes.cjs bridgeNotes). */
 export function readDesktopAppStatus(value: unknown): DesktopAppStatus | null {
 	if (!isDesktopAppStatus(value)) return null;
-	const releaseNotes = Array.isArray(value.releaseNotes) ? value.releaseNotes.filter(isReleaseNoteGroup) : [];
+	const groups = (Array.isArray(value.releaseNotes) ? value.releaseNotes.filter(isReleaseNoteGroup) : []).map((group) => ({
+		version: group.version,
+		...(typeof group.releasedAt === "string" ? { releasedAt: group.releasedAt } : {}),
+		items: group.items,
+	}));
+	const { releaseNotes } = capReleaseNoteGroups(groups);
 	const omitted = value.omittedReleaseCount;
 	return { ...value, releaseNotes, omittedReleaseCount: typeof omitted === "number" && Number.isInteger(omitted) && omitted > 0 ? omitted : 0 };
 }

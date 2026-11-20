@@ -128,8 +128,15 @@ function extractItems(note) {
 // The update feed dates only the offered version; prerelease versions carry their UTC build day.
 const PRERELEASE_BUILD_DAY = /-(?:nightly|preview)\.(\d{4})(\d{2})(\d{2})\.\d+$/;
 
+// A date the page can show: YYYY-MM-DD, or an ISO time with a zone. Anything else is dropped.
+const RELEASED_AT = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
+const MAX_RELEASED_AT_LENGTH = 40;
+function safeReleasedAt(value) {
+	return typeof value === "string" && value.length <= MAX_RELEASED_AT_LENGTH && RELEASED_AT.test(value) && Number.isFinite(Date.parse(value)) ? value : undefined;
+}
+
 function releasedAtOf(version, offeredVersion, releaseDate) {
-	if (version === offeredVersion && typeof releaseDate === "string" && releaseDate) return releaseDate;
+	if (version === offeredVersion && safeReleasedAt(releaseDate)) return releaseDate;
 	const day = PRERELEASE_BUILD_DAY.exec(version);
 	return day ? `${day[1]}-${day[2]}-${day[3]}` : undefined;
 }
@@ -204,4 +211,28 @@ function mergeNotesCache(dataDir, groups) {
 	fs.renameSync(temp, file);
 }
 
-module.exports = { releaseNoteGroups, capGroups, mergeNotesCache, extractItems, compareVersions };
+const MAX_VERSION_LENGTH = 64;
+const MAX_OMITTED_RELEASE_COUNT = 1000;
+
+/**
+ * The notes as the remote page gets them through window.lh.desktopUpdate's
+ * status(), polled every 5 s: only the fields it renders (version, releasedAt,
+ * items), each validated and bounded, at most 6 groups of 8 items.
+ */
+function bridgeNotes(releaseNotes, omittedReleaseCount) {
+	const shown = [];
+	for (const group of Array.isArray(releaseNotes) ? releaseNotes : []) {
+		if (shown.length >= MAX_RELEASE_NOTE_GROUPS) break;
+		if (!group || typeof group.version !== "string" || group.version.length > MAX_VERSION_LENGTH || !VERSION_RE.test(group.version) || !Array.isArray(group.items)) continue;
+		const items = group.items
+			.filter((item) => typeof item === "string" && item.trim() !== "")
+			.slice(0, MAX_RELEASE_NOTE_ITEMS_PER_GROUP)
+			.map((item) => truncateItem(item.trim().replace(/\s+/g, " ")));
+		const releasedAt = safeReleasedAt(group.releasedAt);
+		shown.push({ version: group.version, ...(releasedAt ? { releasedAt } : {}), items });
+	}
+	const omitted = Number.isInteger(omittedReleaseCount) && omittedReleaseCount > 0 ? Math.min(omittedReleaseCount, MAX_OMITTED_RELEASE_COUNT) : 0;
+	return { releaseNotes: shown, omittedReleaseCount: omitted };
+}
+
+module.exports = { releaseNoteGroups, capGroups, mergeNotesCache, extractItems, compareVersions, bridgeNotes, safeReleasedAt };
