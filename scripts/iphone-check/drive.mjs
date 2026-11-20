@@ -426,7 +426,9 @@ async function sideBySide(browser) {
 
 // Chrome runs only while the web is shot, never beside the simulator drive.
 async function withBrowser(work) {
-	const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ["--no-first-run"] });
+	// Chrome's first launch on a busy CI Mac can outlast puppeteer's 30 s default.
+	const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ["--no-first-run"], timeout: 120_000 })
+		.catch((error) => fail("web", `Chrome did not start: ${error.message}`));
 	try {
 		return await work(browser);
 	} finally {
