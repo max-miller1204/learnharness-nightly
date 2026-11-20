@@ -17,7 +17,9 @@ import { PlanDiagram } from "./PlanDiagram";
 import { Label } from "./ui";
 import { space, useTheme } from "./theme";
 
-function Snapshot({ api, chatId, snapshotId, caption }: {
+export const SNAPSHOT_HEIGHT = 360;
+
+export function Snapshot({ api, chatId, snapshotId, caption }: {
   api: MobileApi; chatId: string; snapshotId: string; caption?: string;
 }) {
   const { s } = useTheme();
@@ -30,11 +32,16 @@ function Snapshot({ api, chatId, snapshotId, caption }: {
       .catch(() => { if (!scope.signal.aborted) setFailed(true); });
     return () => scope.abort();
   }, [api, chatId, snapshotId]);
-  if (!image) return <Text style={s.muted}>{failed ? "Image unavailable" : "Loading image…"}</Text>;
+  // The image's size isn't known until it loads, so it always takes the same box: loading,
+  // shown or failed, nothing around it moves.
   return (
     <View style={{ gap: space.xs }}>
-      <Image accessibilityLabel={caption || "Session image"} source={{ uri: `data:${image.mimeType};base64,${image.data}` }}
-        resizeMode="contain" style={{ width: "100%", aspectRatio: image.width / image.height, maxHeight: 360 }} />
+      <View style={{ height: SNAPSHOT_HEIGHT, alignItems: "center", justifyContent: "center" }}>
+        {image
+          ? <Image accessibilityLabel={caption || "Session image"} source={{ uri: `data:${image.mimeType};base64,${image.data}` }}
+            resizeMode="contain" style={{ width: "100%", height: "100%" }} />
+          : <Text style={s.muted}>{failed ? "Image unavailable" : "Loading image…"}</Text>}
+      </View>
       {caption && <Text style={s.meta}>{caption}</Text>}
     </View>
   );
@@ -95,8 +102,12 @@ function BatchView({ batch, eager, width, onBatchLayout, children }: {
   const eagerNow = useRef(eager);
   useLayoutEffect(() => { eagerNow.current = eager; }, [eager]);
   const scope = useMemo(() => ({ id: batch.id, ref, eager: eagerNow }), [batch.id]);
-  useEffect(() => () => window?.setBatch(batch.id, undefined), [window, batch.id]);
   const measuring = !batch.placed;
+  useLayoutEffect(() => { window?.setMeasuring(batch.id, measuring); }, [window, batch.id, measuring]);
+  useEffect(() => () => {
+    window?.setMeasuring(batch.id, false);
+    window?.setBatch(batch.id, undefined);
+  }, [window, batch.id]);
   return (
     <BatchContext.Provider value={scope}>
       <View ref={ref} onLayout={({ nativeEvent }) => onBatchLayout?.(batch, nativeEvent.layout)}

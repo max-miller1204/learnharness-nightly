@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { AccessibilityInfo, Platform, StyleSheet, Text, View, useWindowDimensions, type StyleProp, type TextStyle } from "react-native";
 import { parse, SvgAst, type JsxAST } from "react-native-svg";
 import type { DrawnMath, LabelPiece } from "./choice-math";
@@ -30,25 +30,35 @@ export function useSpeech(enabled: boolean): boolean {
   return ready;
 }
 
-let screenReaderOn = false;
-
-/** Whether a screen reader (VoiceOver, TalkBack) is on, kept up to date. */
-export function useScreenReader(): boolean {
-  const [on, setOn] = useState(screenReaderOn);
-  useEffect(() => {
-    let live = true;
-    const update = (value: boolean) => {
-      screenReaderOn = value;
-      if (live) setOn(value);
-    };
-    AccessibilityInfo.isScreenReaderEnabled().then(update, () => {});
-    const subscription = AccessibilityInfo.addEventListener("screenReaderChanged", update);
+/** Whether a screen reader (VoiceOver, TalkBack) is on: one subscription, shared by every
+ * component that asks. */
+const screenReader = {
+  on: false,
+  listeners: new Set<() => void>(),
+  subscription: undefined as { remove: () => void } | undefined,
+  set(value: boolean) {
+    if (value === screenReader.on) return;
+    screenReader.on = value;
+    for (const listener of screenReader.listeners) listener();
+  },
+  subscribe(listener: () => void) {
+    screenReader.listeners.add(listener);
+    if (!screenReader.subscription) {
+      screenReader.subscription = AccessibilityInfo.addEventListener("screenReaderChanged", screenReader.set);
+      AccessibilityInfo.isScreenReaderEnabled().then(screenReader.set, () => {});
+    }
     return () => {
-      live = false;
-      subscription.remove();
+      screenReader.listeners.delete(listener);
+      if (screenReader.listeners.size || !screenReader.subscription) return;
+      screenReader.subscription.remove();
+      screenReader.subscription = undefined;
     };
-  }, []);
-  return on;
+  },
+};
+const screenReaderOn = () => screenReader.on;
+
+export function useScreenReader(): boolean {
+  return useSyncExternalStore(screenReader.subscribe, screenReaderOn, screenReaderOn);
 }
 
 export type Size = { width: number; height: number; depth: number };

@@ -13,6 +13,8 @@ import { fonts, radius, space, useTheme } from "./theme";
 const BESIDE_TEXT = 120;
 /** Punctuation that stays on the line of the inline math before it. */
 const CLINGS = /^[.,;:!?)\]}%'"\u2019\u201d\u2026]/;
+/** Inline math in a table cell scales down to the cell, never below this width. */
+const MIN_CELL_MATH = 24;
 /** U+2060 WORD JOINER: no line break on either side. */
 const JOIN = "\u2060";
 
@@ -62,8 +64,9 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
   const { width: windowWidth, fontScale } = useWindowDimensions();
   const heading = { h1: 25, h2: 20 } as Record<string, number>;
   const maxWidth = Math.max(40, (windowWidth - BESIDE_TEXT) / fontScale);
-  // A paragraph with math is one screen reader stop with the math spoken in it, so labels
-  // are worked out only while a screen reader is on, spoken once the engine is ready.
+  // A paragraph with math is one screen reader stop with the math in it. Its label is right
+  // from the first render, the math read as text, and spoken once a screen reader is on and
+  // the speech engine is ready.
   const screenReader = useScreenReader();
   const speech = useSpeech(screenReader && tokens.some(hasMath));
 
@@ -101,7 +104,7 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
       <Live key={key} pictures={sizes.size}>
         {(live, ref, onLayout) => (
           <Text ref={ref} onLayout={onLayout} accessibilityRole={role} selectable style={[s.prose, style, extra, { lineHeight }]}
-            accessibilityLabel={screenReader && sizes.size ? spokenLabel(pieces(nodes, sizes), speech && live) : undefined}>
+            accessibilityLabel={sizes.size ? spokenLabel(pieces(nodes, sizes), speech && live) : undefined}>
             {inline(nodes, { sizes, live })}
           </Text>
         )}
@@ -183,7 +186,7 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
             <View key={index} style={{ flexDirection: "row", borderBottomWidth: 1, borderColor: c.border }}>
               {children.map((cell, cellIndex) => line(cellIndex, cell.children, s.prose,
                 [{ flex: 1, paddingHorizontal: space.sm, paddingVertical: space.xs, borderLeftWidth: 1, borderColor: c.border, marginLeft: -1 },
-                  cell.token.type === "th_open" && { fontFamily: fonts.proseBold }], undefined, maxWidth / Math.max(1, children.length) - 2 * space.sm))}
+                  cell.token.type === "th_open" && { fontFamily: fonts.proseBold }], undefined, Math.max(MIN_CELL_MATH, maxWidth / Math.max(1, children.length) - 2 * space.sm)))}
             </View>
           );
         case "hr":
@@ -204,7 +207,7 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
             <Live key={index} pictures={1}>
               {(live, ref, onLayout) => (
                 <View ref={ref} onLayout={onLayout} style={{ alignItems: "center" }}
-                  accessible={screenReader} accessibilityLabel={screenReader ? spokenMath(drawn, speech && live) : undefined}>
+                  accessible accessibilityLabel={spokenMath(drawn, speech && live)}>
                   <MathPicture svg={drawn.svg[c.mode]} drawn={drawn} size={fit(drawn, s.prose.fontSize * MATH_SCALE, Infinity, MAX_LINES * s.prose.lineHeight)}
                     scale={fontScale} color={c.text} live={live} />
                 </View>

@@ -35,16 +35,31 @@ export class MathWindow {
   private viewport = 0;
   private content = 0;
   private readonly batches = new Map<string, { y: number; height: number }>();
+  /** Batches being measured out of sight, whose blocks are never on screen. */
+  private readonly measuring = new Set<string>();
   private readonly blocks = new Set<Block>();
   private frame: number | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private readonly listeners = new Set<() => void>();
   livePictures = 0;
+  /** Once the session shows, blocks on the transcript's first screen mount at once too, so a
+   * status-bar tap never lands on empty boxes. */
+  private startImmediate = false;
+
+  setStartImmediate(value: boolean) {
+    this.startImmediate = value;
+  }
 
   setView(offset: number, viewport: number, content = this.content) {
     if (offset === this.offset && viewport === this.viewport && content === this.content) return;
     [this.offset, this.viewport, this.content] = [offset, viewport, content];
     this.schedule();
+  }
+
+  /** Whether a batch is being measured out of sight. */
+  setMeasuring(id: string, measuring: boolean) {
+    if (measuring) this.measuring.add(id);
+    else this.measuring.delete(id);
   }
 
   /** Where a batch of messages sits in the transcript, or undefined while it isn't placed. */
@@ -93,15 +108,16 @@ export class MathWindow {
     return { top: batch.y + block.y, bottom: batch.y + block.y + block.height };
   }
 
-  /** Blocks on screen whose pictures aren't in yet, or whose place isn't known yet. */
+  /** Blocks that may be on screen without their pictures: on screen and not drawn yet, or
+   * not placed yet (their batch's layout or their own hasn't arrived) unless their batch is
+   * being measured out of sight. */
   pendingOnScreen(): number {
     let pending = 0;
     const [top, bottom] = [this.offset, this.offset + this.viewport];
     for (const block of this.blocks) {
-      if (block.committed) continue;
+      if (block.committed || this.measuring.has(block.batch)) continue;
       const place = this.place(block);
-      const batch = this.batches.get(block.batch);
-      if (place ? place.bottom > top && place.top < bottom : !!batch && batch.y + batch.height > top && batch.y < bottom) pending++;
+      if (!place || (place.bottom > top && place.top < bottom)) pending++;
     }
     return pending;
   }
@@ -111,7 +127,8 @@ export class MathWindow {
   private distances({ top, bottom }: { top: number; bottom: number }) {
     const from = (start: number, end: number) => bottom < start ? start - bottom : top > end ? top - end : 0;
     const view = from(this.offset, this.offset + this.viewport);
-    return { view, keep: Math.min(view, from(0, this.viewport), from(Math.max(0, this.content - this.viewport), this.content)) };
+    const start = from(0, this.viewport);
+    return { view, start, keep: Math.min(view, start, from(Math.max(0, this.content - this.viewport), this.content)) };
   }
 
   /** Mounts what is near, nearest first, and frees what has been far for a while. */
@@ -123,7 +140,7 @@ export class MathWindow {
     for (const block of this.blocks) {
       const place = this.place(block);
       if (!place) continue;
-      const { view, keep } = this.distances(place);
+      const { view, start, keep } = this.distances(place);
       if (keep <= FREE_MARGIN * this.viewport) block.farSince = undefined;
       if (block.wanted && keep > FREE_MARGIN * this.viewport) {
         block.farSince ??= now;
@@ -133,13 +150,13 @@ export class MathWindow {
           block.setLive(false);
         } else recheck = true;
       } else if (!block.wanted && keep <= MOUNT_MARGIN * this.viewport) {
-        near.push({ block, distance: view });
+        near.push({ block, distance: this.startImmediate && start === 0 ? 0 : view });
       }
     }
     near.sort((one, two) => one.distance - two.distance);
     let budget = PICTURES_PER_FRAME;
     for (const { block, distance } of near) {
-      // What is on screen mounts at once; the rest a few at a time.
+      // What is on screen (or on the first screen) mounts at once; the rest a few at a time.
       if (distance > 0 && budget <= 0) {
         this.schedule();
         break;

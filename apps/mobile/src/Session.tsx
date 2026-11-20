@@ -19,7 +19,7 @@ import { PlanScreen } from "./PlanScreen";
 import { useJobs } from "./use-jobs";
 import { useAttachments } from "./use-attachments";
 import { AttachButton, AttachMenu, DraftChips } from "./Attachments";
-import { useSessionOpening } from "./session-open";
+import { transcriptVisibility, useSessionOpening } from "./session-open";
 import { MathWindowContext } from "./math-window";
 
 const EMPTY: LhMessage[] = [];
@@ -102,7 +102,7 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
   const opening = useSessionOpening(settledView, !!record, tailTexts);
   const reduceMotion = useReduceMotion();
   // Until the session has landed at its end, the transcript is hidden (session-open.ts).
-  const hidden = !!record && !opening.shown;
+  const visibility = transcriptVisibility(!!record && !opening.shown);
   const hasPlan = useMemo(() => livePlan(settledView) !== null, [settledView]);
   const reveal = !!question && checkNeedsReveal(question, messages);
   // A check that directly follows another question arrives open; one that
@@ -243,9 +243,8 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
       </View>
       <View style={{ flex: 1 }}>
         {/* Mounted again once the record is in, so Android starts it at the end. */}
-        <ScrollView key={record ? "session" : "waiting"} {...opening.scrollProps} style={{ flex: 1, opacity: hidden ? 0 : 1 }}
-          contentContainerStyle={[s.section, { gap: space.lg }]} keyboardShouldPersistTaps="handled"
-          accessibilityElementsHidden={hidden} importantForAccessibility={hidden ? "no-hide-descendants" : "auto"}>
+        <ScrollView key={record ? "session" : "waiting"} {...opening.scrollProps} {...visibility} style={[{ flex: 1 }, visibility.style]}
+          contentContainerStyle={[s.section, { gap: space.lg }]} keyboardShouldPersistTaps="handled">
           <MathWindowContext.Provider value={opening.mathWindow}>
             <Transcript settled={settledView} batches={opening.batches} eager={opening.eager} batchWidth={opening.width} onBatchLayout={opening.onBatchLayout}
               tail={session.tail} api={api} chatId={id} jobs={jobs} liveHelpers={lessonView} openPlan={() => setPlanOpen(true)}

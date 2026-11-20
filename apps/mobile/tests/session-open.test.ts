@@ -2,15 +2,17 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createElement, type ReactElement } from "react";
+import { AccessibilityInfo, type LayoutChangeEvent, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import type { LhMessage } from "../../../src/client-protocol/index.ts";
 import { projectView } from "../../../src/core/view.ts";
 import { drawTex } from "../src/choice-math.ts";
 import { Markdown } from "../src/Markdown.tsx";
 import { MathWindow, MathWindowContext } from "../src/math-window.ts";
-import { Capped, drawCount, equationsIn } from "../src/message-math.ts";
-import { smallSession, type Batch } from "../src/session-open.ts";
-import { markdownTexts, Transcript } from "../src/Transcript.tsx";
+import { Capped, drawCount, drawFrom, drawQueue, equationsIn, isDrawn } from "../src/message-math.ts";
+import { followsGrowth, smallSession, transcriptVisibility, useSessionOpening, type Batch } from "../src/session-open.ts";
+import { markdownTexts, Snapshot, SNAPSHOT_HEIGHT, Transcript } from "../src/Transcript.tsx";
+import type { LhViewMessage } from "../../../src/core/view.ts";
 
 // Frames run on timers in Node.
 globalThis.requestAnimationFrame ??= ((callback: (time: number) => void) => setTimeout(() => callback(performance.now()), 0) as unknown as number);
@@ -154,4 +156,199 @@ test("a finished reply replaces its streamed text with drawn math in place", asy
   await act(async () => { tree.update(transcript({ settled: projectView([...before, reply]), tail: [] })); });
   assert.equal(top().length, count);
   assert.equal(all(top().at(-1) as ReactTestInstance, "SvgAst").length, 1);
+});
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const wait = (ms: number) => act(async () => { await sleep(ms); });
+/** A unique tag per run, so equations here are never already drawn by another test. */
+const run = Math.random().toString(36).slice(2, 8);
+const user = (id: string, text: string) => ({ role: "user", id, timestamp: 1, content: text }) as LhMessage;
+const assistant = (id: string, text: string) => ({
+  role: "assistant", id, timestamp: 1, api: "openai-completions", provider: "custom", model: "m", stopReason: "stop",
+  usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+  content: [{ type: "text", text }],
+}) as LhMessage;
+/** A made-up session of `turns` exchanges whose replies hold `perReply` equations never drawn before. */
+function coldSession(name: string, turns: number, perReply: number): LhViewMessage[] {
+  return projectView(Array.from({ length: turns }, (_, turn) => [
+    user(`u${turn}`, `Question ${turn}`),
+    assistant(`a${turn}`, Array.from({ length: perReply }, (_, index) => `Step $w_{${name}${run}t${turn}e${index}}^2$ holds.`).join("\n\n")),
+  ]).flat());
+}
+
+type Opening = ReturnType<typeof useSessionOpening>;
+/** The real opening hook over the real transcript, with the ScrollView's events sent by hand. */
+async function opened(settled: LhViewMessage[], loaded = true) {
+  let opening: Opening | undefined;
+  // Blocks sit within the first screen of their batch, so a batch's start holds some.
+  let next = 0;
+  const createNodeMock = () => {
+    const y = (next++ % 10) * 60;
+    return { measureLayout: (_parent: unknown, done: (x: number, y: number, width: number, height: number) => void) => done(0, y, 300, 50) };
+  };
+  function Harness({ settled, loaded, tail }: { settled: LhViewMessage[]; loaded: boolean; tail: string[] }) {
+    const result = useSessionOpening(settled, loaded, tail);
+    opening = result;
+    return createElement(MathWindowContext.Provider, { value: result.mathWindow },
+      transcript({ settled, batches: result.batches, eager: result.eager, batchWidth: result.width, onBatchLayout: result.onBatchLayout }));
+  }
+  const tree = await render(createElement(Harness, { settled, loaded, tail: [] }), { createNodeMock });
+  const now = () => opening as Opening;
+  const events = {
+    tree,
+    now,
+    update: (props: { settled?: LhViewMessage[]; loaded?: boolean; tail?: string[] }) =>
+      act(async () => { tree.update(createElement(Harness, { settled, loaded, tail: [], ...props })); }),
+    layout: (height: number) => act(async () => { now().scrollProps.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 360, height } } } as LayoutChangeEvent); }),
+    content: (height: number) => act(async () => { now().scrollProps.onContentSizeChange(360, height); }),
+    scroll: (offset: number, viewport: number, content: number) => act(async () => {
+      now().scrollProps.onScroll({ nativeEvent: { contentOffset: { x: 0, y: offset }, layoutMeasurement: { width: 360, height: viewport }, contentSize: { width: 360, height: content } } } as NativeSyntheticEvent<NativeScrollEvent>);
+    }),
+    batch: (id: string, layout: { y: number; height: number; width?: number }) => act(async () => {
+      const batch = now().batches.find((each) => each.id === id) as Batch;
+      now().onBatchLayout(batch, { x: 0, width: 360, ...layout });
+    }),
+  };
+  return events;
+}
+
+test("drawing keeps its own progress, so a message with more equations than a slice holds always finishes", () => {
+  const queue = drawQueue([Array.from({ length: 5 }, (_, index) => `$q_{${run}p${index}}$`).join(" ")]);
+  let calls = 0;
+  // The deadline has always passed: each call still draws one more and never starts over.
+  while (!drawFrom(queue, 0, () => 1)) calls++;
+  assert.equal(calls + 1, 5);
+  assert.equal(queue.next, 5);
+});
+
+test("a cold session of up to 60 equations is still drawn at once and shows whole", () => {
+  assert.equal(smallSession(coldSession("small", 4, 10)), true);
+  assert.equal(smallSession(coldSession("big", 7, 10)), false);
+});
+
+test("the transcript shows only after its own ScrollView reports, and not while a block's batch is unplaced", async () => {
+  const settled = coldSession("reveal", 4, 20);
+  const session = await session_waiting(settled);
+  // The ScrollView shown while loading reported an end; none of it counts for the new one.
+  await session.update({ loaded: true });
+  await wait(300);
+  assert.equal(session.now().shown, false);
+  // The new ScrollView is at its end, but the newest batch hasn't reported where it is.
+  await session.layout(800);
+  await session.content(4000);
+  await session.scroll(3200, 800, 4000);
+  await wait(100);
+  assert.equal(session.now().shown, false);
+  assert.ok(session.now().mathWindow.pendingOnScreen() > 0);
+  await session.batch("newest", { y: 16, height: 3968 });
+  await session.scroll(3200, 800, 4000);
+  await wait(200);
+  assert.equal(session.now().shown, true);
+  await act(async () => session.tree.unmount());
+});
+
+async function session_waiting(settled: LhViewMessage[]) {
+  const session = await opened(settled, false);
+  await session.layout(800);
+  await session.content(5000);
+  await session.scroll(4200, 800, 5000);
+  return session;
+}
+
+test("an older batch lands with its first screen drawn, and placed heights clear when the width changes", async () => {
+  const settled = coldSession("older", 60, 12);
+  const session = await opened(settled);
+  await session.layout(800);
+  await session.content(1600);
+  await session.batch("newest", { y: 16, height: 1568 });
+  await session.scroll(800, 800, 1600);
+  for (let tries = 0; tries < 50 && !session.now().shown; tries++) await wait(20);
+  assert.equal(session.now().shown, true);
+  // Older messages come in as a batch measured out of sight.
+  let older: Batch | undefined;
+  for (let tries = 0; tries < 500 && !older; tries++) {
+    await wait(20);
+    older = session.now().batches.find((batch) => !batch.placed);
+  }
+  assert.ok(older, "an older batch is measured");
+  await session.batch(older.id, { y: -1e6, height: 900 });
+  const placed = session.now().batches.find((batch) => batch.id === older.id) as Batch;
+  assert.equal(placed.placed, true);
+  // Whole pixels at the test's 2.625 density, one pixel over the measured height.
+  assert.equal(Math.round((placed.height as number) * 2.625), Math.round(900 * 2.625) + 1);
+  // Its first screen has its pictures in the same commit that placed it.
+  const view = session.tree.root.findAll((node) => is(node, "View") && [node.props.style].flat(2).some((style) => style?.minHeight === placed.height))[0];
+  assert.ok(view && all(view, "SvgAst").length > 0, "the new start has its pictures");
+  await session.batch("newest", { y: 16 + 900 + 16, height: 1568, width: 500 });
+  assert.equal(session.now().batches.find((batch) => batch.id === older.id)?.height, undefined);
+  await act(async () => session.tree.unmount());
+});
+
+test("the end is followed when the reply grows in the same change an older batch lands", () => {
+  assert.equal(followsGrowth(150, 0), true);
+  assert.equal(followsGrowth(900.4, 900), false);
+  assert.equal(followsGrowth(1050, 900), true);
+});
+
+test("the streaming reply's finished math is drawn while it streams", async () => {
+  const session = await opened(projectView(fixture("chat_zzopenshort").messages));
+  assert.equal(session.now().shown, true);
+  const tex = `u_{tail${run}}`;
+  let text = `First $${tex}$ done.\n\n`;
+  for (let tick = 0; tick < 30; tick++) {
+    text += "more ";
+    await session.update({ tail: [text] });
+    await wait(10);
+  }
+  assert.equal(isDrawn({ tex, display: false }), true);
+  await act(async () => session.tree.unmount());
+});
+
+test("while hidden the transcript takes no touches, scrolling or screen reader focus", () => {
+  assert.deepEqual(transcriptVisibility(true), {
+    style: { opacity: 0 }, pointerEvents: "none", scrollEnabled: false, accessibilityElementsHidden: true, importantForAccessibility: "no-hide-descendants",
+  });
+  assert.equal(transcriptVisibility(false).pointerEvents, "auto");
+  assert.equal(transcriptVisibility(false).scrollEnabled, true);
+});
+
+test("a saved image takes the same box while loading, shown and failed", async () => {
+  let resolve: (value: unknown) => void = () => {};
+  const api = { get: () => new Promise((done) => { resolve = done; }) } as never;
+  const tree = await render(createElement(Snapshot, { api, chatId: "c", snapshotId: "s", caption: "A figure" }));
+  const box = () => tree.root.find((node) => is(node, "View") && node.props.style?.height === SNAPSHOT_HEIGHT);
+  assert.ok(box());
+  await act(async () => { resolve({ mimeType: "image/png", data: "AAAA", width: 10, height: 1000 }); });
+  assert.equal(all(box(), "Image").length, 1);
+});
+
+test("a math paragraph's label is right on the first render, before any screen reader check", async () => {
+  let tree: ReactTestRenderer | undefined;
+  act(() => { tree = create(createElement(Markdown, { text: "Then $y^2$ follows." })); });
+  const paragraph = (tree as ReactTestRenderer).root.find((node) => is(node, "Text") && typeof node.props.accessibilityLabel === "string");
+  assert.match(paragraph.props.accessibilityLabel, /^Then y superscript 2 follows\.$/);
+});
+
+test("math in a narrow table cell at the largest text size keeps a positive size", async () => {
+  (globalThis as { fontScale?: number }).fontScale = 3;
+  try {
+    const tree = await render(createElement(Markdown, { text: "| a | b | c | d | e | f |\n| - | - | - | - | - | - |\n| $x^2$ | $y$ | $z$ | $w$ | $v$ | $\\frac{1}{2}$ |" }));
+    const sized = tree.root.findAll((node) => is(node, "View") && typeof node.props.style?.width === "number");
+    assert.ok(sized.length >= 6);
+    for (const view of sized) assert.ok(view.props.style.width > 0 && view.props.style.height > 0);
+  } finally {
+    delete (globalThis as { fontScale?: number }).fontScale;
+  }
+});
+
+test("every paragraph shares one screen reader subscription", async () => {
+  const add = AccessibilityInfo.addEventListener;
+  let subscriptions = 0;
+  Object.assign(AccessibilityInfo, { addEventListener: (...args: Parameters<typeof add>) => { subscriptions++; return add(...args); } });
+  try {
+    await render(createElement("View", null, ...Array.from({ length: 20 }, (_, index) => createElement(Markdown, { key: index, text: `Item $k_{${index}}$.` }))));
+    assert.ok(subscriptions <= 1, `${subscriptions} subscriptions`);
+  } finally {
+    Object.assign(AccessibilityInfo, { addEventListener: add });
+  }
 });

@@ -86,15 +86,23 @@ export function equationsIn(text: string): Equation[] {
   return collect(markdownOf(text).tokens, []);
 }
 
-/** Draws the texts' equations that aren't drawn yet until `deadline` (a performance.now()
- * time). True when every one is drawn. */
-export function drawUntil(texts: readonly string[], deadline: number, now: () => number = () => performance.now()): boolean {
-  for (const text of texts) {
-    for (const equation of equationsIn(text)) {
-      if (isDrawn(equation)) continue;
-      if (now() >= deadline) return false;
-      drawEquation(equation);
-    }
+/** Equations to draw in order, and how far drawing has got. Progress is kept here, never
+ * read from the cache, so a text with more distinct equations than the cache holds still
+ * finishes. */
+export interface DrawQueue {
+  equations: Equation[];
+  next: number;
+}
+
+export const drawQueue = (texts: readonly string[]): DrawQueue => ({ equations: texts.flatMap(equationsIn), next: 0 });
+
+/** Draws the queue's equations until `deadline` (a performance.now() time), at least one a
+ * call. True once every one has been drawn. */
+export function drawFrom(queue: DrawQueue, deadline: number, now: () => number = () => performance.now()): boolean {
+  while (queue.next < queue.equations.length) {
+    drawEquation(queue.equations[queue.next] as Equation);
+    queue.next++;
+    if (queue.next < queue.equations.length && now() >= deadline) return false;
   }
   return true;
 }
