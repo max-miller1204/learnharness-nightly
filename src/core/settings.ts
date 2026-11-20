@@ -206,9 +206,28 @@ export interface SubscriptionUnreachable {
 	code: typeof SUBSCRIPTION_UNREACHABLE_CODE;
 	provider: string;
 }
+/** A subscription connection's display name ("ChatGPT", "GitHub Copilot"). */
+export function subscriptionConnectionLabel(provider: string): string {
+	return provider === "chatgpt" ? "ChatGPT" : NATIVE_SUBSCRIPTIONS.find((p) => p.logicalId === provider)?.label ?? provider;
+}
 export function subscriptionUnreachable(provider: string): SubscriptionUnreachable {
-	const label = provider === "chatgpt" ? "ChatGPT" : NATIVE_SUBSCRIPTIONS.find((p) => p.logicalId === provider)?.label ?? provider;
-	return { error: `${label} could not be reached just now. Try again in a moment.`, code: SUBSCRIPTION_UNREACHABLE_CODE, provider };
+	return { error: `${subscriptionConnectionLabel(provider)} could not be reached just now. Try again in a moment.`, code: SUBSCRIPTION_UNREACHABLE_CODE, provider };
+}
+/** Why a pinned model cannot run right now: its key or connection is missing
+ * (setup), or its subscription is unreachable (an outage that passes). */
+export type ConnectionRefusal = ProviderKeyMissing | SubscriptionUnreachable;
+/** The typed throw for in-process seams (extraction pipeline): the outage
+ * sibling of ProviderKeyMissingError. Callers treat it as a passing failure,
+ * never as setup: the trigger skips and the next trigger retries, routes
+ * surface the envelope. */
+export class SubscriptionUnreachableError extends Error {
+	readonly envelope: SubscriptionUnreachable;
+	constructor(provider: string) {
+		const envelope = subscriptionUnreachable(provider);
+		super(envelope.error);
+		this.name = "SubscriptionUnreachableError";
+		this.envelope = envelope;
+	}
 }
 
 export const CACHE_RETENTIONS = ["none", "short", "long"] as const satisfies readonly CacheRetention[];

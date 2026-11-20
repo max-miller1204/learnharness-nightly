@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, it } from "node:test";
 import { POST } from "../app/api/graph/import/route.ts";
 import { extraction, sourceDirectory } from "../src/server/index.ts";
-import { ModelsNotConfiguredError, ProviderKeyMissingError } from "../src/core/settings.ts";
+import { ModelsNotConfiguredError, ProviderKeyMissingError, SubscriptionUnreachableError, subscriptionUnreachable } from "../src/core/settings.ts";
 import { createExtractionPipeline, NotesImportError } from "../src/agent/subagents/extraction.ts";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { stores } from "../src/server/stores.ts";
@@ -24,7 +24,7 @@ it("route keeps three-worker batching, request positions and mixed per-file outc
 	let active = 0;
 	let peak = 0;
 	const outcomeOf: Record<string, NotesImportError["outcome"]> = { "failed.md": "failed", "partial.md": "partial", "aborted.md": "aborted", "busy.md": "busy" };
-	const names = ["slow.md", "same.md", "same.md", "failed.md", "partial.md", "aborted.md", "busy.md", "models.md", "key.md", "unknown.md"];
+	const names = ["slow.md", "same.md", "same.md", "failed.md", "partial.md", "aborted.md", "busy.md", "models.md", "key.md", "outage.md", "unknown.md"];
 	// slow.md (request 0) finishes only after every other file, not after a fixed delay: the
 	// route's synchronous fsync'd store writes between files can outlast any delay on a slow CI disk.
 	let othersSettled = 0;
@@ -36,6 +36,7 @@ it("route keeps three-worker batching, request positions and mixed per-file outc
 			await (filePath === "slow.md" ? slowReleased : new Promise((resolve) => setTimeout(resolve, 1)));
 			if (filePath === "models.md") throw new ModelsNotConfiguredError(["cheap"]);
 			if (filePath === "key.md") throw new ProviderKeyMissingError("openai", ["cheap"]);
+			if (filePath === "outage.md") throw new SubscriptionUnreachableError("chatgpt");
 			if (filePath in outcomeOf) throw new NotesImportError(outcomeOf[filePath]!, { nodes: 2, chains: 1 }, `synthetic ${filePath}`);
 			if (filePath === "unknown.md") throw new Error("synthetic unknown error");
 			return { nodes: 0, chains: 0 };
@@ -64,6 +65,10 @@ it("route keeps three-worker batching, request positions and mixed per-file outc
 	assert.deepEqual(results.find((r: { filePath: string }) => r.filePath === "models.md").missing, ["cheap"]);
 	const key = results.find((r: { filePath: string }) => r.filePath === "key.md");
 	assert.equal(key.code, "provider_key_missing"); assert.equal(key.provider, "openai"); assert.deepEqual(key.slots, ["cheap"]);
+	const outage = results.find((r: { filePath: string }) => r.filePath === "outage.md");
+	assert.equal(outage.code, "subscription_unreachable", "an outage is not a setup refusal");
+	assert.equal(outage.error, subscriptionUnreachable("chatgpt").error);
+	assert.equal(outage.provider, "chatgpt");
 });
 
 it("real route plus in-memory ledgers and faux stages reprocess identical imports for all four filename cases", async () => {

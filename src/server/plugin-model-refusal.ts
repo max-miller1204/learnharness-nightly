@@ -1,8 +1,5 @@
 import { catalogModelGone } from "../agent/models.ts";
-import { isSubscriptionProvider, connectionUnreachable } from "../agent/subscription-connections.ts";
-import { providerKeyMissing, subscriptionUnreachable } from "../core/settings.ts";
-import { providerKeyPresent } from "./keys.ts";
-import { refreshConnectionCatalog } from "./model-catalog.ts";
+import { connectionRefusal } from "./connection-refusal.ts";
 
 /** For a plugin's model_unavailable refusal: the key-missing envelope only when
  *  the model still exists and its provider key is gone, or the unreachable
@@ -10,9 +7,5 @@ import { refreshConnectionCatalog } from "./model-catalog.ts";
  *  never asks for a key. */
 export async function pluginKeyMissing(provider: string, id: string): Promise<object | null> {
 	if (catalogModelGone(provider, id)) return null;
-	if (isSubscriptionProvider(provider)) {
-		await refreshConnectionCatalog(provider);
-		if (connectionUnreachable(provider)) return subscriptionUnreachable(provider);
-	}
-	return providerKeyPresent(provider) ? null : providerKeyMissing(provider, []);
+	return connectionRefusal(provider, []);
 }

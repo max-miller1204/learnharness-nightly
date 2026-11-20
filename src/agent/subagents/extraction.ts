@@ -9,10 +9,12 @@ import {
 	ModelsNotConfiguredError,
 	ProviderKeyMissingError,
 	ROLE_SLOT,
+	SUBSCRIPTION_UNREACHABLE_CODE,
+	SubscriptionUnreachableError,
+	type ConnectionRefusal,
 	type ModelSlotName,
-	type ProviderKeyMissing,
 } from "../../core/settings.ts";
-import type { PiEngine } from "../models.ts";
+import { catalogModelGone, ModelUnavailableError, type PiEngine } from "../models.ts";
 import { runSubagent } from "./pi-run.ts";
 import { processImage } from "../image-processing/index.ts";
 import { workerRequestStream } from "../worker-request-admission.ts";
@@ -805,6 +807,13 @@ export function extractionStatuses(): RunningExtraction[] {
 	return [...runs().running.values()].sort((a, b) => a.startedAt - b.startedAt);
 }
 
+/** Whether a run for this chat or notes source holds its single-flight
+ *  slot. It does from its first line, before its registry row exists, so a
+ *  run waiting on its connection check is in flight too. */
+export function extractionInFlight(id: string): boolean {
+	return runs().inFlight.has(id);
+}
+
 /** True cancellation of the in-flight run for a chat (the dock's abort
  *  button): the pending model call receives the signal — the provider
  *  cancels the request, spend stops — and the run ends like a failure:
@@ -839,12 +848,14 @@ export interface ExtractionModels {
 	engineFor?: (role: ModelRole) => PiEngine | undefined;
 	/** Key-presence gate (provider-key interlude, 2026-09-25): given a
 	 *  stage engine's provider + the role's slot tier, the injected check
-	 *  returns the refusal envelope when the provider's key is missing
-	 *  (null = run). Same injection discipline as the job runner's seam
-	 *  (the agent layer may not read the key store); absent in tests that
-	 *  inject engines directly (test engines never owe a key). A keyless
-	 *  stage refuses with ProviderKeyMissingError BEFORE any batch runs. */
-	providerKeyMissing?: (provider: string, tier: ModelSlotName) => ProviderKeyMissing | null;
+	 *  returns the refusal envelope when the provider's key or connection
+	 *  is missing, or the outage envelope when its subscription is
+	 *  unreachable (null = run). Same injection discipline as the job
+	 *  runner's seam (the agent layer may not read the key store); absent in
+	 *  tests that inject engines directly (test engines never owe a key). A
+	 *  keyless stage refuses with ProviderKeyMissingError, an unreachable
+	 *  one with SubscriptionUnreachableError, BEFORE any batch runs. */
+	connectionRefusal?: (provider: string, tier: ModelSlotName) => ConnectionRefusal | null | Promise<ConnectionRefusal | null>;
 }
 
 export interface ExtractionPipelineDeps extends GraphDeps, ExtractionModels {
@@ -925,13 +936,29 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	/** The per-need refusal guard: which slot tiers the pipeline's stages
 	 *  found unset (test values count as configured — they ARE engines),
 	 *  and whether a configured stage's provider key is gone (provider-key
-	 *  interlude, 2026-09-25) — both refuse BEFORE any batch runs. */
-	function refuseIfStagesUnready(withImage = false): void {
-		const stages: readonly [ModelRole, PiEngine | undefined][] = [
-			["extractor", stageEngine("extractor", deps.extractor)],
-			["auditor", stageEngine("auditor", deps.auditor)],
-			...(withImage ? [["imageReader", stageEngine("imageReader", deps.imageReader)] as [ModelRole, PiEngine | undefined]] : []),
+	 *  interlude, 2026-09-25): both refuse BEFORE any batch runs. A promise
+	 *  only when the injected check answers with one: with no async check
+	 *  the run registers in the same tick it starts. */
+	function refuseIfStagesUnready(withImage = false): Promise<void> | undefined {
+		// A saved subscription model its live catalog lacks may only mean the
+		// catalog check failed: the connection gate decides before it counts
+		// as gone. A built-in catalog does not depend on keys, so a model it
+		// dropped is gone at once. Every stage resolves again once the gates
+		// pass, so a model a refresh removed never runs from a stale engine.
+		const resolve = (role: ModelRole, override?: PiEngine): PiEngine | ModelUnavailableError | undefined => {
+			try {
+				return stageEngine(role, override);
+			} catch (error) {
+				if (error instanceof ModelUnavailableError && !catalogModelGone(error.provider, error.id)) return error;
+				throw error;
+			}
+		};
+		const overrides: readonly [ModelRole, PiEngine | undefined][] = [
+			["extractor", deps.extractor],
+			["auditor", deps.auditor],
+			...(withImage ? [["imageReader", deps.imageReader] as [ModelRole, PiEngine | undefined]] : []),
 		];
+		const stages = overrides.map(([role, override]) => [role, resolve(role, override), override] as const);
 		const missing = new Set<ModelSlotName>();
 		for (const [role, engine] of stages) if (!engine) missing.add(ROLE_SLOT[role]);
 		if (missing.size > 0) {
@@ -941,13 +968,34 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		// Key-presence parity: first offender surfaces (extractor before
 		// auditor); fixing that key re-gates and the next run surfaces the
 		// next offender, if any.
-		for (const [role, engine] of stages) {
-			const refusal = deps.providerKeyMissing?.(engine!.model.provider, ROLE_SLOT[role]);
+		const refuse = (refusal: ConnectionRefusal | null | undefined): void => {
+			if (refusal?.code === SUBSCRIPTION_UNREACHABLE_CODE) {
+				console.info(`[extraction] deferred: ${refusal.provider} unreachable`);
+				throw new SubscriptionUnreachableError(refusal.provider);
+			}
 			if (refusal) {
 				console.info(`[extraction] refused — ${JSON.stringify(refusal)}`);
 				throw new ProviderKeyMissingError(refusal.provider, refusal.slots);
 			}
-		}
+		};
+		const providerOf = (engine: PiEngine | ModelUnavailableError) => engine instanceof ModelUnavailableError ? engine.provider : engine.model.provider;
+		const check = (i: number): Promise<void> | undefined => {
+			if (i === stages.length) {
+				for (const [role, gated, override] of stages) {
+					const now = stageEngine(role, override); // throws for a model still gone
+					// A pin that moved during the wait is gated again before it runs.
+					if (!now || now.model.provider !== providerOf(gated!)) return refuseIfStagesUnready(withImage);
+				}
+				return undefined;
+			}
+			const [role, engine] = stages[i]!;
+			const provider = providerOf(engine!);
+			const refusal = deps.connectionRefusal?.(provider, ROLE_SLOT[role]);
+			if (refusal instanceof Promise) return refusal.then((settled) => { refuse(settled); return check(i + 1); });
+			refuse(refusal);
+			return check(i + 1);
+		};
+		return check(0);
 	}
 	// THE SHARED REGISTRIES (runs() above — globalThis): every pipeline
 	// instance (route entries in dev, tests) sees the same runs, the same
@@ -1227,13 +1275,14 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		// error below loses at most the in-flight batch — every earlier
 		// batch stays covered, the rest stays visibly uncovered.
 		try {
-			const record = chatStore.getChat(chatId);
-			if (!record) throw new Error(`Chat not found: ${chatId}`);
 			// BYOK per-need gate (owner, 2026-09-22) + key presence
 			// (2026-09-25): the write channel needs extractor + auditor
 			// engines AND their providers' keys; a refusal lands BEFORE any
 			// stage runs (typed: the trigger skips, routes surface the envelope).
-			refuseIfStagesUnready();
+			const ready = refuseIfStagesUnready();
+			if (ready) await ready;
+			const record = chatStore.getChat(chatId); // read after the gate's await
+			if (!record) throw new Error(`Chat not found: ${chatId}`);
 			const covered = coverageOf(record.messages, graphStore.readCoverage(), chatId);
 			const failedOutputCalls = failedOutputCallIds(record.messages);
 			if (covered.uncovered.length === 0) {
@@ -1445,9 +1494,19 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		const mergedStats: EmissionStats = { nodes: 0, chains: 0 };
 		try {
 			// BYOK per-need gate (owner, 2026-09-22) + key presence
-			// (2026-09-25): same refusal as the chat front door — no
-			// extractor/auditor engines, or a stage key gone, no run.
-			refuseIfStagesUnready(input.image !== undefined);
+			// (2026-09-25): same refusal as the chat front door: no
+			// extractor/auditor engines, or a stage key gone, no run. The source
+			// is already listed, so a refused import still shows it. The check
+			// may await, and deletion is blocked only once the run shows in the
+			// registry, so a deletion during the wait wins: the import stops
+			// instead of writing nodes for a source that is gone.
+			const ready = refuseIfStagesUnready(input.image !== undefined);
+			if (ready) {
+				await ready;
+				if (!graphStore.readSources().some((source) => source.id === id)) {
+					throw new NotesImportError("aborted", mergedStats, "This source was deleted while the import waited to start. Import it again to add it back.");
+				}
+			}
 			// CHUNKED like the chat path (owner, 2026-09-28): each chunk is a
 			// standalone extract → audit → merge, so no single call carries a
 			// whole large file. Abort mid-run keeps earlier chunks merged
@@ -1545,7 +1604,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			return stats;
 		} catch (err) {
 			console.error(`[extraction ${id}] notes pipeline failed (${Math.round(performance.now() - t0)}ms):`, err);
-			if (err instanceof NotesImportError || err instanceof ModelsNotConfiguredError || err instanceof ProviderKeyMissingError) throw err;
+			if (err instanceof NotesImportError || err instanceof ModelsNotConfiguredError || err instanceof ProviderKeyMissingError || err instanceof SubscriptionUnreachableError) throw err;
 			throw new NotesImportError(err instanceof Error && err.name === "AbortError" ? "aborted" : "failed", mergedStats,
 				err instanceof Error ? err.message : String(err), { cause: err });
 		} finally {
@@ -1565,7 +1624,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			graphStore.upsertSource({ id, filePath: input.filePath, importedAt });
 			return await runNotesExtraction({ id, ...input, importedAt });
 		} catch (err) {
-			if (err instanceof NotesImportError || err instanceof ModelsNotConfiguredError || err instanceof ProviderKeyMissingError) throw err;
+			if (err instanceof NotesImportError || err instanceof ModelsNotConfiguredError || err instanceof ProviderKeyMissingError || err instanceof SubscriptionUnreachableError) throw err;
 			throw new NotesImportError("failed", { nodes: 0, chains: 0 }, err instanceof Error ? err.message : String(err), { cause: err });
 		} finally {
 			inFlight.delete(id);

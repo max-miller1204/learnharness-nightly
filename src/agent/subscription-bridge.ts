@@ -108,7 +108,13 @@ export async function refreshSubscriptionModels(): Promise<void> {
 	let snapshot: NativeSubscriptionSnapshot;
 	try { snapshot = await subscriptionRequest<NativeSubscriptionSnapshot>("snapshot"); }
 	catch {
-		if (settleCheck(state, started, true)) { invalidate(state); notify(state); }
+		// Listeners hear only a change: a repeat failure with nothing left to
+		// clear stays quiet, so a refresh made on a wake never wakes anyone.
+		const wasUnreachable = state.unreachable;
+		if (!settleCheck(state, started, true)) return;
+		const cleared = state.statuses.size > 0 || state.models.size > 0;
+		invalidate(state);
+		if (!wasUnreachable || cleared) notify(state);
 		return;
 	}
 	const wasUnreachable = state.unreachable;
