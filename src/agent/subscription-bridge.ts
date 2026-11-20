@@ -11,6 +11,8 @@ interface State {
 	controllers: Map<AbortController, { providerId: NativeSubscriptionProviderId; background: boolean }>;
 	listeners: Set<() => void>;
 	counter: number;
+	/** The last snapshot request failed or the desktop connection closed: whether a subscription is connected is unknown until a snapshot arrives. */
+	failed: boolean;
 }
 const KEY = Symbol.for("lh.subscriptions.bridge");
 export function nativeSubscriptionId(logicalId: string): NativeSubscriptionProviderId | undefined {
@@ -28,6 +30,7 @@ function invalidate(state: State, providerId?: NativeSubscriptionProviderId) {
 }
 function accept(state: State, snapshot: NativeSubscriptionSnapshot) {
 	if (!snapshot || !Array.isArray(snapshot.statuses) || !snapshot.models) return;
+	state.failed = false;
 	let changed = false;
 	for (const entry of snapshot.statuses) {
 		if (!NATIVE_SUBSCRIPTIONS.some((p) => p.providerId === entry.providerId) || ![entry.revision, entry.epoch, entry.authorityRevision].every((n) => Number.isSafeInteger(n) && n >= 0)) continue;
@@ -49,7 +52,7 @@ function accept(state: State, snapshot: NativeSubscriptionSnapshot) {
 function bridge(): State {
 	const global = globalThis as typeof globalThis & { [KEY]?: State };
 	if (!global[KEY]) {
-		const state: State = { statuses: new Map(), models: new Map(), pending: new Map(), controllers: new Map(), listeners: new Set(), counter: 0 };
+		const state: State = { statuses: new Map(), models: new Map(), pending: new Map(), controllers: new Map(), listeners: new Set(), counter: 0, failed: false };
 		global[KEY] = state;
 		process.on("message", (raw: unknown) => {
 			const message = raw as { channel?: string; op?: string; id?: string; ok?: boolean; value?: unknown; error?: string; snapshot?: NativeSubscriptionSnapshot };
@@ -67,6 +70,7 @@ function bridge(): State {
 		});
 		process.on("disconnect", () => {
 			if (webSubscriptionsEnabled()) return;
+			state.failed = true;
 			invalidate(state);
 			for (const pending of state.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error("The desktop connection closed.")); }
 			state.pending.clear(); notify(state);
@@ -91,8 +95,9 @@ export async function refreshSubscriptionModels(): Promise<void> {
 	const state = bridge();
 	if (!runtimeConnected()) { invalidate(state); return; }
 	try { accept(state, await subscriptionRequest<NativeSubscriptionSnapshot>("snapshot")); }
-	catch { invalidate(state); notify(state); }
+	catch { state.failed = true; invalidate(state); notify(state); }
 }
+export function nativeSubscriptionStatusUnknown(): boolean { return bridge().failed; }
 export function nativeSubscriptionStatus(providerId: NativeSubscriptionProviderId): NativeSubscriptionStatus | undefined { return bridge().statuses.get(providerId); }
 export function nativeSubscriptionConnected(providerId: NativeSubscriptionProviderId): boolean {
 	const status = nativeSubscriptionStatus(providerId);

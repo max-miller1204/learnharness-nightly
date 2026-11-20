@@ -11,7 +11,7 @@ import {
 } from "../agent/teacher-agent.ts";
 import { catalogModelGone, ModelUnavailableError, piEngineForSpec, type PiEngine } from "../agent/models.ts";
 import { MODEL_UNAVAILABLE, modelUnavailableMessage } from "../core/model-unavailable.ts";
-import { connectionBackgroundAllowed as subscriptionBackgroundAllowed, connectionScopeCurrent, isSubscriptionProvider } from "../agent/subscription-connections.ts";
+import { connectionBackgroundAllowed as subscriptionBackgroundAllowed, connectionScopeCurrent, isSubscriptionProvider, subscriptionStatusUnknown } from "../agent/subscription-connections.ts";
 import { nativeSubscriptionError } from "../agent/subscription-stream.ts";
 import { chatGPTStreamError } from "../agent/chatgpt-stream.ts";
 import { SubscriptionRequestCycle, type SubscriptionDispatchLifecycle } from "../agent/subscription-request-cycle.ts";
@@ -50,7 +50,7 @@ import {
 	resolveConversationSpec,
 	resolveRoleSpec,
 } from "../core/settings-resolution.ts";
-import { modelsNotConfigured, providerKeyMissing as providerKeyMissingEnvelope, ROLE_SLOT, type ModelSlotName, type ProviderKeyMissing } from "../core/settings.ts";
+import { modelsNotConfigured, providerKeyMissing as providerKeyMissingEnvelope, subscriptionUnreachable, ROLE_SLOT, type ModelSlotName, type ProviderKeyMissing } from "../core/settings.ts";
 import { beginTurn, endTurn, isTurnRunning } from "./turn-liveness.ts";
 import { claimPreparingTurn, type TurnPreparation } from "./turn-preparation.ts";
 import { applyParkedDismissal } from "./dismissal-park.ts";
@@ -337,6 +337,12 @@ export async function handleChatInput(
 		await refreshConnectionCatalog(conversation.provider);
 		if (input.type === "steers" && !connectionBackgroundAllowed(conversation.provider)) {
 			return Response.json({ error: "Background use is off for this connection. Automatic follow-up remains deferred in its queue." }, { status: 403 });
+		}
+		// A failed status check is an outage, not missing setup: a retryable
+		// 503. Steers park on the 403 above until the connection changes.
+		if (subscriptionStatusUnknown(conversation.provider)) {
+			console.info(`[chat ${chatId}] turn refused: ${conversation.provider} status unknown`);
+			return Response.json(subscriptionUnreachable(conversation.provider), { status: 503 });
 		}
 	}
 	// A saved model the catalog dropped is refused first: never ask for a

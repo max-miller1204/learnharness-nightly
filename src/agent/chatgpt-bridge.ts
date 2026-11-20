@@ -13,6 +13,8 @@ interface Pending { op: string; resolve: (v: unknown) => void; reject: (e: Error
 interface BridgeState {
  status: ChatGPTStatus; stamp: Stamp; models: Model<"openai-responses">[]; catalogAccount: string | null;
  pending: Map<string, Pending>; controllers: Map<AbortController, boolean>; listeners: Set<() => void>; counter: number; catalogRequest: number;
+ /** The last model catalog request failed or the desktop connection closed: whether the account is connected is unknown until a catalog arrives. */
+ failed: boolean;
 }
 const key = Symbol.for("lh.chatgpt.bridge");
 const unavailable = (): ChatGPTStatus => ({ available: false, pending: false, allowBackgroundUse: true, activeId: null, accounts: [], error: null });
@@ -27,7 +29,7 @@ function runtimeConnected(): boolean { return desktopIPCConnected() || webSubscr
 function bridge(): BridgeState {
  const global = globalThis as typeof globalThis & { [key]?: BridgeState };
  if (!global[key]) {
-  const state: BridgeState = { status: unavailable(), stamp: { epoch: 0, authorityRevision: 0, revision: 0 }, models: [], catalogAccount: null, pending: new Map(), controllers: new Map(), listeners: new Set(), counter: 0, catalogRequest: 0 };
+  const state: BridgeState = { status: unavailable(), stamp: { epoch: 0, authorityRevision: 0, revision: 0 }, models: [], catalogAccount: null, pending: new Map(), controllers: new Map(), listeners: new Set(), counter: 0, catalogRequest: 0, failed: false };
   global[key] = state;
   const receive = (raw: unknown) => {
    const m = raw as { channel?: string; kind?: string; id?: string; op?: string; ok?: boolean; value?: unknown; stamp: Stamp; status: ChatGPTStatus; invalidate?: string; error?: string };
@@ -52,6 +54,7 @@ function bridge(): BridgeState {
   onWebSubscriptionPacket("lh:chatgpt", (packet) => { if (webSubscriptionsEnabled()) receive(packet); });
   process.on("disconnect", () => {
    if (webSubscriptionsEnabled()) return;
+   state.failed = true;
    state.status = unavailable(); clearCatalog(state); state.catalogRequest++;
    for (const controller of state.controllers.keys()) controller.abort("all");
    for (const call of state.pending.values()) { clearTimeout(call.timer); call.reject(new Error("The desktop connection closed.")); }
@@ -86,6 +89,7 @@ export async function refreshChatGPTStatus(): Promise<void> {
  if (!runtimeConnected()) return;
  acceptStatus(bridge(), await chatGPTRequest<StatusValue>("status"));
 }
+export function chatGPTStatusUnknown(): boolean { return bridge().failed; }
 export function chatGPTConnected(): boolean { const s = chatGPTStatus(); return runtimeConnected() && s.available && s.accounts.some((a) => a.id === s.activeId && a.connected && a.planEnabled === true); }
 export function chatGPTBackgroundAllowed(): boolean { const s = chatGPTStatus(); return chatGPTConnected() && s.allowBackgroundUse === true; }
 export function onChatGPTChange(listener: () => void): () => void { bridge().listeners.add(listener); return () => { bridge().listeners.delete(listener); }; }
@@ -148,6 +152,7 @@ export async function refreshChatGPTModels(supported: Model<"openai-responses">[
  try {
   const value = await chatGPTRequest<ModelsValue>("models");
   if (sequence !== state.catalogRequest || !validStamp(value)) return;
+  state.failed = false;
   acceptStatus(state, value);
   if (value.epoch !== state.stamp.epoch || value.authorityRevision !== state.stamp.authorityRevision || value.accountId !== state.status.activeId || !chatGPTConnected()) return;
   state.catalogAccount = value.accountId;
@@ -157,7 +162,7 @@ export async function refreshChatGPTModels(supported: Model<"openai-responses">[
    const base = known(entry) ?? (template && accountModel(entry, template));
    return base ? [{ ...base, provider: "chatgpt", name: entry.name, headers: undefined, samplingParams: undefined, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] : [];
   });
- } catch { if (sequence === state.catalogRequest) clearCatalog(state); }
+ } catch { if (sequence === state.catalogRequest) { clearCatalog(state); state.failed = true; } }
 }
 export function chatGPTAbortController(background = true): { controller: AbortController; release: () => void } {
  const state = bridge(); const controller = new AbortController(); state.controllers.set(controller, background);

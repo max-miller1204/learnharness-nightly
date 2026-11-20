@@ -32,6 +32,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CacheRetention } from "@earendil-works/pi-ai";
 import { AUTH_PROVIDER_KEYS } from "./auth-keys.ts";
 import { CLAUDE_CODE_PROVIDER } from "./contracts/claude-code.ts";
+import { NATIVE_SUBSCRIPTIONS } from "./contracts/subscriptions.ts";
 import type { ModelRole } from "../../config.ts";
 import type { ChatSettings } from "./contracts/chat.ts";
 import { isSearchAccountSelection, isSearchEngineId, isSubscriptionSearchEngineId, type SearchSettings } from "./search.ts";
@@ -195,7 +196,22 @@ export class ProviderKeyMissingError extends Error {
 	}
 }
 
-export const CACHE_RETENTIONS = ["none", "short", "long"] as const satisfies readonly CacheRetention[];
+/** A subscription whose status or catalog check just failed (a failed
+ * snapshot, a closed desktop connection): it may still be connected, so
+ * nothing needs setting up. HTTP callers get 503 + this JSON, which clients
+ * retry, never the 422 setup refusal. */
+export const SUBSCRIPTION_UNREACHABLE_CODE = "subscription_unreachable" as const;
+export interface SubscriptionUnreachable {
+	error: string;
+	code: typeof SUBSCRIPTION_UNREACHABLE_CODE;
+	provider: string;
+}
+export function subscriptionUnreachable(provider: string): SubscriptionUnreachable {
+	const label = provider === "chatgpt" ? "ChatGPT" : NATIVE_SUBSCRIPTIONS.find((p) => p.logicalId === provider)?.label ?? provider;
+	return { error: `${label} could not be reached just now. Try again in a moment.`, code: SUBSCRIPTION_UNREACHABLE_CODE, provider };
+}
+
+export const CACHE_RETENTIONS =["none", "short", "long"] as const satisfies readonly CacheRetention[];
 
 /** Stored model-slot preferences. A slot is configured only when model is
  * present; sanitized level-only records can be retained but resolve as unset.

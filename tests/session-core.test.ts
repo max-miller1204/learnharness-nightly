@@ -358,6 +358,14 @@ describe("send (one input event, verbatim consumption)", () => {
 		});
 	}
 
+	it("an unreachable subscription surfaces its plain message, not the JSON envelope", async () => {
+		const error = "GitHub Copilot could not be reached just now. Try again in a moment.";
+		globalThis.fetch = (async () => Response.json({ error, code: "subscription_unreachable", provider: "github-copilot-subscription" }, { status: 503 })) as typeof globalThis.fetch;
+		const m = model();
+		await m.send({ type: "text", text: "q" });
+		assert.equal(m.getState().error!.message, error);
+	});
+
 	it("a send with attachments shows a plain 4xx refusal's message", async () => {
 		globalThis.fetch = (async () => Response.json({ error: "That file is too large." }, { status: 413 })) as typeof globalThis.fetch;
 		const m = model();

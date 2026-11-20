@@ -34,6 +34,7 @@ import { SessionModel } from "../components/session-core.ts";
 import { buildSubagentSteer } from "../src/core/contracts.ts";
 import { abortTurn, runningTurn, settledTurnResponse } from "../src/server/turn-runs.ts";
 import { chatStore } from "../src/store/chats.ts";
+import { modelsNotConfigured } from "../src/core/settings.ts";
 import { jobStore } from "../src/store/jobs.ts";
 import { buildAnswer, dismissedAnswer, normalizeOptions, resolveCorrect, type QuestionData } from "../src/core/question-core.ts";
 import { danglingQuestionOf, endsInDismissal, needsContinuation, newAnswerResult, newUserMessage } from "../src/core/native-messages.ts";
@@ -1040,10 +1041,7 @@ describe("the BYOK turn gate (no factory floor — owner, 2026-09-22)", () => {
 
 		if (expectRefusal) {
 			assert.equal(res.status, 422, "the universal turn gate refuses before beginTurn");
-			const body = (await res.json()) as { error: string; code: string; missing: string[] };
-			assert.equal(body.code, "models_not_configured");
-			assert.deepEqual(body.missing, ["strong"]);
-			assert.match(body.error, /No model configured/);
+			assert.deepEqual(await res.json(), modelsNotConfigured(["strong"]));
 		} else {
 			assert.equal(res.status, 200, "the record's strong slot satisfies the conversation chain");
 			await drainRunning(chat.id);

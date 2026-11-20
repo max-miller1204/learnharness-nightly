@@ -7,7 +7,8 @@
  *        quotes? } (first question at a teacher-prose block), or
  *        { threadId, retry: true } (re-answer a failed last answer).
  *        Streams NDJSON (src/server/side-chat.ts documents the wire);
- *        refusals are ordinary JSON errors (400/404/409/503).
+ *        refusals are ordinary JSON errors, with models_not_configured
+ *        and provider_key_missing as the setup refusals.
  *
  * Thin wrapper over the server barrel (the import law); tests drive
  * createSideChatService directly.

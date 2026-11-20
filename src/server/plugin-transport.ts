@@ -1,6 +1,7 @@
 import { isPluginHostError } from "./plugin-host.ts";
 import { authRefusal } from "./auth.ts";
 import { MODEL_UNAVAILABLE } from "../core/model-unavailable.ts";
+import { SUBSCRIPTION_UNREACHABLE_CODE } from "../core/settings.ts";
 import type { PluginFrontendContext, PluginInfo } from "../core/plugins.ts";
 
 /** Thin HTTP adapter, separately injectable so its tests never boot plugins. */
@@ -24,7 +25,8 @@ async function objectBody(request: Request): Promise<Record<string, unknown>> {
 /** A plugin operation refused for a saved model it can't use throws an Error
  * with code "model_unavailable" and that `model`. The host answers 422 with
  * the message, or its key-missing envelope when the model still exists and
- * only the provider key is gone. */
+ * only the provider key is gone, or 503 when a subscription's status check
+ * just failed. */
 type KeyMissing = (provider: string, id: string) => object | null | Promise<object | null>;
 export function createPluginTransport(deps: { getHost(): Promise<PluginTransportHost>; directory: string; keyMissing?: KeyMissing }) {
 	const modelRefusal = async (error: unknown): Promise<Response | undefined> => {
@@ -32,7 +34,8 @@ export function createPluginTransport(deps: { getHost(): Promise<PluginTransport
 		if (!refusal || typeof refusal !== "object" || refusal.code !== MODEL_UNAVAILABLE || typeof refusal.message !== "string") return undefined;
 		const model = refusal.model;
 		const keyMissing = typeof model?.provider === "string" && typeof model.id === "string" ? await deps.keyMissing?.(model.provider, model.id) : null;
-		return json(keyMissing ?? { error: refusal.message, code: MODEL_UNAVAILABLE }, 422);
+		const outage = (keyMissing as { code?: unknown } | null)?.code === SUBSCRIPTION_UNREACHABLE_CODE;
+		return json(keyMissing ?? { error: refusal.message, code: MODEL_UNAVAILABLE }, outage ? 503 : 422);
 	};
 	const guarded = async (handle: () => Promise<Response>) => {
 		try { return await handle(); }

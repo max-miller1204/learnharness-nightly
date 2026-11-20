@@ -848,7 +848,7 @@ export function Chat({
 			return;
 		}
 		setOpeningError(false);
-		draftRef.current = prompt; // The existing 503 flow must restore it too.
+		draftRef.current = prompt; // The setup-refusal flow must restore it too.
 		void prepareText(captureNative ? undefined : prompt, () => {
 			clearOpeningPrompt(chatId);
 			openingDraftRef.current = null;
