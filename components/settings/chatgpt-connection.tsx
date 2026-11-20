@@ -82,7 +82,9 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 	const [reading, setReading] = useState(false);
 	// This page's own desktop-bridge sign-in is running: its attempt is the only one, so no
 	// paste-back meanwhile. Adopted attempts, and any left once it ends, keep paste-back.
-	const [desktopRunning, setDesktopRunning] = useState(false);
+	const [desktopRunning, setDesktopRunningState] = useState(false);
+	const desktopRunningRef = useRef(false);
+	function setDesktopRunning(running: boolean) { desktopRunningRef.current = running; setDesktopRunningState(running); }
 	const desktopRun = useRef(0);
 	// Bumped by every edit or submit, so a clipboard read that resolves later never overwrites them.
 	const pasteEdits = useRef(0);
@@ -186,16 +188,21 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 		showDialog(owner);
 		// A sign-in already pending on the server (this page reloaded, or another
 		// tab started it) is adopted: the waiting state, paste-back and Cancel.
-		if (statusRef.current.pending) {
-			loginAttempt.current = { generation: ++generation.current, dialog: owner, registration: "", background: statusRef.current.allowBackgroundUse, backgroundDirty: false, pending: true, phase: "pending" };
-			operation.current = "login"; setBusy(true);
-		}
+		if (statusRef.current.pending) adoptPending(owner);
+	}
+	/** Takes up a sign-in pending on the server that this page didn't start: the waiting state, paste-back and Cancel. */
+	function adoptPending(owner: Dialog) {
+		loginAttempt.current = { generation: ++generation.current, dialog: owner, registration: "", background: statusRef.current.allowBackgroundUse, backgroundDirty: false, pending: true, phase: "pending" };
+		operation.current = "login"; setBusy(true);
 	}
 	function close(): CloseOutcome {
 		if (operation.current === "disconnect" || operation.current === "change" || operation.current === "cancel") return "blocked";
 		const current = dialogRef.current;
 		if (current?.kind === "manage" && current.confirm) { showDialog({ ...current, confirm: false }); setError(null); return "handled-without-close"; }
 		const cancel = loginAttempt.current !== null || statusRef.current.pending;
+		// This page's own desktop sign-in: its cancel ends only that attempt, so one still pending
+		// afterwards is another device's, taken up here rather than reported as a failed cancel.
+		const ownDesktop = desktopRunningRef.current;
 		const intent = ++generation.current;
 		const owner = dialogRef.current;
 		loginAttempt.current = null;
@@ -219,6 +226,9 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 				if (next && !next.pending) {
 					setDismissedError(value.error); // Dismiss only this cancellation's error, not a newer failure.
 					if (dialogRef.current === owner) showDialog(null);
+				} else if (next && ownDesktop) {
+					setDismissedError(value.error);
+					if (owner && dialogRef.current === owner) adoptPending(owner);
 				} else if (next) setError(CONTROL_ERROR);
 			}).catch(() => { if (mounted.current && generation.current === intent) setError(CONTROL_ERROR); }).finally(() => {
 				if (mounted.current && generation.current === intent) { operation.current = null; setBusy(false); }
@@ -276,6 +286,14 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 			try { value = await bridge.login(registration || undefined); }
 			finally { if (viaDesktop && mounted.current && run === desktopRun.current) setDesktopRunning(false); }
 			if (!owns(attempt) || attempt.phase === "consent") return;
+			// This page's desktop sign-in ended without signing in. Another device's attempt may
+			// still be pending on the server: take it up at once, with paste-back.
+			if (viaDesktop && isStatus(value) && value.error) {
+				if (request === statusSequence.current) publishStatus(value);
+				setError(value.error); finish(attempt);
+				if (value.pending && dialogRef.current === owner) adoptPending(owner);
+				return;
+			}
 			// Never publish an old acknowledgement over a newer event. If events
 			// coalesced past pending before the acknowledgement arrived, read the
 			// current backend state after it rather than losing that completion.

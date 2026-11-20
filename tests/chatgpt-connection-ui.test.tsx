@@ -873,10 +873,12 @@ test("paste-back is hidden only while this page's own desktop sign-in runs; it r
   assert(document.body.textContent?.includes("Waiting for browser sign-in"));
   assert(!document.querySelector('[data-testid="chatgpt-paste-reveal"]'), "no paste-back while the bridge's own attempt runs");
   assert(!document.querySelector('[data-testid="chatgpt-paste"]'));
-  // The desktop's attempt ends, but the server still waits (left behind, or another device's): paste-back returns.
+  // The desktop's attempt fails while another device's sign-in waits on the server: the open
+  // dialog shows why, and paste-back for that attempt, at once.
   await act(async () => { finish({ error: "Couldn’t reserve the local ChatGPT callback port." }); await new Promise((resolve) => setTimeout(resolve, 0)); });
-  await click(byTest("chatgpt-login"));
-  assert.equal(byTest("chatgpt-paste-reveal").textContent, CHATGPT_PASTE_COPY.reveal);
+  assert.equal(document.querySelector('[data-testid="chatgpt-account-dialog"] [role="alert"]')?.textContent, "Couldn’t reserve the local ChatGPT callback port.");
+  assert.equal(byTest("chatgpt-paste-reveal").textContent, CHATGPT_PASTE_COPY.reveal, "no reopening Settings needed");
+  await click(byTest("chatgpt-paste-reveal")); assert(byTest("chatgpt-paste"));
  } finally { page.restore(); }
 });
 
@@ -897,5 +899,34 @@ test("a sign-in adopted from another device keeps paste-back in the desktop app,
   await click(button("Cancel", byTest("chatgpt-account-dialog")));
   assert.deepEqual(cancels, ["desktop"]);
   assert.deepEqual(ops, ["cancel"], "the desktop had none of its own, so the page cancels the adopted one");
+ } finally { page.restore(); }
+});
+
+test("Cancel of this page's desktop sign-in, with another device's sign-in now pending, takes that one up: paste-back, no error", async () => {
+ const page = webPage("desktop.tail1234.ts.net");
+ let pending = false;
+ const ops: string[] = [];
+ globalThis.fetch = async (_input, init) => {
+  if (init?.method) { ops.push(JSON.parse(String(init.body)).op); return Response.json({ value: { ...disconnected(), pending } }); }
+  return Response.json({ chatgpt: { ...disconnected(), pending }, native: [] });
+ };
+ let finish!: (result: { ok: true } | { error: string }) => void;
+ window.lh = { chatgptSignIn: {
+  start: () => new Promise((resolve) => { finish = resolve; }),
+  // The desktop ends its own attempt (scoped); meanwhile a phone started one, so the server still waits.
+  cancel: async () => { finish({ error: "ChatGPT sign-in ended. Try again." }); pending = true; return { ok: true, ended: true }; },
+ } };
+ try {
+  const events = await mountWithEvents();
+  await click(byTest("chatgpt-login")); await click(byTest("chatgpt-proceed"));
+  pending = true; await events.fire();
+  assert(!document.querySelector('[data-testid="chatgpt-paste-reveal"]'));
+  await click(button("Cancel", byTest("chatgpt-account-dialog")));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  assert.deepEqual(ops, [], "no unscoped cancel of the phone's sign-in");
+  assert(byTest("chatgpt-account-dialog"), "the dialog stays for the pending sign-in");
+  assert.equal(document.querySelector('[data-testid="chatgpt-account-dialog"] [role="alert"]'), null, "no error for a cancel the user asked for");
+  assert(document.body.textContent?.includes("Waiting for browser sign-in"));
+  assert.equal(byTest("chatgpt-paste-reveal").textContent, CHATGPT_PASTE_COPY.reveal, "paste-back for the phone's attempt at once");
  } finally { page.restore(); }
 });
