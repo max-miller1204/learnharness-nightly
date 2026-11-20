@@ -348,23 +348,37 @@ async function main() {
 	});
 }
 
+async function readable() {
+	for (let boot = 0; ; boot++) {
+		const start = Date.now();
+		for (let attempt = 1; Date.now() - start < 120_000; attempt++) {
+			try {
+				await axe(["displays"]);
+				await describe();
+				return;
+			} catch (error) {
+				const why = String(error.stderr || error.message).trim().split("\n")[0];
+				log(`accessibility read ${attempt} after boot ${boot} failed at ${Math.round((Date.now() - start) / 1000)}s: ${why}`);
+				if (boot === 2 && Date.now() - start >= 115_000) fail("simulator", `the accessibility tree never became readable: ${why}`);
+				await sleep(5000);
+			}
+		}
+		if (boot === 2) fail("simulator", "the accessibility tree never became readable");
+		log("rebooting the simulator");
+		await simctl("shutdown", UDID);
+		await simctl("boot", UDID);
+		await simctl("bootstatus", UDID, "-b");
+		await simctl("status_bar", UDID, "override", "--time", "9:41", "--batteryState", "charged", "--batteryLevel", "100", "--wifiBars", "3", "--cellularBars", "4");
+	}
+}
+
 async function phone() {
 	// The first reads after boot can overrun AXe's short deadlines while its
 	// frameworks load cold, and one try can take minutes on a CI Mac; a later
-	// read works. AXe asks for a displays read before accessibility.
-	const start = Date.now();
-	for (let attempt = 1; ; attempt++) {
-		try {
-			await axe(["displays"]);
-			await describe();
-			break;
-		} catch (error) {
-			const why = String(error.stderr || error.message).trim().split("\n")[0];
-			log(`accessibility read ${attempt} failed after ${Math.round((Date.now() - start) / 1000)}s: ${why}`);
-			if (Date.now() - start > 480_000) fail("simulator", `the accessibility tree never became readable: ${why}`);
-			await sleep(5000);
-		}
-	}
+	// read works. A simulator whose screens never settle stays unreadable
+	// until it reboots (AXe's AccessibilityFetcher says so), so after two
+	// minutes it reboots, at most twice. AXe asks for a displays read first.
+	await readable();
 	log(`AXe reads the screen (${screenSize.width}x${screenSize.height} pt)`);
 	await setPhoneMode("light");
 	const bundled = () => (readFileSync(METRO_LOG, "utf8").match(/iOS Bundled/g) ?? []).length;
