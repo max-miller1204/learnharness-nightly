@@ -105,7 +105,7 @@ it("a plugin's model_unavailable refusal is 422 with its message, unless only th
 	const envelope = { code: "provider_key_missing", provider: "opencode-go", slots: [], error: "No OpenCode Go key is set" };
 	const keyless = createPluginTransport({ getHost: async () => host, directory: "/temporary/plugins", keyMissing: () => envelope });
 	const keyRefused = await keyless.call("flashcards", request({ operation: "preflight-file", input: {} }));
-	assert.equal(keyRefused.status, 503);
+	assert.equal(keyRefused.status, 422);
 	assert.deepEqual(await keyRefused.json(), envelope);
 	host.call = async () => { throw new Error("Plugin operation failed"); };
 	assert.equal((await gone.call("flashcards", request({ operation: "x", input: {} }))).status, 500, "other plugin errors stay 500");

@@ -267,11 +267,11 @@ export function createSideChatService(deps: SideChatDeps): SideChatService {
 
 export async function productionEngineFor(record: ChatRecord): Promise<SideEngine | Response> {
 	const spec = resolveSideQuestionSpec(record.settings, stores.settingsStore.readSettings());
-	if (!spec) return Response.json(modelsNotConfigured(["strong"]), { status: 503 });
+	if (!spec) return Response.json(modelsNotConfigured(["strong"]), { status: 422 });
 	if (isSubscriptionProvider(spec.provider)) await refreshConnectionCatalog(spec.provider);
 	// A saved model the catalog dropped wins over a missing key.
 	if (catalogModelGone(spec.provider, spec.id)) return Response.json({ error: modelUnavailableMessage(spec.provider, spec.id), code: MODEL_UNAVAILABLE }, { status: 422 });
-	if (!providerKeyPresent(spec.provider)) return Response.json(providerKeyMissingEnvelope(spec.provider, ["strong"]), { status: 503 });
+	if (!providerKeyPresent(spec.provider)) return Response.json(providerKeyMissingEnvelope(spec.provider, ["strong"]), { status: 422 });
 	try {
 		let denied = false;
 		const engine = piEngineForSpec(spec, false, { captured() {}, beforeDispatch() {}, noDispatch() { denied = true; } },

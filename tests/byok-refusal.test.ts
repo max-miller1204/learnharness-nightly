@@ -16,9 +16,9 @@ import type { ModelCatalogEntry, ModelSlotName } from "../src/core/index.ts";
 
 /**
  * The BYOK universal gate rendered honestly (owner, 2026-09-22): the server
- * refuses ALL turns with 503 {error, code: "models_not_configured", missing}
+ * refuses ALL turns with 422 {error, code: "models_not_configured", missing}
  * when a slot tier is unset. These pin the client's pure seams: the refusal
- * detector (the transport throws the 503 body verbatim as the error text),
+ * detector (the transport throws the 422 body verbatim as the error text),
  * the job-record refusal matcher, and the SetupDialog's prefill.
  */
 
@@ -57,13 +57,13 @@ describe("Retry owns no composer recovery draft", () => {
 				fetch: async (_url, init) => {
 					assert.equal(submittedDraft.current, null, "retire A before Retry can reach a refusal");
 					assert.deepEqual(JSON.parse(String(init?.body)).input, { type: "retry" });
-					return new Response(body, { status: 503 });
+					return new Response(body, { status: 422 });
 				},
 			});
 			let request!: ReturnType<SessionModel["send"]>;
 			retryFailedResponse((input) => request = model.send(input), submittedDraft);
 			await request;
-			assert.equal(model.getState().error?.message, body, "503 stays raw for existing setup/picker routing");
+			assert.equal(model.getState().error?.message, body, "the setup refusal stays raw for existing setup/picker routing");
 			assert.ok(parseModelsRefusal(body) || parseProviderKeyRefusal(body));
 			// The existing refusal effect restores only an owned submitted
 			// draft. Retry must leave this slot empty, not replace B with A.
@@ -91,7 +91,7 @@ describe("Retry owns no composer recovery draft", () => {
 		const body = JSON.stringify(providerKeyMissing("openrouter", ["strong"]));
 		const model = new SessionModel({
 			chatId: "fixture", initialMessages: [],
-			fetch: async () => new Response(body, { status: 503 }),
+			fetch: async () => new Response(body, { status: 422 }),
 		});
 		await model.send({ type: "text", text: submittedDraft.current! });
 		assert.equal(submittedDraft.current, "Ordinary text C");

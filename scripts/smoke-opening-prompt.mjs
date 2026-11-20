@@ -92,7 +92,7 @@ try {
 				const body = JSON.parse(request.postData()); posts.push(body);
 				if (mode === "held-post") { held.push(request); return; }
 				if (mode === "lost-ack") return await request.abort("failed");
-				if (mode === "refused") return await request.respond({ status: 503, contentType: "application/json", body: JSON.stringify({ code: "models_not_configured", missing: ["strong"] }) });
+				if (mode === "refused") return await request.respond({ status: 422, contentType: "application/json", body: JSON.stringify({ code: "models_not_configured", missing: ["strong"] }) });
 				accepted.set(body.chatId, [{ id: "saved_user", role: "user", content: body.input.text, timestamp: Date.now() }]);
 				return await respond({ ok: true });
 			}

@@ -126,7 +126,7 @@ const jobRunner = createJobRunner({
 	// Key-presence gate (provider-key interlude, 2026-09-25): the runner
 	// reads the resolved engine's provider and asks THIS check (the agent
 	// layer may not read the key store); a missing key refuses the spawn
-	// with the 503-envelope family instead of dying mid-run.
+	// with the refusal-envelope family instead of dying mid-run.
 	providerKeyMissing: (provider, tier) =>
 		providerKeyPresent(provider) ? null : providerKeyMissingEnvelope(provider, [tier]),
 	// Search port wave (2026-09-20): the researcher's web_search runs on the
@@ -311,7 +311,7 @@ export async function handleChatInput(
 	// THE UNIVERSAL TURN GATE (BYOK, owner, 2026-09-22): a turn needs the
 	// CONVERSATION chain — the chat's own model override over the strong
 	// slot — and there is no factory floor; when both are empty the turn
-	// refuses honestly with the machine-readable 503 envelope (new sessions
+	// refuses honestly with the machine-readable 422 envelope (new sessions
 	// and continuing ones alike — wake-pipeline turns ride this same path).
 	// Placement is deliberate: BEFORE beginTurn (no liveness effects), the
 	// write-ahead persist (nothing durable changes), and every downstream
@@ -321,7 +321,7 @@ export async function handleChatInput(
 	if (!conversation) {
 		const envelope = modelsNotConfigured(["strong"]);
 		console.info(`[chat ${chatId}] turn refused — ${JSON.stringify(envelope)}`);
-		return Response.json(envelope, { status: 503 });
+		return Response.json(envelope, { status: 422 });
 	}
 
 	// THE KEY-PRESENCE GATE (provider-key interlude, owner, 2026-09-25): a
@@ -348,7 +348,7 @@ export async function handleChatInput(
 	if (!providerKeyPresent(conversation.provider)) {
 		const envelope = providerKeyMissingEnvelope(conversation.provider, ["strong"]);
 		console.info(`[chat ${chatId}] turn refused — ${JSON.stringify(envelope)}`);
-		return Response.json(envelope, { status: 503 });
+		return Response.json(envelope, { status: 422 });
 	}
 
 	// THE COMPACTION GATE (owner round 14, 2026-10-05 — the structural

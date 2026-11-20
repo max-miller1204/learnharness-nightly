@@ -212,7 +212,7 @@ After the happy path passes, run at least one probe that matches what you change
 - model failure mid-turn: `curl -X POST "$FAKE_CONTROL/__prove/fail?mode=broken-stream"` (or `http500`, `hang`), send a turn, expect a recorded error, "Something went wrong" with Retry, a usable composer and a working follow-up; reset with `mode=none`.
 - delete the session you are viewing (open it, right-click its row, Delete), including right after a turn starts: expect no 404 for the deleted session (`/api/chats/<id>`, `/api/chats/<id>/side-chats`), home after, and Back not reopening it. Any such 404 is BROKEN.
 - doing it twice: on the question card press Enter twice on Submit answer; expect one answer in `data/chats/<id>.json`.
-- cold start, in its own run folder (one instance per side per run): `C=$(scripts/new-run.sh cold); PROVE_SEED=0 scripts/start.sh "$C" head` starts with no model configured; `/chat/new` must show the setup call to action (`data-testid="setup-cta"`), not an error page, and a turn must answer 503 `models_not_configured`; then `scripts/stop.sh "$C"`.
+- cold start, in its own run folder (one instance per side per run): `C=$(scripts/new-run.sh cold); PROVE_SEED=0 scripts/start.sh "$C" head` starts with no model configured; `/chat/new` must show the setup call to action (`data-testid="setup-cta"`), not an error page, and a turn must answer 422 `models_not_configured`; then `scripts/stop.sh "$C"`.
 - selfhost: a broken version is already probed by tier B; for launcher changes also try `lh use <bad version>` and `lh rollback` with no previous version.
 - a sibling flow that should behave the same: practice sessions (`new-session-practice`) for a teaching-session change.
 

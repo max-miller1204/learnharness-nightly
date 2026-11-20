@@ -1232,7 +1232,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			// BYOK per-need gate (owner, 2026-09-22) + key presence
 			// (2026-09-25): the write channel needs extractor + auditor
 			// engines AND their providers' keys; a refusal lands BEFORE any
-			// stage runs (typed — the trigger skips, routes surface 503).
+			// stage runs (typed: the trigger skips, routes surface the envelope).
 			refuseIfStagesUnready();
 			const covered = coverageOf(record.messages, graphStore.readCoverage(), chatId);
 			const failedOutputCalls = failedOutputCallIds(record.messages);

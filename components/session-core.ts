@@ -989,7 +989,8 @@ export class SessionModel {
 				let message = (await res.text()) || `The send failed (${res.status}).`;
 				try {
 					const refusal = JSON.parse(message) as { error?: unknown; code?: unknown } | null;
-					const guidance = (attachments && res.status !== 503) || ((input.type === "retry" || input.type === "retry-question") && res.status === 400) || refusal?.code === "model_unavailable";
+					const setup = refusal?.code === "models_not_configured" || refusal?.code === "provider_key_missing";
+					const guidance = !setup && (attachments || ((input.type === "retry" || input.type === "retry-question") && res.status === 400) || refusal?.code === "model_unavailable");
 					if (guidance && typeof refusal?.error === "string" && refusal.error.length > 0) message = refusal.error;
 				} catch { /* Non-envelope failures keep their original text. */ }
 				throw new Error(message);

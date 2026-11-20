@@ -75,7 +75,7 @@ export type ModelDto = ModelCatalogEntry;
  * STRONG SLOT IS THE NEW-SESSION DEFAULT, and the resolve-time fallback
  * for legacy settings-less records. BYOK (owner, 2026-09-22): there is no
  * factory floor — when the strong slot names no model, the default is
- * NULL and the turn gate refuses with the 503 models_not_configured
+ * NULL and the turn gate refuses with the 422 models_not_configured
  * envelope. An unset thinkingLevel resolves from DEFAULT_THINKING_ORDER at
  * engine build (reported as absent here).
  */

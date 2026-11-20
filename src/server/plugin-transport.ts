@@ -32,7 +32,7 @@ export function createPluginTransport(deps: { getHost(): Promise<PluginTransport
 		if (!refusal || typeof refusal !== "object" || refusal.code !== MODEL_UNAVAILABLE || typeof refusal.message !== "string") return undefined;
 		const model = refusal.model;
 		const keyMissing = typeof model?.provider === "string" && typeof model.id === "string" ? await deps.keyMissing?.(model.provider, model.id) : null;
-		return keyMissing ? json(keyMissing, 503) : json({ error: refusal.message, code: MODEL_UNAVAILABLE }, 422);
+		return json(keyMissing ?? { error: refusal.message, code: MODEL_UNAVAILABLE }, 422);
 	};
 	const guarded = async (handle: () => Promise<Response>) => {
 		try { return await handle(); }

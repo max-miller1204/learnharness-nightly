@@ -380,8 +380,8 @@ describe("side chat service", () => {
 		assert.equal((await service.ask(chatId, { threadId: "side_nope", text: "q", quotes: [] })).status, 404);
 		assert.equal((await service.ask("chat_nope", { anchor, text: "q", quotes: [] })).status, 404);
 
-		refuse(Response.json({ error: "No model configured" }, { status: 503 }));
-		assert.equal((await service.ask(chatId, { anchor, text: "q", quotes: [] })).status, 503);
+		refuse(Response.json({ error: "No model configured" }, { status: 422 }));
+		assert.equal((await service.ask(chatId, { anchor, text: "q", quotes: [] })).status, 422);
 		assert.equal(chatStore.getChat(chatId)!.sideChats, undefined, "no orphan question");
 		refuse(null);
 
@@ -492,6 +492,30 @@ describe("a side chat on a saved model the catalog dropped", () => {
 			}
 		} finally {
 			if (saved === undefined) delete process.env.OPENCODE_API_KEY; else process.env.OPENCODE_API_KEY = saved;
+		}
+	});
+});
+
+describe("a side chat that needs setup", () => {
+	it("is refused with 422 and the setup envelope when no model is set or its key is missing", async () => {
+		const { productionEngineFor } = await import("../src/server/side-chat.ts");
+		const unset = chatStore.createChat("side unset");
+		const noModel = await productionEngineFor(chatStore.getChat(unset.id)!);
+		assert.ok(noModel instanceof Response);
+		assert.equal(noModel.status, 422);
+		assert.deepEqual(await noModel.json(), core.modelsNotConfigured(["strong"]));
+
+		const keyless = chatStore.createChat("side keyless");
+		chatStore.saveSettings(keyless.id, { model: { provider: "together", id: "deepseek-ai/DeepSeek-V4.1-Flash" } });
+		const saved = process.env.TOGETHER_API_KEY;
+		delete process.env.TOGETHER_API_KEY;
+		try {
+			const noKey = await productionEngineFor(chatStore.getChat(keyless.id)!);
+			assert.ok(noKey instanceof Response);
+			assert.equal(noKey.status, 422);
+			assert.deepEqual(await noKey.json(), core.providerKeyMissing("together", ["strong"]));
+		} finally {
+			if (saved !== undefined) process.env.TOGETHER_API_KEY = saved;
 		}
 	});
 });

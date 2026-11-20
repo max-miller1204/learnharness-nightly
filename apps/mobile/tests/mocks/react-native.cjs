@@ -8,7 +8,8 @@ const Pressable = ({ style, children, ...props }) => React.createElement("Pressa
   typeof children === "function" ? children({ pressed: false }) : children);
 
 module.exports = {
-  View: "View", Text: "Text", TextInput: "TextInput", Image: "Image", ScrollView: "ScrollView", Pressable,
+  View: "View", Text: "Text", TextInput: "TextInput", Image: "Image", ScrollView: "ScrollView", FlatList: "FlatList", Pressable,
+  Keyboard: { dismiss: () => {} },
   StyleSheet: { create: (styles) => styles, flatten, hairlineWidth: 1 },
   useColorScheme: () => "dark",
   // Tests set globalThis.fontScale to try the system font scale.

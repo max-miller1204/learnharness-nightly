@@ -1026,7 +1026,7 @@ describe("renameChat (the header's click-to-edit title)", () => {
 });
 
 describe("the BYOK turn gate (no factory floor — owner, 2026-09-22)", () => {
-	it("a chat with no model refuses the turn with the 503 envelope — nothing lingers", async () => {
+	it("a chat with no model refuses the turn with the 422 envelope, nothing lingers", async () => {
 		const chat = chatStore.createChat("Test: unconfigured chat");
 		createdChats.push(chat.id);
 
@@ -1039,7 +1039,7 @@ describe("the BYOK turn gate (no factory floor — owner, 2026-09-22)", () => {
 		const res = await handleChatRequest(post(chat.id, { type: "text", text: "teach me the solar system" }), agentFactory(scriptedTeacher(defaultLesson).engine));
 
 		if (expectRefusal) {
-			assert.equal(res.status, 503, "the universal turn gate refuses before beginTurn");
+			assert.equal(res.status, 422, "the universal turn gate refuses before beginTurn");
 			const body = (await res.json()) as { error: string; code: string; missing: string[] };
 			assert.equal(body.code, "models_not_configured");
 			assert.deepEqual(body.missing, ["strong"]);
@@ -1072,7 +1072,7 @@ describe("the key-presence turn gate (provider-key interlude, 2026-09-25)", () =
 	// The gate's truth is env-first (keyValue): in tests process.env is the
 	// WHOLE truth (the throwaway data dir has no auth.json), so each test
 	// pins its provider's env var explicitly and restores it after.
-	it("a pinned provider whose key is gone refuses with 503 provider_key_missing — nothing lingers", async () => {
+	it("a pinned provider whose key is gone refuses with 422 provider_key_missing, nothing lingers", async () => {
 		const chat = chatStore.createChat("Test: keyless provider");
 		createdChats.push(chat.id);
 		const saved = process.env.TOGETHER_API_KEY;
@@ -1084,7 +1084,7 @@ describe("the key-presence turn gate (provider-key interlude, 2026-09-25)", () =
 			chatStore.saveSettings(chat.id, { model: { provider: "together", id: "deepseek-ai/DeepSeek-V4.1-Flash" } });
 			const res = await handleChatRequest(post(chat.id, { type: "text", text: "teach me something" }), agentFactory(scriptedTeacher(defaultLesson).engine));
 
-			assert.equal(res.status, 503, "the key-presence gate refuses before beginTurn");
+			assert.equal(res.status, 422, "the key-presence gate refuses before beginTurn");
 			const body = (await res.json()) as { error: string; code: string; provider: string; slots: string[] };
 			assert.equal(body.code, "provider_key_missing");
 			assert.equal(body.provider, "together", "the envelope names whose key is gone");

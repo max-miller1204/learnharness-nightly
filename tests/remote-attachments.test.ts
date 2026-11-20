@@ -118,7 +118,7 @@ test("a refused opening creates no chat and leaves its bytes reusable", async ()
 	const body = JSON.stringify({ draftId, sendId: randomUUID(), title: "Open with a file", attachmentUploadIds: [upload.id] });
 	const before = chatStore.listChats().length;
 	for (let attempt = 0; attempt < 2; attempt++) {
-		assert.equal((await startAttachmentRequest(request("/api/attachments/start", "POST", body))).status, 503);
+		assert.equal((await startAttachmentRequest(request("/api/attachments/start", "POST", body))).status, 422);
 	}
 	assert.equal(chatStore.listChats().length, before);
 	assert.equal((await uploadAttachmentRequest(request(upload.uploadUrl, "PUT", "test"))).status, 204);

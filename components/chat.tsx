@@ -174,7 +174,7 @@ export const ChatActionsContext = createContext<{
 } | null>(null);
 
 /** The BYOK refusal envelope from the transport's error text: the
- *  DefaultChatTransport throws the 503 body VERBATIM as the error message,
+ *  DefaultChatTransport throws the 422 body VERBATIM as the error message,
  *  so the machine-readable {code, missing} shape survives to here. Real
  *  errors (any other text) read as null and keep the honest banner.
  *  Exported pure for tests. */
@@ -193,7 +193,7 @@ export function parseModelsRefusal(message: string | undefined): ModelSlotName[]
 }
 
 /** The provider-key refusal's transport seam (zero-keys wave, Platform's
- *  66dbea9): same discipline as parseModelsRefusal — the 503 body rides
+ *  66dbea9): same discipline as parseModelsRefusal: the 422 body rides
  *  the thrown error message verbatim, so the envelope's own matcher
  *  (core, invariant-tail) decides; the wording can never drift client-
  *  side. Exported pure for tests. */
@@ -901,7 +901,7 @@ export function Chat({
 	}, [chatId, hasConfirmedConversation, applyText]);
 
 	// THE BYOK REFUSAL (owner, 2026-09-22): a send that lands the server's
-	// 503 models_not_configured envelope renders as the SETUP FLOW, never
+	// 422 models_not_configured envelope renders as the SETUP FLOW, never
 	// the error banner. The gate refuses BEFORE the write-ahead persist,
 	// so the server record is the truth minus the refused send — the
 	// optimistic message is an orphan that goes HOME: refetch the record,

@@ -42,7 +42,7 @@ export const PATHS = {
 // BYOK ALL THE WAY DOWN (owner, 2026-09-22): there are NO factory default
 // models. Every engine resolves from the user's model slots (settings.json
 // models section: strong/cheap/vision) over per-role/ChatSettings overrides,
-// and a chain that ends empty REFUSES honestly (503 models_not_configured).
+// and a chain that ends empty REFUSES honestly (422 models_not_configured).
 // .env stays for secrets (API keys) only. What remains here are ENGINE
 // CONSTRUCTION FACTS: the thinking-level scale and the default order.
 

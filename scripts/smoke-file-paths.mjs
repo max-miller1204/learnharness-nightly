@@ -83,7 +83,7 @@ async function instrument(target) {
 			// submits while dropping. Record their complete synthetic bodies.
 			if (request.method() === "POST" && (/^\/api\/(chat|answer)(\/|$)/.test(url.pathname) || /\/(answer|import|turn|retry)(\/|$)/.test(url.pathname))) {
 				posts.push({ pathname: url.pathname, body: JSON.parse(request.postData() || "{}") });
-				return await request.respond({ status: 503, contentType: "application/json", body: JSON.stringify({ code: "models_not_configured", missing: ["strong"] }) });
+				return await request.respond({ status: 422, contentType: "application/json", body: JSON.stringify({ code: "models_not_configured", missing: ["strong"] }) });
 			}
 			if (/^\/api\/chats\/[^/]+\/stream$/.test(url.pathname)) return await request.respond({ status: 204 });
 			return await request.continue();

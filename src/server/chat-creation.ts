@@ -10,7 +10,7 @@ export function initialChatSettings(): ChatSettings | undefined {
 	// the new-session default. From here the strong slot never reaches
 	// this session again: in-session picks write the session's own record
 	// (PUT /api/chats/:id/settings). No strong slot configured (fresh BYOK
-	// boot) → no stamp; the turn gate's 503 models_not_configured envelope
+	// boot) → no stamp; the turn gate's 422 models_not_configured envelope
 	// refuses honestly until the setup flow fills the slot.
 	const strong = readSettings()?.models?.strong;
 	if (strong?.model) {
