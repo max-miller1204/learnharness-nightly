@@ -62,8 +62,15 @@ export function createWebChatGPTBridge(hub: Hub): ChatGPTControlBridge {
 			const desktop = window.lh?.chatgptSignIn;
 			return desktop ? desktopLogin(desktop, id) : withBrowser(() => control<ChatGPTStatus>("chatgpt", "login", { id }));
 		},
-		// The desktop's attempt (its listener, and its browser before it opens) ends first.
-		cancel: async () => { await window.lh?.chatgptSignIn?.cancel().catch(() => {}); return call("cancel"); }, complete: (url) => call("complete", { url }), select: (id) => call("select", { id }),
+		// The desktop's own attempt (its listener, and its browser before it opens) ends with its
+		// own scoped cancel. Only without one does the page cancel whatever is pending (an
+		// attempt adopted from another device), so this window never ends one it didn't start.
+		cancel: async () => {
+			const desktop = window.lh?.chatgptSignIn;
+			const reply: unknown = desktop ? await desktop.cancel().catch(() => null) : null;
+			const ended = !!reply && typeof reply === "object" && "ended" in reply && reply.ended === true;
+			return ended ? (await status()).chatgpt : call("cancel");
+		}, complete: (url) => call("complete", { url }), select: (id) => call("select", { id }),
 		disconnect: (id) => call("disconnect", { id }), logout: (id) => call("logout", { id }),
 		consent: (enabled) => call("consent", { enabled }),
 		onChange: (listener) => onChange(hub, listener),

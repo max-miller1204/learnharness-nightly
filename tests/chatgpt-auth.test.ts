@@ -1039,7 +1039,7 @@ test("Settings' Cancel ends the desktop's attempt: during login no browser opens
 			const started = bridge.signIn();
 			if (when === "during-login") { await new Promise((resolve) => setTimeout(resolve, 20)); releaseLogin(); }
 			assert.deepEqual(await started, { error: "ChatGPT sign-in ended. Try again." });
-			assert.deepEqual(await cancelled, { ok: true }, "Cancel resolves once the attempt ended");
+			assert.deepEqual(await cancelled, { ok: true, ended: true }, "Cancel resolves once its own attempt ended");
 			assert.deepEqual(calls, [{ op: "login" }, { op: "cancel", attemptId: attempt }], `${when}: its own, scoped cancel`);
 			assert.equal((await f.service.status()).pending, false);
 			if (callback) await assert.rejects(fetch(`${callback}?state=x&code=y`), "the callback listener is closed");
@@ -1124,4 +1124,24 @@ test("a sign-in queued behind a slow cancel checks again that its server is stil
 	await a;
 	assert.deepEqual(await b, { error: "ChatGPT sign-in ended. Try again." });
 	assert.deepEqual(runs, ["https://one.example.test", "https://one.example.test"]);
+});
+
+test("a refused desktop login shows the server's own reason, and Cancel with no attempt of its own says so", async () => {
+	const { chatGPTControl } = require("../electron/chatgpt-ipc.cjs");
+	const f = fixture();
+	try {
+		await f.service.login(); // A phone's sign-in is already waiting on the server.
+		const bridge = viaBridge("https://desktop-refused.example.test", "fixture-bearer", {
+			timeoutMs: 5000,
+			openExternal: async () => assert.fail("a refused login opens no browser"),
+			request: async (_input: URL, options: RequestInit) => {
+				const body = JSON.parse(String(options.body));
+				assert.equal(body.op, "login", "and sends no cancel: it never had an attempt");
+				return Response.json({ value: await chatGPTControl(body, f.service, body.desktopRedirectPort) });
+			},
+		});
+		assert.deepEqual(await bridge.signIn(), { error: "A ChatGPT sign-in is already pending." });
+		assert.equal((await f.service.status()).pending, true, "the phone's sign-in is untouched");
+		assert.deepEqual(await bridge.cancel(), { ok: true, ended: false });
+	} finally { f.service.close(); }
 });

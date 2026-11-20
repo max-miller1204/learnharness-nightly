@@ -91,7 +91,8 @@ declare global {
 			 *  cancel() ends the attempt. */
 			chatgptSignIn?: {
 				start: (accountId?: string) => Promise<{ ok: true } | { error: string }>;
-				cancel: () => Promise<unknown>;
+				/** `ended`: it ended this window's own attempt. */
+				cancel: () => Promise<{ ok: true; ended: boolean }>;
 			};
 			/** Native chrome follows the active theme (theme wave): main sets
 			 *  themeSource and repaints the window background / overlay. */

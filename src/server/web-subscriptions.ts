@@ -82,7 +82,7 @@ export function createWebSubscriptionOwner(options: {
 				browserAction = `/api/subscriptions/browser?id=${id}`;
 			}
 			// The desktop relay's login also gets its attempt, so its own cancel can't end a newer one.
-			const attemptId = providerId === "chatgpt" && command.op === "login" && command.desktopRedirectPort !== undefined ? chatgpt.pendingAttempt() : null;
+			const attemptId = providerId === "chatgpt" && command.op === "login" && command.desktopRedirectPort !== undefined && browserAction ? chatgpt.pendingAttempt() : null;
 			return { value, ...(browserAction ? { browserAction } : {}), ...(attemptId ? { attemptId } : {}) };
 		},
 		async takeBrowserAction(id: string, origin: string): Promise<string | undefined> {

@@ -48,7 +48,11 @@ async function remoteChatGPTSignIn(origin, token, {
 		// Collect the login reply even if the user aborts during this request.
 		// Only an acknowledged browser action establishes an attempt to cancel.
 		const reply = await control("login", { ...(accountId && { id: accountId }), desktopRedirectPort: port }, AbortSignal.timeout(15000));
-		if (!isBrowserAction(reply?.browserAction)) throw new ServerProblem("sign-in", "The server couldn’t start ChatGPT sign-in. Check Providers on the server.");
+		if (!isBrowserAction(reply?.browserAction)) {
+			// The server's own public reason (a sign-in already pending, disconnected), bounded.
+			const reason = typeof reply?.value?.error === "string" && reply.value.error.trim() ? reply.value.error.trim().slice(0, 300) : null;
+			throw new ServerProblem("sign-in", reason ?? "The server couldn’t start ChatGPT sign-in. Check Providers on the server.");
+		}
 		pending = true;
 		if (typeof reply.attemptId === "string" && reply.attemptId.length <= 200) attemptId = reply.attemptId;
 		lifetime.throwIfAborted();
@@ -146,11 +150,13 @@ function createRemoteChatGPTSignIn({ selection, openExternal, run = remoteChatGP
 		/** The window closed or switched, or an update covers its server: its sign-in ends. */
 		abort,
 		/** Settings' Cancel: ends this window's sign-in, also while its login is in flight, and
-		 *  resolves once that attempt's own cancel reached its server. */
+		 *  resolves once that attempt's own cancel reached its server. `ended`: there was one,
+		 *  so the page sends no cancel of its own (that would end whatever is pending). */
 		async cancel() {
+			const ended = current !== null;
 			abort();
 			await last;
-			return { ok: true };
+			return { ok: true, ended };
 		},
 	};
 }

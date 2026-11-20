@@ -80,6 +80,10 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 	const [pasting, setPasting] = useState(false);
 	const [clipboardBlocked, setClipboardBlocked] = useState(false);
 	const [reading, setReading] = useState(false);
+	// This page's own desktop-bridge sign-in is running: its attempt is the only one, so no
+	// paste-back meanwhile. Adopted attempts, and any left once it ends, keep paste-back.
+	const [desktopRunning, setDesktopRunning] = useState(false);
+	const desktopRun = useRef(0);
 	// Bumped by every edit or submit, so a clipboard read that resolves later never overwrites them.
 	const pasteEdits = useRef(0);
 	const pasteField = useRef<HTMLInputElement>(null);
@@ -264,8 +268,13 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 		const request = ++statusSequence.current;
 		setBusy(true); setError(null); setDismissedError(null);
 		setPasteOpen(false); setPasted(""); setPasteError(null); setPasting(false); setClipboardBlocked(false); setReading(false);
+		const viaDesktop = typeof window !== "undefined" && !!window.lh?.chatgptSignIn;
+		const run = ++desktopRun.current;
+		if (viaDesktop) setDesktopRunning(true);
 		try {
-			let value: unknown = await bridge.login(registration || undefined);
+			let value: unknown;
+			try { value = await bridge.login(registration || undefined); }
+			finally { if (viaDesktop && mounted.current && run === desktopRun.current) setDesktopRunning(false); }
 			if (!owns(attempt) || attempt.phase === "consent") return;
 			// Never publish an old acknowledgement over a newer event. If events
 			// coalesced past pending before the acknowledgement arrived, read the
@@ -314,8 +323,7 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 			if (owns(attempt)) { setClipboardBlocked(true); pasteField.current?.focus(); }
 		} finally { if (owns(attempt)) setReading(false); }
 	}
-	// The desktop app's window onto a server signs in through its bridge: the callback reaches
-	// this computer, and the bridge's attempt is the only one, so there is no paste-back.
+	// The desktop app's window onto a server signs in through its bridge: the callback reaches this computer.
 	const desktopSignIn = typeof window !== "undefined" && !!window.lh?.chatgptSignIn;
 	const sameMachine = !web || desktopSignIn || (typeof window !== "undefined" && loopbackHost(window.location?.hostname ?? ""));
 	const context = {
@@ -369,7 +377,7 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 				</div>
 				{!status.available && <p className="mt-3 text-xs text-muted-foreground">ChatGPT sign-in is available only in the desktop app. API-key connections remain available here.</p>}
 				{status.pending && <p role="status" className="mt-3 text-xs text-muted-foreground">Waiting for browser sign-in…</p>}
-				{status.pending && dialog.kind === "connect" && loginAttempt.current && !desktopSignIn && (sameMachine && !pasteOpen
+				{status.pending && dialog.kind === "connect" && loginAttempt.current && !desktopRunning && (sameMachine && !pasteOpen
 					? <button type="button" data-testid="chatgpt-paste-reveal" className="mt-2 cursor-pointer text-xs text-muted-foreground underline underline-offset-2" onClick={() => setPasteOpen(true)}>{CHATGPT_PASTE_COPY.reveal}</button>
 					: <form data-testid="chatgpt-paste" className="mt-3 flex flex-col gap-2 text-xs text-muted-foreground" onSubmit={(event) => { event.preventDefault(); void submitPaste(); }}>
 						<p className="leading-relaxed">{CHATGPT_PASTE_COPY.remote}</p>

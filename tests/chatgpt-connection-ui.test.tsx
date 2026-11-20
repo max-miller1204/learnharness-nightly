@@ -14,6 +14,7 @@ import { ModelControl } from "../components/model-picker.tsx";
 import type { ChatGPTStatus, ChatGPTControlBridge } from "../src/core/index.ts";
 import { completedWithin } from "./completion.ts";
 import { InteractionLayersProvider } from "../components/interaction-layers.tsx";
+import { ServerEventsProvider, type NotifySource } from "../components/server-events.tsx";
 import { installModalDom } from "./modal-dom.ts";
 
 const dom = parseHTML("<html><body></body></html>");
@@ -828,7 +829,7 @@ test("Settings in the desktop app's window onto a server signs in through the de
  const page = webPage("desktop.tail1234.ts.net");
  const calls: (string | undefined)[] = [];
  let finish!: (result: { ok: true } | { error: string }) => void;
- window.lh = { chatgptSignIn: { start: (accountId?: string) => { calls.push(accountId); return new Promise((resolve) => { finish = resolve; }); }, cancel: async () => ({ ok: true }) } };
+ window.lh = { chatgptSignIn: { start: (accountId?: string) => { calls.push(accountId); return new Promise((resolve) => { finish = resolve; }); }, cancel: async () => ({ ok: true, ended: false }) } };
  window.open = () => assert.fail("no sign-in tab in the desktop app");
  try {
   await mount(); await click(byTest("chatgpt-login"));
@@ -843,17 +844,58 @@ test("Settings in the desktop app's window onto a server signs in through the de
  } finally { page.restore(); }
 });
 
-test("while the desktop bridge drives a sign-in, Settings offers no paste-back, and Cancel ends the desktop's attempt", async () => {
+/** Mounts with a server-events source the test can fire "subscriptions-changed" on. */
+async function mountWithEvents() {
+ let changed = () => {};
+ const source: NotifySource = { onEvent: (name, cb) => { if (name === "subscriptions-changed") changed = () => cb("{}"); }, onOpen() {}, close() {} };
+ host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+ await act(async () => root!.render(<InteractionLayersProvider><ServerEventsProvider connect={() => source}><ChatGPTUIProvider><ChatGPTConnection /></ChatGPTUIProvider></ServerEventsProvider></InteractionLayersProvider>));
+ return { fire: () => act(async () => { changed(); await new Promise((resolve) => setTimeout(resolve, 0)); }) };
+}
+
+test("paste-back is hidden only while this page's own desktop sign-in runs; it returns once that ends", async () => {
+ const page = webPage("desktop.tail1234.ts.net");
+ let pending = false;
+ globalThis.fetch = async (_input, init) => {
+  if (init?.method) { page.ops.push({ op: JSON.parse(String(init.body)).op }); return Response.json({ value: { ...disconnected(), pending } }); }
+  return Response.json({ chatgpt: { ...disconnected(), pending }, native: [] });
+ };
+ let finish!: (result: { ok: true } | { error: string }) => void;
+ const cancels: string[] = [];
+ window.lh = { chatgptSignIn: {
+  start: () => new Promise((resolve) => { finish = resolve; }),
+  cancel: async () => { cancels.push("desktop"); finish({ error: "ChatGPT sign-in ended. Try again." }); return { ok: true, ended: true }; },
+ } };
+ try {
+  const events = await mountWithEvents();
+  await click(byTest("chatgpt-login")); await click(byTest("chatgpt-proceed"));
+  pending = true; await events.fire();
+  assert(document.body.textContent?.includes("Waiting for browser sign-in"));
+  assert(!document.querySelector('[data-testid="chatgpt-paste-reveal"]'), "no paste-back while the bridge's own attempt runs");
+  assert(!document.querySelector('[data-testid="chatgpt-paste"]'));
+  // The desktop's attempt ends, but the server still waits (left behind, or another device's): paste-back returns.
+  await act(async () => { finish({ error: "Couldn’t reserve the local ChatGPT callback port." }); await new Promise((resolve) => setTimeout(resolve, 0)); });
+  await click(byTest("chatgpt-login"));
+  assert.equal(byTest("chatgpt-paste-reveal").textContent, CHATGPT_PASTE_COPY.reveal);
+ } finally { page.restore(); }
+});
+
+test("a sign-in adopted from another device keeps paste-back in the desktop app, and Cancel there cancels it on the server", async () => {
  const page = webPage("desktop.tail1234.ts.net");
  const cancels: string[] = [];
- window.lh = { chatgptSignIn: { start: async () => ({ ok: true }), cancel: async () => { cancels.push("desktop"); return { ok: true }; } } };
- globalThis.fetch = async (_input, init) => init?.method ? Response.json({ value: { ...disconnected(), pending: true } }) : Response.json({ chatgpt: { ...disconnected(), pending: true }, native: [] });
+ window.lh = { chatgptSignIn: { start: async () => ({ ok: true }), cancel: async () => { cancels.push("desktop"); return { ok: true, ended: false }; } } };
+ const ops: string[] = [];
+ globalThis.fetch = async (_input, init) => {
+  if (init?.method) { ops.push(JSON.parse(String(init.body)).op); return Response.json({ value: disconnected() }); }
+  return Response.json({ chatgpt: { ...disconnected(), pending: true }, native: [] });
+ };
  try {
   await mount(); await click(byTest("chatgpt-login"));
   assert(document.body.textContent?.includes("Waiting for browser sign-in"));
-  assert(!document.querySelector('[data-testid="chatgpt-paste-reveal"]'), "no paste-back: the desktop's attempt is the only one");
-  assert(!document.querySelector('[data-testid="chatgpt-paste"]'));
+  assert.equal(byTest("chatgpt-paste-reveal").textContent, CHATGPT_PASTE_COPY.reveal, "the phone's attempt can be finished here");
+  await click(byTest("chatgpt-paste-reveal")); assert(byTest("chatgpt-paste"));
   await click(button("Cancel", byTest("chatgpt-account-dialog")));
   assert.deepEqual(cancels, ["desktop"]);
+  assert.deepEqual(ops, ["cancel"], "the desktop had none of its own, so the page cancels the adopted one");
  } finally { page.restore(); }
 });

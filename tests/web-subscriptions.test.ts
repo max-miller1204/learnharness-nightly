@@ -226,6 +226,9 @@ test("the desktop's login gets its attempt id, and a cancel naming an old attemp
 	const web = await control({ op: "login" }, false);
 	assert.equal(web.attemptId, undefined, "only the desktop relay's login reply carries one");
 	assert.equal(await pending(), true);
+	const refused = await control({ op: "login", desktopRedirectPort: 42426 });
+	assert.equal(typeof refused.value.error, "string", "a desktop login while another is pending is refused");
+	assert.equal(refused.attemptId, undefined, "and never carries the other attempt's id");
 	await control({ op: "cancel", attemptId: first.attemptId });
 	assert.equal(await pending(), true, "the desktop's late cancel can't end it");
 	await control({ op: "cancel" }, false);

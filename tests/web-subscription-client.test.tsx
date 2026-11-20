@@ -111,7 +111,7 @@ test("in the desktop app's window onto a server, ChatGPT login uses its sign-in 
 	const asked: unknown[] = [];
 	const ok = { ok: true };
 	let reply: unknown = ok;
-	window.lh = { chatgptSignIn: { start: async (accountId?: string) => { asked.push(accountId); if (reply === ok) current = signedIn; return reply as { ok: true }; }, cancel: async () => ({ ok: true }) } };
+	window.lh = { chatgptSignIn: { start: async (accountId?: string) => { asked.push(accountId); if (reply === ok) current = signedIn; return reply as { ok: true }; }, cancel: async () => ({ ok: true, ended: false }) } };
 	const bridge = createWebChatGPTBridge(null);
 	assert.deepEqual(await bridge.login(), signedIn, "the server's status after the desktop's sign-in");
 	assert.deepEqual(await bridge.login("0b0c2a4e-6d8f-4a1b-9c3d-5e7f9a1b3c5d"), signedIn);
@@ -131,27 +131,27 @@ test("in the desktop app's window onto a server, ChatGPT login uses its sign-in 
 	assert.equal(tabs, 1);
 });
 
-test("Settings' Cancel in the desktop app's window ends the desktop's attempt before the server's own cancel", async () => {
+test("Settings' Cancel in the desktop app's window: the desktop's own attempt ends by its scoped cancel, and only otherwise does the page cancel", async () => {
 	const order: string[] = [];
 	const idle = { available: true, pending: false, allowBackgroundUse: true, activeId: null, accounts: [], error: null };
 	globalThis.fetch = async (_url, options) => {
 		if (options?.method) { order.push(`server ${JSON.parse(String(options.body)).op}`); return Response.json({ value: idle }); }
+		order.push("server status");
 		return Response.json({ chatgpt: idle, native: [] });
 	};
-	let release!: () => void;
-	window.lh = { chatgptSignIn: {
-		start: async () => ({ ok: true }),
-		cancel: () => { order.push("desktop cancel"); return new Promise((resolve) => { release = () => { order.push("desktop ended"); resolve({ ok: true }); }; }); },
-	} };
-	const cancelling = createWebChatGPTBridge(null).cancel();
-	await new Promise((resolve) => setImmediate(resolve));
-	assert.deepEqual(order, ["desktop cancel"], "the server's cancel waits for the desktop's attempt to end");
-	release();
-	assert.deepEqual(await cancelling, idle);
-	assert.deepEqual(order, ["desktop cancel", "desktop ended", "server cancel"]);
-	// A failing desktop cancel still cancels on the server.
-	window.lh = { chatgptSignIn: { start: async () => ({ ok: true }), cancel: async () => { throw new Error("gone"); } } };
+	const desktop = (cancel: () => Promise<{ ok: true; ended: boolean }>) => { window.lh = { chatgptSignIn: { start: async () => ({ ok: true }), cancel } }; };
+	// It ended its own attempt: no unscoped cancel, which would end a phone's newer sign-in.
+	desktop(async () => { order.push("desktop cancel"); return { ok: true, ended: true }; });
+	assert.deepEqual(await createWebChatGPTBridge(null).cancel(), idle);
+	assert.deepEqual(order, ["desktop cancel", "server status"]);
+	// It had none (an attempt adopted from another device): the page cancels on the server.
 	order.length = 0;
+	desktop(async () => { order.push("desktop cancel"); return { ok: true, ended: false }; });
+	await createWebChatGPTBridge(null).cancel();
+	assert.deepEqual(order, ["desktop cancel", "server cancel"]);
+	// A failing desktop cancel still cancels on the server.
+	order.length = 0;
+	desktop(async () => { throw new Error("gone"); });
 	await createWebChatGPTBridge(null).cancel();
 	assert.deepEqual(order, ["server cancel"]);
 	delete window.lh;
