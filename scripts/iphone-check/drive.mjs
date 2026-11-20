@@ -137,12 +137,37 @@ async function tap(screen, find) {
 	await sleep(700);
 }
 
-/** Open a session row with a tap on its title. */
+/** Open a session row. Each row sits in a native long-press menu, which on
+ * the simulator may take a touch held as long as AXe's default tap (0.1 s)
+ * for the start of a long press. The touches tried are logged; the first
+ * that works is tried first on the next row. */
+const ROW_TOUCHES = [
+	["touch held 0.03 s", 0.03],
+	["touch held 0.01 s", 0.01],
+	["touch held 0.06 s", 0.06],
+	["touch held 0.1 s (AXe's tap)", 0.1],
+];
+let rowTouch = 0;
 async function openRow(screen, title, reached) {
-	const row = (await settled(screen)).find((el) => label(el).startsWith(`${title},`) || label(el) === title);
-	if (!row) fail(screen, `no row for "${title}"`);
-	await axe(["tap", "-x", String(Math.round(frame(row).x + 40)), "-y", String(Math.round(frame(row).y + frame(row).height * 0.3)), "--tap-style", "physical"]);
-	await waitFor(screen === "sessions" ? `open ${title}` : screen, reached);
+	const order = [rowTouch, ...ROW_TOUCHES.keys()].filter((i, n, all) => all.indexOf(i) === n);
+	for (const i of order) {
+		const [name, hold] = ROW_TOUCHES[i];
+		const row = (await settled(screen)).find((el) => label(el).startsWith(`${title},`) || label(el) === title);
+		if (!row) fail(screen, `no row for "${title}"`);
+		const x = String(Math.round(frame(row).x + 40)), y = String(Math.round(frame(row).y + frame(row).height * 0.3));
+		await axe(["touch", "-x", x, "-y", y, "--down", "--up", "--delay", String(hold)]);
+		const deadline = Date.now() + 6000;
+		while (Date.now() < deadline) {
+			await sleep(800);
+			if (reached(await settled(screen))) {
+				log(`opened "${title}" with a ${name}`);
+				rowTouch = i;
+				return;
+			}
+		}
+		log(`a ${name} did not open "${title}"`);
+	}
+	fail(screen, `no touch opened the "${title}" row`);
 }
 
 /** Does a tap reach the app? Flip the session kind filter to Teaching and back to All. */
