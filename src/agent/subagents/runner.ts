@@ -1,4 +1,4 @@
-import type { PiEngine } from "../models.ts";
+import { ModelUnavailableError, type PiEngine } from "../models.ts";
 import type { SearchProvider } from "../../core/search.ts";
 import {
 	accumulateJobUsage,
@@ -26,7 +26,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ModelRole } from "../../../config.ts";
-import { ROLE_SLOT, modelsNotConfigured, type ModelSlotName, type ProviderKeyMissing } from "../../core/settings.ts";
+import { ROLE_SLOT, SUBSCRIPTION_UNREACHABLE_CODE, modelsNotConfigured, subscriptionConnectionLabel, type ConnectionRefusal, type ModelSlotName } from "../../core/settings.ts";
 import type { ChatStore, JobStore } from "../../core/ports.ts";
 import { runDemoBuilder } from "./demo-builder.ts";
 import { runPdfReaderAgent } from "./pdf-reader.ts";
@@ -93,11 +93,20 @@ export interface JobRunnerDeps {
 	searchProvider?: () => SearchProvider | null;
 	/** Key-presence gate (provider-key interlude, 2026-09-25): given the
 	 *  resolved engine's provider + the kind's slot tier, return the
-	 *  refusal envelope when the provider's key is missing (null = run).
-	 *  Injected because the agent layer may not read the key store; absent
-	 *  in tests that inject engines directly (test engines never owe a key). */
-	providerKeyMissing?: (provider: string, tier: ModelSlotName) => ProviderKeyMissing | null;
+	 *  refusal envelope when the provider's key or connection is missing,
+	 *  or the outage envelope when its subscription is unreachable
+	 *  (null = run). Injected because the agent layer may not read the key
+	 *  store; absent in tests that inject engines directly (test engines
+	 *  never owe a key). */
+	connectionRefusal?: (provider: string, tier: ModelSlotName) => ConnectionRefusal | null | Promise<ConnectionRefusal | null>;
+	/** Subscribes to connection changes (a parked job's wake); returns the
+	 *  unsubscribe. Absent: a parked job rechecks on its timer only. */
+	onConnectionChange?: (listener: () => void) => () => void;
 }
+
+/** How long a job parked on an unreachable subscription waits before it
+ *  checks again when no connection change wakes it first. */
+export const PARKED_RECHECK_MS = 30_000;
 
 export interface JobRunner {
 	/** Run one job's sub-agent loop to completion (background; never throws).
@@ -137,16 +146,11 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 	 * then writes through the job store so the poll sees progress). */
 	const usageTotals = new Map<string, JobUsage>();
 
-	function makeLoopContext(jobId: string, engine: PiEngine): LoopContext {
+	function makeLoopContext(jobId: string, engine: PiEngine, controller: AbortController): LoopContext {
 		const chatId = jobStore.getJob(jobId)?.chatId;
 		// Provider-qualified stamp: the engine's actual model — the only
 		// thing that ran (BYOK: no config-pin fallback stamps exist).
 		const model = `${engine.model.provider}:${engine.model.id}`;
-		// Real-kill wiring (2026-09 abort semantics): the controller is what
-		// the abort endpoint fires (agent/subagents/aborts.ts registry); the
-		// signal rides into every model call of the loop.
-		const controller = new AbortController();
-		registerJobAbort(jobId, controller);
 		return {
 			abortSignal: controller.signal,
 			chatId,
@@ -183,6 +187,18 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		return testOverride[KIND_ROLE[kind]]?.current ?? deps.engineFor?.(KIND_ROLE[kind]);
 	}
 
+	/** pickEngine, with a saved model its live catalog lacks returned instead
+	 *  of thrown: while a subscription is unreachable its catalog is empty, so
+	 *  the connection gate decides before the model counts as gone. */
+	function pickOrGone(kind: BuiltinJobKind): PiEngine | ModelUnavailableError | undefined {
+		try {
+			return pickEngine(kind);
+		} catch (error) {
+			if (error instanceof ModelUnavailableError) return error;
+			throw error;
+		}
+	}
+
 	const KIND_RUNNERS: Record<
 		BuiltinJobKind,
 		(jobId: string, engine: PiEngine, input: JobToolInput | undefined, loop: LoopContext) => Promise<void>
@@ -206,7 +222,6 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			jobStore.updateJob(jobId, { status: "error", error: `unknown kind ${job.kind}`, activity: "failed" });
 			return;
 		}
-		const engine = pickEngine(job.kind);
 		// The per-need refusal guards (BYOK 2026-09-22 / provider-key
 		// interlude 2026-09-25): no engine for the kind's tier, or the
 		// resolved engine's provider key gone — both refuse through the SAME
@@ -245,26 +260,60 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 								};
 			await finishJob(jobId, failure);
 		};
-		if (!engine) {
-			const tier = ROLE_SLOT[KIND_ROLE[job.kind]];
-			const envelope = modelsNotConfigured([tier]);
-			console.info(`[job ${jobId}] refused — ${JSON.stringify(envelope)}`);
-			await refuse(`${envelope.error} (missing: ${tier})`);
-			return;
-		}
-		// Key presence (2026-09-25): the engine exists, but its provider's
-		// key may be gone — refuse the spawn BEFORE the loop, same
-		// convention (the injected check reads the key store; absent in
-		// engine-injecting tests).
-		const keyRefusal =
-			deps.providerKeyMissing?.(engine.model.provider, ROLE_SLOT[KIND_ROLE[job.kind]]) ?? null;
-		if (keyRefusal) {
-			console.info(`[job ${jobId}] refused — ${JSON.stringify(keyRefusal)}`);
-			await refuse(keyRefusal.error);
-			return;
-		}
+		const tier = ROLE_SLOT[KIND_ROLE[job.kind]];
+		// Real-kill wiring (2026-09 abort semantics): the controller is what
+		// the abort endpoint fires (agent/subagents/aborts.ts registry); the
+		// signal rides into every model call of the loop. It is registered
+		// from the first gate check, so a job waiting on its connection is
+		// live: END aborts it and the stale sweep never runs a second copy.
+		const controller = new AbortController();
+		registerJobAbort(jobId, controller);
 		try {
-			await run(jobId, engine, input, makeLoopContext(jobId, engine));
+			let engine: PiEngine;
+			for (;;) {
+				const picked = pickOrGone(job.kind);
+				if (!picked) {
+					const envelope = modelsNotConfigured([tier]);
+					console.info(`[job ${jobId}] refused: ${JSON.stringify(envelope)}`);
+					await refuse(`${envelope.error} (missing: ${tier})`);
+					return;
+				}
+				// Key presence (2026-09-25): the engine exists, but its provider's
+				// key may be gone: refuse the spawn BEFORE the loop, same
+				// convention (the injected check reads the key store; absent in
+				// engine-injecting tests).
+				const provider = picked instanceof ModelUnavailableError ? picked.provider : picked.model.provider;
+				const refusal = (await deps.connectionRefusal?.(provider, tier)) ?? null;
+				if (controller.signal.aborted || !stillRunning(jobId)) return;
+				if (refusal?.code === SUBSCRIPTION_UNREACHABLE_CODE) {
+					// An unreachable subscription is an outage, not missing setup:
+					// the job waits, still running, and resumes on recovery the way
+					// parked steers do. No error is recorded, so no surface sends
+					// the learner to setup. Each wake reads settings fresh.
+					console.info(`[job ${jobId}] waiting: ${refusal.provider} unreachable`);
+					jobStore.updateJob(jobId, { activity: `waiting: ${subscriptionConnectionLabel(refusal.provider)} could not be reached` });
+					await connectionWake(controller.signal);
+					if (controller.signal.aborted || !stillRunning(jobId)) return;
+					continue;
+				}
+				if (refusal) {
+					console.info(`[job ${jobId}] refused: ${JSON.stringify(refusal)}`);
+					await refuse(refusal.error);
+					return;
+				}
+				// The gate refreshed a subscription's catalog: a model it still
+				// lacks is really gone.
+				const current = picked instanceof ModelUnavailableError ? pickOrGone(job.kind) : picked;
+				if (!current) continue; // settings changed: the next pass refuses
+				if (current instanceof ModelUnavailableError) {
+					console.info(`[job ${jobId}] refused: ${current.message}`);
+					await refuse(current.message);
+					return;
+				}
+				engine = current;
+				break;
+			}
+			await run(jobId, engine, input, makeLoopContext(jobId, engine, controller));
 		} finally {
 			unregisterJobAbort(jobId);
 			// The last usage write may have been mid-flight when the loop died;
@@ -274,6 +323,23 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			if (usage) jobStore.updateJob(jobId, { usage });
 			usageTotals.delete(jobId);
 		}
+	}
+
+	/** Resolves on the next connection change, after PARKED_RECHECK_MS, or
+	 *  on abort, whichever comes first. */
+	function connectionWake(signal: AbortSignal): Promise<void> {
+		return new Promise((resolve) => {
+			let unsubscribe: (() => void) | undefined;
+			const wake = () => {
+				clearTimeout(timer);
+				unsubscribe?.();
+				signal.removeEventListener("abort", wake);
+				resolve();
+			};
+			const timer = setTimeout(wake, PARKED_RECHECK_MS);
+			unsubscribe = deps.onConnectionChange?.(wake);
+			signal.addEventListener("abort", wake, { once: true });
+		});
 	}
 
 	/** Dispatch input wins, then the job's saved arguments. Legacy jobs

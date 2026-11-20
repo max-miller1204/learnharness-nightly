@@ -13,7 +13,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, before, beforeEach, test } from "node:test";
+import { createFauxCore, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { issueSession } from "../selfhost/src/auth-store.ts";
+import type { PiEngine } from "../src/agent/models.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "lh-subscription-outage-"));
 process.env.LH_DATA_DIR = path.join(root, "data");
@@ -23,10 +25,13 @@ process.env.LH_SELFHOST = "0";
 process.env.LH_IGNORE_ENV_KEYS = "1";
 
 const { PATHS } = await import("../config.ts");
-const { piModels } = await import("../src/agent/models.ts");
-const { connectionUnreachable } = await import("../src/agent/subscription-connections.ts");
-const { providerKeyMissing, subscriptionUnreachable } = await import("../src/core/settings.ts");
-const { handleChatInput, handleChatRequest } = await import("../src/server/chat-handler.ts");
+const { piEngineForSpec, piModels } = await import("../src/agent/models.ts");
+const { connectionUnreachable, onSubscriptionChange } = await import("../src/agent/subscription-connections.ts");
+const { createJobRunner } = await import("../src/agent/subagents/runner.ts");
+const { isProviderKeyRefusal, providerKeyMissing, ProviderKeyMissingError, subscriptionUnreachable, SubscriptionUnreachableError } = await import("../src/core/settings.ts");
+const { extraction, handleChatInput, handleChatRequest } = await import("../src/server/chat-handler.ts");
+const { connectionRefusal } = await import("../src/server/connection-refusal.ts");
+const { jobStore } = await import("../src/store/jobs.ts");
 const { catalogProviders, refreshConnectionCatalog } = await import("../src/server/model-catalog.ts");
 const { productionEngineFor } = await import("../src/server/side-chat.ts");
 const { pluginKeyMissing } = await import("../src/server/plugin-model-refusal.ts");
@@ -193,6 +198,71 @@ test("a ChatGPT steer during a catalog outage parks on 403 even with cached back
 	const steer = { id: "auto", role: "custom" as const, customType: "subagent-steer" as const, content: "Automatic result", details: { jobId: "fixture-job" }, display: true, timestamp: 2 };
 	const response = await handleChatInput(pinned("chatgpt", GPT), { type: "steers", steers: [steer] } as Parameters<typeof handleChatInput>[1], () => assert.fail("a parked steer builds no agent"));
 	assert.equal(response.status, 403);
+});
+
+// The job runner and extraction pipeline get the same gate chat-handler wires.
+// The engine resolves against the live catalog like production's, then runs scripted.
+const jobRunner = (engine: PiEngine, steers: unknown[]) => createJobRunner({
+	chatStore, jobStore, deliver: async (steer) => { steers.push(steer); },
+	engineFor: () => { piEngineForSpec({ provider: COPILOT, id: COPILOT_MODEL }); return engine; },
+	connectionRefusal: (provider, tier) => connectionRefusal(provider, [tier]),
+	onConnectionChange: onSubscriptionChange,
+});
+function copilotEngine(brief: string): PiEngine {
+	const faux = createFauxCore({ tokenSize: { min: 64, max: 64 } });
+	faux.setResponses([fauxAssistantMessage([fauxText(brief)])]);
+	return { model: { ...faux.getModel(), provider: COPILOT }, streamFn: faux.streamSimple };
+}
+function researchJob() {
+	const chatId = pinned(COPILOT, COPILOT_MODEL);
+	return jobStore.createJob({ kind: "research", chatId, toolCallId: `call-${randomUUID()}`, input: { question: "What is a monad?" } }).id;
+}
+
+test("a job spawn during a native outage waits with no setup refusal; a confirmed disconnect refuses; recovery runs it with no settings change", async () => {
+	const steers: unknown[] = [];
+	const refused = researchJob();
+	const parked = jobRunner(copilotEngine("unused"), steers).runJob(refused);
+	await until(() => jobStore.getJob(refused)!.activity === "waiting: GitHub Copilot could not be reached");
+	assert.equal(jobStore.getJob(refused)!.status, "running");
+	assert.equal(jobStore.getJob(refused)!.error, undefined, "the dock and dispatch card have no setup refusal to show");
+
+	native = "disconnected";
+	await refreshConnectionCatalog(COPILOT); // the snapshot says "not connected": the parked job wakes
+	await parked;
+	assert.equal(jobStore.getJob(refused)!.error, providerKeyMissing(COPILOT, ["cheap"]).error);
+	assert.equal(isProviderKeyRefusal(jobStore.getJob(refused)!.error), true, "a real disconnect is setup");
+
+	native = "fails";
+	await refreshConnectionCatalog(COPILOT);
+	const recovered = researchJob();
+	const waiting = jobRunner(copilotEngine("The brief after the outage."), steers).runJob(recovered);
+	await until(() => jobStore.getJob(recovered)!.activity?.startsWith("waiting:") === true);
+	native = "connected";
+	await refreshConnectionCatalog(COPILOT); // any check that sees the connection wakes it
+	await waiting;
+	const done = jobStore.getJob(recovered)!;
+	assert.equal(done.status, "done");
+	assert.equal((done.result as { brief: string }).brief, "The brief after the outage.");
+});
+
+test("an extraction run during an outage defers (retryable), a confirmed disconnect refuses as setup, and recovery runs with no settings change", async () => {
+	writeSettings({ version: 1, models: { cheap: { model: { provider: COPILOT, id: COPILOT_MODEL } } } });
+	try {
+		const chatId = chatStore.createChat("outage extraction").id;
+		await assert.rejects(extraction.runExtraction(chatId), (error: unknown) => {
+			assert.ok(error instanceof SubscriptionUnreachableError, "an outage, not a setup refusal");
+			assert.deepEqual(error.envelope, subscriptionUnreachable(COPILOT));
+			return true;
+		});
+		// The failed check emptied the catalog: still an outage, not a gone model.
+		await assert.rejects(extraction.runExtraction(chatId), SubscriptionUnreachableError);
+		native = "disconnected";
+		await assert.rejects(extraction.runExtraction(chatId), ProviderKeyMissingError);
+		native = "connected";
+		assert.deepEqual(await extraction.runExtraction(chatId), { nodes: 0, chains: 0 });
+	} finally {
+		writeSettings({ version: 1 });
+	}
 });
 
 // Last: the desktop connection closes for the rest of this process.

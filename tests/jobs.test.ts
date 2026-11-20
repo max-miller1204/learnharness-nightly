@@ -71,8 +71,8 @@ import { persistTurn } from "../src/server/turn-service.ts";
 import { chatStore } from "../src/store/chats.ts";
 import { jobStore } from "../src/store/jobs.ts";
 import { createJobRunner, pdfModelOverride, researchModelOverride } from "../src/agent/subagents/runner.ts";
-import { providerKeyMissing, type ModelSlotName } from "../src/core/settings.ts";
-import type { PiEngine } from "../src/agent/models.ts";
+import { isProviderKeyRefusal, providerKeyMissing, subscriptionUnreachable, type ModelSlotName } from "../src/core/settings.ts";
+import { ModelUnavailableError, type PiEngine } from "../src/agent/models.ts";
 import type { SearchProvider } from "../src/core/search.ts";
 import { PATHS } from "../config.ts";
 import { projectView as projectNative } from "../src/core/view.ts";
@@ -1876,7 +1876,7 @@ describe("provider-key job refusal (key-presence interlude)", () => {
 			jobStore,
 			deliver: delivery.deliver,
 			engineFor: () => engine,
-			providerKeyMissing: (provider, tier) => {
+			connectionRefusal: (provider, tier) => {
 				seen.push([provider, tier]);
 				return providerKeyMissing(provider, [tier]);
 			},
@@ -1896,6 +1896,93 @@ describe("provider-key job refusal (key-presence interlude)", () => {
 		);
 		const result = done.result as ResearchResult;
 		assert.equal(result.sources.length, 0, "the failure result matches the research convention");
+	});
+
+	/** A runner whose gate answers from `answer`, with a hand-fired connection change. */
+	function outageRunner(answer: () => ReturnType<NonNullable<Parameters<typeof createJobRunner>[0]["connectionRefusal"]>>, engine: PiEngine | (() => PiEngine)) {
+		const delivery = fakeDeliver();
+		const listeners = new Set<() => void>();
+		const runner = createJobRunner({
+			chatStore, jobStore, deliver: delivery.deliver, engineFor: typeof engine === "function" ? engine : () => engine,
+			connectionRefusal: answer,
+			onConnectionChange: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+		});
+		return { runner, delivery, listeners, change: () => { for (const listener of [...listeners]) listener(); } };
+	}
+	function researchJob(toolCallId: string) {
+		const chat = chatStore.createChat(`Test: outage ${toolCallId}`);
+		trackChat(chat.id);
+		chatStore.saveMessages(chat.id, nativeToolMessages("hi", "research", toolCallId, RESEARCH_INPUT));
+		const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId });
+		trackJob(job.id);
+		return job.id;
+	}
+	const settle = async (ready: () => boolean) => { while (!ready()) await new Promise((resolve) => setImmediate(resolve)); };
+
+	it("an unreachable subscription parks the spawn with no setup refusal, and the same settings run it on recovery", async () => {
+		const jobId = researchJob("call-outage1");
+		let reachable = false;
+		const engine = fauxEngine([fauxAssistantMessage([fauxText("The brief after the outage.")])]);
+		// While unreachable the subscription's live catalog is empty, so the
+		// engine does not resolve: the gate still decides, not "model gone".
+		const resolve = () => { if (!reachable) throw new ModelUnavailableError("chatgpt", "gpt-5"); return engine; };
+		const { runner, delivery, listeners, change } = outageRunner(() => (reachable ? null : subscriptionUnreachable("chatgpt")), resolve);
+		const running = runner.runJob(jobId);
+		await settle(() => listeners.size === 1);
+
+		const parked = jobStore.getJob(jobId)!;
+		assert.equal(parked.status, "running", "an outage is not a failure");
+		assert.equal(parked.error, undefined, "no error, so the dock and dispatch card never offer setup");
+		assert.equal(isProviderKeyRefusal(parked.error), false);
+		assert.equal(parked.activity, "waiting: ChatGPT could not be reached");
+		assert.equal(isJobLive(jobId), true, "a parked job is live: END reaches it and the sweep never runs a second copy");
+		assert.equal(delivery.steers.length, 0, "nothing is steered while it waits");
+
+		change(); // a connection change while still unreachable parks again
+		await settle(() => listeners.size === 1);
+		assert.equal(jobStore.getJob(jobId)!.status, "running");
+
+		reachable = true;
+		change();
+		await running;
+		const done = jobStore.getJob(jobId)!;
+		assert.equal(done.status, "done");
+		assert.equal((done.result as ResearchResult).brief, "The brief after the outage.");
+		assert.equal(delivery.steers.length, 1);
+		assert.equal(listeners.size, 0, "the wake unsubscribes");
+		assert.equal(isJobLive(jobId), false);
+	});
+
+	it("END on a parked job unwinds it; a confirmed disconnect after an outage is the setup refusal", async () => {
+		const aborted = researchJob("call-outage2");
+		const first = outageRunner(() => subscriptionUnreachable("chatgpt"), fauxEngine([]));
+		const parked = first.runner.runJob(aborted);
+		await settle(() => first.listeners.size === 1);
+		assert.deepEqual(abortJob(aborted), { ok: true });
+		await parked;
+		assert.equal(jobStore.getJob(aborted)!.error, "Aborted by learner");
+		assert.equal(first.listeners.size, 0);
+
+		const refused = researchJob("call-outage3");
+		const engine = fauxEngine([]);
+		let disconnected = false;
+		const second = outageRunner(() => (disconnected ? providerKeyMissing("chatgpt", ["cheap"]) : subscriptionUnreachable("chatgpt")), engine);
+		const waiting = second.runner.runJob(refused);
+		await settle(() => second.listeners.size === 1);
+		disconnected = true;
+		second.change();
+		await waiting;
+		const done = jobStore.getJob(refused)!;
+		assert.equal(done.error, providerKeyMissing("chatgpt", ["cheap"]).error);
+		assert.equal(isProviderKeyRefusal(done.error), true, "a real disconnect still opens setup");
+		assert.equal(second.delivery.steers.length, 1);
+
+		// Reachable, but the refreshed catalog still lacks the model: gone.
+		const gone = researchJob("call-outage4");
+		const third = outageRunner(() => null, () => { throw new ModelUnavailableError("chatgpt", "gpt-retired"); });
+		await third.runner.runJob(gone);
+		assert.equal(jobStore.getJob(gone)!.error, new ModelUnavailableError("chatgpt", "gpt-retired").message);
+		assert.equal(isProviderKeyRefusal(jobStore.getJob(gone)!.error), false);
 	});
 });
 
