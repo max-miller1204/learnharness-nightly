@@ -588,7 +588,10 @@ async function phone() {
 	// The fake model answers the saved quiz answer with one scripted reply.
 	const replied = () => readFileSync(inst.MODEL_LOG, "utf8").includes("quiz-answered");
 	const answered = (elements) => replied() && inSession(QUIZ.title)(elements) && !elements.some(isChoice)
-		&& !has("Reply in progress…")(elements) && hasMatch(ANSWER_LINE)(elements) && hasMatch(/The first pair fits/)(elements);
+		// The card's answer line and its verdict (the fixture's earlier cards are correct). The
+		// scripted reply has math, and a paragraph with math is not in the accessibility
+		// tree, so the web pass checks the reply's text.
+		&& !has("Reply in progress…")(elements) && hasMatch(ANSWER_LINE)(elements) && has("INCORRECT")(elements);
 	await waitFor("quiz-answered", answered, 90_000);
 	// The saved answer holds exactly the two picked choices.
 	const record = JSON.parse(readFileSync(path.join(inst.DATA_DIR, "chats", `${QUIZ.id}.json`), "utf8"));
