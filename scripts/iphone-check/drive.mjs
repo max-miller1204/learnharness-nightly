@@ -131,7 +131,9 @@ async function tap(screen, find) {
 	const target = elements.find(find);
 	if (!target) fail(screen, "the control to tap is missing");
 	const { x, y } = center(target);
-	await axe(["tap", "-x", String(x), "-y", String(y)]);
+	// A real touch down and up: the session rows sit in a native long-press
+	// menu that a synthesized simulator tap does not press.
+	await axe(["tap", "-x", String(x), "-y", String(y), "--tap-style", "physical"]);
 	await sleep(700);
 }
 
