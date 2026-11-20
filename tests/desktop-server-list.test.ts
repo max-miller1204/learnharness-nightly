@@ -251,7 +251,7 @@ test("the app-owned switch flow keeps defaults, enforces preflight and isolates 
 
 	await controller.launch();
 	assert.equal(localStarts, 0);
-	assert.deepEqual(await send(panel(), "state"), { servers: [], defaultServer: null, active: null, busy: false, problem: null, notice: "", signingIn: false, damaged: false });
+	assert.deepEqual(await send(panel(), "state"), { servers: [], defaultServer: null, active: null, busy: false, removing: false, problem: null, notice: "", signingIn: false, damaged: false });
 	await send(panel(), "connect", "local");
 	const local = lastWindow();
 	assert.equal(localStarts, 1);
@@ -1187,134 +1187,323 @@ test("Update everything: the relaunch reopens its server once, and a covered res
 	await controller.endUpdate(beta, null);
 	assert.equal(TestWindow.all.length, windows, "Later doesn't switch back");
 });
+const unreachableMessage = "Couldn’t reach the LearnHarness server. Check the address and connection, then retry.";
+const savedCredential = (origin: string, token: string) => fakeSafeStorage.encryptString(JSON.stringify({ origin, token })).toString("base64");
 
-test("Remove forgets a saved server and its credential with an ordinary write, and old lists stay readable", async (t) => {
+test("Remove forgets a saved server with an ordinary write, a removed default stays empty, and old lists stay readable", async (t) => {
 	const directory = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-remove-store-"));
 	t.after(() => fs.rm(directory, { recursive: true, force: true }));
 	const file = path.join(directory, "servers.json");
-	// A list as earlier versions wrote it.
-	const credential = (origin: string, token: string) => fakeSafeStorage.encryptString(JSON.stringify({ origin, token })).toString("base64");
-	await fs.writeFile(file, JSON.stringify({
-		defaultServer: beta, version: 1,
-		servers: [{ origin: alpha, credential: credential(alpha, "alpha-secret") }, { origin: beta, credential: credential(beta, "beta-secret") }],
+	// Lists as earlier versions wrote them: no setUp field.
+	const writeOld = (defaultServer: string | null) => fs.writeFile(file, JSON.stringify({
+		defaultServer, version: 1,
+		servers: [{ origin: alpha, credential: savedCredential(alpha, "alpha-secret") }, { origin: beta, credential: savedCredential(beta, "beta-secret") }],
 	}), { mode: 0o600 });
+	await writeOld(null);
+	const unfinished = await openServerList(file, fakeSafeStorage);
+	assert.equal(unfinished.damaged, false);
+	assert.equal(unfinished.firstSetup, true, "an old list paired but never connected is still in its first setup");
+	await writeOld(beta);
 	const store = await openServerList(file, fakeSafeStorage);
 	assert.equal(store.damaged, false);
+	assert.equal(store.firstSetup, false, "an old list with a default has finished setup");
 	assert.deepEqual(store.origins, [alpha, beta]);
 	await store.remove(beta);
 	assert.deepEqual(store.origins, [alpha]);
 	assert.equal(store.defaultServer, null, "removing the default leaves no launch default");
+	assert.equal(store.firstSetup, false, "a removed default isn't a first setup");
 	await store.remove("https://unknown.example.test");
 	const reopened = await openServerList(file, fakeSafeStorage);
 	assert.equal(reopened.damaged, false);
 	assert.deepEqual(reopened.origins, [alpha]);
+	assert.equal(reopened.firstSetup, false, "still set up after a restart");
 	assert.equal(await reopened.readToken(alpha), "alpha-secret");
 	await assert.rejects(reopened.readToken(beta), { kind: "pair" });
-	assert.deepEqual(Object.keys(JSON.parse(await fs.readFile(file, "utf8"))).sort(), ["defaultServer", "servers", "version"]);
+	assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), {
+		defaultServer: null, servers: [{ origin: alpha, credential: savedCredential(alpha, "alpha-secret") }], setUp: true, version: 1,
+	});
+	await reopened.savePairing(beta, "beta-secret");
+	assert.equal(reopened.firstSetup, false, "pairing again keeps the record");
 	await reopened.saveDefault("local");
 	await reopened.remove(alpha);
 	assert.equal(reopened.defaultServer, "local", "another default stays");
 });
 
-test("Remove asks first, closes the open server it forgets, and Switch server says when the open server is gone", async (t) => {
+type Published = { busy: boolean; removing: boolean; problem: { server: string; kind: string; message: string } | null; servers: string[] };
+/** A list over saved alpha and beta (default beta), with fetch and the confirm dialog under the test's control. */
+async function removalFixture(t: test.TestContext, { defaultServer = beta as string | null, setUp = true } = {}) {
 	const directory = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-remove-"));
 	const originalFetch = globalThis.fetch;
 	t.after(async () => { globalThis.fetch = originalFetch; await fs.rm(directory, { recursive: true, force: true }); });
-	const saved = await openServerList(path.join(directory, "servers.json"), fakeSafeStorage);
-	await saved.savePairing(alpha, "alpha-secret");
-	await saved.savePairing(beta, "beta-secret");
-	await saved.saveDefault(beta);
-	let betaGone = false;
-	globalThis.fetch = async (input) => {
+	const file = path.join(directory, "servers.json");
+	await fs.writeFile(file, JSON.stringify({
+		defaultServer, version: 1, ...(setUp ? {} : { setUp: false }),
+		servers: [{ origin: alpha, credential: savedCredential(alpha, "alpha-secret") }, { origin: beta, credential: savedCredential(beta, "beta-secret") }],
+	}), { mode: 0o600 });
+	const fixture = {
+		file,
+		/** Servers that refuse connections. */
+		down: new Set<string>(),
+		/** Requests, as "origin path bearer". */
+		calls: [] as string[],
+		/** While set for an origin, its descriptor requests wait for the promise. */
+		holdDescriptor: new Map<string, Promise<void>>(),
+		answer: 1,
+		asked: [] as { parent: unknown; options: { message: string; buttons: string[]; defaultId: number; cancelId: number } }[],
+		/** Every snapshot the list was sent, in order. */
+		published: [] as Published[],
+		/** Runs on each snapshot as it is sent. */
+		onPublish: (_state: Published) => {},
+		localStarts: 0,
+	};
+	globalThis.fetch = async (input, options) => {
 		const url = new URL(String(input));
-		if (url.origin === beta && betaGone) throw new TypeError("fetch failed", { cause: Object.assign(new Error("refused"), { code: "ECONNREFUSED" }) });
+		const bearer = new Headers(options?.headers).get("authorization");
+		fixture.calls.push(`${url.origin} ${url.pathname} ${bearer ?? "-"}`);
+		if (url.pathname === PROTOCOL_ROUTES.serverInfo) await fixture.holdDescriptor.get(url.origin);
+		if (fixture.down.has(url.origin)) throw new TypeError("fetch failed", { cause: Object.assign(new Error("refused"), { code: "ECONNREFUSED" }) });
 		if (url.pathname === PROTOCOL_ROUTES.serverInfo) return Response.json({ name: "Test server", protocolVersion: CLIENT_PROTOCOL_VERSION });
 		if (url.pathname === PROTOCOL_ROUTES.session) return Response.json({ authenticated: true });
 		throw new Error("Unexpected request " + url.pathname);
 	};
-	const asked: { parent: unknown; options: { message: string; buttons: string[]; cancelId: number } }[] = [];
-	let answer = 0;
 	type FakeEvent = { sender: TestWindow["webContents"]; senderFrame: { url: string } };
 	let handler!: (event: FakeEvent, action: string, payload?: unknown) => Promise<unknown>;
 	const controller = await createServerList({
 		app: { getPath: () => directory }, BrowserWindow: TestWindow, WebContentsView: TestView, safeStorage: fakeSafeStorage,
 		ipcMain: { handle: (_channel: string, callback: typeof handler) => { handler = callback; } },
 		session: { fromPartition: () => new TestSession() },
-		dialog: { showMessageBox: async (parent: unknown, options: (typeof asked)[number]["options"]) => { asked.push({ parent, options }); return { response: answer }; } },
-		startLocal: async () => "http://localhost:3000", stopLocal: async () => {},
+		dialog: {
+			showMessageBox: async (parent: unknown, options: (typeof fixture.asked)[number]["options"]) => {
+				fixture.asked.push({ parent, options });
+				return { response: fixture.answer };
+			},
+		},
+		startLocal: async () => { fixture.localStarts++; return "http://localhost:3000"; },
+		stopLocal: async () => {},
 		createLocalWindow: () => { const win = new TestWindow(); return { win, load: (url: string) => win.loadURL(url) }; },
 		setLocalMenu() {},
 	});
-	const panel = () => controller.show() as TestWindow;
+	const panel = () => {
+		const win = controller.show() as TestWindow;
+		if (!(win as unknown as { watched?: boolean }).watched) {
+			(win as unknown as { watched?: boolean }).watched = true;
+			const send = win.webContents.send;
+			win.webContents.send = (channel: string, state: typeof win.snapshot) => {
+				send(channel, state);
+				const next = state as unknown as Published;
+				fixture.published.push(next);
+				fixture.onPublish(next);
+			};
+		}
+		return win;
+	};
 	const send = (action: string, value?: unknown) => {
 		const win = panel();
 		return handler({ sender: win.webContents, senderFrame: win.webContents.mainFrame }, action, value);
 	};
-	const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 20));
+	const state = () => send("state") as Promise<{ servers: string[]; defaultServer: string | null; active: string | null; busy: boolean; removing: boolean; problem: { server: string; kind: string; message: string } | null }>;
+	return Object.assign(fixture, { controller, panel, send, state });
+}
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 20));
+/** Waits for `done`, up to a second. */
+async function until(done: () => boolean) {
+	for (let waited = 0; !done() && waited < 1000; waited += 10) await new Promise<void>((resolve) => setTimeout(resolve, 10));
+}
 
-	await controller.launch();
-	const open = controller.current()!.win as TestWindow;
+test("Remove asks first, forgets the server, and closes the open server it forgets", async (t) => {
+	const list = await removalFixture(t);
+	await list.controller.launch();
+	const open = list.controller.current()!.win as TestWindow;
 	assert.equal(open.url, beta);
 
-	// Switch server… on an open server that went away: the list says so and offers Retry.
-	betaGone = true;
-	controller.show();
-	assert.equal(open.destroyed, false, "plain show() leaves the open server alone");
-	const list = controller.show({ check: true }) as TestWindow;
-	await settle();
-	assert.equal(open.destroyed, true);
-	assert.deepEqual(list.snapshot?.problem, { server: beta, kind: "retry", message: "Couldn’t reach the LearnHarness server. Check the address and connection, then retry." });
-
-	// Cancel keeps it; T3's destructive confirm asks first, with Cancel as the default.
-	await send("remove", beta);
-	assert.equal(asked.length, 1);
-	assert.equal(asked[0]!.parent, list);
-	assert.equal(asked[0]!.options.message, `Remove ${beta} from this device?`);
-	assert.deepEqual(asked[0]!.options.buttons, ["Cancel", "Confirm"]);
-	assert.equal(asked[0]!.options.cancelId, 0);
-	assert.deepEqual((await send("state") as { servers: string[] }).servers, [alpha, beta]);
-
-	answer = 1;
-	await send("remove", beta);
-	const state = await send("state") as { servers: string[]; defaultServer: string | null; problem: unknown; busy: boolean };
-	assert.deepEqual(state.servers, [alpha]);
-	assert.equal(state.defaultServer, null);
-	assert.equal(state.problem, null, "the removed server's problem goes with it");
-	assert.equal(state.busy, false);
+	// T3's destructive confirm asks first, with Cancel as the default and the Esc answer.
+	list.answer = 0;
+	await list.send("remove", alpha);
+	assert.equal(list.asked.length, 1);
+	assert.equal(list.asked[0]!.parent, list.panel());
+	assert.equal(list.asked[0]!.options.message, `Remove ${alpha} from this device?`);
+	assert.deepEqual(list.asked[0]!.options.buttons, ["Cancel", "Confirm"]);
+	assert.equal(list.asked[0]!.options.defaultId, 0);
+	assert.equal(list.asked[0]!.options.cancelId, 0);
+	assert.deepEqual((await list.state()).servers, [alpha, beta]);
 
 	// The open server can be removed too: its window closes.
-	betaGone = false;
-	await send("connect", alpha);
-	const alphaWindow = controller.current()!.win as TestWindow;
-	await send("remove", alpha);
-	assert.equal(alphaWindow.destroyed, true);
-	assert.equal(controller.current(), null);
-	assert.deepEqual((await send("state") as { servers: string[]; active: string | null }).servers, []);
+	list.answer = 1;
+	await list.send("remove", beta);
+	assert.equal(open.destroyed, true);
+	assert.equal(list.controller.current(), null);
+	const after = await list.state();
+	assert.deepEqual(after.servers, [alpha]);
+	assert.equal(after.defaultServer, null);
+	assert.equal(after.busy, false);
 
 	// This computer and unknown origins are never removed or asked about.
-	const before = asked.length;
-	await send("remove", "local");
-	await send("remove", "https://unknown.example.test");
-	assert.equal(asked.length, before);
-	const reopened = await openServerList(path.join(directory, "servers.json"), fakeSafeStorage);
-	assert.deepEqual(reopened.origins, []);
-	assert.equal(reopened.damaged, false);
+	const before = list.asked.length;
+	await list.send("remove", "local");
+	await list.send("remove", "https://unknown.example.test");
+	assert.equal(list.asked.length, before);
+	assert.deepEqual((await openServerList(list.file, fakeSafeStorage)).origins, [alpha]);
 });
 
-test("the list offers Remove… for each saved server but not This computer, and hides an empty recovery box", async () => {
+test("a removal shows Removing…, not Connecting…, and a removed default is never replaced by a later connect", async (t) => {
+	const list = await removalFixture(t);
+	await list.controller.launch();
+	await list.send("remove", beta);
+	const during = list.published.filter((state) => state.removing);
+	assert.ok(during.length > 0, "the list hears about the removal");
+	assert.ok(during.every((state) => state.busy), "its controls are disabled meanwhile");
+
+	// The page's notice: Removing…, never Connecting….
+	const shell = path.join(import.meta.dirname, "../electron");
+	const { document } = parseHTML(await fs.readFile(path.join(shell, "server-list.html"), "utf8"));
+	let listener!: (state: object) => void;
+	const quiet = { servers: [alpha], defaultServer: null, active: null, busy: false, removing: false, problem: null, notice: "", signingIn: false, damaged: false };
+	runInNewContext(await fs.readFile(path.join(shell, "server-list.js"), "utf8"), {
+		window: { servers: { state: async () => quiet, onChange: (next: typeof listener) => { listener = next; } } }, document,
+	});
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	listener({ ...quiet, ...during[0] });
+	assert.equal(document.getElementById("notice")!.textContent, "Removing…");
+	assert.equal(document.getElementById("pair-submit")!.textContent, "Connect");
+	listener({ ...quiet, busy: true });
+	assert.equal(document.getElementById("notice")!.textContent, "Connecting…", "a connect still says so");
+
+	// Connect, This computer, Dock reopen and Retry all leave the launch default empty.
+	await list.send("connect", alpha);
+	assert.equal(list.controller.current()?.origin, alpha);
+	assert.equal((await list.state()).defaultServer, null, "Connect doesn't make a default");
+	await list.send("connect", "local");
+	assert.equal((await list.state()).defaultServer, null, "This computer doesn't make a default");
+	await list.send("connect", alpha);
+	await list.controller.reopen();
+	assert.equal((await list.state()).defaultServer, null, "Dock reopen doesn't make a default");
+	list.down.add(alpha);
+	await list.send("connect", alpha);
+	assert.equal((await list.state()).problem?.kind, "retry");
+	list.down.delete(alpha);
+	await list.send("connect", alpha);
+	assert.equal((await list.state()).defaultServer, null, "Retry doesn't make a default");
+	assert.equal((await openServerList(list.file, fakeSafeStorage)).defaultServer, null);
+	// Set as default still works.
+	await list.send("default", alpha);
+	assert.equal((await list.state()).defaultServer, alpha);
+});
+
+test("the first setup of an old list paired but never connected still saves its default", async (t) => {
+	const list = await removalFixture(t, { defaultServer: null });
+	await list.send("connect", alpha);
+	assert.equal((await list.state()).defaultServer, alpha);
+	const fresh = await removalFixture(t, { defaultServer: null, setUp: false });
+	await fresh.send("connect", "local");
+	assert.equal((await fresh.state()).defaultServer, "local");
+});
+
+test("Switch server waits out a restarting server, then says when the open server is gone", async (t) => {
+	const list = await removalFixture(t);
+	await list.controller.launch();
+	const open = list.controller.current()!.win as TestWindow;
+
+	// Down for a moment: the retry window covers it and the page stays.
+	list.down.add(beta);
+	setTimeout(() => list.down.delete(beta), 15);
+	const before = list.calls.length;
+	list.controller.show({ check: true });
+	await until(() => list.calls.slice(before).some((call) => call.startsWith(`${beta} ${PROTOCOL_ROUTES.session}`)));
+	await settle();
+	assert.equal(open.destroyed, false, "a server back within the retry window keeps its page");
+	assert.equal((await list.state()).problem, null);
+	assert.ok(list.calls.filter((call) => call.startsWith(`${beta} ${PROTOCOL_ROUTES.serverInfo}`)).length > 2, "it retried");
+
+	// Still down past the window: the list says so, with Retry.
+	list.down.add(beta);
+	list.controller.show();
+	await settle();
+	assert.equal(open.destroyed, false, "plain show() leaves the open server alone");
+	const panel = list.controller.show({ check: true }) as TestWindow;
+	await settle();
+	assert.equal(open.destroyed, false, "the page stays while the retry window runs");
+	await until(() => open.destroyed);
+	assert.equal(open.destroyed, true);
+	assert.deepEqual(panel.snapshot?.problem, { server: beta, kind: "retry", message: unreachableMessage });
+});
+
+test("removing another server while the open server's check fails still shows the problem", async (t) => {
+	const list = await removalFixture(t);
+	await list.controller.launch();
+	const open = list.controller.current()!.win as TestWindow;
+	let release!: () => void;
+	list.holdDescriptor.set(beta, new Promise<void>((resolve) => { release = resolve; }));
+	list.down.add(beta);
+	list.controller.show({ check: true });
+	await settle();
+	// The check fails while alpha's removal is writing.
+	let failedDuringRemoval = false;
+	list.onPublish = (state) => {
+		if (state.removing && !failedDuringRemoval) { failedDuringRemoval = true; release(); }
+	};
+	// A non-connectivity failure ends the check at once, inside the write.
+	list.down.delete(beta);
+	globalThis.fetch = ((original) => async (input: RequestInfo | URL, options?: RequestInit) => {
+		if (String(input).startsWith(beta)) {
+			await list.holdDescriptor.get(beta);
+			throw new TypeError("fixture without a cause");
+		}
+		return original(input, options);
+	})(globalThis.fetch);
+	await list.send("remove", alpha);
+	await settle();
+	assert.equal(failedDuringRemoval, true);
+	assert.equal(open.destroyed, true, "the dead window doesn't stay");
+	const state = await list.state();
+	assert.deepEqual(state.servers, [beta]);
+	assert.deepEqual(state.problem, { server: beta, kind: "retry", message: unreachableMessage });
+});
+
+test("a check still waiting when its server is removed never sends the removed bearer", async (t) => {
+	for (const when of ["during the write", "after the removal"]) {
+		const list = await removalFixture(t);
+		await list.controller.launch();
+		let release!: () => void;
+		list.holdDescriptor.set(beta, new Promise<void>((resolve) => { release = resolve; }));
+		list.controller.show({ check: true });
+		await settle();
+		const sent = list.calls.length;
+		if (when === "during the write") list.onPublish = (state) => { if (state.removing) release(); };
+		await list.send("remove", beta);
+		release();
+		await settle();
+		const later = list.calls.slice(sent);
+		assert.deepEqual(later.filter((call) => call.includes("beta-secret")), [], `${when}: no request carries the removed bearer`);
+		assert.deepEqual((await list.state()).servers, [alpha]);
+	}
+});
+
+test("the list offers Remove… for each saved server but not This computer, and focus stays on a visible control", async () => {
 	const shell = path.join(import.meta.dirname, "../electron");
 	assert.match(await fs.readFile(path.join(shell, "server-list.css"), "utf8"), /\[hidden\] \{ display: none !important; \}/, ".alert's display can't show a hidden box");
 	const { window, document } = parseHTML(await fs.readFile(path.join(shell, "server-list.html"), "utf8"));
+	// linkedom keeps no focus: track it as a browser does, where a removed or disabled control loses it.
+	let focused: HTMLElement | null = null;
+	window.HTMLElement.prototype.focus = function (this: HTMLElement) { focused = this; };
+	Object.defineProperty(document, "activeElement", {
+		configurable: true,
+		get: () => (focused?.isConnected && !(focused as HTMLButtonElement).disabled ? focused : document.body),
+	});
 	const sent: unknown[][] = [];
 	let listener!: (state: object) => void;
 	const preview = "https://box.tail.ts.net:8444";
-	const base = { servers: [beta, preview], defaultServer: beta, active: beta, busy: false, problem: null, notice: "", signingIn: false, damaged: false };
+	const base = { servers: [beta, preview], defaultServer: beta, active: beta, busy: false, removing: false, problem: null, notice: "", signingIn: false, damaged: false };
+	let next: object = base;
 	const servers = {
 		state: async () => base,
 		parseLink: async () => null,
 		connect: async (server: string) => { sent.push(["connect", server]); },
-		remove: async (server: string) => { sent.push(["remove", server]); listener({ ...base, servers: [beta] }); },
-		onChange: (next: typeof listener) => { listener = next; },
+		remove: async (server: string) => {
+			sent.push(["remove", server]);
+			listener({ ...base, busy: true, removing: true });
+			listener(next);
+		},
+		onChange: (update: typeof listener) => { listener = update; },
 	};
 	runInNewContext(await fs.readFile(path.join(shell, "server-list.js"), "utf8"), { window: { servers }, document });
 	const $ = (id: string) => document.getElementById(id) as HTMLElement;
@@ -1325,13 +1514,33 @@ test("the list offers Remove… for each saved server but not This computer, and
 	assert.equal(rows().length, 3);
 	assert.deepEqual(removeButtons().map((button) => button.getAttribute("aria-label")), [`Remove ${beta} from this device`, `Remove ${preview} from this device`]);
 	assert.equal(rows()[0]!.querySelectorAll("button").length, 1, "This computer has no Remove");
+
+	// Other servers remain: focus moves to the first visible control in the list.
+	next = { ...base, servers: [beta] };
 	removeButtons()[1]!.focus();
 	await removeButtons()[1]!.onclick!(new window.Event("click") as PointerEvent);
 	assert.deepEqual(sent, [["remove", preview]]);
 	assert.equal(rows().length, 2);
-	listener({ ...base, problem: { server: preview, kind: "retry", message: "Couldn’t reach the LearnHarness server. Check the address and connection, then retry." } });
+	assert.equal(document.activeElement, rows()[0]!.querySelector("button"), "This computer's Connect");
+
+	// The last server and the default go: the setup tiles show, and focus lands on the first.
+	next = { ...base, servers: [], defaultServer: null, active: null };
+	removeButtons()[0]!.focus();
+	await removeButtons()[0]!.onclick!(new window.Event("click") as PointerEvent);
+	assert.equal($("list").hidden, true);
+	assert.equal(document.activeElement, $("run-local"));
+
+	// A cancelled removal keeps focus where it was.
+	listener(base);
+	next = base;
+	removeButtons()[0]!.focus();
+	servers.remove = async (server: string) => { sent.push(["remove", server]); };
+	await removeButtons()[0]!.onclick!(new window.Event("click") as PointerEvent);
+	assert.equal(document.activeElement, removeButtons()[0]);
+
+	listener({ ...base, problem: { server: preview, kind: "retry", message: unreachableMessage } });
 	assert.equal($("recovery").hidden, false);
-	assert.equal($("problem").textContent, "Couldn’t reach the LearnHarness server. Check the address and connection, then retry.");
+	assert.equal($("problem").textContent, unreachableMessage);
 	assert.equal($("recover").textContent, "Retry");
 	assert.equal($("recover").hidden, false);
 	listener({ ...base, damaged: true, servers: [] });

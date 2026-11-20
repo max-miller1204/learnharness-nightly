@@ -47,6 +47,8 @@ async function createServerList({
 	let window = null;
 	let controls = null;
 	let busy = false;
+	// The saved server a confirmed Remove is forgetting, while its write runs.
+	let removing = null;
 	let problem = null;
 	let notice = "";
 	let connecting = null;
@@ -56,6 +58,8 @@ async function createServerList({
 	// Settles after the latest attempt, including any cancel it sends.
 	let lastLogin = Promise.resolve();
 	const rechecking = new WeakSet();
+	// Each remote window's lifetime: it ends any check still running for it.
+	const lifetimes = new WeakMap();
 	let closing = false;
 	// Update everything (update-everything.cjs) covers the server's page with the
 	// ghost dashboard while the server restarts. Its errors then are expected.
@@ -64,7 +68,7 @@ async function createServerList({
 	function snapshot() {
 		return {
 			servers: store.origins, defaultServer: store.defaultServer, damaged: store.damaged,
-			active: window ? active?.server ?? null : null, busy, problem,
+			active: window ? active?.server ?? null : null, busy: busy || !!removing, removing: !!removing, problem,
 			notice: notice || (store.damaged ? "Couldn’t read the saved server list." : ""), signingIn: !!login,
 		};
 	}
@@ -134,12 +138,15 @@ async function createServerList({
 		show();
 		publish();
 	}
-	async function recheck(win, selection, mainFrame, signal) {
+	// `retry`: wait out a restarting server first, as a connect does.
+	async function recheck(win, selection, mainFrame, signal, { retry = false } = {}) {
 		if (updating || rechecking.has(win) || busy || win !== window) return;
 		rechecking.add(win);
 		try {
-			await checkDescriptor(selection.server, { signal });
-			await checkSession(selection.server, selection.token, { signal });
+			await checkDescriptor(selection.server, { signal, retry });
+			// A removed server's bearer is never sent again.
+			if (signal?.aborted || removing === selection.server || !store.origins.includes(selection.server)) return;
+			await checkSession(selection.server, selection.token, { signal, retry });
 			if (mainFrame) throw new ServerProblem("retry", "Couldn’t load the server page. Try again.");
 		} catch (error) {
 			if (win === window && !busy) {
@@ -215,7 +222,7 @@ async function createServerList({
 				closeList();
 				const url = await starting;
 				operation.signal.throwIfAborted();
-				if (!store.damaged && !store.defaultServer) await store.saveDefault(server);
+				if (!store.damaged && store.firstSetup) await store.saveDefault(server);
 				// As before, the bundled app's own load errors stay in its window.
 				trace("real page load start", "local");
 				await local.load(url).catch(() => {});
@@ -241,6 +248,7 @@ async function createServerList({
 						openExternal: (target) => shell.openExternal(target),
 						onProblem: (mainFrame) => { void recheck(created, selection, mainFrame, lifetime.signal); },
 					});
+					lifetimes.set(created, lifetime.signal);
 					created.once("closed", () => lifetime.abort());
 					registerContent(created);
 					return created;
@@ -268,7 +276,7 @@ async function createServerList({
 					// hidden or under the skeleton, until this check passes.
 					await checkSession(server, token, options);
 					operation.signal.throwIfAborted();
-					if (!store.defaultServer) await store.saveDefault(server);
+					if (store.firstSetup) await store.saveDefault(server);
 					operation.signal.throwIfAborted();
 					active = { server, token };
 					trace(skeleton ? "reveal" : "show() call", skeleton ? "remote" : "list connect");
@@ -305,8 +313,9 @@ async function createServerList({
 			message: `Remove ${server} from this device?`,
 			detail: "This forgets its pairing and saved credential here. Pair again to add it back.",
 		});
-		if (response !== 1 || busy || closing || store.damaged || !store.origins.includes(server)) return;
-		busy = true;
+		if (response !== 1 || busy || removing || closing || store.damaged || !store.origins.includes(server)) return;
+		// Not busy: a failing check of the open server still shows its problem meanwhile.
+		removing = server;
 		publish();
 		try {
 			await store.remove(server);
@@ -314,7 +323,7 @@ async function createServerList({
 			if (problem?.server === server) problem = null;
 			notice = "";
 		} catch { notice = "Couldn’t remove the saved server."; }
-		finally { busy = false; publish(); }
+		finally { removing = null; publish(); }
 	}
 	async function signIn() {
 		if (busy || login || !active?.token || !window) return;
@@ -351,7 +360,7 @@ async function createServerList({
 		}
 		if (action === "state") return snapshot();
 		if (action === "link") return typeof value === "string" && value.length <= 8192 ? parsePairLink(value) : null;
-		if (busy || closing) return;
+		if (busy || removing || closing) return;
 		if (action === "connect" && (value === "local" || store.origins.includes(value))) return connect(value);
 		if (action === "reset" && store.damaged) {
 			busy = true;
@@ -382,7 +391,7 @@ async function createServerList({
 		/** `check`: Switch server… also checks the open server, so one that went away says so. */
 		show({ check = false } = {}) {
 			const panel = show();
-			if (check && window && active?.token && !busy) void recheck(window, active, false);
+			if (check && window && active?.token && !busy) void recheck(window, active, false, lifetimes.get(window), { retry: true });
 			return panel;
 		},
 		/** `server`: the one Update everything restarted from, reopened once instead of the default. */

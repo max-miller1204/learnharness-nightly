@@ -17,12 +17,12 @@ function showPair(origin = "") {
 }
 
 function render() {
-	const { servers, active, defaultServer, damaged, busy, problem, notice, signingIn } = state;
+	const { servers, active, defaultServer, damaged, busy, removing, problem, notice, signingIn } = state;
 	const firstRun = !defaultServer && !active && !problem && servers.length === 0 && !notice;
 	$("welcome").hidden = !firstRun || adding;
 	$("list").hidden = (firstRun || adding) && !problem;
 	$("add-server").hidden = !adding || !!problem;
-	$("notice").textContent = busy ? "Connecting…" : signingIn ? "Finish sign-in in your browser." : notice;
+	$("notice").textContent = removing ? "Removing…" : busy ? "Connecting…" : signingIn ? "Finish sign-in in your browser." : notice;
 	$("recovery").hidden = !problem;
 	if (problem) {
 		$("problem").textContent = problem.message;
@@ -67,7 +67,9 @@ function render() {
 			remove.onclick = async () => {
 				await api.remove(server);
 				// Its row is gone: keep the focus in the list for the keyboard.
-				if (!document.activeElement || document.activeElement === document.body) $("add").focus();
+				if (!document.activeElement || document.activeElement === document.body) {
+					[...document.querySelectorAll("main button")].find((button) => !button.disabled && !button.closest("[hidden]"))?.focus();
+				}
 			};
 			item.append(remove);
 		}
@@ -76,7 +78,7 @@ function render() {
 	$("add").hidden = damaged;
 	$("reset").hidden = !damaged;
 	$("sign-in").hidden = !active || active === "local";
-	$("pair-submit").textContent = busy ? "Connecting…" : "Connect";
+	$("pair-submit").textContent = busy && !removing ? "Connecting…" : "Connect";
 	document.querySelectorAll("button, input").forEach((input) => { input.disabled = busy; });
 	$("sign-in").disabled = busy || signingIn;
 }
