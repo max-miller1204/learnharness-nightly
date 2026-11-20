@@ -10,7 +10,6 @@ if (process.isMainFrame) {
 		pair: (origin, code) => ipcRenderer.invoke("lh:server-list", "pair", { origin, code }),
 		setDefault: (server) => ipcRenderer.invoke("lh:server-list", "default", server),
 		remove: (server) => ipcRenderer.invoke("lh:server-list", "remove", server),
-		signIn: () => ipcRenderer.invoke("lh:server-list", "sign-in"),
 		onChange: (listener) => {
 			ipcRenderer.on("lh:server-list:changed", (_event, state) => listener(state));
 		},

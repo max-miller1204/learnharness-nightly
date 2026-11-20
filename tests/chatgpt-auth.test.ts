@@ -839,15 +839,30 @@ test("while an exchange is in flight, a second paste or a paste after the redire
 	}
 });
 
+/** The desktop's sign-in as a server's Settings page starts it: window.lh.chatgptSignIn in the
+ * remote window, through main's sender check (remote-chatgpt-ipc.cjs) and its runner. */
+function viaBridge(origin: string, token: string, options: Record<string, unknown>) {
+	const { registerChatGPTSignInIPC } = require("../electron/remote-chatgpt-ipc.cjs");
+	const { createRemoteChatGPTSignIn } = require("../electron/remote-chatgpt.cjs");
+	const handlers = new Map<string, (event: unknown, ...args: unknown[]) => Promise<unknown>>();
+	const mainFrame = { url: `${origin}/settings` };
+	const contents = { mainFrame };
+	const win = { webContents: contents, isDestroyed: () => false };
+	const runner = createRemoteChatGPTSignIn({ ...options, selection: () => ({ origin, token }) });
+	registerChatGPTSignInIPC({ handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => Promise<unknown>) => handlers.set(channel, fn) }, {
+		current: () => ({ win, origin }), signIn: runner.signIn,
+	});
+	return { runner, signIn: (...args: unknown[]) => handlers.get("lh:chatgpt-sign-in")!({ sender: contents, senderFrame: mainFrame }, ...args) };
+}
+
 test("desktop relay reserves loopback, forwards the exact verified callback once, and exchanges only on the server", async () => {
-	const { remoteChatGPTSignIn } = require("../electron/remote-chatgpt.cjs");
 	const f = fixture();
 	const origin = "https://server.example.test";
 	const browserAction = "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001";
 	const operations: string[] = [];
 	let exact = "";
 	try {
-		await remoteChatGPTSignIn(origin, "fixture-bearer", {
+		const result = await viaBridge(origin, "fixture-bearer", {
 			timeoutMs: 5000,
 			request: async (input: URL, options: RequestInit) => {
 				assert.equal(input.origin, origin);
@@ -886,7 +901,8 @@ test("desktop relay reserves loopback, forwards the exact verified callback once
 				await accepted.text();
 				assert.equal((await fetch(exact)).status, 404, "replay does not reach the server");
 			},
-		});
+		}).signIn();
+		assert.deepEqual(result, { ok: true });
 		assert.deepEqual(operations, ["login", "browser", "complete"]);
 		const exchange = f.requests.filter((r) => r.url === tokenUrl);
 		assert.equal(exchange.length, 1);
@@ -899,14 +915,13 @@ test("desktop relay reserves loopback, forwards the exact verified callback once
 
 test("desktop relay never opens the browser for bind failure, an occupied redirect port, or an unexpected authorization endpoint", async () => {
 	const { createServer } = await import("node:http");
-	const { remoteChatGPTSignIn } = require("../electron/remote-chatgpt.cjs");
 	const occupied = createServer();
 	await new Promise<void>((resolve) => occupied.listen(0, "127.0.0.1", resolve));
 	try {
 		const address = occupied.address();
 		assert(address && typeof address !== "string");
 		const openExternal = async () => assert.fail("must stop before opening a browser");
-		await assert.rejects(remoteChatGPTSignIn("https://server.example.test", "fixture", {
+		assert.deepEqual(await viaBridge("https://server.example.test", "fixture", {
 			openExternal,
 			createListener: () => {
 				const listener = createServer();
@@ -915,14 +930,19 @@ test("desktop relay never opens the browser for bind failure, an occupied redire
 				return listener;
 			},
 			request: () => assert.fail("bind must happen before login"),
-		}), /reserve the local/);
+		}).signIn(), { error: "Couldn’t reserve the local ChatGPT callback port." });
+		const accountId = "0b0c2a4e-6d8f-4a1b-9c3d-5e7f9a1b3c5d";
 		for (const reason of ["occupied", "endpoint"]) {
 			let port = 0;
-			await assert.rejects(remoteChatGPTSignIn("https://server.example.test", "fixture", {
+			let sentId: unknown;
+			assert.deepEqual(await viaBridge("https://server.example.test", "fixture", {
 				openExternal,
 				request: async (input: URL, options: RequestInit) => {
 					if (input.pathname === "/api/subscriptions") {
-						port = JSON.parse(String(options.body)).desktopRedirectPort;
+						const body = JSON.parse(String(options.body));
+						if (body.op === "cancel") return Response.json({ value: {} });
+						port = body.desktopRedirectPort;
+						sentId = body.id;
 						assert.notEqual(port, address.port, "the kernel chose a free port");
 						return Response.json({ browserAction: "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001" });
 					}
@@ -931,26 +951,26 @@ test("desktop relay never opens the browser for bind failure, an occupied redire
 					auth.searchParams.set("redirect_uri", `http://127.0.0.1:${reason === "occupied" ? address.port : port}/auth/callback`);
 					return new Response(null, { status: 303, headers: { Location: auth.href } });
 				},
-			}), /unexpected ChatGPT callback/);
+			}).signIn(accountId), { error: "The server returned an unexpected ChatGPT callback. Update LearnHarness on the server and try again." });
+			assert.equal(sentId, accountId, "a saved account's id reaches the server's login");
 		}
 	} finally { await new Promise<void>((resolve) => occupied.close(() => resolve())); }
 });
 
 test("desktop relay cancels an acknowledged attempt on abort and timeout using the original origin", async () => {
-	const { remoteChatGPTSignIn } = require("../electron/remote-chatgpt.cjs");
 	const origin = "https://desktop-sign-in.example.test";
 	for (const reason of ["abort", "timeout", "during-login"]) {
 		const f = fixture();
-		const abort = new AbortController();
 		const calls: string[] = [];
 		const browserAction = "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001";
+		// The remote window closing (or switching) ends its sign-in.
+		let closeWindow = () => {};
 		try {
-			await assert.rejects(remoteChatGPTSignIn(origin, "fixture-bearer", {
+			const bridge = viaBridge(origin, "fixture-bearer", {
 				timeoutMs: reason === "timeout" ? 50 : 5000,
-				signal: abort.signal,
 				openExternal: async () => {
 					assert.notEqual(reason, "during-login", "do not open the browser after the user aborts");
-					if (reason === "abort") abort.abort();
+					if (reason === "abort") closeWindow();
 				},
 				request: async (input: URL, options: RequestInit) => {
 					assert.equal(input.origin, origin);
@@ -967,13 +987,15 @@ test("desktop relay cancels an acknowledged attempt on abort and timeout using t
 					assert.equal(options.signal?.aborted, false);
 					if (body.op === "login") {
 						const value = await f.service.login(undefined, body.desktopRedirectPort);
-						if (reason === "during-login") abort.abort();
+						if (reason === "during-login") closeWindow();
 						return Response.json({ value, browserAction });
 					}
 					assert.deepEqual(body, { providerId: "chatgpt", op: "cancel" });
 					return Response.json({ value: f.service.cancelLogin() });
 				},
-			}));
+			});
+			closeWindow = () => bridge.runner.abort();
+			assert.deepEqual(await bridge.signIn(), { error: "ChatGPT sign-in ended. Try again." });
 			assert.deepEqual(calls, reason === "during-login" ? ["login", "cancel"] : ["login", "browser", "cancel"]);
 			assert.equal((await f.service.status()).pending, false);
 			assert.equal((await f.service.login()).pending, true, "can retry immediately");

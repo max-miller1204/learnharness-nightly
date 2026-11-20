@@ -43,11 +43,24 @@ async function withBrowser<T>(action: () => Promise<Reply<T>>): Promise<T> {
 		return reply.value;
 	} catch (error) { tab?.close(); throw error; }
 }
+/** In the desktop app's window onto this server, its narrow bridge runs the verified
+ * sign-in (electron/remote-chatgpt.cjs): the callback reaches the desktop, with no tab
+ * or paste-back. It resolves when sign-in ends; the status events carry its progress. */
+async function desktopLogin(signIn: NonNullable<NonNullable<Window["lh"]>["chatgptSignIn"]>, id?: string): Promise<ChatGPTStatus> {
+	const result: unknown = await signIn(id);
+	const current = (await status()).chatgpt;
+	if (result && typeof result === "object" && "ok" in result && result.ok === true) return current;
+	const error = result && typeof result === "object" && "error" in result && typeof result.error === "string" ? result.error.slice(0, 300) : "ChatGPT sign-in failed. Try again.";
+	return { ...current, error };
+}
 export function createWebChatGPTBridge(hub: Hub): ChatGPTControlBridge {
 	const call = async (op: string, fields?: Record<string, unknown>) => (await control<ChatGPTStatus>("chatgpt", op, fields)).value;
 	return {
 		status: async () => (await status()).chatgpt,
-		login: (id) => withBrowser(() => control<ChatGPTStatus>("chatgpt", "login", { id })),
+		login: (id) => {
+			const signIn = window.lh?.chatgptSignIn;
+			return signIn ? desktopLogin(signIn, id) : withBrowser(() => control<ChatGPTStatus>("chatgpt", "login", { id }));
+		},
 		cancel: () => call("cancel"), complete: (url) => call("complete", { url }), select: (id) => call("select", { id }),
 		disconnect: (id) => call("disconnect", { id }), logout: (id) => call("logout", { id }),
 		consent: (enabled) => call("consent", { enabled }),

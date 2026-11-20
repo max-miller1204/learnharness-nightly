@@ -823,3 +823,34 @@ test("a slow read never overwrites typing and never reaches a later attempt; one
   assert.equal(pasteField().value, "", "a read from an ended attempt changes nothing");
  } finally { page.restore(); restore(); }
 });
+
+test("Settings in the desktop app's window onto a server signs in through the desktop bridge, without paste-back", async () => {
+ const page = webPage("desktop.tail1234.ts.net");
+ const calls: (string | undefined)[] = [];
+ let finish!: (result: { ok: true } | { error: string }) => void;
+ window.lh = { chatgptSignIn: (accountId?: string) => { calls.push(accountId); return new Promise((resolve) => { finish = resolve; }); } };
+ window.open = () => assert.fail("no sign-in tab in the desktop app");
+ try {
+  await mount(); await click(byTest("chatgpt-login"));
+  assert(byTest("chatgpt-privacy-notice").textContent?.includes("on the machine running LearnHarness"), "credentials still live on the server");
+  assert(!document.querySelector('[data-testid="chatgpt-remote-ahead"]'), "no paste-back warning: the callback reaches this computer");
+  await click(byTest("chatgpt-proceed"));
+  assert.deepEqual(calls, [undefined], "one click starts the desktop's sign-in");
+  assert.deepEqual(page.ops, [], "the page doesn't start the server's login itself");
+  assert(!document.querySelector('[data-testid="chatgpt-paste"]'));
+  await act(async () => finish({ error: "ChatGPT sign-in ended. Try again." }));
+  assert.equal(document.querySelector('[data-testid="chatgpt-account-dialog"] [role="alert"]')?.textContent, "ChatGPT sign-in ended. Try again.");
+ } finally { page.restore(); }
+});
+
+test("a pending sign-in in the desktop app's window offers paste-back only behind its reveal", async () => {
+ const page = webPage("desktop.tail1234.ts.net");
+ window.lh = { chatgptSignIn: async () => ({ ok: true }) };
+ globalThis.fetch = async (_input, init) => init?.method ? Response.json({ value: { ...disconnected(), pending: true } }) : Response.json({ chatgpt: { ...disconnected(), pending: true }, native: [] });
+ try {
+  await mount(); await click(byTest("chatgpt-login"));
+  assert(document.body.textContent?.includes("Waiting for browser sign-in"));
+  assert.equal(byTest("chatgpt-paste-reveal").textContent, CHATGPT_PASTE_COPY.reveal);
+  assert(!document.querySelector('[data-testid="chatgpt-paste"]'));
+ } finally { page.restore(); }
+});

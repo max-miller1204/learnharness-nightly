@@ -314,7 +314,8 @@ export function ChatGPTUIProvider({ children }: { children: React.ReactNode }) {
 			if (owns(attempt)) { setClipboardBlocked(true); pasteField.current?.focus(); }
 		} finally { if (owns(attempt)) setReading(false); }
 	}
-	const sameMachine = !web || (typeof window !== "undefined" && loopbackHost(window.location?.hostname ?? ""));
+	// The desktop app's window onto a server signs in through its bridge: the callback reaches this computer.
+	const sameMachine = !web || (typeof window !== "undefined" && (!!window.lh?.chatgptSignIn || loopbackHost(window.location?.hostname ?? "")));
 	const context = {
 		status, busy, error: warning ? null : visibleError, inlineError: dialog || warning ? null : visibleError, warning: dialog?.kind === "warning" ? null : warning,
 		connect: openConnect,

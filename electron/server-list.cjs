@@ -5,7 +5,7 @@ const { pathToFileURL } = require("node:url");
 const { randomUUID } = require("node:crypto");
 const { openServerList } = require("./server-list-store.cjs");
 const { ServerProblem, atOrigin, parseOrigin, withScheme, normalizeCode, parsePairLink, checkDescriptor, checkSession, pairServer } = require("./remote-server.cjs");
-const { remoteChatGPTSignIn } = require("./remote-chatgpt.cjs");
+const { createRemoteChatGPTSignIn } = require("./remote-chatgpt.cjs");
 const { createRemoteWindow } = require("./remote-window.cjs");
 const { BACKGROUND, hostLabel, paintFirst, tracePaint, opaqueWhenPainted, coverWindow } = require("./skeleton.cjs");
 const { trace, traceWindow } = require("./first-frame.cjs");
@@ -55,9 +55,6 @@ async function createServerList({
 	let connecting = null;
 	// A ghost-dashboard connect is in flight: launch and reopen wait on it.
 	let ghosting = false;
-	let login = null;
-	// Settles after the latest attempt, including any cancel it sends.
-	let lastLogin = Promise.resolve();
 	// The running check of each window: { server, stop, again }.
 	const rechecks = new WeakMap();
 	// Each remote window's lifetime: it ends any check still running for it.
@@ -77,7 +74,7 @@ async function createServerList({
 		return {
 			servers: store.origins, defaultServer: store.defaultServer, damaged: store.damaged,
 			active: window ? active?.server ?? null : null, busy: busy || !!removing, removing: !!removing, problem,
-			notice: notice || (store.damaged ? "Couldn’t read the saved server list." : ""), signingIn: !!login,
+			notice: notice || (store.damaged ? "Couldn’t read the saved server list." : ""),
 		};
 	}
 	function publish() {
@@ -120,8 +117,7 @@ async function createServerList({
 			updating.stop();
 			updating = null;
 		}
-		login?.abort();
-		login = null;
+		chatgpt.abort();
 		active = null;
 		if (window && !window.isDestroyed()) window.destroy();
 		window = null;
@@ -131,8 +127,7 @@ async function createServerList({
 		win.once("closed", () => {
 			if (window === win) {
 				window = null;
-				login?.abort();
-				login = null;
+				chatgpt.abort();
 				publish();
 			}
 		});
@@ -363,34 +358,11 @@ async function createServerList({
 		} catch { notice = "Couldn’t remove the saved server."; }
 		finally { removing = null; publish(); }
 	}
-	async function signIn() {
-		if (busy || login || !active?.token || !window) return;
-		const selection = active;
-		const operation = new AbortController();
-		login = operation;
-		notice = "";
-		publish();
-		const previous = lastLogin;
-		let settled;
-		lastLogin = new Promise((resolve) => { settled = resolve; });
-		try {
-			// An abandoned attempt may still be cancelling on its server.
-			await previous;
-			operation.signal.throwIfAborted();
-			await remoteChatGPTSignIn(selection.server, selection.token, {
-				signal: operation.signal, openExternal: (url) => shell.openExternal(url),
-			});
-			notice = "ChatGPT sign-in completed.";
-		} catch (error) {
-			if (!operation.signal.aborted) notice = error instanceof ServerProblem ? error.message : "ChatGPT sign-in failed. Try again from Switch server.";
-		} finally {
-			settled();
-			if (login === operation) {
-				login = null;
-				publish();
-			}
-		}
-	}
+	// The open remote window's ChatGPT sign-in (window.lh.chatgptSignIn), never for a held server.
+	const chatgpt = createRemoteChatGPTSignIn({
+		openExternal: (url) => shell.openExternal(url),
+		selection: () => (window && !window.isDestroyed() && active?.token && !held(active.server) ? { origin: active.server, token: active.token } : null),
+	});
 	ipcMain.handle(CHANNEL, async (event, action, value) => {
 		if (!controls || controls.isDestroyed() || event.sender !== controls.webContents ||
 			event.senderFrame !== controls.webContents.mainFrame || !isShell(event.senderFrame.url)) {
@@ -421,8 +393,6 @@ async function createServerList({
 			finally { busy = false; publish(); }
 		} else if (action === "remove" && !store.damaged && store.origins.includes(value)) {
 			await remove(value);
-		} else if (action === "sign-in") {
-			void signIn();
 		}
 	});
 	return {
@@ -506,8 +476,10 @@ async function createServerList({
 		close() {
 			closing = true;
 			connecting?.abort();
-			login?.abort();
+			chatgpt.abort();
 		},
+		/** window.lh.chatgptSignIn from the open remote window (electron/remote-chatgpt-ipc.cjs). */
+		chatgptSignIn: (accountId) => (active && held(active.server) ? { error: HELD_BY_UPDATE } : chatgpt.signIn(accountId)),
 	};
 }
 

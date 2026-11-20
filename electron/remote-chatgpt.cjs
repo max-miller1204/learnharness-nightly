@@ -9,9 +9,10 @@ const CALLBACK_HOST = "127.0.0.1";
 const CALLBACK_PATH = "/auth/callback";
 const LOGIN_PATH = "/api/subscriptions";
 
+// `accountId`: sign in again to that saved account (the server's own `login` id).
 async function remoteChatGPTSignIn(origin, token, {
 	openExternal, signal, request, createListener = () => http.createServer(),
-	timeoutMs = 180000,
+	timeoutMs = 180000, accountId,
 }) {
 	const listener = createListener();
 	const timeout = AbortSignal.timeout(timeoutMs);
@@ -42,7 +43,7 @@ async function remoteChatGPTSignIn(origin, token, {
 		const callbackUrl = `http://${callbackHost}${CALLBACK_PATH}`;
 		// Collect the login reply even if the user aborts during this request.
 		// Only an acknowledged browser action establishes an attempt to cancel.
-		const reply = await control("login", { desktopRedirectPort: port }, AbortSignal.timeout(15000));
+		const reply = await control("login", { ...(accountId && { id: accountId }), desktopRedirectPort: port }, AbortSignal.timeout(15000));
 		if (!isBrowserAction(reply?.browserAction)) throw new ServerProblem("sign-in", "The server couldn’t start ChatGPT sign-in. Check Providers on the server.");
 		pending = true;
 		lifetime.throwIfAborted();
@@ -84,7 +85,7 @@ async function remoteChatGPTSignIn(origin, token, {
 		});
 		const opened = openExternal(target.href).then(() => callback);
 		const exact = await Promise.race([opened, interrupted]);
-		if (!exact) throw new ServerProblem("sign-in", "ChatGPT sign-in ended. Try again from Switch server.");
+		if (!exact) throw new ServerProblem("sign-in", "ChatGPT sign-in ended. Try again.");
 		const { value } = await control("complete", { url: exact });
 		pending = false;
 		if (!value?.activeId || value.error) throw new ServerProblem("sign-in", "ChatGPT sign-in did not complete. Check Providers on the server.");
@@ -98,4 +99,43 @@ async function remoteChatGPTSignIn(origin, token, {
 	}
 }
 
-module.exports = { remoteChatGPTSignIn };
+/**
+ * The open remote window's sign-in (electron/remote-chatgpt-ipc.cjs). One at a time: a new
+ * start ends the previous one, after that one's cancel reached its server. The page sees
+ * only { ok: true } or a fixed message, never a URL, port or credential.
+ * `selection()`: { origin, token } of the open remote window, or null.
+ */
+function createRemoteChatGPTSignIn({ selection, openExternal, run = remoteChatGPTSignIn, ...options }) {
+	let current = null;
+	// Settles after the latest attempt, including any cancel it sends.
+	let last = Promise.resolve();
+	async function signIn(accountId) {
+		const selected = selection();
+		if (!selected) return { error: "Open this server in the desktop app to sign in to ChatGPT." };
+		current?.abort();
+		const operation = new AbortController();
+		current = operation;
+		const previous = last;
+		let settled;
+		last = new Promise((resolve) => { settled = resolve; });
+		try {
+			await previous;
+			operation.signal.throwIfAborted();
+			await run(selected.origin, selected.token, { ...options, accountId, openExternal, signal: operation.signal });
+			return { ok: true };
+		} catch (error) {
+			if (operation.signal.aborted) return { error: "ChatGPT sign-in ended. Try again." };
+			return { error: error instanceof ServerProblem ? error.message : "ChatGPT sign-in failed. Try again." };
+		} finally {
+			settled();
+			if (current === operation) current = null;
+		}
+	}
+	return {
+		signIn,
+		/** The window closed or switched: its sign-in ends. */
+		abort() { current?.abort(); current = null; },
+	};
+}
+
+module.exports = { remoteChatGPTSignIn, createRemoteChatGPTSignIn };

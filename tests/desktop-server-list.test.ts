@@ -14,6 +14,7 @@ const require = createRequire(import.meta.url);
 const wire = require("../electron/remote-server.cjs");
 const { createRemoteWindow } = require("../electron/remote-window.cjs");
 const { createServerList } = require("../electron/server-list.cjs");
+const { registerChatGPTSignInIPC } = require("../electron/remote-chatgpt-ipc.cjs");
 const { openServerList } = require("../electron/server-list-store.cjs");
 const { hostLabel, coverWindow, firstFrame } = require("../electron/skeleton.cjs");
 // Quiet retries wait 15 s in the app; the fixtures need only a few steps.
@@ -251,7 +252,7 @@ test("the app-owned switch flow keeps defaults, enforces preflight and isolates 
 
 	await controller.launch();
 	assert.equal(localStarts, 0);
-	assert.deepEqual(await send(panel(), "state"), { servers: [], defaultServer: null, active: null, busy: false, removing: false, problem: null, notice: "", signingIn: false, damaged: false });
+	assert.deepEqual(await send(panel(), "state"), { servers: [], defaultServer: null, active: null, busy: false, removing: false, problem: null, notice: "", damaged: false });
 	await send(panel(), "connect", "local");
 	const local = lastWindow();
 	assert.equal(localStarts, 1);
@@ -462,7 +463,7 @@ test("remote browser handoff keeps the credential in main and leaves ordinary pa
 	win.destroy();
 });
 
-test("a new ChatGPT sign-in waits for the abandoned attempt's slow cancel before starting", { timeout: 10000 }, async (t) => {
+test("through the Settings bridge, a new ChatGPT sign-in waits for the abandoned attempt's slow cancel before starting", { timeout: 10000 }, async (t) => {
 	const { AUTHORIZE } = require("../electron/chatgpt.cjs");
 	const directory = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-sign-in-"));
 	const originalFetch = globalThis.fetch;
@@ -502,19 +503,26 @@ test("a new ChatGPT sign-in waits for the abandoned attempt's slow cancel before
 		}
 	};
 	type FakeEvent = { sender: TestWindow["webContents"]; senderFrame: { url: string } };
-	let handler!: (event: FakeEvent, action: string, payload?: unknown) => Promise<unknown>;
+	const handlers = new Map<string, (event: FakeEvent, ...args: unknown[]) => Promise<unknown>>();
+	const ipcMain = { handle: (channel: string, callback: (event: FakeEvent, ...args: unknown[]) => Promise<unknown>) => { handlers.set(channel, callback); } };
 	const controller = await createServerList({
 		app: { getPath: () => directory }, BrowserWindow: TestWindow, WebContentsView: TestView, safeStorage: fakeSafeStorage,
-		ipcMain: { handle: (_channel: string, callback: typeof handler) => { handler = callback; } },
+		ipcMain,
 		session: { fromPartition: () => new TestSession() },
 		shell: { openExternal: async (url: string) => { opened.push(url); } },
 		startLocal: async () => "http://localhost:3000", stopLocal: async () => {},
 		createLocalWindow: () => { const win = new TestWindow(); return { win, load: (url: string) => win.loadURL(url) }; }, setLocalMenu() {},
 	});
+	registerChatGPTSignInIPC(ipcMain, { current: () => controller.current(), signIn: (accountId?: string) => controller.chatgptSignIn(accountId) });
 	const panel = () => controller.show() as TestWindow;
 	const send = (action: string, value?: unknown) => {
 		const win = panel();
-		return handler({ sender: win.webContents, senderFrame: win.webContents.mainFrame }, action, value);
+		return handlers.get("lh:server-list")!({ sender: win.webContents, senderFrame: win.webContents.mainFrame }, action, value);
+	};
+	// What the server's Settings page calls in the remote window: window.lh.chatgptSignIn().
+	const signIn = () => {
+		const win = controller.current()!.win as TestWindow;
+		return handlers.get("lh:chatgpt-sign-in")!({ sender: win.webContents, senderFrame: win.webContents.mainFrame });
 	};
 	const until = async (ready: () => boolean) => {
 		for (let i = 0; i < 400 && !ready(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
@@ -526,20 +534,24 @@ test("a new ChatGPT sign-in waits for the abandoned attempt's slow cancel before
 	});
 	await controller.launch();
 	await send("pair", { origin: beta, code });
-	await send("sign-in");
+	const first = signIn();
 	await until(() => opened.length === 1);
 	await send("pair", { origin: alpha, code });
 	await until(() => operations.includes("cancel"));
 	await send("connect", beta);
-	await send("sign-in");
-	assert.equal((await send("state") as { signingIn: boolean }).signingIn, true, "the retry shows the existing pending state");
+	let second: unknown = "pending";
+	void signIn().then((result) => { second = result; });
 	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(second, "pending", "the retry waits");
 	assert.deepEqual(operations, ["login", "browser", "cancel"], "no new login while the old one is still cancelling");
 	releaseCancel();
+	assert.deepEqual(await first, { error: "ChatGPT sign-in ended. Try again." }, "switching away ended it");
 	await until(() => opened.length === 2);
 	assert.deepEqual(operations, ["login", "browser", "cancel", "login", "browser"]);
 	controller.close();
 	await until(() => operations.length === 6);
+	await until(() => second !== "pending");
+	assert.deepEqual(second, { error: "ChatGPT sign-in ended. Try again." });
 });
 
 test("quiet retries wait out a starting server, but never repeat the one-use pairing exchange", async (t) => {
@@ -941,7 +953,7 @@ test("the setup screen offers two tiles, and a pasted pairing link fills the add
 	const { window, document } = parseHTML(await fs.readFile(path.join(shell, "server-list.html"), "utf8"));
 	const sent: unknown[][] = [];
 	let listener!: (state: object) => void;
-	const empty = { servers: [], defaultServer: null, active: null, busy: false, problem: null, notice: "", signingIn: false, damaged: false };
+	const empty = { servers: [], defaultServer: null, active: null, busy: false, problem: null, notice: "", damaged: false };
 	const servers = {
 		state: async () => empty,
 		parseLink: async (text: string) => wire.parsePairLink(text),
@@ -1387,7 +1399,7 @@ test("a removal shows Removing…, not Connecting…, and a default removed whil
 	const shell = path.join(import.meta.dirname, "../electron");
 	const { document } = parseHTML(await fs.readFile(path.join(shell, "server-list.html"), "utf8"));
 	let listener!: (state: object) => void;
-	const quiet = { servers: [alpha], defaultServer: null, active: null, busy: false, removing: false, problem: null, notice: "", signingIn: false, damaged: false };
+	const quiet = { servers: [alpha], defaultServer: null, active: null, busy: false, removing: false, problem: null, notice: "", damaged: false };
 	runInNewContext(await fs.readFile(path.join(shell, "server-list.js"), "utf8"), {
 		window: { servers: { state: async () => quiet, onChange: (next: typeof listener) => { listener = next; } } }, document,
 	});
@@ -1555,7 +1567,7 @@ test("the list offers Remove… for each saved server but not This computer, and
 	const sent: unknown[][] = [];
 	let listener!: (state: object) => void;
 	const preview = "https://box.tail.ts.net:8444";
-	const base = { servers: [beta, preview], defaultServer: beta, active: beta, busy: false, removing: false, problem: null, notice: "", signingIn: false, damaged: false };
+	const base = { servers: [beta, preview], defaultServer: beta, active: beta, busy: false, removing: false, problem: null, notice: "", damaged: false };
 	let next: object = base;
 	const servers = {
 		state: async () => base,
@@ -1688,7 +1700,7 @@ test("a list emptied while This computer is open shows the setup screen, and onl
 	// The page shows the setup screen for it, not Switch server.
 	const shell = path.join(import.meta.dirname, "../electron");
 	const { document } = parseHTML(await fs.readFile(path.join(shell, "server-list.html"), "utf8"));
-	const emptied = { servers: [], defaultServer: null, active: "local", busy: false, removing: false, problem: null, notice: "", signingIn: false, damaged: false };
+	const emptied = { servers: [], defaultServer: null, active: "local", busy: false, removing: false, problem: null, notice: "", damaged: false };
 	runInNewContext(await fs.readFile(path.join(shell, "server-list.js"), "utf8"), {
 		window: { servers: { state: async () => emptied, onChange() {} } }, document,
 	});
@@ -1788,4 +1800,65 @@ test("while a server is being removed, Update everything can't start against it"
 	list.onPublish = (state) => { if (state.removing && seen === "unset") seen = list.controller.current(); };
 	await list.send("remove", beta);
 	assert.equal(seen, null, "no selection to update while its removal writes");
+});
+
+test("the ChatGPT sign-in bridge answers only the open remote window's main frame at its origin", async () => {
+	const handlers = new Map<string, (event: unknown, ...args: unknown[]) => Promise<unknown>>();
+	const mainFrame = { url: `${alpha}/settings` };
+	const contents = { mainFrame };
+	const win = { webContents: contents, isDestroyed: () => false };
+	let open: { win: typeof win; origin: string } | null = { win, origin: alpha };
+	const started: unknown[] = [];
+	registerChatGPTSignInIPC({ handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => Promise<unknown>) => handlers.set(channel, fn) }, {
+		current: () => open,
+		signIn: async (accountId?: string) => { started.push(accountId); return { ok: true }; },
+	});
+	assert.deepEqual([...handlers.keys()], ["lh:chatgpt-sign-in"], "one channel");
+	const handle = handlers.get("lh:chatgpt-sign-in")!;
+	const id = "0b0c2a4e-6d8f-4a1b-9c3d-5e7f9a1b3c5d";
+	assert.deepEqual(await handle({ sender: contents, senderFrame: mainFrame }), { ok: true });
+	assert.deepEqual(await handle({ sender: contents, senderFrame: mainFrame }, id), { ok: true });
+	assert.deepEqual(started, [undefined, id]);
+	const refused: unknown[][] = [
+		[{ sender: {}, senderFrame: mainFrame }],
+		[{ sender: contents, senderFrame: { ...mainFrame } }],
+		[{ sender: contents, senderFrame: mainFrame }, id, "extra"],
+		[{ sender: contents, senderFrame: mainFrame }, "not-an-account-id"],
+		[{ sender: contents, senderFrame: mainFrame }, { id }],
+		[{ sender: contents, senderFrame: mainFrame }, 7],
+	];
+	for (const [event, ...args] of refused) await assert.rejects(handle(event, ...args), /Untrusted desktop request/);
+	mainFrame.url = `${beta}/settings`;
+	await assert.rejects(handle({ sender: contents, senderFrame: mainFrame }), /Untrusted/, "another origin");
+	mainFrame.url = "https://evil.example/";
+	await assert.rejects(handle({ sender: contents, senderFrame: mainFrame }), /Untrusted/);
+	mainFrame.url = `${alpha}/settings`;
+	open = null;
+	await assert.rejects(handle({ sender: contents, senderFrame: mainFrame }), /Untrusted/, "no open remote window");
+	assert.deepEqual(started, [undefined, id], "nothing refused ever started");
+});
+
+test("the server's own sign-in is refused while it is removed or updated, and the list has no ChatGPT button", async (t) => {
+	const list = await removalFixture(t);
+	const handlers = new Map<string, (event: unknown, ...args: unknown[]) => Promise<unknown>>();
+	const ipcMain = { handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => Promise<unknown>) => handlers.set(channel, fn) };
+	let runs = 0;
+	registerChatGPTSignInIPC(ipcMain, { current: () => list.controller.current(), signIn: (accountId?: string) => { runs++; return list.controller.chatgptSignIn(accountId); } });
+	await list.controller.launch();
+	const win = list.controller.current()!.win as TestWindow;
+	const handle = () => handlers.get("lh:chatgpt-sign-in")!({ sender: win.webContents, senderFrame: win.webContents.mainFrame });
+	list.updating = beta;
+	assert.deepEqual(await handle(), { error: "Update everything is running for this server. Try again once it finishes." });
+	list.updating = null;
+	let during: Promise<unknown> | null = null;
+	list.onPublish = (state) => { if (state.removing && !during) during = handle().then(() => "started", () => "refused"); };
+	await list.send("remove", beta);
+	assert.equal(await during, "refused", "no sign-in for a server being removed");
+	assert.equal(runs, 1);
+
+	const shell = path.join(import.meta.dirname, "../electron");
+	const html = await fs.readFile(path.join(shell, "server-list.html"), "utf8");
+	assert.equal(/ChatGPT|sign-in/i.test(html), false, "Switch server is only for servers");
+	assert.equal(/signIn|sign-in/.test(await fs.readFile(path.join(shell, "server-list.js"), "utf8")), false);
+	assert.equal(/sign-in/.test(await fs.readFile(path.join(shell, "server-list-preload.cjs"), "utf8")), false);
 });
