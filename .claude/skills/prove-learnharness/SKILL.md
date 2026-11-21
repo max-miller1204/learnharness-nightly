@@ -49,7 +49,7 @@ Follow each changed file to the surfaces and flows it reaches. Internal code cou
 | `plugins/**`, `core-plugins.json`, plugin build scripts | yes | web, api, agent | the plugin's view and tools |
 | `package*.json`, `next.config.ts`, `proxy.ts`, `instrumentation.ts`, `config.ts`, `tsconfig.json` | yes: launch config | every surface (smoke) | teaching session, `lh` commands, desktop window |
 | `apps/mobile/**` | yes: same server contract | mobile | [mobile beta](references/features/mobile-beta.md) |
-| `.github/scripts/**` (release and decision CLIs such as `mobile-release.cjs`) | no | ci-script (no app surface) | its spec: run the script's own tests, then drive its CLI with fixtures you write from the spec (not from the script), and run each workflow step that calls it against stubs |
+| `.github/scripts/**` (release and decision CLIs such as `mobile-release.cjs`) | no | ci-script: the plan runs the scripts' tests and ends `MANUAL` (exit 4); a diff of `*.test.cjs` only just runs the tests | its spec: run the script's own tests, then drive its CLI with fixtures you write from the spec (not from the script), and run each workflow step that calls it against stubs |
 | `app/api/v<N>/**` | PLANNED | protocol, api | none: [planned.md](references/planned.md) |
 
 A change that only touches tests, docs or this skill reaches no surface: say so in the receipt and stop. A change to launch config (env vars, ports, dependencies, migrations) reaches every surface: smoke test each one. A path `scope.mjs` calls UNMAPPED: decide by hand, then add a rule to `scope.mjs` and this table in the same change.
@@ -192,7 +192,7 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 
 ### Planned surfaces
 
-`/api/v<N>` paths have no scripts and no recipe: a diff that reaches them is BLOCKED for that surface until `/create-prove-it` builds its section. The Expo mobile app on Android (the emulator on this machine) has no scripts but has a recipe: a diff that reaches `apps/mobile/**` runs the scripted plan, which ends `MANUAL` (exit 4), and then you drive the [mobile beta recipe](references/features/mobile-beta.md) on the emulator. Only a device step the machine can't give you is BLOCKED, and only that step. The client protocol itself (server info, the version header, the protocol 1 routes) is driven with the API: [client-protocol recipe](references/features/client-protocol.md). Extension points: [references/planned.md](references/planned.md).
+`/api/v<N>` paths have no scripts and no recipe: a diff that reaches them is BLOCKED for that surface until `/create-prove-it` builds its section. The Expo mobile app on Android (the emulator on this machine) has no scripts but has a recipe: a diff that reaches `apps/mobile/**` runs the scripted plan, which ends `MANUAL` (exit 4), and then you drive the [mobile beta recipe](references/features/mobile-beta.md) on the emulator. Only a device step the machine can't give you is BLOCKED, and only that step. Its iOS variant follows [references/planned.md](references/planned.md#ios-iphone). The client protocol itself (server info, the version header, the protocol 1 routes) is driven with the API: [client-protocol recipe](references/features/client-protocol.md). Extension points: [references/planned.md](references/planned.md).
 
 ### Varies by and deliberate
 

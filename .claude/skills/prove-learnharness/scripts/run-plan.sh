@@ -112,7 +112,8 @@ cleanup
 	for p in "${failed_parts[@]}"; do echo "failed: $p"; done
 	[ -n "$head_failed" ] && echo "BROKEN: $head_failed (see run-plan.log and build-head.log or app.log)"
 	[ -n "$blocked" ] && echo "BLOCKED: $blocked (see run-plan.log)"
-	[ -n "$manual" ] && echo "MANUAL (not a verdict): the scripted steps ran; $manual"
+	# The step by hand comes only once every scripted step passed.
+	[ -n "$manual" ] && [ -z "$head_failed" ] && [ -z "$blocked" ] && [ "$checks_failed" = 0 ] && echo "MANUAL (not a verdict): every scripted step passed; $manual"
 } | tee "$RUN/summary.txt" >&2
 echo "$RUN"
 [ -n "$head_failed" ] && exit 1

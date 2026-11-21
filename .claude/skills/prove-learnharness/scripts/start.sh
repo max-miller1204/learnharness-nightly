@@ -36,12 +36,30 @@ mkdir -p "$SD/home" "$SD/data"
 # boot (src/server/startup-pairing.ts), so app.log can hold a live credential.
 # Blank its token in place (same length, same file, so the server's own
 # writes carry on at their offsets) on every way out of this script. A start
-# that fails stops its server first, so nothing prints a link afterwards.
+# that fails stops its server first, and waits for it to be gone, so nothing
+# prints a link after the last redaction.
 blank_pairing() { node -e 'const fs = require("fs"); const f = process.argv[1]; if (!fs.existsSync(f)) process.exit(0); const s = fs.readFileSync(f, "latin1"); const fd = fs.openSync(f, "r+"); for (const m of s.matchAll(/#token=([^\s)]+)/g)) fs.writeSync(fd, "x".repeat(m[1].length), m.index + 7, "latin1"); fs.closeSync(fd);' "$SD/app.log"; }
+# A pid file left by an earlier failed start of this side is stale: drop it,
+# so app.pid only ever names the server this invocation launches.
+[ ! -f "$SD/app.pid" ] || rm -- "$SD/app.pid"
+# <pgid>: a live member of that process group is this side's server (its
+# environment names this side's data dir), so the group is ours to stop.
+ours() { local p; for p in $(pgrep -g "$1" 2>/dev/null); do grep -qaF -- "LH_DATA_DIR=$SD/data" "/proc/$p/environ" 2>/dev/null && return 0; done; return 1; }
+gone() { ! kill -0 -- "-$1" 2>/dev/null; }
 STARTED=0
 on_exit() {
+	local pid
 	if [ "$STARTED" != 1 ] && [ -f "$SD/app.pid" ]; then
-		kill -TERM -- "-$(cat "$SD/app.pid")" 2>/dev/null && sleep 1
+		pid=$(cat "$SD/app.pid")
+		case "$pid" in ''|*[!0-9]*) pid= ;; esac
+		if [ -n "$pid" ] && ours "$pid"; then
+			kill -TERM -- "-$pid" 2>/dev/null
+			for _ in $(seq 1 40); do gone "$pid" && break; sleep 0.25; done
+			if ! gone "$pid"; then
+				kill -KILL -- "-$pid" 2>/dev/null
+				for _ in $(seq 1 20); do gone "$pid" && break; sleep 0.25; done
+			fi
+		fi
 	fi
 	blank_pairing
 }

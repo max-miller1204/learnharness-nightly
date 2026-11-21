@@ -32,7 +32,7 @@ Preconditions: [update-rollback.md](update-rollback.md) step 2 tier B install, a
 
 ## Gotchas
 
-- Reading `data-action` proves the state, not what the user sees on hover. Update everything shipped (55a63743, #265) with a hover that showed only "Update this app and 1 server": the bridge's `status()` in `electron/update-everything.cjs` and the pill both dropped the notes, and its proof passed. What the `everything` hover must show is set by PR #293's spec (`docs/specs/t3-style-updates.md`), and the hover check comes with that spec.
+- Reading `data-action` proves the state, not what the user sees on hover. Update everything shipped (55a63743, #265) with a hover that showed only "Update this app and 1 server": the bridge's `status()` in `electron/update-everything.cjs` and the pill both dropped the notes, and its proof passed. Screenshot what the hover shows in each state and compare it with the spec.
 
 - `feed/latest.json` without the `nightly/` folder (the update-rollback recipe's layout) makes the pinned install fail with "Can't find version … next to the feed".
 - The relaunched AppImage drops the CDP flag; find it as [desktop-window.md](desktop-window.md) says.
