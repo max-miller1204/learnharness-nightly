@@ -22,18 +22,27 @@ export interface ReleaseNoteGroup {
 	footer?: string;
 }
 
-/** Old clients read only `items`, so the release script also writes the intro or footer as the
- *  last item (scripts/generate-release-notes.ts entryItems); a client that reads those fields drops
- *  that copy. */
+const normalized = (text: string | undefined) => (text ?? "").trim().replace(/\s+/g, " ");
+
+/**
+ * Old clients read only `items`, so the release script also writes the intro or footer once more
+ * as the last item (scripts/generate-release-notes.ts entryItems). Every stored or sent copy of the
+ * notes keeps it, for old readers; what a new client shows drops it: only that one trailing item,
+ * compared as the full text with both sides normalized, never another bullet.
+ */
 export function withoutSummaryEcho(items: readonly string[], { intro, footer }: { intro?: string; footer?: string }): string[] {
-	return items.filter((item) => item !== intro && item !== footer);
+	const last = items.length > 0 ? normalized(items[items.length - 1]) : "";
+	const echoes = last !== "" && ((footer !== undefined && last === normalized(footer)) || (intro !== undefined && last === normalized(intro)));
+	return echoes ? items.slice(0, -1) : [...items];
 }
 
-/** The release's whole count: what the feed said, else the items and the intro (T3's totalItems). */
-export const totalReleaseItems = (group: ReleaseNoteGroup): number =>
-	typeof group.totalItems === "number" && Number.isInteger(group.totalItems) && group.totalItems >= 0
-		? Math.max(group.totalItems, group.items.length)
-		: group.items.length + (group.intro ? 1 : 0);
+/** The release's whole count: what the feed said, else the shown items and the intro (T3's totalItems). */
+export const totalReleaseItems = (group: ReleaseNoteGroup): number => {
+	const shown = withoutSummaryEcho(group.items, group).length;
+	return typeof group.totalItems === "number" && Number.isInteger(group.totalItems) && group.totalItems >= 0
+		? Math.max(group.totalItems, shown)
+		: shown + (group.intro ? 1 : 0);
+};
 
 export const MAX_RELEASE_NOTE_GROUPS = 6;
 export const MAX_RELEASE_NOTE_ITEMS = 8;

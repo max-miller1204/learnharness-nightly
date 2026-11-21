@@ -88,11 +88,15 @@ export interface NotesEntry {
 export interface ReleaseCommit {
 	subject: string;
 	authorName: string;
+	/** The commit's hash, to match it to the PR it merged. */
+	sha?: string;
 }
 
 export interface PullRequest {
 	body: string;
 	author: { __typename: string; login: string; name?: string | null } | null;
+	/** The hash of the commit that merged it (a squash merge: the commit on main). */
+	mergeCommit?: string | null;
 }
 
 /** A summary's parts: the highlight items, and the count of the rest as a footer, or as the intro with no highlights. */
@@ -112,11 +116,27 @@ const pullRequestNumber = (subject: string) => {
 /** Oldest first, as the model reads them (T3's order), each with its git author. */
 export function readCommits(previousTag: string, ref: string): ReleaseCommit[] {
 	const range = previousTag ? `${previousTag}..${ref}` : ref;
-	const log = execFileSync("git", ["log", "--no-merges", "--reverse", "--format=%s%x1f%an", range], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+	const log = execFileSync("git", ["log", "--no-merges", "--reverse", "--format=%H%x1f%s%x1f%an", range], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
 	return log.split("\n").filter((line) => line.trim() !== "").map((line) => {
-		const [subject = "", authorName = ""] = line.split("\x1f");
-		return { subject, authorName };
+		const [sha = "", subject = "", authorName = ""] = line.split("\x1f");
+		return { subject, authorName, sha };
 	});
+}
+
+/**
+ * The PR a commit names, when it really is that commit's. A commit imported from upstream keeps
+ * upstream's "(#190)", and this repo's own #190 is another PR: it counts only when it merged this
+ * commit, or its author is the commit's (login or profile name). Otherwise the commit counts by
+ * its git author and the model gets no body for it. Decided per commit, so a number shared by a
+ * fork PR and an imported commit gives each its own answer.
+ */
+export function pullRequestFor(commit: ReleaseCommit, pullRequests: ReadonlyMap<number, PullRequest>): PullRequest | undefined {
+	const number = pullRequestNumber(commit.subject);
+	const pullRequest = number === undefined ? undefined : pullRequests.get(number);
+	if (!pullRequest) return undefined;
+	if (pullRequest.mergeCommit && commit.sha && pullRequest.mergeCommit === commit.sha) return pullRequest;
+	const author = pullRequest.author;
+	return author && commit.authorName && (author.login === commit.authorName || author.name === commit.authorName) ? pullRequest : undefined;
 }
 
 /** PR authors without bots, plus authors of direct pushes who have no PR in the range (T3's countContributors). */
@@ -126,8 +146,7 @@ export function countContributors(commits: readonly ReleaseCommit[], pullRequest
 	const prAuthorNames = new Set<string>();
 	const directAuthors: string[] = [];
 	for (const commit of commits) {
-		const number = pullRequestNumber(commit.subject);
-		const author = number === undefined ? undefined : pullRequests.get(number)?.author;
+		const author = pullRequestFor(commit, pullRequests)?.author;
 		if (!author) {
 			directAuthors.push(commit.authorName);
 			continue;
@@ -177,12 +196,13 @@ export function trimPullRequestBody(body: string, limit = PULL_REQUEST_BODY_LIMI
 	return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
-export function buildSummaryInput(subjects: readonly string[], bodies: ReadonlyMap<number, string>): string {
+/** `bodyOf` says whether commit `index` may use the body its PR number names (pullRequestFor). */
+export function buildSummaryInput(subjects: readonly string[], bodies: ReadonlyMap<number, string>, bodyOf: (index: number) => boolean = () => true): string {
 	return subjects
 		.flatMap((subject, index) => {
 			const line = `[${index + 1}] ${subject}`;
 			const number = pullRequestNumber(subject);
-			const body = number === undefined ? "" : trimPullRequestBody(bodies.get(number) ?? "");
+			const body = number === undefined || !bodyOf(index) ? "" : trimPullRequestBody(bodies.get(number) ?? "");
 			return body ? [line, `  > ${body}`] : [line];
 		})
 		.join("\n");
@@ -259,7 +279,7 @@ export function readPullRequests(repository: string, numbers: readonly number[],
 	const pullRequests = new Map<number, PullRequest>();
 	for (let start = 0; start < numbers.length; start += 100) {
 		const fields = numbers.slice(start, start + 100)
-			.map((n) => `pr${n}: pullRequest(number: ${n}) { body author { __typename login ... on User { name } } }`).join("\n");
+			.map((n) => `pr${n}: pullRequest(number: ${n}) { body mergeCommit { oid } author { __typename login ... on User { name } } }`).join("\n");
 		const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
 		let out = "";
 		try {
@@ -269,11 +289,12 @@ export function readPullRequests(repository: string, numbers: readonly number[],
 			out = typeof stdout === "string" ? stdout : Buffer.isBuffer(stdout) ? stdout.toString("utf8") : "";
 		}
 		try {
-			const repo = (JSON.parse(out) as { data?: { repository?: Record<string, { body?: string; author?: PullRequest["author"] } | null> } }).data?.repository ?? {};
+			const repo = (JSON.parse(out) as { data?: { repository?: Record<string, { body?: string; author?: PullRequest["author"]; mergeCommit?: { oid?: unknown } | null } | null> } }).data?.repository ?? {};
 			for (const [alias, pr] of Object.entries(repo)) {
 				if (!pr || typeof pr.body !== "string") continue;
 				const author = pr.author && typeof pr.author.login === "string" ? pr.author : null;
-				pullRequests.set(Number(alias.slice(2)), { body: pr.body, author });
+				const mergeCommit = typeof pr.mergeCommit?.oid === "string" ? pr.mergeCommit.oid : null;
+				pullRequests.set(Number(alias.slice(2)), { body: pr.body, author, mergeCommit });
 			}
 		} catch {
 			/* PR bodies are extra context; subjects alone still work */
@@ -345,7 +366,7 @@ async function main() {
 	const pullRequests = readPullRequests(values.repository, numbers);
 	const bodies = new Map([...pullRequests].map(([number, pullRequest]) => [number, pullRequest.body]));
 	const model = process.env.OPENROUTER_MODEL || DEFAULT_MODEL;
-	const highlights = await summarize(buildSummaryInput(subjects, bodies), apiKey, model);
+	const highlights = await summarize(buildSummaryInput(subjects, bodies, (index) => pullRequestFor(commits[index]!, pullRequests) !== undefined), apiKey, model);
 	const summary = formatSummary(subjects, highlights);
 	if (!summary) throw new Error("a highlight names a commit that is not in the range");
 	writeAtomically(output, { version, publishedAt, ...summary, items: entryItems(summary), stats: releaseStats(commits.length, countContributors(commits, pullRequests)) });

@@ -981,6 +981,24 @@ describe("General update rows", () => {
 		assert.ok(!html.includes("hidden by the intro"), "an intro shows instead of the items");
 	});
 
+	it("the old-client copy of a footer or intro shows once, as itself; a bullet with the same text elsewhere stays", () => {
+		const footer = "Plus 2 more bug fixes.";
+		const html = renderToStaticMarkup(<ReleaseNoteSections homepage="https://github.com/o/r" omittedReleaseCount={0}
+			groups={[
+				{ version: "0.3.9", items: ["**Cards.** Practice.", footer], footer },
+				{ version: "0.3.8", items: ["3 bug fixes."], intro: "3 bug fixes.", stats: "3 changes from 1 contributor" },
+				{ version: "0.3.7", items: [footer, "New feature.", footer], footer },
+			]} />);
+		const text = parseHTML(`<div>${html}</div>`).document;
+		const sections = [...text.querySelectorAll("section")];
+		assert.deepEqual([...sections[0]!.querySelectorAll("li")].map((li) => li.textContent), ["Cards. Practice."], "the footer copy isn't a bullet");
+		assert.equal(sections[0]!.querySelector("[data-testid='release-notes-footer']")?.textContent, footer);
+		assert.equal(sections[1]!.querySelectorAll("li").length, 0, "an intro-only release shows its paragraph, no list");
+		assert.equal(sections[1]!.querySelector("[data-testid='release-notes-intro']")?.textContent, "3 bug fixes.");
+		assert.deepEqual([...sections[2]!.querySelectorAll("li")].map((li) => li.textContent), [footer, "New feature."], "only the trailing copy goes");
+		assert.deepEqual([...text.querySelectorAll("a")].map((a) => a.textContent), ["View release on GitHub", "3 changes from 1 contributor", "View release on GitHub"], "and no copy counts as a change left out");
+	});
+
 	it("formatReleaseAge is T3's: feed times read 3h ago, build days read today or 2d ago, an unreadable time reads nothing", () => {
 		const now = Date.parse("2026-11-20T12:00:00Z");
 		assert.equal(formatReleaseAge("2026-11-20T11:59:30Z", now), "just now");

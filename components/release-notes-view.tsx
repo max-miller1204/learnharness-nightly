@@ -28,7 +28,7 @@
  */
 
 import { ExternalLinkIcon } from "lucide-react";
-import { totalReleaseItems, type ReleaseNoteGroup } from "@/src/core";
+import { totalReleaseItems, withoutSummaryEcho, type ReleaseNoteGroup } from "@/src/core";
 
 export const releaseUrl = (homepage: string, version: string) =>
 	homepage ? `${homepage}/releases/tag/v${encodeURIComponent(version)}` : null;
@@ -68,7 +68,7 @@ export function versionWithAge(version: string, releasedAt: string | undefined, 
 /** The release link's label: a summary's stats, else "View release on GitHub" or "N more changes on GitHub". */
 export function releaseLinkLabel(group: ReleaseNoteGroup): string {
 	if (group.stats) return group.stats;
-	const omitted = Math.max(0, totalReleaseItems(group) - group.items.length);
+	const omitted = Math.max(0, totalReleaseItems(group) - withoutSummaryEcho(group.items, group).length);
 	return omitted === 0 ? "View release on GitHub" : `${plural(omitted, "more change", "more changes")} on GitHub`;
 }
 
@@ -112,6 +112,8 @@ export function ReleaseNoteSections({ groups, omittedReleaseCount, homepage, off
 			{groups.map((group, index) => {
 				const link = releaseUrl(homepage, group.version);
 				const generated = group.stats !== undefined || group.intro !== undefined;
+				// The notes keep the old-client copy of the intro or footer; it shows once, as itself.
+				const items = withoutSummaryEcho(group.items, group);
 				return (
 					<section className={index > 0 ? "mt-4" : undefined} key={group.version} data-testid="release-notes-group">
 						{generated ? (
@@ -123,9 +125,9 @@ export function ReleaseNoteSections({ groups, omittedReleaseCount, homepage, off
 						)}
 						{group.intro ? (
 							<p className="break-words text-xs leading-5 text-popover-foreground" data-testid="release-notes-intro">{group.intro}</p>
-						) : group.items.length > 0 ? (
+						) : items.length > 0 ? (
 							<ul className="space-y-1.5 pl-4 text-xs leading-5 text-popover-foreground/90">
-								{keyItems(group.items).map(({ item, key }) => {
+								{keyItems(items).map(({ item, key }) => {
 									const highlight = /^\*\*([^*]+)\*\* (.+)$/.exec(item);
 									return (
 										<li className="list-disc break-words" key={key}>

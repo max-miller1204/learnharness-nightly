@@ -138,7 +138,7 @@ function extractReleaseNoteSummary(summary) {
 		}
 		// Any other "### " line after the summary's text is its footer too (summaryBody writes one
 		// for every footer); a heading before it, such as "### What's changed", is skipped as in T3.
-		if (/^###\s+\S/.test(plain) && (items.length > 0 || intro.length > 0)) {
+		if (/^###\s+\S/.test(plain) && (items.length > 0 || intro.length > 0 || stats !== undefined)) {
 			footer = plain.replace(/^###\s+/, "");
 			continue;
 		}
@@ -238,7 +238,8 @@ function releaseNoteGroups(info) {
 		// A feed note (electron/nightly-updater.cjs) is already structured: its fields as they are,
 		// never through Markdown, where item text like "<br>" or "- x" would change shape.
 		const note = Array.isArray(entry.items) ? feedNoteFields(entry) : extractReleaseNoteItems(entry.note);
-		if (note.totalItems === 0 && !note.stats) continue;
+		// T3 drops a release with nothing to show; a footer alone is something.
+		if (note.totalItems === 0 && !note.stats && !note.footer) continue;
 		seen.add(version);
 		const releasedAt = releasedAtOf(version, info.version, info.releaseDate);
 		groups.push({ version, ...note, ...(releasedAt ? { releasedAt } : {}) });
@@ -246,10 +247,16 @@ function releaseNoteGroups(info) {
 	return groups;
 }
 
-/** Old clients read only `items`, so the generator also writes the intro or footer as the last
- *  item; a client that reads those fields drops that copy. */
+/**
+ * Old clients read only `items`, so the generator also writes the intro or footer once more as the
+ * last item. The groups main keeps, caches and sends over the bridge keep that copy (a page from
+ * before the fields shows it); counting and the release page drop it. Only that one trailing item,
+ * compared as the full text with both sides normalized (src/core/release-notes.ts withoutSummaryEcho).
+ */
 function withoutSummaryEcho(items, { intro, footer } = {}) {
-	return items.filter((item) => item !== intro && item !== footer);
+	const last = items.length > 0 ? cleanText(items[items.length - 1]) : "";
+	const echoes = last !== "" && ((footer !== undefined && last === cleanText(footer)) || (intro !== undefined && last === cleanText(intro)));
+	return echoes ? items.slice(0, -1) : [...items];
 }
 
 /** A feed note's own fields (latest.json notes, selfhost/src/release.ts FeedNote). */
@@ -259,8 +266,8 @@ function feedNoteFields(entry) {
 		const value = boundedText(entry[key], limit);
 		if (value) summary[key] = value;
 	}
-	const items = withoutSummaryEcho(entry.items.filter((item) => typeof item === "string").map(cleanText).filter(Boolean), summary);
-	return { items, totalItems: items.length + (summary.intro ? 1 : 0), ...summary };
+	const items = entry.items.filter((item) => typeof item === "string").map(cleanText).filter(Boolean);
+	return { items, totalItems: withoutSummaryEcho(items, summary).length + (summary.intro ? 1 : 0), ...summary };
 }
 
 /**
@@ -347,9 +354,10 @@ function boundedGroup(group) {
 		const value = boundedText(group[key], limit);
 		if (value) summary[key] = value;
 	}
-	const all = withoutSummaryEcho(group.items.filter((item) => typeof item === "string").map(cleanText).filter(Boolean), summary);
+	// The old-client copy stays in the items; it's compared (and left out of the count) at full length.
+	const all = group.items.filter((item) => typeof item === "string").map(cleanText).filter(Boolean);
 	const items = all.slice(0, MAX_RELEASE_NOTE_ITEMS_PER_GROUP).map(truncateItem);
-	const counted = all.length + (summary.intro ? 1 : 0);
+	const counted = withoutSummaryEcho(all, summary).length + (summary.intro ? 1 : 0);
 	const totalItems = Number.isInteger(group.totalItems) && group.totalItems >= items.length ? Math.min(group.totalItems, MAX_TOTAL_ITEMS) : counted;
 	const releasedAt = safeReleasedAt(group.releasedAt);
 	return { version: group.version, ...(releasedAt ? { releasedAt } : {}), items, totalItems, ...summary };

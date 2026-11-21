@@ -10,9 +10,9 @@ import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { capReleaseNoteGroups, MAX_RELEASE_NOTE_ITEM_LENGTH } from "../src/core/release-notes.ts";
+import { capReleaseNoteGroups, MAX_RELEASE_NOTE_ITEM_LENGTH, totalReleaseItems, withoutSummaryEcho } from "../src/core/release-notes.ts";
 import { feedNotesToGroups, groupsBetween, mergeNotesCache, readNotesCache, readUpdateRecord, whatsNew, writeUpdateRecord } from "../src/server/update-records.ts";
-import { buildSummaryInput, countContributors, entryItems, fallbackItems, formatSummary, parseHighlights, readPullRequests, releaseStats, trimPullRequestBody, type PullRequest } from "../scripts/generate-release-notes.ts";
+import { buildSummaryInput, countContributors, entryItems, fallbackItems, formatSummary, parseHighlights, pullRequestFor, readPullRequests, releaseStats, trimPullRequestBody, type PullRequest } from "../scripts/generate-release-notes.ts";
 
 const require = createRequire(import.meta.url);
 const electronNotes = require("../electron/release-notes.cjs") as {
@@ -20,6 +20,7 @@ const electronNotes = require("../electron/release-notes.cjs") as {
 	summaryBody(note: unknown): string;
 	FULL_CHANGELOG_MARKER: string;
 	capGroups(groups: unknown[]): { releaseNotes: Array<{ version: string; items: string[]; totalItems: number; intro?: string; stats?: string; footer?: string }>; omittedReleaseCount: number };
+	bridgeNotes(groups: unknown[], omitted: number): { releaseNotes: Array<{ version: string; releasedAt?: string; items: string[]; totalItems: number; intro?: string; footer?: string }>; omittedReleaseCount: number };
 	mergeNotesCache(dir: string, groups: unknown[]): void;
 };
 
@@ -43,24 +44,56 @@ describe("notes limits", () => {
 		assert.equal(capReleaseNoteGroups([{ version: V(1), items: [], intro: "3 bug fixes." }]).releaseNotes[0]!.totalItems, 1, "an intro counts as one");
 	});
 
-	it("older clients still see the intro or footer (written once more as the last item); newer ones drop that copy", () => {
+	it("older clients still see the intro or footer (written once more as the last item); every stored or sent copy keeps it", () => {
 		const withFooter = { items: ["**Cards.** Practice."], footer: "Plus 2 more bug fixes." };
 		const introOnly = { items: [], intro: "3 bug fixes." };
 		assert.deepEqual(entryItems(withFooter), ["**Cards.** Practice.", "Plus 2 more bug fixes."], "an older server or app shows the count as a bullet");
 		assert.deepEqual(entryItems(introOnly), ["3 bug fixes."], "and an intro-only release isn't empty there");
 		assert.deepEqual(entryItems({ items: ["a"] }), ["a"]);
+		// The server's state and cache keep it (its own older pages read only items); the count leaves it out.
 		const groups = feedNotesToGroups([
 			{ version: V(12), publishedAt: "", items: entryItems(withFooter), footer: withFooter.footer },
 			{ version: V(11), publishedAt: "", items: entryItems(introOnly), intro: introOnly.intro },
 		]);
-		assert.deepEqual(groups.map((g) => g.items), [["**Cards.** Practice."], []], "the server shows the footer and intro once");
+		assert.deepEqual(groups.map((g) => g.items), [["**Cards.** Practice.", "Plus 2 more bug fixes."], ["3 bug fixes."]]);
+		assert.deepEqual(groups.map(totalReleaseItems), [1, 1]);
+		// So does the desktop: main's state, the cache and the bridge.
 		const desktop = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: [
 			{ version: V(12), items: entryItems(withFooter), footer: withFooter.footer },
 			{ version: V(11), items: entryItems(introOnly), intro: introOnly.intro },
 		] });
-		assert.deepEqual(desktop.map((g) => [g.items, g.totalItems]), [[["**Cards.** Practice."], 1], [[], 1]], "so does the desktop");
-		assert.equal(electronNotes.summaryBody({ version: V(12), items: entryItems(introOnly), intro: introOnly.intro }), "**3 bug fixes.**", "and the release page");
+		assert.deepEqual(desktop.map((g) => [g.items, g.totalItems]), [[["**Cards.** Practice.", "Plus 2 more bug fixes."], 1], [["3 bug fixes."], 1]]);
+		// A page from before the summary fields (the old readDesktopAppStatus kept version, releasedAt and items)
+		// still shows "Plus 2 more" and "3 bug fixes." from what the bridge sends.
+		const sent = electronNotes.bridgeNotes(desktop, 0).releaseNotes;
+		const oldReader = sent.map((group) => ({ version: group.version, ...(group.releasedAt ? { releasedAt: group.releasedAt } : {}), items: group.items }));
+		assert.deepEqual(oldReader.map((g) => g.items), [["**Cards.** Practice.", "Plus 2 more bug fixes."], ["3 bug fixes."]]);
+		// The release page shows it once.
+		assert.equal(electronNotes.summaryBody({ version: V(12), items: entryItems(introOnly), intro: introOnly.intro }), "**3 bug fixes.**");
 		assert.ok(!electronNotes.summaryBody({ version: V(12), items: entryItems(withFooter), footer: withFooter.footer }).includes("- Plus 2"));
+	});
+
+	it("only the single trailing copy is the old-client echo: a bullet with the same text elsewhere stays", () => {
+		const footer = "Plus 2 more bug fixes.";
+		assert.deepEqual(withoutSummaryEcho([footer, "New feature.", footer], { footer }), [footer, "New feature."]);
+		assert.deepEqual(withoutSummaryEcho([footer, "New feature."], { footer }), [footer, "New feature."], "not the last item: no echo");
+		assert.deepEqual(withoutSummaryEcho(["a", `  Plus 2   more bug fixes. `], { footer }), ["a"], "compared normalized");
+		assert.deepEqual(withoutSummaryEcho(["a"], {}), ["a"]);
+		// Through main and then the bridge (two bounding passes, the second over cut items), a long bullet
+		// whose cut form reads like the footer is neither dropped nor uncounted.
+		const longFooter = `${"x".repeat(217)}...`;
+		const kept = electronNotes.capGroups([{ version: V(12), items: ["a", "x".repeat(300)], footer: longFooter }]).releaseNotes;
+		const [group] = electronNotes.bridgeNotes(kept, 0).releaseNotes;
+		assert.equal(group!.items.length, 2, "the long bullet is still sent");
+		assert.equal(group!.totalItems, 2, "and still counts");
+	});
+
+	it("a footer alone is a release to show (no stats, only the footer and its copy; or a body with stats and a ### line)", () => {
+		const [fromFeed] = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: [{ version: V(12), items: ["Thanks to everyone who tested."], footer: "Thanks to everyone who tested." }] });
+		assert.deepEqual([fromFeed?.footer, fromFeed?.totalItems], ["Thanks to everyone who tested.", 0]);
+		const body = `**v${V(12)}** · 1 change from 1 contributor\n\n### Thanks to everyone who tested.\n\n${electronNotes.FULL_CHANGELOG_MARKER}`;
+		const [fromPage] = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: body });
+		assert.deepEqual([fromPage?.stats, fromPage?.footer], ["1 change from 1 contributor", "Thanks to everyone who tested."]);
 	});
 
 	it("summary fields are trimmed and collapsed before their bounds", () => {
@@ -145,14 +178,14 @@ describe("generate-release-notes", () => {
 
 	it("counts contributors T3's way and writes its stats line", () => {
 		const commits = [
-			{ subject: "feat: a (#1)", authorName: "Max Miller" },
-			{ subject: "fix: b (#2)", authorName: "dependabot[bot]" },
-			{ subject: "fix: c", authorName: "Max Miller" },
-			{ subject: "docs: d", authorName: "Sam" },
+			{ subject: "feat: a (#1)", authorName: "Max Miller", sha: "aaa1" },
+			{ subject: "fix: b (#2)", authorName: "dependabot[bot]", sha: "bbb2" },
+			{ subject: "fix: c", authorName: "Max Miller", sha: "ccc3" },
+			{ subject: "docs: d", authorName: "Sam", sha: "ddd4" },
 		];
 		const pullRequests = new Map<number, PullRequest>([
-			[1, { body: "", author: { __typename: "User", login: "max-miller1204", name: "Max" } }],
-			[2, { body: "", author: { __typename: "Bot", login: "dependabot" } }],
+			[1, { body: "", author: { __typename: "User", login: "max-miller1204", name: "Max" }, mergeCommit: "aaa1" }],
+			[2, { body: "", author: { __typename: "Bot", login: "dependabot" }, mergeCommit: "bbb2" }],
 		]);
 		assert.equal(countContributors(commits, pullRequests), 2, "a PR author once (their git name too), bots never, plus direct pushers");
 		assert.equal(countContributors(commits, new Map()), 2, "without PR authors: the git names, bots aside");
@@ -167,6 +200,20 @@ describe("generate-release-notes", () => {
 		assert.deepEqual([...read.keys()], [1]);
 		assert.equal(read.get(1)!.author!.login, "max");
 		assert.equal(readPullRequests("o/r", [1], () => { throw new Error("no gh"); }).size, 0, "no output at all: no PRs, no throw");
+	});
+
+	it("an imported upstream commit's (#N) is not this repo's PR #N: no author, no body from it", () => {
+		const ours: PullRequest = { body: "Our own PR 190.", author: { __typename: "User", login: "max-miller1204", name: "Max Miller" }, mergeCommit: "f0f0" };
+		const pullRequests = new Map<number, PullRequest>([[190, ours]]);
+		const imported = { subject: "feat: upstream thing (#190)", authorName: "Upstream Dev", sha: "u1u1" };
+		const own = { subject: "feat: our thing (#190)", authorName: "Max Miller", sha: "f0f0" };
+		assert.equal(pullRequestFor(imported, pullRequests), undefined, "another sha and another author");
+		assert.equal(pullRequestFor(own, pullRequests), ours, "the commit the PR merged");
+		assert.equal(pullRequestFor({ ...own, sha: "rebased" }, pullRequests), ours, "or the same author (a rebased copy)");
+		assert.equal(countContributors([imported], pullRequests), 1, "the upstream author counts by git name");
+		assert.equal(countContributors([imported, own], pullRequests), 2, "each commit gets its own answer");
+		const input = buildSummaryInput([imported.subject, own.subject], new Map([[190, ours.body]]), (index) => pullRequestFor([imported, own][index]!, pullRequests) !== undefined);
+		assert.equal(input, "[1] feat: upstream thing (#190)\n[2] feat: our thing (#190)\n  > Our own PR 190.", "the body only for the commit it belongs to");
 	});
 
 	it("rejects a highlight that names a commit outside the input", () => {

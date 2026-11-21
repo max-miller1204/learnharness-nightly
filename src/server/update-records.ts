@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { PATHS } from "../../config.ts";
 import { writeFileAtomicSync } from "../store/atomic-write.ts";
-import { capReleaseNoteGroups, withoutSummaryEcho, type ReleaseNoteGroup } from "../core/release-notes.ts";
+import { capReleaseNoteGroups, type ReleaseNoteGroup } from "../core/release-notes.ts";
 import { compareVersions, FEED_NOTE_LIMITS, FEED_NOTES_KEEP, isExactVersion, type FeedNote } from "../../selfhost/src/release.ts";
 
 export interface UpdateRecord {
@@ -56,7 +56,9 @@ function parseGroups(value: unknown): ReleaseNoteGroup[] {
 		seen.add(entry.version);
 		// T3's summary extras, when the feed (or an older cache) has them.
 		const summary = { ...summaryText("intro", entry.intro), ...summaryText("stats", entry.stats), ...summaryText("footer", entry.footer) };
-		const items = withoutSummaryEcho(entry.items.filter((item): item is string => typeof item === "string" && item.trim() !== ""), summary);
+		// The old-client copy of the intro or footer stays (pages from before the fields show it);
+		// the renderer drops it (src/core/release-notes.ts withoutSummaryEcho).
+		const items = entry.items.filter((item): item is string => typeof item === "string" && item.trim() !== "");
 		groups.push({
 			version: entry.version,
 			...(typeof entry.releasedAt === "string" && entry.releasedAt ? { releasedAt: entry.releasedAt } : {}),
