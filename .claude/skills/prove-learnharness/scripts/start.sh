@@ -75,25 +75,26 @@ printf 'PROVE-FIXTURE-NONL: this file has no final newline.\nzz-prove-it last li
 FAKE_PORT=$(free_port)
 # setsid: each process leads its own process group, so stop.sh can end it
 # with every child (the standalone server forks next-server).
-PROVE_FIXTURE=$FIXTURE setsid nohup node "$PROVE_SCRIPTS/fake-model.mjs" --port "$FAKE_PORT" --scenario "$SCENARIO" \
+PROVE_FIXTURE=$FIXTURE "${SETSID[@]}" nohup node "$PROVE_SCRIPTS/fake-model.mjs" --port "$FAKE_PORT" --scenario "$SCENARIO" \
 	--log "$SD/model-requests.jsonl" </dev/null >"$SD/fake-model.log" 2>&1 &
 echo $! >"$SD/fake-model.pid"
 
 APP_PORT=$(free_port)
 # Login (docs/specs/login-pairing.md): a build that has the login store gets a
 # session written into it, the way `lh` does; a base build from before has none.
+# It lasts 12 hours, not lh's 5 minutes: a drive can outlast that.
 APP_TOKEN=
 if [ -f "$BUILD/selfhost/src/auth-store.ts" ]; then
-	APP_TOKEN=$(node -e 'import(process.argv[1]).then((m) => console.log(m.issueSession(process.argv[2], { method: "cli", client: { label: "prove", deviceType: "bot" } }).token))' "$BUILD/selfhost/src/auth-store.ts" "$SD/data")
+	APP_TOKEN=$(node -e 'import(process.argv[1]).then((m) => console.log(m.issueSession(process.argv[2], { method: "cli", ttlMs: 12 * 3600_000, client: { label: "prove", deviceType: "bot" } }).token))' "$BUILD/selfhost/src/auth-store.ts" "$SD/data")
 fi
 # env -i: no ambient provider keys, tokens or LH_* settings reach the app.
 # PROVE_MODEL=claude-code keeps your real HOME so the claude CLI finds its login.
 APP_HOME=$SD/home
 [ "$PROVE_MODEL" = claude-code ] && APP_HOME=$HOME
-setsid nohup env -C "$(dirname "$SERVER")" -i PATH="$PATH:$HOME/.local/bin" HOME="$APP_HOME" LANG=C.UTF-8 \
+(cd "$(dirname "$SERVER")" && exec "${SETSID[@]}" nohup env -i PATH="$PATH:$HOME/.local/bin" HOME="$APP_HOME" LANG=C.UTF-8 \
 	NODE_ENV=production HOSTNAME=127.0.0.1 PORT="$APP_PORT" NEXT_TELEMETRY_DISABLED=1 \
 	LH_DATA_DIR="$SD/data" LH_AUTH_FILE="$SD/auth.json" LH_IGNORE_ENV_KEYS=1 CHROME_PATH="$PROVE_CHROME" \
-	node "$SERVER" </dev/null >"$SD/app.log" 2>&1 &
+	node "$SERVER") </dev/null >"$SD/app.log" 2>&1 &
 echo $! >"$SD/app.pid"
 
 APP_URL=http://127.0.0.1:$APP_PORT

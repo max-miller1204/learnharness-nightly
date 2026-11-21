@@ -1,0 +1,18 @@
+{
+	"rules": [
+		{
+			"id": "quiz-answered",
+			"match": {
+				"lastRole": "tool",
+				"lastIncludes": "\"kind\":\"quiz\""
+			},
+			"times": 1,
+			"reply": {
+				"text": "The first pair fits, since $4 < 8$. The second does not, since $0.20 > -0.10$. The third fits too: $-0.10 < 0.20$."
+			}
+		}
+	],
+	"fallback": {
+		"text": "zz-iphone fallback reply."
+	}
+}

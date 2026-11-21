@@ -10,13 +10,34 @@ REPO=$(git -C "$PROVE_SCRIPTS" rev-parse --show-toplevel)
 die() { printf 'prove: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*" >&2; }
 
+# macOS has neither util-linux's flock nor setsid; Perl stand-ins do the same.
+# flock [-n] [-s|-x] <fd> locks the open file on <fd>, which keeps the lock
+# after Perl exits, as flock(1) does. "${SETSID[@]}" cmd... runs cmd as the
+# leader of a new session and process group, so stop.sh can signal the group.
+if ! command -v flock >/dev/null 2>&1; then
+	flock() {
+		local block=1 mode=ex
+		while [ $# -gt 1 ]; do
+			case $1 in -n) block=0 ;; -s) mode=sh ;; -x) mode=ex ;; *) die "flock stand-in: unsupported option $1" ;; esac
+			shift
+		done
+		perl -MFcntl=:flock -e 'open(my $fh, ">&=", $ARGV[0]) or die "flock: fd $ARGV[0]: $!\n";
+			flock($fh, ($ARGV[1] eq "sh" ? LOCK_SH : LOCK_EX) | ($ARGV[2] ? 0 : LOCK_NB)) or exit 1' "$1" "$mode" "$block"
+	}
+fi
+if command -v setsid >/dev/null 2>&1; then
+	SETSID=(setsid)
+else
+	SETSID=(perl -MPOSIX -e 'POSIX::setsid() != -1 or die "setsid: $!\n"; exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n"' --)
+fi
+
 free_port() { node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})'; }
 
 # The canonical path of a run folder made by new-run.sh, or die. Every script
 # uses it, so paths written into env, pid checks and unit names always match.
 canon_run() {
 	local run
-	run=$(realpath -e -- "${1:?run folder required}" 2>/dev/null) || die "no run folder $1"
+	run=$(CDPATH= cd -- "${1:?run folder required}" 2>/dev/null && pwd -P) || die "no run folder $1"
 	case "$run" in
 		"$REPO"/.prove-it/runs/[0-9]*T[0-9]*Z-*) ;;
 		*) die "refusing: $run is not a run folder under $REPO/.prove-it/runs/ (make one with new-run.sh)" ;;
