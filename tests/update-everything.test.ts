@@ -22,7 +22,7 @@ const V73 = "0.6.1-nightly.20261118.73";
 type Reply = { status?: number; body?: unknown } | Error;
 type Prompt = { message: string; detail: string; buttons: string[]; signal?: AbortSignal };
 
-function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0] as Array<number | "wait">, saved = null as unknown, downloadFails = false } = {}) {
+function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0] as Array<number | "wait">, saved = null as unknown, downloadFails = false, appNotes = [] as unknown[], duringDownload = () => {} } = {}) {
 	const log: string[] = [];
 	const prompts: Prompt[] = [];
 	const notices: Array<{ message: string; detail: string }> = [];
@@ -48,13 +48,13 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 	const ue = createUpdateEverything({
 		appVersion: V71,
 		updater: {
-			state: () => ({ status: offered ? "available" : "up-to-date", version: offered }),
+			state: () => ({ status: offered ? "available" : "up-to-date", version: offered, releaseNotes: appNotes }),
 			check: () => log.push("check"),
 			download: () => log.push("download"),
 			pin: async () => { log.push("pin"); return offered; },
-			downloadPinned: async (v: string) => { if (downloadFails) throw new Error("sha512 checksum mismatch"); log.push(`download ${v}`); },
+			downloadPinned: async (v: string) => { duringDownload(); if (downloadFails) throw new Error("sha512 checksum mismatch"); log.push(`download ${v}`); },
 			// The app-only retry: exactly v, whatever the feed's newest is.
-			downloadExact: async (v: string) => { log.push(`exact ${v}`); },
+			downloadExact: async (v: string) => { duringDownload(); log.push(`exact ${v}`); },
 			installPinned: (v: string) => {
 				if (remote.installFails > 0) { remote.installFails--; log.push(`install ${v} failed`); throw new Error("Could not locate update bundle"); }
 				log.push(`install ${v}`); finished();
@@ -299,9 +299,73 @@ test("a launcher rejection, a rollback and the 32-minute limit fail the server s
 	assert.equal(slow.log.some((entry) => entry.startsWith("install")), false);
 });
 
+test("status passes the offered version's release notes through to the remote page, and reads a state without them as none", () => {
+	const notes = [{ version: V72, items: ["**Cards.** Practice with cards."] }, { version: V71, items: ["Older"] }];
+	let appState: Record<string, unknown> = { status: "available", version: V72, releaseNotes: notes, omittedReleaseCount: 3 };
+	const ue = createUpdateEverything({ appVersion: V71, updater: { state: () => appState } });
+	assert.deepEqual(ue.status(), { version: V71, target: V72, phase: "available", error: null, downloadPercent: null, releaseNotes: notes, omittedReleaseCount: 3 });
+	appState = { status: "downloading", version: V72, downloadPercent: 40, releaseNotes: notes, omittedReleaseCount: 0 };
+	assert.deepEqual(ue.status().releaseNotes, notes);
+	assert.equal(ue.status().downloadPercent, 40);
+	// A state without notes (an updater snapshot before any offer, or a malformed count) reads as none.
+	appState = { status: "up-to-date", version: null, omittedReleaseCount: -2 };
+	assert.deepEqual(ue.status(), { version: V71, target: null, phase: "up-to-date", error: null, downloadPercent: null, releaseNotes: [], omittedReleaseCount: 0 });
+	appState = { status: "available", version: V72, releaseNotes: "not a list", omittedReleaseCount: 1.5 };
+	assert.deepEqual([ue.status().releaseNotes, ue.status().omittedReleaseCount], [[], 0]);
+});
+
+test("a run sends no notes, also in its download step and the app-only retry's, which the page can't tell from a plain download", async () => {
+	const appNotes = [{ version: V72, items: ["App change"] }];
+	const seen: Array<{ phase: string; releaseNotes: unknown[] }> = [];
+	let ue: ReturnType<typeof fixture>["ue"] | null = null;
+	const f = fixture({ appNotes, duringDownload: () => { const { phase, releaseNotes } = ue!.status(); seen.push({ phase, releaseNotes }); } });
+	ue = f.ue;
+	assert.deepEqual(f.ue.status().releaseNotes, appNotes, "before the run: this app's notes");
+	f.remote.onInstall = () => { f.remote.running = V72; f.remote.health = V72; f.remote.instance = "new"; };
+	await f.ue.install();
+	await f.done;
+	assert.deepEqual(seen, [{ phase: "downloading", releaseNotes: [] }]);
+
+	const saved = { savedAt: 1_000_000 - 1000, server: ORIGIN, updated: ORIGIN, from: V71, target: V72 };
+	const seenRetry: Array<{ phase: string; releaseNotes: unknown[] }> = [];
+	let retryUe: ReturnType<typeof fixture>["ue"] | null = null;
+	const r = fixture({ saved, appNotes, answers: [0], duringDownload: () => { const { phase, releaseNotes } = retryUe!.status(); seenRetry.push({ phase, releaseNotes }); } });
+	retryUe = r.ue;
+	await r.ue.offerRetry(r.ue.takeLaunch()!.retry);
+	await r.done;
+	assert.deepEqual(seenRetry, [{ phase: "downloading", releaseNotes: [] }]);
+});
+
+test("status forwards only the notes' rendered fields, each validated and bounded", () => {
+	const long = "x".repeat(5000);
+	const groups = [
+		{ version: V73, releasedAt: "2026-11-18T09:37:13.265Z", items: [`  ${long}  `, "", 7, "**Cards.** Practice   with cards."], extra: long, totalItems: 99 },
+		{ version: V72, releasedAt: long, items: ["a"] },
+		{ version: V71, releasedAt: "yesterday", items: Array.from({ length: 20 }, (_, i) => `item ${i}`) },
+		{ version: `${V71}${"9".repeat(100)}`, items: ["too long a version"] },
+		{ version: "not a version", items: ["x"] },
+		{ version: "0.6.1-nightly.20261118.70", releasedAt: "2026-11-18", items: ["kept day"] },
+		...Array.from({ length: 10 }, (_, i) => ({ version: `0.6.1-nightly.20261117.${i + 1}`, items: ["older"] })),
+	];
+	const ue = createUpdateEverything({ appVersion: V71, updater: { state: () => ({ status: "available", version: V73, releaseNotes: groups, omittedReleaseCount: 1e9 }) } });
+	const { releaseNotes, omittedReleaseCount } = ue.status() as { releaseNotes: Array<{ version: string; releasedAt?: string; items: string[] }>; omittedReleaseCount: number };
+	assert.equal(releaseNotes.length, 6, "at most 6 groups");
+	assert.deepEqual(Object.keys(releaseNotes[0]!), ["version", "releasedAt", "items"], "only what the page renders");
+	assert.equal(releaseNotes[0]!.releasedAt, "2026-11-18T09:37:13.265Z");
+	assert.equal(releaseNotes[0]!.items.length, 2);
+	assert.ok(releaseNotes[0]!.items[0]!.length <= 220 && releaseNotes[0]!.items[0]!.endsWith("..."), "items are cut at 220 characters");
+	assert.equal(releaseNotes[0]!.items[1], "**Cards.** Practice with cards.");
+	assert.equal(releaseNotes[1]!.releasedAt, undefined, "an unbounded date is dropped");
+	assert.equal(releaseNotes[2]!.releasedAt, undefined, "a date that isn't one is dropped");
+	assert.equal(releaseNotes[2]!.items.length, 8, "at most 8 items");
+	assert.deepEqual(releaseNotes.map((group) => group.version).slice(3), ["0.6.1-nightly.20261118.70", "0.6.1-nightly.20261117.1", "0.6.1-nightly.20261117.2"], "bad versions are skipped");
+	assert.equal(releaseNotes[3]!.releasedAt, "2026-11-18");
+	assert.equal(omittedReleaseCount, 1000, "the count is bounded too");
+});
+
 test("status reports the run, and a second click while the dialog is open is ignored", async () => {
 	const f = fixture({ answers: [0, 1] });
-	assert.deepEqual(f.ue.status(), { version: V71, target: V72, phase: "available", error: null, downloadPercent: null });
+	assert.deepEqual(f.ue.status(), { version: V71, target: V72, phase: "available", error: null, downloadPercent: null, releaseNotes: [], omittedReleaseCount: 0 });
 	let phaseWhileUpdating: unknown;
 	f.remote.onInstall = () => {
 		phaseWhileUpdating = f.ue.status().phase;

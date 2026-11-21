@@ -7,12 +7,12 @@ import assert from "node:assert/strict";
 import { describe, it, after, afterEach } from "node:test";
 import { readFileSync } from "node:fs";
 import { renderWithInteractionLayers as renderToStaticMarkup } from "./interaction-layer-render.tsx";
-import { InteractionLayersProvider } from "../components/interaction-layers.tsx";
+import { InteractionLayersProvider, useInteractionLayer } from "../components/interaction-layers.tsx";
 import { installModalDom } from "./modal-dom.ts";
 import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
-import { UpdateSettings, updateStatusText, MANUAL_UPDATE_HINT, AUTO_UPDATE_HINT, type UpdateState } from "../components/settings/update-settings.tsx";
-import { AUTO_RELOAD_KEY, AUTO_RELOAD_MEMORY, claimAutoReload, downloadingTooltip, downloadRingOffset, hasUnsentMessage, SidebarUpdatePill, updateControlTooltip } from "../components/sidebar-update-pill.tsx";
+import { UpdateSettings, readDesktopAppStatus, updateStatusText, MANUAL_UPDATE_HINT, AUTO_UPDATE_HINT, type UpdateState } from "../components/settings/update-settings.tsx";
+import { AUTO_RELOAD_KEY, AUTO_RELOAD_MEMORY, claimAutoReload, downloadingTooltip, downloadRingOffset, hasUnsentMessage, shownReleaseNotes, SidebarUpdatePill, updateControlTooltip } from "../components/sidebar-update-pill.tsx";
 import { createRequire } from "node:module";
 import { ServerEventsProvider } from "../components/server-events.tsx";
 import { ReleaseNoteSections } from "../components/release-notes-view.tsx";
@@ -20,6 +20,7 @@ import WhatsNewDialog, { WhatsNewBody } from "../components/whats-new-dialog.tsx
 import { InstallUpdateDialog } from "../components/install-update-dialog.tsx";
 import { SettingsDialogBody, SettingsDialogProvider } from "../components/settings/settings-dialog.tsx";
 import nextConfig from "../next.config.ts";
+import { TOOLTIP_DELAY_MS } from "../components/ui/tooltip.tsx";
 
 const dom = parseHTML("<html><body></body></html>");
 Object.assign(globalThis, { window: dom.window, document: dom.document, Element: dom.window.Element,
@@ -75,6 +76,57 @@ async function mount(element: React.ReactElement) {
 async function click(element: HTMLElement | null) {
 	assert.ok(element, "missing click target");
 	await act(async () => { element.click(); });
+}
+
+/** A mouse over `element`: what opens the notes (pointerenter) and the plain tooltip (pointermove). */
+async function hover(element: HTMLElement) {
+	const pointer = (type: string, bubbles = true) => Object.assign(new window.Event(type, { bubbles, cancelable: true }), { pointerType: "mouse", button: 0, isPrimary: true });
+	await act(async () => { element.dispatchEvent(pointer("pointerover")); element.dispatchEvent(pointer("pointerenter", false)); element.dispatchEvent(pointer("pointermove")); });
+}
+
+/** After the tooltip's open delay, whether the plain tooltip opened: its trigger's state (linkedom
+ *  can't lay out the positioned content itself; tests/passive-tooltip.test.tsx covers that). */
+async function plainTooltipOpens(trigger: HTMLElement) {
+	await act(async () => { await new Promise((resolve) => setTimeout(resolve, TOOLTIP_DELAY_MS + 50)); });
+	return trigger.getAttribute("data-state") === "delayed-open";
+}
+
+// linkedom has no capture phase (it runs a window capture listener last, at bubble time), so
+// keydown capture listeners on the window are kept here and `key` runs them first, as a browser does.
+const windowKeyCapture = new Set<EventListenerOrEventListenerObject>();
+const isCapture = (options?: boolean | AddEventListenerOptions | EventListenerOptions) => options === true || (typeof options === "object" && !!options.capture);
+const addWindowListener = dom.window.addEventListener.bind(dom.window);
+const removeWindowListener = dom.window.removeEventListener.bind(dom.window);
+dom.window.addEventListener = ((type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => {
+	if (type === "keydown" && isCapture(options)) windowKeyCapture.add(listener);
+	else addWindowListener(type, listener, options);
+}) as typeof dom.window.addEventListener;
+dom.window.removeEventListener = ((type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions) => {
+	if (type === "keydown" && isCapture(options)) windowKeyCapture.delete(listener);
+	else removeWindowListener(type, listener, options);
+}) as typeof dom.window.removeEventListener;
+
+/** A keydown from `element`: the window's capture listeners, then (unless one stopped it) the
+ *  target and the bubble through React's root to the document and the window. */
+async function key(element: Element, name: string, { shiftKey = false, altKey = false, ctrlKey = false, metaKey = false } = {}) {
+	const event = Object.assign(new window.Event("keydown", { bubbles: true, cancelable: true }), { key: name, shiftKey, altKey, ctrlKey, metaKey });
+	let stopped = false;
+	const stop = event.stopPropagation.bind(event);
+	event.stopPropagation = () => { stopped = true; stop(); };
+	await act(async () => {
+		for (const listener of [...windowKeyCapture]) {
+			if (typeof listener === "function") listener.call(window, event); else listener.handleEvent(event);
+			if (stopped) return;
+		}
+		element.dispatchEvent(event);
+	});
+}
+
+/** Keyboard focus (linkedom can't match :focus-visible). */
+function keyboardFocusable(element: HTMLElement) {
+	const matches = element.matches.bind(element);
+	element.matches = (selector: string) => selector === ":focus-visible" || matches(selector);
+	return element;
 }
 
 afterEach(async () => {
@@ -624,6 +676,279 @@ describe("General update rows", () => {
 		assert.equal(popover!.querySelector("strong")!.textContent, "Cards.");
 	});
 
+	it("T3's hover rule: every state about an offered update shows its notes when there are any; the others keep the tooltip", async () => {
+		const notes = [{ version: "0.3.8", items: ["A change"] }];
+		const cases: Array<[string, Partial<UpdateState>, boolean]> = [
+			["download", { status: "available", version: "0.3.8" }, true],
+			["downloading", { status: "downloading", version: "0.3.8", downloadPercent: 30 }, true],
+			["install", { status: "downloaded", version: "0.3.8" }, true],
+			["check", { status: "up-to-date" }, false],
+			["unavailable", { status: "disabled" }, false],
+			["dismiss-notice", { status: "up-to-date", notice: { kind: "rolled-back", version: "0.3.8", text: "Rolled back to 0.3.7.", at: 1 } }, false],
+		];
+		for (const [action, over, showsNotes] of cases) {
+			bridge(state({ revision: 1, releaseNotes: notes, ...over }));
+			const host = await mount(<SidebarUpdatePill />);
+			await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+			const pill = q(host, "update-pill")!;
+			assert.equal(pill.getAttribute("data-action"), action);
+			await hover(pill);
+			assert.equal(!!q(document, "update-pill-notes"), showsNotes, `${action}: notes`);
+			assert.equal(await plainTooltipOpens(pill), !showsNotes, `${action}: the plain tooltip`);
+			const { root } = roots.pop()!; await act(async () => { root.unmount(); }); host.remove();
+		}
+		// The same states with no notes: the plain tooltip, never an empty popover.
+		bridge(state({ status: "available", version: "0.3.8", revision: 1 }));
+		const plain = await mount(<SidebarUpdatePill />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		await hover(q(plain, "update-pill")!);
+		assert.ok(!q(document, "update-pill-notes"));
+		assert.equal(await plainTooltipOpens(q(plain, "update-pill")!), true);
+	});
+
+	it("after Install and restart the notes still show on hover, as T3's do while its action is pending", async () => {
+		const notes = [{ version: "0.3.8", items: ["A change"] }];
+		bridge(state({ status: "downloaded", version: "0.3.8", revision: 1, releaseNotes: notes }));
+		const host = await mount(<SidebarUpdatePill />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		await click(q(host, "update-pill"));
+		await click(q(document, "install-update-confirm"));
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+		const pill = q(host, "update-pill")!;
+		assert.equal(pill.getAttribute("data-action"), "restarting");
+		await hover(pill);
+		assert.ok(q(document, "update-pill-notes"));
+		assert.equal(q(document, "update-pill-notes")!.firstElementChild!.textContent, "Restarting to install 0.3.8…");
+	});
+
+	it("from the keyboard: Tab moves into the notes' links and through them, Shift+Tab goes back, Escape closes them onto the button", async () => {
+		const notes = [{ version: "0.3.9", items: ["Newest"] }, { version: "0.3.8", items: ["Older"] }];
+		bridge(state({ status: "downloaded", version: "0.3.9", revision: 1, releaseNotes: notes }));
+		const host = await mount(<SidebarUpdatePill homepage="https://github.com/o/r" />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		// What reaches the window: the app's Tab (cycle text fields), Shift+Tab (thinking) and Escape (abort a turn).
+		const reached: string[] = [];
+		const onWindow = (event: Event) => { reached.push(`${(event as KeyboardEvent).shiftKey ? "Shift+" : ""}${(event as KeyboardEvent).key}`); };
+		window.addEventListener("keydown", onWindow);
+		try {
+			const pill = keyboardFocusable(q(host, "update-pill")!);
+			await act(async () => { pill.focus(); });
+			assert.ok(q(document, "update-pill-notes"), "keyboard focus opens the notes");
+			await key(pill, "Tab");
+			const links = [...q(document, "update-pill-notes")!.querySelectorAll("a")];
+			assert.equal(links.length, 2, "one Read more per release");
+			assert.ok(document.activeElement === links[0], "Tab is on the first link");
+			await key(links[0], "Tab");
+			assert.ok(document.activeElement === links[1], "Tab moves to the next link");
+			await key(links[1], "Tab", { shiftKey: true });
+			assert.ok(document.activeElement === links[0], "Shift+Tab moves back");
+			await key(links[0], "Tab", { shiftKey: true });
+			assert.ok(document.activeElement === pill, "Shift+Tab from the first link is the button");
+			assert.ok(q(document, "update-pill-notes"), "with the notes still open");
+			assert.deepEqual(reached, [], "none of those reached the app's own Tab and Shift+Tab");
+
+			await key(pill, "Tab");
+			await key(links[0], "Escape");
+			await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); });
+			assert.ok(document.activeElement === pill, "Escape returns focus to the button");
+			assert.ok(!q(document, "update-pill-notes"), "and the notes stay closed");
+			assert.deepEqual(reached, [], "Escape never reaches the turn abort");
+
+			// Escape on the button itself closes notes its focus opened.
+			await act(async () => { pill.blur(); });
+			await act(async () => { pill.focus(); });
+			assert.ok(q(document, "update-pill-notes"));
+			await key(pill, "Escape");
+			assert.ok(!q(document, "update-pill-notes"));
+			assert.deepEqual(reached, []);
+
+			// Past the last link the notes close onto the button, and the app's Tab goes on.
+			await key(pill, "Tab");
+			const again = [...q(document, "update-pill-notes")!.querySelectorAll("a")];
+			await key(again[0]!, "Tab");
+			await key(again[1]!, "Tab");
+			await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); });
+			assert.ok(!q(document, "update-pill-notes"));
+			assert.ok(document.activeElement === pill);
+			assert.deepEqual(reached, ["Tab"]);
+		} finally {
+			window.removeEventListener("keydown", onWindow);
+		}
+	});
+
+	it("Escape with focus in the composer closes hover-opened notes first, and reaches neither the field nor the turn abort", async () => {
+		bridge(state({ status: "downloaded", version: "0.3.9", revision: 1, releaseNotes: [{ version: "0.3.9", items: ["Newest"] }] }));
+		const fieldKeys: string[] = [];
+		const host = await mount(<><SidebarUpdatePill /><textarea data-testid="composer" onKeyDown={(event) => fieldKeys.push(event.key)} /></>);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const reached: string[] = [];
+		const onWindow = (event: Event) => { reached.push((event as KeyboardEvent).key); };
+		window.addEventListener("keydown", onWindow);
+		// React's select plugin reads the selection on a field's keys (linkedom has none).
+		const hadSelection = Object.getOwnPropertyDescriptor(dom.window, "getSelection");
+		Object.assign(dom.window, { getSelection: () => ({ anchorNode: null, anchorOffset: 0, focusNode: null, focusOffset: 0, rangeCount: 0 }) });
+		try {
+			const composer = q(host, "composer")!;
+			await act(async () => { composer.focus(); });
+			await hover(q(host, "update-pill")!);
+			assert.ok(q(document, "update-pill-notes"), "the pointer opened the notes");
+			await key(composer, "Escape");
+			assert.ok(!q(document, "update-pill-notes"), "Escape closed them");
+			assert.deepEqual([fieldKeys, reached], [[], []], "one Esc, one action: nothing else saw it");
+			assert.ok(document.activeElement === composer, "focus stays in the composer");
+			await key(composer, "Escape");
+			assert.deepEqual([fieldKeys, reached], [["Escape"], ["Escape"]], "with the notes closed Escape is the app's again");
+		} finally {
+			window.removeEventListener("keydown", onWindow);
+			if (hadSelection) Object.defineProperty(dom.window, "getSelection", hadSelection); else Reflect.deleteProperty(dom.window, "getSelection");
+		}
+	});
+
+	it("Escape with a modifier from the composer closes hover-opened notes too, and never reaches the turn abort", async () => {
+		bridge(state({ status: "downloaded", version: "0.3.9", revision: 1, releaseNotes: [{ version: "0.3.9", items: ["Newest"] }] }));
+		const fieldKeys: string[] = [];
+		const host = await mount(<><SidebarUpdatePill /><textarea data-testid="composer" onKeyDown={(event) => fieldKeys.push(event.key)} /></>);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const reached: string[] = [];
+		const onWindow = (event: Event) => { reached.push((event as KeyboardEvent).key); };
+		window.addEventListener("keydown", onWindow);
+		// React's select plugin reads the selection on a field's keys (linkedom has none).
+		const hadSelection = Object.getOwnPropertyDescriptor(dom.window, "getSelection");
+		Object.assign(dom.window, { getSelection: () => ({ anchorNode: null, anchorOffset: 0, focusNode: null, focusOffset: 0, rangeCount: 0 }) });
+		try {
+			const composer = q(host, "composer")!;
+			await act(async () => { composer.focus(); });
+			for (const modifier of ["shiftKey", "altKey", "ctrlKey", "metaKey"] as const) {
+				await hover(q(host, "update-pill")!);
+				assert.ok(q(document, "update-pill-notes"), `${modifier}: the pointer opened the notes`);
+				await key(composer, "Escape", { [modifier]: true });
+				assert.ok(!q(document, "update-pill-notes"), `${modifier}+Escape closed the notes`);
+				assert.deepEqual([fieldKeys, reached], [[], []], `${modifier}+Escape reached neither the field nor the turn abort`);
+			}
+		} finally {
+			window.removeEventListener("keydown", onWindow);
+			if (hadSelection) Object.defineProperty(dom.window, "getSelection", hadSelection); else Reflect.deleteProperty(dom.window, "getSelection");
+		}
+	});
+
+	it("leaving the notes closes them after a mouse click on a link, but not while a link holds keyboard focus", async () => {
+		bridge(state({ status: "downloaded", version: "0.3.9", revision: 1, releaseNotes: [{ version: "0.3.9", items: ["Newest"] }] }));
+		const host = await mount(<SidebarUpdatePill homepage="https://github.com/o/r" />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const pill = q(host, "update-pill")!;
+		const leave = async (element: Element) => {
+			// React makes pointer leave from pointerout to an element outside.
+			const out = Object.assign(new window.Event("pointerout", { bubbles: true, cancelable: true }), { pointerType: "mouse", relatedTarget: document.body });
+			await act(async () => { element.dispatchEvent(out); await new Promise((resolve) => setTimeout(resolve, 200)); });
+		};
+		await hover(pill);
+		const clicked = q(document, "update-pill-notes")!.querySelector("a")!;
+		// A mouse click focuses the link without :focus-visible.
+		clicked.matches = ((matches) => (selector: string) => selector !== ":focus-visible" && matches(selector))(clicked.matches.bind(clicked));
+		await act(async () => { clicked.focus(); });
+		await leave(q(document, "update-pill-notes")!);
+		assert.ok(!q(document, "update-pill-notes"), "a clicked link doesn't hold the notes open");
+
+		await hover(pill);
+		const typed = keyboardFocusable(q(document, "update-pill-notes")!.querySelector("a")!);
+		await act(async () => { typed.focus(); });
+		await leave(q(document, "update-pill-notes")!);
+		assert.ok(q(document, "update-pill-notes"), "keyboard focus in the notes holds them open");
+	});
+
+	it("notes that stop applying with focus in them hand focus back to the button; notes that start applying under keyboard focus open", async () => {
+		const notes = [{ version: "0.3.9", items: ["Newest"] }];
+		const b = bridge(state({ status: "available", version: "0.3.9", revision: 1, releaseNotes: notes }));
+		const host = await mount(<SidebarUpdatePill homepage="https://github.com/o/r" />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const pill = keyboardFocusable(q(host, "update-pill")!);
+		await act(async () => { pill.focus(); });
+		await key(pill, "Tab");
+		assert.ok(document.activeElement === q(document, "update-pill-notes")!.querySelector("a"));
+		// The offer goes away (a check found nothing newer): no notes, and focus is not dropped.
+		await b.push(state({ status: "up-to-date", revision: 2 }));
+		assert.ok(!q(document, "update-pill-notes"));
+		assert.ok(document.activeElement === pill, "focus is back on the button");
+		// A new offer arrives while the button holds keyboard focus: its notes open, as T3's do.
+		await b.push(state({ status: "available", version: "0.3.10", revision: 3, releaseNotes: [{ version: "0.3.10", items: ["Newer"] }] }));
+		assert.ok(q(document, "update-pill-notes"), "the notes open under keyboard focus");
+		assert.ok(q(document, "update-pill-notes")!.textContent!.includes("Newer"));
+	});
+
+	it("Escape belongs to a foreground layer (Settings, a dialog, a popover) over hover-opened notes: the layer closes, the notes stay", async () => {
+		bridge(state({ status: "downloaded", version: "0.3.9", revision: 1, releaseNotes: [{ version: "0.3.9", items: ["Newest"] }] }));
+		const closes: string[] = [];
+		function Foreground() {
+			const rootRef = React.useRef<HTMLDivElement>(null);
+			useInteractionLayer({ kind: "modal", enabled: true, rootRef, onClose: (reason) => { closes.push(reason); return "handled-without-close"; } });
+			return <div ref={rootRef} data-testid="foreground"><button type="button" data-testid="foreground-button">in the dialog</button></div>;
+		}
+		const host = await mount(<><SidebarUpdatePill /><Foreground /></>);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		await hover(q(host, "update-pill")!);
+		assert.ok(q(document, "update-pill-notes"), "the pointer opened the notes");
+		const inDialog = q(host, "foreground-button")!;
+		await act(async () => { inDialog.focus(); });
+		await key(inDialog, "Escape");
+		assert.deepEqual(closes, ["escape"], "the foreground layer got its Escape");
+		assert.ok(q(document, "update-pill-notes"), "the background notes stay open");
+	});
+
+	it("inside the notes Escape with a modifier closes them too, and never reaches the turn abort", async () => {
+		bridge(state({ status: "downloaded", version: "0.3.9", revision: 1, releaseNotes: [{ version: "0.3.9", items: ["Newest"] }] }));
+		const host = await mount(<SidebarUpdatePill homepage="https://github.com/o/r" />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const reached: string[] = [];
+		const onWindow = (event: Event) => { reached.push(`${(event as KeyboardEvent).shiftKey ? "Shift+" : ""}${(event as KeyboardEvent).key}`); };
+		window.addEventListener("keydown", onWindow);
+		try {
+			const pill = keyboardFocusable(q(host, "update-pill")!);
+			await act(async () => { pill.focus(); });
+			await key(pill, "Tab");
+			const link = q(document, "update-pill-notes")!.querySelector("a")!;
+			assert.ok(document.activeElement === link);
+			await key(link, "Escape", { shiftKey: true });
+			assert.ok(!q(document, "update-pill-notes"), "Shift+Escape closed the notes");
+			assert.ok(document.activeElement === pill, "onto the button");
+			assert.deepEqual(reached, [], "the abort shortcut never saw it");
+		} finally {
+			window.removeEventListener("keydown", onWindow);
+		}
+	});
+
+	it("a plain tooltip closed while notes applied stays closed once they stop applying", async () => {
+		const b = bridge(state({ status: "up-to-date", revision: 1 }));
+		const host = await mount(<SidebarUpdatePill />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const pill = q(host, "update-pill")!;
+		await hover(pill);
+		assert.equal(await plainTooltipOpens(pill), true, "the plain tooltip opened");
+		await b.push(state({ status: "available", version: "0.3.9", revision: 2, releaseNotes: [{ version: "0.3.9", items: ["Newest"] }] }));
+		assert.equal(pill.getAttribute("data-state"), "closed", "the notes replace it");
+		const out = Object.assign(new window.Event("pointerout", { bubbles: true, cancelable: true }), { pointerType: "mouse", relatedTarget: document.body });
+		await act(async () => { pill.dispatchEvent(out); await new Promise((resolve) => setTimeout(resolve, 200)); });
+		await b.push(state({ status: "up-to-date", revision: 3 }));
+		assert.equal(q(host, "update-pill")!.getAttribute("data-state"), "closed", "the pointer left: no tooltip comes back");
+	});
+
+	it("without notes the pill leaves Tab and Escape to the app", async () => {
+		bridge(state({ status: "downloaded", version: "0.3.9", revision: 1 }));
+		const host = await mount(<SidebarUpdatePill homepage="https://github.com/o/r" />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const reached: string[] = [];
+		const onWindow = (event: Event) => { reached.push((event as KeyboardEvent).key); };
+		window.addEventListener("keydown", onWindow);
+		try {
+			const pill = keyboardFocusable(q(host, "update-pill")!);
+			await act(async () => { pill.focus(); });
+			await key(pill, "Tab");
+			await key(pill, "Escape");
+			assert.deepEqual(reached, ["Tab", "Escape"]);
+		} finally {
+			window.removeEventListener("keydown", onWindow);
+		}
+	});
+
 	it("release note sections link each group's release (Read more) and the older ones", () => {
 		const html = renderToStaticMarkup(<ReleaseNoteSections homepage="https://github.com/o/r" omittedReleaseCount={2}
 			groups={[{ version: "0.3.9", items: ["a"] }, { version: "0.3.8", items: [] }]} />);
@@ -664,7 +989,7 @@ describe("General update rows", () => {
 describe("Update everything in the desktop app's window onto a server (roadmap item 23)", () => {
 	const V71 = "0.6.1-nightly.20261118.71";
 	const V72 = "0.6.1-nightly.20261118.72";
-	type Status = { version: string; target: string | null; phase: string; error: string | null; downloadPercent?: number | null };
+	type Status = { version: string; target: string | null; phase: string; error: string | null; downloadPercent?: number | null; releaseNotes?: unknown; omittedReleaseCount?: unknown };
 	function remote(status: Status, server: UpdateState) {
 		let current = status;
 		const calls = { getStatus: 0, check: 0, download: 0, install: 0, fetches: [] as string[] };
@@ -695,6 +1020,75 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		assert.equal(calls.install, 1, "the app opens its own confirmation");
 		assert.equal(calls.download, 0);
 		assert.ok(!calls.fetches.some((url) => url.includes("/install")), "the page never installs anything on the server itself");
+	});
+
+	it("everything's hover shows this app's release notes under T3's summary (the hover bug: it showed nothing)", async () => {
+		const appNotes = [{ version: V72, items: ["**Cards.** Practice with cards."] }];
+		const serverNotes = [{ version: V72, items: ["Server-side copy"] }];
+		const { pill } = await pillIn({ version: V71, target: V72, phase: "available", error: null, releaseNotes: appNotes, omittedReleaseCount: 0 },
+			state({ status: "up-to-date", runningVersion: V71, releaseNotes: serverNotes }));
+		assert.equal(pill().getAttribute("data-action"), "everything");
+		await hover(pill());
+		const popover = q(document, "update-pill-notes");
+		assert.ok(popover, "the notes open");
+		assert.equal(popover!.firstElementChild!.textContent, "Update this app and 1 server", "the popover's header is the summary");
+		assert.equal(popover!.querySelector("strong")!.textContent, "Cards.", "this app's notes, not the server's");
+		assert.ok(!popover!.textContent!.includes("Server-side copy"));
+	});
+
+	it("this app's download, downloading and install states show its notes; a run, or an app without notes, keeps the tooltip", async () => {
+		const appNotes = [{ version: V72, items: ["App change"] }];
+		const cases: Array<[string, Status, boolean]> = [
+			["app-download", { version: V71, target: V72, phase: "available", error: null, releaseNotes: appNotes }, true],
+			["app-install", { version: V71, target: V72, phase: "downloaded", error: null, releaseNotes: appNotes }, true],
+			["downloading", { version: V71, target: V72, phase: "downloading", error: null, downloadPercent: 20, releaseNotes: appNotes }, true],
+			// T3 shows no notes while an Update everything run is going.
+			["restarting", { version: V71, target: V72, phase: "updating", error: null, releaseNotes: appNotes }, false],
+			// An app from before the bridge carried notes.
+			["app-download", { version: V71, target: V72, phase: "available", error: null }, false],
+		];
+		for (const [action, status, showsNotes] of cases) {
+			const server = state({ status: "up-to-date", runningVersion: V72, committed: true });
+			const r = remote(status, server);
+			const host = await mount(<SidebarUpdatePill pageVersion={V72} />);
+			await settle();
+			assert.equal(q(host, "update-pill")!.getAttribute("data-action"), action);
+			await hover(q(host, "update-pill")!);
+			assert.equal(!!q(document, "update-pill-notes"), showsNotes, `${action}: notes`);
+			if (showsNotes) assert.ok(q(document, "update-pill-notes")!.textContent!.includes("App change"));
+			void r;
+			const { root } = roots.pop()!; await act(async () => { root.unmount(); }); host.remove();
+		}
+	});
+
+	it("reads the bridge's notes tolerantly: an older app's status or a malformed group is no notes, never a broken status", () => {
+		assert.equal(readDesktopAppStatus(null), null);
+		assert.equal(readDesktopAppStatus({ version: V71 }), null);
+		assert.deepEqual(readDesktopAppStatus({ version: V71, target: V72, phase: "available", error: null }),
+			{ version: V71, target: V72, phase: "available", error: null, releaseNotes: [], omittedReleaseCount: 0 });
+		const good = { version: V72, items: ["a"] };
+		const read = readDesktopAppStatus({ version: V71, target: V72, phase: "available", error: null, omittedReleaseCount: "2",
+			releaseNotes: [good, { version: 3, items: [] }, { version: V71, items: [1] }, null] });
+		assert.deepEqual(read?.releaseNotes, [good]);
+		assert.equal(read?.omittedReleaseCount, 0);
+		// The bridge's caps again: a version of at most 64 characters, a date of at most 40, a bounded count.
+		const capped = readDesktopAppStatus({ version: V71, target: V72, phase: "available", error: null, omittedReleaseCount: 1e9,
+			releaseNotes: [{ version: "9".repeat(65), items: ["a"] }, { version: V72, releasedAt: `2026-11-18T00:00:00Z${"0".repeat(30)}`, items: ["b"] }, { version: V71, releasedAt: "2026-11-18", items: ["c"] }] });
+		assert.deepEqual(capped?.releaseNotes, [{ version: V72, items: ["b"] }, { version: V71, releasedAt: "2026-11-18", items: ["c"] }]);
+		assert.equal(capped?.omittedReleaseCount, 1000);
+	});
+
+	it("shownReleaseNotes picks whose notes: this app's for its own states, the server's otherwise", () => {
+		const app = { version: V71, target: V72, phase: "available" as const, error: null, releaseNotes: [{ version: V72, items: ["app"] }], omittedReleaseCount: 1 };
+		const server = state({ status: "downloaded", version: V72, releaseNotes: [{ version: V72, items: ["server"] }], omittedReleaseCount: 2 });
+		assert.deepEqual(shownReleaseNotes(server, "everything", app), { releaseNotes: app.releaseNotes, omittedReleaseCount: 1 });
+		assert.deepEqual(shownReleaseNotes(server, "install", app), { releaseNotes: server.releaseNotes, omittedReleaseCount: 2 });
+		assert.deepEqual(shownReleaseNotes(server, "downloading", { ...app, phase: "downloading" }), { releaseNotes: app.releaseNotes, omittedReleaseCount: 1 });
+		assert.deepEqual(shownReleaseNotes(server, "downloading", null), { releaseNotes: server.releaseNotes, omittedReleaseCount: 2 });
+		assert.equal(shownReleaseNotes(server, "check", app), null);
+		assert.equal(shownReleaseNotes(server, "reload", app), null);
+		assert.equal(shownReleaseNotes(server, "everything", { ...app, phase: "updating" }), null);
+		assert.equal(shownReleaseNotes(server, "everything", { ...app, releaseNotes: [] }), null);
 	});
 
 	it("this app's own download shows its percent in the ring and label, not the server's", async () => {

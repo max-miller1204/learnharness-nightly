@@ -144,6 +144,14 @@ describe("electron release notes (T3 port)", () => {
 		assert.deepEqual(groups, [{ version: V(12), releasedAt: "2026-11-12T00:00:00Z", items: ["**Flashcards.** Practice with cards.", "Plus 2 more bug fixes."] }]);
 	});
 
+	it("keeps the feed's release date only when it is a bounded ISO date; the nightly's build day stands in otherwise", () => {
+		const dated = (releaseDate: unknown) => electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: generated, releaseDate })[0]?.releasedAt;
+		assert.equal(dated("2026-11-12T09:37:13.265Z"), "2026-11-12T09:37:13.265Z");
+		assert.equal(dated("2026-11-12"), "2026-11-12");
+		const buildDay = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: generated })[0]?.releasedAt;
+		for (const junk of ["yesterday", `2026-11-12T00:00:00Z${"x".repeat(5000)}`, "2026-13-45", 12]) assert.equal(dated(junk), buildDay, String(junk).slice(0, 30));
+	});
+
 	it("reads the per-version array (fullChangelog), stripping HTML and PR numbers", () => {
 		const groups = electronNotes.releaseNoteGroups({
 			version: V(12),

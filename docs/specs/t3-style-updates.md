@@ -1,19 +1,60 @@
-# Spec: updates work like T3 Code, plus What's new
+# Spec: updates work exactly like T3 Code, plus What's new
 
-Status: approved by the user, 2026-11-17.
+Status: approved by the user, 2026-11-17. Revised by the owner, 2026-11-20 (below).
 Base: main at 42ae045. Roadmap item 7 ("Update deadline"), reworked by the user.
-T3 Code reference: github.com/pingdotgg/t3code at 54ad956 (MIT). Ported pieces keep T3's MIT notice in a header comment.
+T3 Code reference: github.com/pingdotgg/t3code at 54ad956 (MIT); the 2026-11-20 revision copies it at df09ced7. Ported pieces keep T3's MIT notice in a header comment (as `components/release-notes-view.tsx` does) and name the T3 commit.
+Related: [update-control.md](update-control.md) (the sidebar control's states) and [desktop-server-list.md](desktop-server-list.md) PR 2 (Update everything).
 
-## What main does today
+## Revision, 2026-11-20: copy T3's update flow exactly
 
-- Self-hosted server (`src/server/self-update.ts`): checks at start and every 15 minutes, downloads in the background, then applies the staged version on its own the first time nothing is running (checked every 30 s). Once a version is staged it stops checking, so a newer nightly is never picked up until the staged one installs. "Restart" applies at once.
-- Desktop (`electron/main.cjs`): checks at launch and every 24 hours, downloads on its own (`autoDownload`), installs on quit (`autoInstallOnAppQuit`), "Restart" quits and installs.
-- UI: a fixed bottom-right card (`components/update-banner.tsx`) for "ready", "Updated to X" and "rolled back". Settings > General has the Version row and an "Automatic updates" toggle (`general.autoUpdate`).
-- Notes: the nightly release body is a plain commit list. `latest.json` has no notes, so the app never sees any. Nightlies prune to the newest 30 releases.
+The owner's ask: "copy to a T literally exactly what T3 does for their update flow... literally everything the same... copy the source code if you have to." Updating felt clunky, and hovering the update control no longer showed what the update is. The research behind this revision maps both flows with file and line.
 
-## Decided by the user (brief)
+### Decisions (owner, 2026-11-20)
 
-Server: check at start, then every 4 hours; download in the background; the toggle becomes "Check for updates automatically" (checking and downloading only); apply only on click, behind a confirm dialog that lists the running work. Desktop: match T3 (check 15 s after launch then every 4 hours, download only on click, never install on quit, Install confirms and first re-checks for a newer build). UI: sidebar pill that stays until acted on, plus the Settings row, no toast. Pill shows T3-style release notes. One-time "What's new in X" popup after an update, last seen remembered per server. Notes generated in nightly.yml with an AI summary through OpenRouter, falling back to the plain commit list. Out of scope: stable channel (item 11), desktop nightly publishing (item 1), mobile.
+- **Copy T3's flow:** its states, icons, hover text, release-notes popover (header "Update ready to download", the line "X · 3h ago", T3's link labels), retry tooltips, confirm text and menu dialogs.
+- **Toasts like T3's** (reverses the 2026-11-17 "no toast" decision).
+- **Update everything like T3's:** its in-app dialog with the machine table, and the sidebar progress capsule ("N of M updated", "Restart in 5s" with Later, Retry, Dismiss). It is also offered when only the server is behind this app.
+- **The server offers, then downloads on a click,** like T3: a check that finds a newer version shows "available" with a Download button (reverses the background download).
+- **No "Check for updates automatically" toggle** (T3 has none). Both the app and the server check 15 s after launch, then every 4 hours.
+- **Desktop install** calls `quitAndInstall` silent with force-run-after, like T3.
+- **The launcher's commit and rollback stay** for server updates: a hidden safety net. The user sees T3's flow.
+- **In a plain browser the control stays visible:** there the self-hosted server is the app (T3 hides it unless servers need updating, `SidebarUpdatePill.tsx:412`).
+
+### The PR split
+
+One builder, one PR at a time, each reviewed and proved before the next.
+
+1. **Hover fix and this spec.** The desktop bridge's `status()` carries `releaseNotes` and `omittedReleaseCount`, `DesktopAppStatus` has them (read tolerantly: an older app reads as no notes), and the sidebar uses T3's rule (`SidebarUpdatePill.tsx:58-63, 95, 279-280`): `showsNotes = showUpdateDetails && notes.length > 0`, where the detail states are download, downloading, install, restarting, everything, app-download and app-install, and never while an Update everything run is going. The notes are this app's for the app's own states (everything, app-download, app-install, its own download) and the server's otherwise; everything's popover header is its summary. Keyboard (`SidebarUpdatePill.tsx:72-80, 499-516, 579-586`): keyboard focus opens the notes, forward Tab moves into their links, Escape closes them onto the button and they don't reopen until focus leaves. LearnHarness has no native Tab (Tab cycles text fields, Shift+Tab the thinking level), so the notes move focus between their links themselves, Shift+Tab from the first goes back to the button, Tab past the last closes them onto the button and the app's Tab goes on, and none of these keys (nor Escape) reach the app's shortcuts.
+2. **Release-notes popover parity.** Port `SidebarUpdateReleaseNotes.tsx` and T3's `releaseNotes.ts` extras: for available the header "Update ready to download" and the line "X · 3h ago" (`formatReleaseAge`, from the feed's time or the nightly's build day), otherwise the hover text; "View release on GitHub" or "N more changes on GitHub" per release; "N older releases on GitHub"; the generated intro, stats and footer. What's new uses the same renderer.
+3. **Desktop updater correctness.** Port `updateMachine.ts` as CJS reducers: `availableVersion`, `downloadedVersion`, `checkedAt`, `message`, `errorContext` (check, download, install), `canRetry`, `notAppliedVersion`. An offer stays on screen through a re-check and a failed check. Download re-checks first (`DesktopUpdates.ts:658-674`). Install writes an install record; a next launch still on its `fromVersion` sets `notAppliedVersion`. `quitAndInstall({ isSilent: true, isForceRunAfter: true })`. T3's tooltips: "Download failed for X. Click to retry.", "Install failed for X. Click to retry.", "Update X did not apply. Click to retry." (`desktopUpdate.logic.ts:109-178, 230-239`). The confirm text is T3's (`desktopUpdate.logic.ts:180-197`), and the "Running now:" list goes.
+4. **Toasts.** A toast primitive (modelled on T3's `ui/toast.tsx`, keyboard reachable and dismissable) and T3's toasts (`desktopUpdate.toast.tsx`): "Update downloaded" / "Restart the app from the update button to install it." / "Read more ↗"; "Could not check for updates", "Could not download update", "Could not start update download", "Could not install update", "Could not confirm update"; once per launch "Update did not apply" / "LearnHarness is still on {current}. Install {version} again from the update button."
+5. **Settings parity, no toggle, the server offers.** Settings → General: each row (Version, or Server and This app) is T3's About row: one button whose label changes (Download, Install, "Checking…", "Downloading…", "Up to Date", "Check for Updates"), with the sidebar's tooltip, and the description "Update available.", the reason updates are off, or "Current version of the application." (`SettingsPanels.tsx:308-354`); no toast from Settings. This app's Install installs only this app, behind T3's confirm. The toggle goes from Settings and both updaters; a stored `general.autoUpdate` is ignored, not migrated (tolerant read). The server (`src/server/self-update.ts`) stops downloading in the background: a check that finds a newer version sets "available" with its notes, POST `/api/updates/download` (signed in) downloads it, and Install re-checks first as today. `lh update` without `--now` only checks and says how to download. Update `docs/self-hosting.md` with it.
+6. **Native menu dialogs everywhere.** App menu → Check for Updates… uses T3's native dialogs (`DesktopApplicationMenu.ts:71-165`) in the local window too, not only onto a server: "You're up to date!", "Update available" (Download / Later), "Update downloading", "Update ready" (Restart / Later), "Update check failed", "Updates unavailable".
+7. **Update everything dialog and capsule.** Port `UpdateEverythingDialog.tsx` ("Update N machines?", the Machine, LearnHarness and Providers table with "This app" last, the skipped list, the running-work warning, Cancel focused) and `SidebarUpdateCapsule.tsx` with `updateEverything.logic.ts:525-625, 672-849` ("N of M updated", "Downloading NN%", "<machine> failed" with Retry, "Restart in Ns" with Later, "Restarting…", the slow warning after 3 minutes, Dismiss; the result toast, kept across the restart). They render in the remote page from a wider `window.lh.desktopUpdate`: `status()` gains the run's phase, machines and countdown, and `install()` takes the dialog's choice. **Security-relevant:** main still validates the sender, never takes a version, URL or path from the page, and checks every argument. The ghost cover stays only while the server's page cannot render (the server is restarting); before and after, the page shows the capsule.
+8. **"Everything" when only the server is behind.** When this app has no newer version but its server runs an older one, the control is "everything" ("Update <server>") and the run asks the server for exactly `APP_VERSION` through `install-version`, with no app restart.
+
+### Also decided (owner, 2026-11-20, after PR 1's first review)
+
+- **The install confirm is T3's:** its title and the line "Any running tasks will be interrupted. Make sure you're ready before continuing.", with no "Running now:" list (built in PR 3).
+- **Settings' This app Install updates only this app,** like T3's About button (built in PR 5). Update everything stays in the sidebar. This replaces the 2026-11-18 decision that it opens Update everything.
+
+### Proof
+
+Run each PR's flow in the real desktop app and in a browser, against local feeds; recipes: `.claude/skills/prove-learnharness/references/features/update-everything.md` (desktop onto a server) and `update-rollback.md` (a tier B server install and its feed). Every feed entry carries `notes` with at least two versions, so the popover has "What's changed" and "Changes in X". Keep 3 GiB free.
+
+- **PR 1, desktop onto a server.** App V1 and server V1, the desktop feed offering V2 with notes. After the 15 s check the control is the circle arrow. Hover: a popover headed "Update this app and 1 server" with the app feed's V2 notes. `await window.lh.desktopUpdate.getStatus()` over CDP has `releaseNotes` and `omittedReleaseCount`. With the server on V2 too: app-download and app-install hover the same notes, and the app's downloading state shows them with its percent. During a run: the plain tooltip. Keyboard: press a key, then focus the control (`document.querySelector('[data-testid=update-pill]').focus()` over CDP), and the notes open; Tab moves to the first link, Tab to the next, Shift+Tab back, Escape closes them onto the control, and a running chat turn keeps going. With focus in the composer and the notes open from hover, Escape, with or without a modifier such as Shift, only closes them (no abort confirm), unless Settings or another dialog or popover is open, which closes first. After a mouse click on Read more, moving off the notes closes them.
+- **PR 1, browser.** A server on V1 with the feed offering V2 with notes. Hover the control while it downloads and once it is downloaded: the notes. Check, up to date and a rollback notice: the plain tooltip. The same keyboard steps.
+- **PR 2.** Available: header "Update ready to download", the line "V2 · <age>" and "View release on GitHub"; a release with more items than shown says "N more changes on GitHub"; 7 releases give "1 older release on GitHub".
+- **PR 3.** A desktop feed whose package fails its checksum: "Download failed for V2. Click to retry." and a click downloads again. Replace the installer so it refuses: after relaunch "Update V2 did not apply. Click to retry." On Windows the install runs without the NSIS window and relaunches.
+- **PR 4.** Each toast from its trigger, focusable and dismissable from the keyboard; the did-not-apply toast once per launch.
+- **PR 5.** Settings has no toggle; a stored `autoUpdate: false` changes nothing. The server shows "available" and its Download, downloads only on the click, then Install. The button's labels go through T3's six.
+- **PR 6.** Check for Updates… in the local window gives each native dialog (feed up to date, offering, downloading, downloaded, broken, a dev build).
+- **PR 7.** The dialog's table lists the server and "This app" last, Cancel is focused and changes nothing; Update shows the capsule's counts, "Restart in 5s" and Later; a server rollback gives "<server> failed" with Retry. Over CDP the bridge refuses any argument, from any origin but the selected one and from frames.
+- **PR 8.** App on V2 and server on V1, no newer app version: "Update <server>" moves only the server to V2, and the app does not restart.
+
+## Decided by the user (brief, 2026-11-17, as revised above)
+
+Server and desktop: match T3 (check 15 s after launch then every 4 hours, download only on click, never install on quit, Install confirms and first re-checks for a newer build); the server's confirm lists the running work. UI: the sidebar control, the Settings row and T3's toasts. Pill shows T3-style release notes. One-time "What's new in X" popup after an update, last seen remembered per server. Notes generated in nightly.yml with an AI summary through OpenRouter, falling back to the plain commit list. Out of scope: stable channel (item 11), desktop nightly publishing (item 1), mobile.
 
 Answers to my questions: the rollback notice becomes a pill warning state (hover shows the text, click dismisses it, remembered per server; the Settings row also shows it). The What's new popup runs on desktop too, through the same mechanism. With no notes for the new version, the popup still shows ("Updated to version X." plus Read more).
 
@@ -22,7 +63,7 @@ Answers to my questions: the rollback notice becomes a pill warning state (hover
 ### 1. Shared shapes
 
 - `ReleaseNoteGroup = { version: string; releasedAt?: string; items: string[] }`. `items` are plain sentences; an item shaped `**Label.** detail` renders the label bold (T3's convention). At most 8 items per group, each at most 220 characters (T3's limits).
-- `UpdateState` (desktop and web) gains `"available"` in `status` (desktop only: found, not downloaded), `releaseNotes: ReleaseNoteGroup[]` (newest first, versions newer than the running one up to the offered one, at most 6 groups) and `omittedReleaseCount: number` (groups beyond 6). Both default to empty. The self-hosted state also carries `instance`, an id of the server process: a restarted server counts revisions from 0 again, so a client that sees a new `instance` resets its revision guard instead of ignoring the new server (prove round 1 finding).
+- `UpdateState` (desktop and web) gains `"available"` in `status` (found, not downloaded), `releaseNotes: ReleaseNoteGroup[]` (newest first, versions newer than the running one up to the offered one, at most 6 groups) and `omittedReleaseCount: number` (groups beyond 6). Both default to empty. The self-hosted state also carries `instance`, an id of the server process: a restarted server counts revisions from 0 again, so a client that sees a new `instance` resets its revision guard instead of ignoring the new server (prove round 1 finding).
 
 ### 2. Notes at release time (nightly.yml, `scripts/generate-release-notes.ts`)
 
@@ -37,10 +78,10 @@ Answers to my questions: the rollback notice becomes a pill warning state (hover
 
 ### 3. Self-hosted server updater (`src/server/self-update.ts`)
 
-- Checks at start (when the toggle is on) and every 4 hours (`CHECK_INTERVAL_MS`). The toggle still gates automatic checks only; Check for updates always works.
-- Download stays automatic in the background when a check finds a newer version.
+- Checks 15 s after start and every 4 hours (`CHECK_INTERVAL_MS`); Check for updates works any time. No toggle (revision PR 5).
+- A check that finds a newer version offers it ("available", with its notes); it downloads only on a click (revision PR 5).
 - No automatic apply: the idle loop (`IDLE_POLL_MS`, `scheduleIdleApply`) is removed. Applying happens only through `install()` (the Install button, POST `/api/updates/install`, `lh update --now`).
-- Checks keep running while a version is ready: a newer nightly is downloaded and then replaces the ready one (the older one stays offered until the newer one is fully staged). `install()` first re-checks the feed (T3's "a download can be hours old" rule), installs the newer version if one appears and stages, and otherwise installs the ready one; a failed re-check installs the ready one.
+- Checks keep running while a version is ready, and the ready one stays offered. `install()` first re-checks the feed (T3's "a download can be hours old" rule), installs the newer version if one appears and stages, and otherwise installs the ready one; a failed re-check installs the ready one.
 - Notes: on each successful check the state's `releaseNotes` and `omittedReleaseCount` come from the feed's `notes`, filtered to versions newer than the running one and not newer than the feed's version. Each check also merges the feed's notes into the notes cache (section 6).
 - Notices: the "updated" notice and `UPDATED_NOTICE_MS` go (What's new replaces them). The rolled-back notice stays and is now dismissible per server: POST `/api/updates/notice/dismiss` records its id (`rolled-back:<version>:<at>`) in the updates record (section 6); a dismissed notice is not adopted again at boot, and dismissing clears its text from the Settings row too.
 - `appIsIdle()` and `/api/health`'s `idle` stay (the launcher's own protocol hand-off and `lh status` use them).
@@ -50,33 +91,21 @@ Answers to my questions: the rollback notice becomes a pill warning state (hover
 ### 4. Desktop updater (`electron/main.cjs`, `electron/preload.cjs`)
 
 - `autoDownload = false`, `autoInstallOnAppQuit = false`, `fullChangelog = true`.
-- Automatic checks: 15 s after launch, then every 4 hours, gated by the toggle as today. Manual checks unchanged.
+- Automatic checks: 15 s after launch, then every 4 hours. Manual checks unchanged.
 - `update-available` sets `available` with the version and notes (no download). New IPC `lh:update:download` (preload `downloadUpdate()`) calls `downloadUpdate()`; progress shows `downloading`; done shows `downloaded`.
-- Install (`lh:update-install`, trusted windows only): first re-checks; when the feed offers a version newer than the downloaded one, downloads it, then installs that one; otherwise installs the downloaded one. A failed re-check (feed unreachable) installs the downloaded one. If downloading the newer one fails, nothing installs and the server keeps running: electron-updater 6.8.9 has already deleted the old download, so the state returns to `available` for the newer version and the user can retry (decided after review, 2026-11-17). Before quitting it saves the installed version's notes to the notes cache (section 6) and kills the server first, as today. If the app has not started quitting 10 s after `quitAndInstall` (a cancelled admin prompt, a missing installer), it relaunches on the current version so it is never left without its server.
-- Notes: `electron/release-notes.cjs`, a port of T3's `apps/desktop/src/updates/releaseNotes.ts` (HTML/markdown stripping, `<details>` cut, 6 groups, 8 items, 220 characters), turns electron-updater's `releaseNotes` (string or per-version array) into `ReleaseNoteGroup[]`, dropping T3's intro/stats/footer extras and channel filter.
+- Install (`lh:update-install`, trusted windows only): first re-checks; when the feed offers a version newer than the downloaded one, downloads it, then installs that one; otherwise installs the downloaded one. A failed re-check (feed unreachable) installs the downloaded one. If downloading the newer one fails, nothing installs and the server keeps running: electron-updater 6.8.9 has already deleted the old download, so the state returns to `available` for the newer version and the user can retry (decided after review, 2026-11-17). Before quitting it saves the installed version's notes to the notes cache (section 6) and kills the server first, as today. It calls `quitAndInstall(true, true)` (silent, run after; revision PR 3). If the app has not started quitting 10 s after `quitAndInstall` (a cancelled admin prompt, a missing installer), it relaunches on the current version so it is never left without its server.
+- Notes: `electron/release-notes.cjs`, a port of T3's `apps/desktop/src/updates/releaseNotes.ts` (HTML/markdown stripping, `<details>` cut, 6 groups, 8 items, 220 characters), turns electron-updater's `releaseNotes` (string or per-version array) into `ReleaseNoteGroup[]`, without T3's channel filter. T3's intro, stats and footer come in revision PR 2.
 - The rule "a later check must not hide a staged update" stays.
 
 ### 5. UI
 
-**Sidebar pill** (`components/sidebar-update-pill.tsx`, adapted from T3's `SidebarUpdatePill` and `SidebarUpdateReleaseNotes`). A round icon button at the right end of the sidebar's Settings row (T3's size-8 icon button, no text; its label is the tooltip text). Shown only when there is something to act on:
+**Sidebar control** (`components/sidebar-update-pill.tsx`, adapted from T3's `SidebarUpdatePill` and `SidebarUpdateReleaseNotes`). A round icon button at the right end of the sidebar's Settings row (T3's size-8 icon button, no text; its label is the tooltip text). Its states are in [update-control.md](update-control.md). Hidden when the sidebar is closed (it is part of the sidebar, as in T3).
 
-| State | Icon | Hover | Click |
-|---|---|---|---|
-| desktop `available` | download arrow | release notes popover, title "Update ready to download" | starts the download |
-| `downloading` | spinner | "Downloading update" | nothing (disabled) |
-| `downloaded` | arrow-up-circle | release notes popover, title "Update X downloaded. Click to restart and install." | the confirm dialog |
-| rolled-back notice, no update | warning triangle | the rollback text | dismisses the notice |
+Release notes popover (T3's content): opens on hover or keyboard focus with a 150 ms close delay, stays open while hovered so the links work, in every state about an offered update (T3's rule, revision PR 1). One section per group: the newest group's heading is "What's changed", others "Changes in X"; bullets; the header and link labels are T3's (revision PR 2); when groups were cut, "N older releases on GitHub" linking to `<homepage>/releases`. With no notes the hover shows only the title line, as a tooltip.
 
-Otherwise hidden (checking and up-to-date live in Settings). Hidden when the sidebar is closed (it is part of the sidebar, as in T3).
+**Confirm dialog** (`components/install-update-dialog.tsx`, HostDialog, the abort dialog's minimal tone). Title "Install update X and restart LearnHarness?". Line "Any running tasks will be interrupted. Make sure you're ready before continuing." (T3's wording, and nothing more: no list of the running work, owner 2026-11-20, revision PR 3). Buttons Cancel and "Install and restart" (focused). Opened by the pill and by the Settings Install button, on both transports.
 
-Release notes popover (T3's content): opens on hover or keyboard focus with a 150 ms close delay, stays open while hovered so the links work. One section per group: the newest group's heading is "What's changed", others "Changes in X"; bullets; a "Read more" link to `<homepage>/releases/tag/v<version>`; when groups were cut, "N older releases on GitHub" linking to `<homepage>/releases`. With no notes the hover shows only the title line, as a tooltip.
-
-**Confirm dialog** (`components/install-update-dialog.tsx`, HostDialog, the abort dialog's minimal tone). Title "Install update X and restart LearnHarness?". Line "Any running tasks will be interrupted. Make sure you're ready before continuing." (T3's wording). When GET `/api/updates/running` returns items, a list headed "Running now:" with one line per item ("Chat turn: <title>", "Compaction: <title>", "Background job: <title>", "Plugin worker: <title>", "Extraction: <title>"); fetched when the dialog opens. Buttons Cancel and "Install and restart" (focused). Opened by the pill and by the Settings Install button, on both transports.
-
-**Settings** (`components/settings/update-settings.tsx`): the button is "Download" for desktop `available`, "Install" (was "Restart") for `downloaded` (opens the confirm dialog), otherwise "Check for updates". Texts:
-- Toggle label "Check for updates automatically". Hint, web: "Check at startup and every 4 hours, and download new versions in the background. Nothing installs until you click Install." Desktop: "Check 15 seconds after launch and every 4 hours. Nothing downloads or installs until you click."
-- Version row hint, web: "Check for updates downloads a newer version. It installs when you click Install." Desktop: "Check for updates looks for a newer version. Download and Install happen when you click them."
-- Status: `available` "Version X is available."; `downloaded` "Version X is ready to install." (both transports); a rollback notice's text while it is undismissed and no update is offered; others unchanged.
+**Settings** (`components/settings/update-settings.tsx`): T3's About row (revision PR 5). Status lines: `available` "Version X is available."; `downloaded` "Version X is ready to install."; a rollback notice's text while it is undismissed and no update is offered.
 
 **Removed**: `components/update-banner.tsx` and its mount in `app/layout.tsx`.
 
@@ -95,11 +124,11 @@ Release notes popover (T3's content): opens on hover or keyboard focus with a 15
 
 ## Done looks like
 
-1. Server, tier B: a self-hosted install sees a newer version, downloads it, shows the pill and Settings "Install"; nothing installs on its own, even when idle for minutes. Hovering the pill shows the notes from `latest.json` (newest "What's changed", older "Changes in X", Read more links). Install opens the dialog listing a running chat turn; Cancel keeps everything; Install and restart switches versions. After the switch the "What's new in X" popup appears once; Got it on one browser closes it on a second and it never returns after reload. A rolled-back trial shows the warning pill; clicking it dismisses it for every browser.
-2. Toggle off: no automatic check or download; Check for updates still finds, downloads and offers.
-3. Desktop, packaged, against a local `LH_UPDATE_FEED`: no download before the click (pill "available" with notes), Download then Install with the dialog, quitting without Install leaves the old version, Install re-checks and takes a newer build published after the download, and the What's new popup shows after relaunch.
-4. Workflow: `generate-release-notes.ts` produces items from a real range with a key, and the fallback produces the commit list without one; `make-feed.ts` merges and caps the notes history; an old `parseFeed` input without `notes` still parses.
-5. CI `Check` green.
+1. Server, tier B: a self-hosted install sees a newer version, offers it, downloads it on a click, shows the control and Settings "Install"; nothing installs on its own, even when idle for minutes. Hovering the control shows the notes from `latest.json` (newest "What's changed", older "Changes in X", T3's links). Install opens T3's confirm; Cancel keeps everything; Install and restart switches versions. After the switch the "What's new in X" popup appears once; Got it on one browser closes it on a second and it never returns after reload. A rolled-back trial shows the warning pill; clicking it dismisses it for every browser.
+2. Desktop, packaged, against a local `LH_UPDATE_FEED`: no download before the click (pill "available" with notes), Download then Install with the dialog, quitting without Install leaves the old version, Install re-checks and takes a newer build published after the download, and the What's new popup shows after relaunch.
+3. Workflow: `generate-release-notes.ts` produces items from a real range with a key, and the fallback produces the commit list without one; `make-feed.ts` merges and caps the notes history; an old `parseFeed` input without `notes` still parses.
+4. CI `Check` green.
+5. The revision's Proof above, PR by PR.
 
 ## Not changed
 

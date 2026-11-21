@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { BrailleSpinner } from "@/components/braille-spinner";
 import { useNotifyHub } from "@/components/server-events";
 import { InstallUpdateDialog } from "@/components/install-update-dialog";
-import type { ReleaseNoteGroup } from "@/src/core";
+import { capReleaseNoteGroups, type ReleaseNoteGroup } from "@/src/core";
 import { SettingsRow, Toggle } from "./controls.tsx";
 import { isNewerVersion } from "@/selfhost/src/version-order.ts";
 
@@ -55,6 +55,9 @@ export type DesktopAppStatus = {
 	error: string | null;
 	/** While this app downloads its update: how far, 0 to 100, or null when unknown. Older apps omit it. */
 	downloadPercent?: number | null;
+	/** The offered version's notes, newest first, as in UpdateState (the sidebar's hover). Older apps omit them. */
+	releaseNotes?: ReleaseNoteGroup[];
+	omittedReleaseCount?: number;
 };
 
 export type DesktopUpdateBridge = {
@@ -178,6 +181,31 @@ export function useUpdateState() {
 const isDesktopAppStatus = (value: unknown): value is DesktopAppStatus =>
 	typeof value === "object" && value !== null && typeof (value as DesktopAppStatus).version === "string" && typeof (value as DesktopAppStatus).phase === "string";
 
+// The bridge's caps (electron/release-notes.cjs bridgeNotes), applied again on the page.
+const MAX_NOTE_VERSION_LENGTH = 64;
+const MAX_RELEASED_AT_LENGTH = 40;
+const MAX_OMITTED_RELEASE_COUNT = 1000;
+
+const isReleaseNoteGroup = (value: unknown): value is ReleaseNoteGroup =>
+	typeof value === "object" && value !== null && typeof (value as ReleaseNoteGroup).version === "string"
+	&& (value as ReleaseNoteGroup).version.length <= MAX_NOTE_VERSION_LENGTH
+	&& Array.isArray((value as ReleaseNoteGroup).items) && (value as ReleaseNoteGroup).items.every((item) => typeof item === "string");
+
+/** Tolerant read of the bridge's status: an app from before the notes field (or a malformed
+ *  group) reads as no notes, never as a broken status. Groups keep only what the page renders,
+ *  within the UI's limits (the app bounds them too, electron/release-notes.cjs bridgeNotes). */
+export function readDesktopAppStatus(value: unknown): DesktopAppStatus | null {
+	if (!isDesktopAppStatus(value)) return null;
+	const groups = (Array.isArray(value.releaseNotes) ? value.releaseNotes.filter(isReleaseNoteGroup) : []).map((group) => ({
+		version: group.version,
+		...(typeof group.releasedAt === "string" && group.releasedAt.length <= MAX_RELEASED_AT_LENGTH ? { releasedAt: group.releasedAt } : {}),
+		items: group.items,
+	}));
+	const { releaseNotes } = capReleaseNoteGroups(groups);
+	const omitted = value.omittedReleaseCount;
+	return { ...value, releaseNotes, omittedReleaseCount: typeof omitted === "number" && Number.isInteger(omitted) && omitted > 0 ? Math.min(omitted, MAX_OMITTED_RELEASE_COUNT) : 0 };
+}
+
 /** How often the page asks the app for its update status (the bridge has no push channel). */
 export const DESKTOP_STATUS_POLL_MS = 5_000;
 
@@ -189,8 +217,8 @@ export function useDesktopAppUpdate() {
 	const refresh = useCallback(async () => {
 		if (!bridge) return;
 		try {
-			const next = await bridge.getStatus();
-			if (isDesktopAppStatus(next)) setStatus(next);
+			const next = readDesktopAppStatus(await bridge.getStatus());
+			if (next) setStatus(next);
 		} catch { /* keep the last status */ }
 	}, [bridge]);
 	useEffect(() => {
