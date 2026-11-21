@@ -10,7 +10,8 @@
  *   updater()            electron-updater's autoUpdater, or null when updates are off
  *   state()              main's update snapshot (electron/update-machine.cjs: { status, version, ... })
  *   check()              main's check (checkForUpdates), the sidebar's: resolves { checked }
- *   activate()           show and focus the app's window (reopening one), before the check
+ *   activate()           show and focus the app's window (starting to reopen one), before the
+ *                        check; the window to parent the dialog on, or null
  *   downloadStarted(version)  "downloading" `version` at 0%, as the Download button does
  *   downloadFailed(version)   the download failed: offer `version` again with T3's retry
  *   installing()         an install is already under way
@@ -18,9 +19,9 @@
  *   adoptNotes(info)     keep the offered version's release notes
  *   appVersion           this app's version
  *   compareVersions(a, b)
- *   show(options)        dialog.showMessageBox, resolving { response }
- *   download()           the menu's Download (downloadUpdateNow)
- *   install()            the menu's Restart (installUpdateNow, which re-checks)
+ *   show(options, parent) dialog.showMessageBox over `parent` when given, resolving { response }
+ *   download(version)    the menu's Download (downloadUpdateNow), of exactly `version`
+ *   install(version)     the menu's Restart (installUpdateNow, which re-checks), of exactly `version`
  *   running()            an Update everything run (or its confirmation) is going
  *   pinFeed(version)     make the feed offer exactly `version` (null: the newest again)
  *   log(line), wait(ms)
@@ -92,7 +93,6 @@ function createUpdateActions(deps) {
 		deps.startInstall();
 	}
 
-	/** T3's native dialogs for the app menu's check (DesktopApplicationMenu.ts:71-165 at 3ce2145). */
 	/**
 	 * App menu → Check for Updates…: T3 Code's native dialogs, ported from
 	 * apps/desktop/src/window/DesktopApplicationMenu.ts at df09ced7 (MIT, Copyright (c) 2026 T3
@@ -100,8 +100,8 @@ function createUpdateActions(deps) {
 	 * The check, Download and Restart are main's own (the sidebar's paths), so the state, the
 	 * sidebar and Settings follow, and the menu raises no toast. The dialogs' text is fixed: the
 	 * state's message is one of main's fixed lines, never an updater error. LearnHarness's own: no
-	 * dialog while an install is under way, and "Update in progress" while Update everything runs,
-	 * which owns the updater (checked again before Download or Restart acts).
+	 * dialog while an install is under way, "Update in progress" while Update everything runs,
+	 * which owns the updater, and Download and Restart act only on the state their dialog showed.
 	 */
 	async function checkNatively() {
 		const show = deps.show;
@@ -116,25 +116,36 @@ function createUpdateActions(deps) {
 			return;
 		}
 		// T3 activates the window first (:168-170); a failure there never stops the check.
-		try { await deps.activate(); } catch { /* the dialog shows without a parent */ }
-		await deps.check();
+		let parent = null;
+		try { parent = (await deps.activate()) ?? null; } catch { /* the dialog shows without a parent */ }
+		const { checked } = await deps.check();
 		if (deps.installing()) return;
 		const state = deps.state();
+		// A click whose own check didn't run (another check or a download of ours is running) shows
+		// what T3's state would then say: "Update downloading" during a download, else nothing (a
+		// check under way reads "checking" in T3). Never a stale offer from before that check.
+		if (!checked && state.status !== "downloading") return;
 		const offered = state.availableVersion ?? state.version ?? null;
+		/** A button acts only on the state its dialog showed: the same revision and version, with no
+		 *  Update everything run, so it never downloads or installs a version it didn't name. */
+		const unchanged = (version) => {
+			const now = deps.state();
+			return !deps.running() && now.revision === state.revision && now.status === state.status && (now.downloadedVersion ?? now.availableVersion ?? now.version ?? null) === version;
+		};
 		if (state.status === "up-to-date") {
 			// :76-84
-			await show({ type: "info", title: "You're up to date!", message: `LearnHarness ${deps.appVersion} is currently the newest version available.`, buttons: ["OK"] });
+			await show({ type: "info", title: "You're up to date!", message: `LearnHarness ${deps.appVersion} is currently the newest version available.`, buttons: ["OK"] }, parent);
 		} else if (state.status === "available") {
 			// :85-102
 			const { response } = await show({
 				type: "info", title: "Update available",
 				message: offered ? `LearnHarness ${offered} is available.` : "A new version of LearnHarness is available.",
 				detail: `You're running LearnHarness ${deps.appVersion}.`, buttons: ["Download", "Later"], defaultId: 0, cancelId: 1,
-			});
-			if (response === 0 && !deps.running()) void deps.download();
+			}, parent);
+			if (response === 0 && offered && unchanged(offered)) void deps.download(offered);
 		} else if (state.status === "downloading") {
 			// :103-113
-			await show({ type: "info", title: "Update downloading", message: offered ? `LearnHarness ${offered} is already downloading.` : "A new version of LearnHarness is already downloading.", buttons: ["OK"] });
+			await show({ type: "info", title: "Update downloading", message: offered ? `LearnHarness ${offered} is already downloading.` : "A new version of LearnHarness is already downloading.", buttons: ["OK"] }, parent);
 		} else if (state.status === "downloaded") {
 			// :114-127
 			const version = state.downloadedVersion ?? offered;
@@ -142,14 +153,13 @@ function createUpdateActions(deps) {
 				type: "info", title: "Update ready",
 				message: version ? `LearnHarness ${version} is ready to install.` : "A new version of LearnHarness is ready to install.",
 				detail: "LearnHarness will restart to install it. Any running tasks will be interrupted.", buttons: ["Restart", "Later"], defaultId: 0, cancelId: 1,
-			});
-			// A run may have started while the dialog was open.
-			if (response === 0 && !deps.running()) void deps.install();
+			}, parent);
+			if (response === 0 && version && unchanged(version)) void deps.install(version);
 		} else if (state.status === "error") {
 			// :128-136
-			await show({ type: "warning", title: "Update check failed", message: "Could not check for updates.", detail: state.message ?? "An unknown error occurred. Please try again later.", buttons: ["OK"] });
+			await show({ type: "warning", title: "Update check failed", message: "Could not check for updates.", detail: state.message ?? "An unknown error occurred. Please try again later.", buttons: ["OK"] }, parent);
 		}
-		// "checking" (another check of ours was running, so this one didn't) and "idle" show nothing, as in T3.
+		// "idle" shows nothing, as in T3.
 	}
 
 	return { pin, downloadPinned, downloadExact, installPinned, checkNatively };

@@ -747,7 +747,9 @@ function checkForUpdates() {
  *  offer, which still downloads; a re-check that finds nothing (the release was pulled) clears
  *  the offer and downloads nothing. Resolves T3's action result (DesktopUpdates.ts:628-768):
  *  `accepted` once admitted, `completed` once downloaded; the sidebar's toasts read it. */
-async function downloadUpdateNow() {
+/** `expect`: the menu's Download names the version its dialog showed; a re-check that finds
+ *  another one downloads nothing (the state then offers what the feed names). */
+async function downloadUpdateNow({ expect = null } = {}) {
 	const refused = { accepted: false, completed: false };
 	if (!autoUpdater || installing || updateEverything?.running()) return refused;
 	if (activeAction === "check" && activeCheck) await activeCheck.catch(() => {});
@@ -774,6 +776,10 @@ async function downloadUpdateNow() {
 		if (!updateMachine.hasDownloadableOffer(updateState)) {
 			if (updateState.status !== "checking") return { accepted: true, completed: false };
 			setUpdateState({ ...clicked });
+		}
+		if (expect !== null && updateState.availableVersion !== expect) {
+			log(`menu download: the feed now offers ${updateState.availableVersion}, not ${expect}; nothing downloads`);
+			return { accepted: true, completed: false };
 		}
 		setUpdateState(updateMachine.reduceOnDownloadStart(updateState));
 		try {
@@ -802,8 +808,11 @@ function installAccepted() {
 /** The user confirmed Install: re-check, take a newer build if one appeared, then quit and install. */
 /** `fromSidebar`: the sidebar control started it, so its failure is the page's notice (Settings,
  *  the menu and Update everything report theirs their own way). */
-async function installUpdateNow({ fromSidebar = false } = {}) {
+/** `expect`: the menu's Restart names the version its dialog showed. Another one staged, or a
+ *  newer one the re-check finds, installs nothing: the state then offers what the feed names. */
+async function installUpdateNow({ fromSidebar = false, expect = null } = {}) {
 	if (installing || !installAccepted()) return;
+	if (expect !== null && updateState.downloadedVersion !== expect) return;
 	installing = true;
 	installNotifies = fromSidebar;
 	// Installing again after a failed install: the last failure no longer applies.
@@ -817,6 +826,14 @@ async function installUpdateNow({ fromSidebar = false } = {}) {
 	} catch (err) {
 		// A failed re-check (feed unreachable) installs what is already downloaded.
 		log(`install re-check failed: ${err?.message ?? err}; installing ${downloaded}`);
+	}
+	if (offered && expect !== null) {
+		log(`menu install: the feed now offers ${offered.version}, not the ${expect} its dialog named; nothing installs`);
+		installing = false;
+		adoptOfferedNotes(offered);
+		const notes = offeredNotes();
+		setUpdateState(updateMachine.reduceOnUpdateAvailable({ ...updateState, downloadedVersion: null }, offered.version, nowIso(), notes.releaseNotes, notes.omittedReleaseCount));
+		return;
 	}
 	if (offered) {
 		log(`install: ${offered.version} is newer than the downloaded ${downloaded}; downloading it first`);
@@ -914,12 +931,14 @@ const updateActions = createUpdateActions({
 	// Read when used: main.cjs loads before Electron's app is ready (and under test fakes).
 	get appVersion() { return app.getVersion(); },
 	compareVersions: releaseNotes.compareVersions,
-	show: (options) => {
-		const parent = BrowserWindow.getFocusedWindow();
-		return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
+	// `parent`: the window the menu just activated (focus arrives late on Linux and Windows).
+	show: (options, parent) => {
+		const owner = parent && !parent.isDestroyed() ? parent : BrowserWindow.getFocusedWindow();
+		return owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options);
 	},
-	download: () => downloadUpdateNow(),
-	install: () => installUpdateNow(),
+	// The menu's Download and Restart name the version their dialog showed: never another one.
+	download: (version) => downloadUpdateNow({ expect: version }),
+	install: (version) => installUpdateNow({ expect: version }),
 	running: () => updateEverything?.running() ?? false,
 	pinFeed: (version) => require("./nightly-updater.cjs").pinFeed(autoUpdater, version, { override: process.env.LH_UPDATE_FEED }),
 	log,
@@ -1041,13 +1060,32 @@ function setupAutoUpdater() {
 	});
 }
 
-/** The menu's check shows its dialog over the app's window: restore and focus it, reopening one
- *  when none is open (T3's desktopWindow.activate, DesktopApplicationMenu.ts:168-170). */
-async function activateWindow() {
-	const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? await reopenWindow?.();
-	if (!win || win.isDestroyed?.()) return;
+/** The app's own window: the server list's content window, or the dev shell's local one; never
+ *  the Switch server… panel, a popup or any other window. */
+function appWindow() {
+	if (serverList) return serverList.appWindow();
+	return [...trustedAppWindows].find((win) => !win.isDestroyed()) ?? null;
+}
+
+/** The menu's check shows its dialog over the app's window: restore and focus it, or start
+ *  reopening it when it is gone, without waiting for a reconnect (T3's desktopWindow.activate,
+ *  DesktopWindow.ts:1169-1189 at df09ced7, reveals its splash and returns). The window to
+ *  parent the dialog on, or null while one is still opening. */
+function activateWindow() {
+	let win = appWindow();
+	if (!win) {
+		try {
+			const opening = reopenWindow?.();
+			if (opening && typeof opening.then === "function") opening.catch((err) => log(`menu reopen failed: ${err?.message ?? err}`));
+		} catch (err) {
+			log(`menu reopen failed: ${err?.message ?? err}`);
+		}
+		win = appWindow();
+		if (!win) return null;
+	}
 	if (win.isMinimized()) win.restore();
 	win.focus();
+	return win;
 }
 
 function zoomStep(win, dir) {
@@ -1075,7 +1113,9 @@ function installMenu() {
 				{ role: "about" },
 				// T3's native dialogs, in the local window and onto a server (revision PR 6); onto a
 				// server also the way out when this app is too old to open it (owner, 2026-11-18).
-				{ label: "Check for Updates…", click: () => { void updateActions.checkNatively(); } },
+				// macOS only, as in T3 (DesktopApplicationMenu.ts:217-225 at df09ced7): on Windows and
+				// Linux the sidebar control and Settings are the entry points.
+				...(process.platform === "darwin" ? [{ label: "Check for Updates…", click: () => { void updateActions.checkNatively(); } }] : []),
 				...(serverList ? [{ label: "Switch server…", click: () => serverList.show({ check: true }) }] : []),
 				{ type: "separator" },
 				{ role: "hide" },

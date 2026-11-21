@@ -13,7 +13,7 @@ const mainFile = fileURLToPath(new URL("../electron/main.cjs", import.meta.url))
 const mainSource = readFileSync(mainFile, "utf8");
 const mainRequire = createRequire(mainFile);
 
-function fixture({ packaged = true, updaterMissing = false, installRecord = null as string | null } = {}) {
+function fixture({ packaged = true, updaterMissing = false, installRecord = null as string | null, platform = "darwin" } = {}) {
 	let settings: string | Error = JSON.stringify({ version: 1 });
 	const settingsReads: string[] = [];
 	// userData/desktop-update-install.json: written before an install, read once at launch.
@@ -89,7 +89,8 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 		isMinimized() { return this.minimized; }
 		isDestroyed() { return !windows.includes(this); }
 		restore() { this.minimized = false; }
-		focus() { this.focused = true; }
+		// Focus arrives a moment later, as on Linux and Windows.
+		focus() { setImmediate(() => { for (const other of windows) other.focused = other === this; }); }
 		show() {}
 		close() {
 			windows.splice(windows.indexOf(this), 1);
@@ -155,7 +156,7 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 			};
 			return mainRequire(id);
 		},
-		process: { argv: [], env: { LH_DEV_URL: "http://127.0.0.1:9000" }, platform: "darwin", on() {} },
+		process: { argv: [], env: { LH_DEV_URL: "http://127.0.0.1:9000" }, platform, on() {} },
 		__dirname: path.dirname(mainFile), URL, AbortController,
 		setInterval: (callback: () => void, delay: number) => intervals.push({ callback, delay }),
 		setTimeout: (callback: () => void, delay: number) => {
@@ -176,6 +177,7 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 		state: () => JSON.parse(JSON.stringify(run("updateState"))),
 		check: async () => { run("checkForUpdates()"); await Promise.resolve(); await Promise.resolve(); },
 		menuCheck: () => menu[0]!.submenu!.find(item => item.label === "Check for Updates…")!.click!(),
+		menu: () => menu,
 	};
 }
 
@@ -827,6 +829,108 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 		assert.equal(f.dialogs[0]!.parent, win, "over the app's window");
 		assert.deepEqual(win.webContents.messages.filter((message) => !message.channel.startsWith("lh:update")), [], "no Settings page: the dialog is the answer");
 		assert.equal(f.state().status, "up-to-date", "the sidebar and Settings follow the same state");
+	});
+
+	it("the menu targets the app window, never another one (the Switch server panel, a popup), and parents the dialog on it before focus lands", async () => {
+		const f = fixture(); await f.run("main()");
+		const first = f.windows[0]!;
+		first.close();
+		const panel = f.untrustedWindow(); // opened first, like the Switch server… panel
+		f.run("createWindow(process.env.LH_DEV_URL)");
+		const app = f.windows.find((win) => win !== panel)!;
+		app.minimized = true;
+		await f.menuCheck();
+		await settleMenu();
+		assert.equal(app.minimized, false, "the app window is restored");
+		assert.equal(f.dialogs[0]!.parent, app, "and the dialog sits on it");
+		assert.equal(f.windows.length, 2, "no second app window opened");
+		// Only the panel open: the app window is reopened for the dialog.
+		const g = fixture(); await g.run("main()");
+		g.windows[0]!.close();
+		const other = g.untrustedWindow();
+		await g.menuCheck();
+		await settleMenu();
+		assert.equal(g.windows.length, 2, "an app window reopened beside the panel");
+		assert.notEqual(g.dialogs[0]!.parent, other);
+	});
+
+	it("with no window the menu starts reopening one and checks at once, never waiting for a reconnect", async () => {
+		const f = fixture(); await f.run("main()");
+		f.windows[0]!.close();
+		f.run("reopenWindow = () => new Promise(() => {})"); // a reconnect that never ends
+		await f.menuCheck();
+		await settleMenu();
+		assert.equal(f.updater.checks, 1, "the check ran without waiting");
+		assert.deepEqual([f.dialogs[0]!.options.title, f.dialogs[0]!.parent], ["You're up to date!", null], "the dialog shows without a parent meanwhile");
+	});
+
+	it("a second click while the first click's check runs shows nothing, and the first shows the feed's answer", async () => {
+		const f = fixture(); await f.run("main()");
+		f.updater.offer = { version: "0.3.8" };
+		await f.run("checkForUpdates()");
+		let release!: () => void;
+		const original = f.updater.checkForUpdates.bind(f.updater);
+		f.updater.checkForUpdates = function () { this.checks++; return new Promise((resolve) => { release = () => { this.offer = { version: "0.3.9" }; resolve(original()); }; }); };
+		const first = f.menuCheck();
+		await settleMenu();
+		await f.menuCheck();
+		await settleMenu();
+		assert.equal(f.dialogs.length, 0, "the second click's check didn't run: no stale 0.3.8 dialog");
+		f.updater.checkForUpdates = original;
+		release();
+		await first; await settleMenu();
+		assert.deepEqual(f.dialogs.map((d) => d.options.message), ["LearnHarness 0.3.9 is available."]);
+	});
+
+	it("Restart installs only the version its dialog named: a run that staged a newer one meanwhile, or a newer one the re-check finds, installs nothing", async () => {
+		const f = fixture(); await f.run("main()");
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		let answer!: (value: { response: number }) => void;
+		f.run("dialog").showMessageBox = () => new Promise((resolve) => { answer = resolve; });
+		const clicked = f.menuCheck();
+		await settleMenu();
+		// An Update everything run starts, stages 0.3.9 and ends while "Update ready 0.3.8" is open.
+		f.updater.emit("update-downloaded", { version: "0.3.9" });
+		answer({ response: 0 });
+		await clicked; await settleMenu();
+		assert.deepEqual(f.installArgs, [], "never the 0.3.9 its dialog didn't name");
+		// A newer build the Restart's own re-check finds: nothing installs; the state offers it.
+		const g = fixture(); await g.run("main()");
+		g.updater.emit("update-downloaded", { version: "0.3.8" });
+		await g.run(`installUpdateNow({ expect: "0.3.8" })`);
+		assert.deepEqual(g.installArgs, [[true, true]], "the same version installs");
+		const h = fixture(); await h.run("main()");
+		h.updater.emit("update-downloaded", { version: "0.3.8" });
+		h.updater.offer = { version: "0.3.9" };
+		await h.run(`installUpdateNow({ expect: "0.3.8" })`);
+		assert.deepEqual(h.installArgs, []);
+		assert.deepEqual([h.state().status, h.state().availableVersion], ["available", "0.3.9"]);
+		assert.equal(h.run("installing"), false);
+	});
+
+	it("Download downloads only the version its dialog named: a newer one the re-check finds downloads nothing", async () => {
+		const f = fixture(); await f.run("main()");
+		f.updater.offer = { version: "0.3.8" };
+		await f.run("checkForUpdates()");
+		f.updater.offer = { version: "0.3.9" };
+		const result = await f.run(`downloadUpdateNow({ expect: "0.3.8" })`) as { accepted: boolean; completed: boolean };
+		assert.deepEqual([result.accepted, result.completed], [true, false]);
+		assert.equal(f.updater.downloads, 0);
+		const g = fixture(); await g.run("main()");
+		g.updater.offer = { version: "0.3.8" };
+		await g.run("checkForUpdates()");
+		await g.run(`downloadUpdateNow({ expect: "0.3.8" })`);
+		assert.equal(g.updater.downloads, 1, "the named version downloads");
+	});
+
+	it("Check for Updates… is in the macOS app menu only, as in T3; Windows and Linux reach updates from the sidebar and Settings", async () => {
+		for (const platform of ["linux", "win32"]) {
+			const f = fixture({ platform }); await f.run("main()");
+			const items = f.menu().flatMap((top) => top.submenu ?? []).map((item) => item.label);
+			assert.equal(items.includes("Check for Updates…"), false, platform);
+		}
+		const mac = fixture(); await mac.run("main()");
+		assert.ok(mac.menu()[0]!.submenu!.some((item) => item.label === "Check for Updates…"));
 	});
 
 	it("the menu reopens a window when none is open, then shows its dialog", async () => {
