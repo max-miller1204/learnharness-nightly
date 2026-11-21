@@ -117,7 +117,6 @@ declare global {
 			/** Download the "available" update (downloads happen only on click); resolves T3's
 			 *  { accepted, completed } with the state. Older apps resolve nothing. */
 			downloadUpdate?: () => Promise<UpdateActionResult | void>;
-			onOpenSettings?: (cb: (section: string) => void) => () => void;
 		};
 	}
 }

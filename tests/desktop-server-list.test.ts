@@ -1123,6 +1123,7 @@ test("Update everything: the relaunch reopens its server once, and a covered res
 	assert.equal(current.origin, beta);
 	assert.equal(current.token, "beta-secret");
 	assert.equal(current.win, win);
+	assert.equal(controller.appWindow(), win, "the menu's window: the content window");
 
 	// A run for another server never covers this one (a switch before the cover went up).
 	controller.coverForUpdate(alpha, "Updating one…");
@@ -1143,6 +1144,8 @@ test("Update everything: the relaunch reopens its server once, and a covered res
 	const list = TestWindow.since(opened).first;
 	assert.deepEqual(list.snapshot?.problem, { server: beta, kind: "retry", message: "two wasn’t back after 32 minutes. Your app wasn’t changed." });
 	assert.equal(controller.current(), null);
+	assert.equal(controller.appWindow(), null, "with only the list open, no app window: never the list panel");
+	assert.notEqual(list, null);
 
 	// Later: the same window stays and loads the updated server's page. Destroying it first
 	// would leave no window, and Windows and Linux quit then (the 91b5951 proof).
