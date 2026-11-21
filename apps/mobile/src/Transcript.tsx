@@ -14,6 +14,7 @@ import { confirmExternalLink, Markdown } from "./Markdown";
 import { NativeMarkdown } from "./NativeMarkdown";
 import { blocksOf, equationsIn, equationsInTokens, type Equation } from "./message-math";
 import { AnswerLine } from "./AnswerLine";
+import { ConfidenceRecord } from "./ConfidenceRail";
 import { SavedChips } from "./Attachments";
 import { PlanDiagram } from "./PlanDiagram";
 import { Label } from "./ui";
@@ -266,6 +267,7 @@ function Part({ part, context, blocks }: { part: LhViewPart; context: PartContex
           <View style={s.card}>
             <Markdown text={answer.questionText} />
             <AnswerLine answer={answer} />
+            {answer.kind === "quiz" && typeof answer.confidence === "number" && <ConfidenceRecord value={answer.confidence} />}
             {typeof answer.correct === "boolean" && !answer.dismissed && !answer.dontKnow &&
               <Text style={[s.label, { color: answer.correct ? c.success : c.error }]}>{answer.correct ? "Correct" : "Incorrect"}</Text>}
             {!!answer.explanation && <Markdown text={answer.explanation} />}

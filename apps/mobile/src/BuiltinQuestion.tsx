@@ -9,6 +9,7 @@ import {
 } from "../../../src/core/question-core.ts";
 import { parseQuestionInput } from "../../../src/core/tool-parts.ts";
 import type { ChatInput } from "../../../src/client-protocol/index.ts";
+import { RailPaint } from "./ConfidenceRail";
 import { Markdown } from "./Markdown";
 import { ChoiceRow } from "./ChoiceRow";
 import { Button, Field, Label } from "./ui";
@@ -17,7 +18,7 @@ import { alpha, confidenceColors, fonts, radius, space, useTheme } from "./theme
 /** The web dock's confidence slider: a thin rail with tick marks and a round
  *  handle that snaps to the six stops. Tap or drag anywhere on the rail. */
 function ConfidenceRail({ value, disabled, onChange }: { value: number; disabled: boolean; onChange: (stop: number) => void }) {
-  const { c, s } = useTheme();
+  const { s } = useTheme();
   const width = useRef(0);
   const index = Math.max(0, CONFIDENCE_STOPS.indexOf(value));
   const color = confidenceColors[index] ?? confidenceColors[2];
@@ -42,10 +43,7 @@ function ConfidenceRail({ value, disabled, onChange }: { value: number; disabled
         onResponderGrant={({ nativeEvent }) => pick(nativeEvent.locationX)}
         onResponderMove={({ nativeEvent }) => pick(nativeEvent.locationX)}
         hitSlop={{ top: 12, bottom: 12 }} style={{ flex: 1, height: 16, opacity: disabled ? 0.4 : 1 }}>
-        <View pointerEvents="none" style={{ position: "absolute", left: 8, right: 8, top: 5, height: 6, borderRadius: 3, borderWidth: 1, borderColor: c.border, backgroundColor: c.background, overflow: "hidden" }}>
-          {[30, 50, 70, 90].map((tick) => <View key={tick} style={{ position: "absolute", left: `${tick}%`, top: 0, bottom: 0, width: 1, backgroundColor: alpha(c.text, 0.35) }} />)}
-          <View style={{ width: `${value}%`, height: "100%", backgroundColor: color }} />
-        </View>
+        <RailPaint value={value} style={{ position: "absolute", left: 8, right: 8, top: 5 }} />
         <View pointerEvents="none" style={{ position: "absolute", left: 8, right: 8, top: 0, height: 16 }}>
           <View style={{ position: "absolute", left: `${value}%`, marginLeft: -8, width: 16, height: 16, borderRadius: 8, backgroundColor: color }} />
         </View>
