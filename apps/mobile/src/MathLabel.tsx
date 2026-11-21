@@ -18,6 +18,10 @@ const MONO = { ascent: 1.02, descent: 0.3 };
  * gives that character no font (RCTNSAttributedStringFragmentFromFragment), so TextKit uses
  * its default, Helvetica at 12 points (descender 0.23 em), at any text size. */
 const VIEW_FONT_DESCENT = 2.76;
+/** React Native rounds an inline view's origin to the pixel grid (ParagraphShadowNode's
+ * roundToPixel), moving it up to half a pixel: half a point at most. Room is left for that
+ * wherever a picture would otherwise touch the edge of what cuts it off. */
+const PIXEL_ROUNDING = 0.5;
 
 /** A font in a line of text: its size, and whether it is the code face. */
 export type TextRun = { fontSize: number; mono?: boolean };
@@ -131,11 +135,11 @@ function iosFonts(runs: TextRun[]) {
  * inside its line. Android puts an inline view on the baseline itself. */
 export function inlineLift(lineHeight: number, size: Size, fonts: InlineFonts, fontScale: number, platform: string = Platform.OS): number {
   if (platform !== "ios") return 0;
-  if (!fonts.line.length) return fonts.text.length ? 0 : -VIEW_FONT_DESCENT;
+  if (!fonts.line.length) return fonts.text.length ? 0 : -(VIEW_FONT_DESCENT + PIXEL_ROUNDING);
   const { descent } = iosFonts(fonts.line);
   const { tallest } = iosFonts(fonts.text);
   const baseline = (descent + Math.max(0, (lineHeight - tallest) / 2)) * fontScale;
-  const room = (lineHeight - (size.height - size.depth)) * fontScale - VIEW_FONT_DESCENT;
+  const room = (lineHeight - (size.height - size.depth)) * fontScale - VIEW_FONT_DESCENT - PIXEL_ROUNDING;
   return Math.max(0, Math.min(baseline - VIEW_FONT_DESCENT, room));
 }
 
@@ -145,7 +149,15 @@ export function inlineLift(lineHeight: number, size: Size, fonts: InlineFonts, f
 export function depthRoom(pictures: { size: Size; fonts: InlineFonts }[], fontScale: number, platform: string = Platform.OS): number {
   if (platform !== "ios") return 0;
   return Math.max(0, ...pictures.filter(({ fonts }) => fonts.last && !fonts.line.length)
-    .map(({ size, fonts }) => size.depth * fontScale - VIEW_FONT_DESCENT - inlineLift(0, size, fonts, fontScale, platform)));
+    .map(({ size, fonts }) => size.depth * fontScale - VIEW_FONT_DESCENT - inlineLift(0, size, fonts, fontScale, platform) + PIXEL_ROUNDING));
+}
+
+/** A Text's bottom padding with `room` added to what its style already gives. */
+export function bottomPadding(style: StyleProp<TextStyle>, room: number): { paddingBottom?: number } {
+  if (room <= 0) return {};
+  const { paddingBottom, paddingVertical, padding } = StyleSheet.flatten(style) ?? {};
+  const given = [paddingBottom, paddingVertical, padding].find((value) => typeof value === "number") ?? 0;
+  return { paddingBottom: given + room };
 }
 
 /** A label with its math drawn as pictures, sized before it is drawn so the row never
@@ -199,7 +211,7 @@ export function MathLabel({ pieces, style, color }: { pieces: LabelPiece[]; styl
         const pictures = block.map((_, at) => sizes[at] && { size: sizes[at], fonts: { line: lines[lineOf[at] as number] ?? [], text, last: lineOf[at] === lines.length - 1 } });
         const below = depthRoom(pictures.filter((picture) => picture !== undefined), fontScale);
         return (
-          <Text key={index} style={[style, { lineHeight: line, ...below > 0 && { paddingBottom: below } }]}>
+          <Text key={index} style={[style, { lineHeight: line, ...bottomPadding(style, below) }]}>
             {block.map((piece, at) => {
               const picture = pictures[at];
               if (piece.kind === "text") return piece.text;

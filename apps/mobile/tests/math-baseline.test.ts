@@ -108,7 +108,7 @@ for (const os of ["ios", "android"] as const) {
 			assert.ok(boxes.length > 0, `${name}: inline math found`);
 			for (const { lift } of boxes) {
 				if (os === "android" || name.endsWith("after text")) assert.equal(lift, 0, `${name}: lifted ${lift}, expected none`);
-				else if (name.includes("alone")) assert.equal(lift, -VIEW_FONT_DESCENT, `${name}: lowered onto the line's bottom`);
+				else if (name.includes("alone")) assert.ok(lift <= -VIEW_FONT_DESCENT, `${name}: lowered onto the line's bottom: ${lift}`);
 				else assert.ok(lift > 3, `${name}: lifted ${lift}`);
 			}
 		}
@@ -142,32 +142,45 @@ test("ios: lines keep the line height they have on Android, and tall or deep mat
 	assert.equal(row?.lineHeight, 21, "a choice row stays at the 21 it had before the lift");
 });
 
-test("ios: math in a Text of its own shows whole: none of it is outside the Text, which cuts off what is", async () => {
-	// #315. A Text with no text is one line as tall as its pictures' boxes, with its baseline at
-	// its bottom; React Native puts each box's bottom 2.76 pt up from there before the lift.
+test("ios: math in a Text of its own shows whole, at every pixel density", async () => {
+	// #315. React Native lays a Text with no text out as one line exactly as tall as its
+	// pictures' boxes, each box's size rounded up to the pixel grid after adding 0.01 pt
+	// (ParagraphShadowNode.cpp:121-126), and puts a box's top 2.76 pt above the line's (its
+	// bottom at the line's bottom plus TextKit's Helvetica 12 descender), that origin rounded to
+	// the nearest pixel (:423-424). The Text cuts off what lies outside it (Text.js: overflow
+	// hidden). Before this, the top 2.76 pt and the depth were cut off.
 	for (const [name, element] of [
 		["choice", choice("$(-0.10, +0.20)$")],
 		["answered card", card(["$(+0.20, -0.10)$"])],
-		["message", message("$(+0.20, -0.10)$")],
-		["message, after a line of text", message("Earlier text\n$(+0.20, -0.10)$")],
+		["message pair", message("$(+0.20, -0.10)$")],
+		["message rule", message("$\\rule{1em}{4em}$")],
 	] as const) {
 		const boxes = await boxesOn("ios", element);
 		assert.equal(boxes.length, 1, name);
-		for (const { lift, size, padding } of boxes) {
-			const bottom = VIEW_FONT_DESCENT + lift;
-			if (!name.endsWith("text")) assert.ok(bottom + size.height - size.depth <= size.height - size.depth + 1e-6, `${name}: top ${bottom} pt above the Text's top`);
-			assert.ok(bottom - size.depth >= -padding - 1e-6, `${name}: ${(size.depth - bottom - padding).toFixed(2)} pt cut off below`);
+		const [{ lift, size, padding }] = boxes as [(typeof boxes)[number]];
+		for (const scale of [1, 2, 3]) {
+			const line = Math.ceil((size.height - size.depth + 0.01) * scale) / scale;
+			const top = Math.round(-VIEW_FONT_DESCENT * scale) / scale - lift;
+			assert.ok(top >= 0, `${name} at ${scale}x: ${(-top).toFixed(2)} pt cut off at the top`);
+			assert.ok(top + size.height <= line + padding, `${name} at ${scale}x: ${(top + size.height - line - padding).toFixed(2)} pt cut off at the bottom`);
 		}
 	}
 	const [android] = await boxesOn("android", choice("$(-0.10, +0.20)$"));
 	assert.equal(android?.padding, 0, "Android keeps its layout");
 });
 
+test("ios: a cell holding only math keeps its own padding and adds room for the depth", async () => {
+	const [cell] = await boxesOn("ios", message("| Pair | Note |\n| --- | --- |\n| $(x)$ | text |"));
+	assert.ok(cell);
+	// The cell's own padding is 4 pt (space.xs) above and below.
+	assert.ok(cell.padding >= 4 + cell.size.depth, `padding ${cell.padding}, depth ${cell.size.depth}`);
+});
+
 test("the lift is iOS only, and none for a line with no text beside text", () => {
 	const size = { width: 10, height: 13, depth: 0 };
 	assert.equal(inlineLift(24, size, { line: [{ fontSize: 16 }], text: [{ fontSize: 16 }], last: true }, 1, "android"), 0);
 	assert.equal(inlineLift(24, size, { line: [], text: [{ fontSize: 16 }], last: true }, 1, "ios"), 0);
-	assert.equal(inlineLift(24, size, { line: [], text: [], last: true }, 1, "ios"), -VIEW_FONT_DESCENT);
+	assert.ok(inlineLift(24, size, { line: [], text: [], last: true }, 1, "ios") <= -VIEW_FONT_DESCENT);
 	assert.equal(inlineLift(24, size, { line: [], text: [], last: true }, 1, "android"), 0);
 	// Helvetica's descender doesn't grow with Dynamic Type, so the lift isn't the 1x lift scaled.
 	const once = inlineLift(24, size, { line: [{ fontSize: 16 }], text: [{ fontSize: 16 }], last: true }, 1, "ios");

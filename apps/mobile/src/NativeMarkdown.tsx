@@ -3,7 +3,7 @@ import { Text, View, useWindowDimensions, type HostInstance, type LayoutChangeEv
 import { drawingsOf, equationOf } from "./message-math";
 import { useLivePictures } from "./math-window";
 import type { LabelPiece } from "./choice-math";
-import { depthRoom, fit, inlineLift, lineHeightFor, MathPicture, MATH_SCALE, MAX_LINES, useScreenReader, useSpeech, type InlineFonts, type Size, type TextRun } from "./MathLabel";
+import { bottomPadding, depthRoom, fit, inlineLift, lineHeightFor, MathPicture, MATH_SCALE, MAX_LINES, useScreenReader, useSpeech, type InlineFonts, type Size, type TextRun } from "./MathLabel";
 import { spokenLabel, spokenMath } from "./math-speech";
 import { httpsLink, type MarkdownToken } from "./render-markdown";
 import { fonts, radius, space, useTheme } from "./theme";
@@ -132,7 +132,7 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
     return (
       <Live key={key} pictures={sizes.size}>
         {(live, ref, onLayout) => (
-          <Text ref={ref} onLayout={onLayout} accessibilityRole={role} selectable style={[s.prose, style, extra, { lineHeight, ...below > 0 && { paddingBottom: below } }]}
+          <Text ref={ref} onLayout={onLayout} accessibilityRole={role} selectable style={[s.prose, style, extra, { lineHeight, ...bottomPadding([s.prose, style, extra], below) }]}
             accessibilityLabel={sizes.size ? spokenLabel(pieces(nodes, sizes), speech && live) : undefined}>
             {inline(nodes, { sizes, live, fonts, lineHeight })}
           </Text>

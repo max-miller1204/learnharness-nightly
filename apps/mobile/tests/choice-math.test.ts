@@ -138,6 +138,14 @@ test("a rule is drawn in the text's color or its own \\color, and kept when a th
       flattening.on = true;
     }
   }
+  // A rule takes the nearest \color above it, even from math inside \text, which MathJax
+  // parses apart and fills with black; a color written for the rule itself stays.
+  for (const tex of ["\\textcolor{red}{x\\text{$\\rule{1em}{1em}$}}", "\\text{\\color{red}\\rule[2pt]{1em}{1em}}",
+    "\\mmlToken{mspace}[width=\"1em\",height=\"1em\",mathbackground=\"red\"]{}"]) {
+    const svg = drawTex(tex, false)?.svg;
+    assert.ok(svg, tex);
+    assert.deepEqual([...new Set([...fills(svg.light), ...fills(svg.dark)])], ["red"], tex);
+  }
   // A box behind text is still a box, and still dropped where its color doesn't stand out.
   const box = drawTex("\\colorbox{yellow}{x}", false)?.svg;
   assert.ok(box && box.light.includes('<rect fill="yellow"') && !box.dark.includes("<rect"));

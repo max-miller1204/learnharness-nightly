@@ -170,13 +170,17 @@ const THEMES = Object.fromEntries((["dark", "light"] as const).map((mode) => {
   return [mode, { text: colors.text, surfaces }];
 })) as Record<ThemeMode, { text: string; surfaces: string[] }>;
 
-/** A \rule is a space MathJax fills with the \color in effect, or with black when there is
- * none (BaseMethods' Rule). That black stands for the text's color, which a glyph with no
- * \color takes, so it becomes currentColor. */
-function rulesInTextColor(node: MmlNode, colored = false) {
-  colored ||= ["mathcolor", "color"].some((name) => node.attributes?.getExplicit(name) !== undefined);
-  if (node.isKind("mspace") && !colored && node.attributes?.getExplicit("mathbackground") !== undefined) node.attributes.set("mathbackground", "currentColor");
-  if (!node.isToken) for (const child of children(node)) if (child) rulesInTextColor(child, colored);
+/** A \rule is a space MathJax fills with the \color in effect where the rule is parsed, or
+ * with black when there is none (BaseMethods' Rule). That black stands for the color around
+ * it: the nearest \color above it, which math inside \text doesn't see while it is parsed,
+ * or else the text's color. Any other fill was chosen, and is left alone. */
+function rulesInTextColor(node: MmlNode, color?: string) {
+  const own = ["mathcolor", "color"].map((name) => node.attributes?.getExplicit(name)).find((value) => value !== undefined);
+  color = own === undefined ? color : String(own);
+  if (node.isKind("mspace") && String(node.attributes?.getExplicit("mathbackground")).trim().toLowerCase() === "black") {
+    node.attributes.set("mathbackground", color ?? "currentColor");
+  }
+  if (!node.isToken) for (const child of children(node)) if (child) rulesInTextColor(child, color);
 }
 
 /** MathJax draws a rule as a rectangle marked as a background, like a \colorbox's, but it is
