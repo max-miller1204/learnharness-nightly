@@ -160,26 +160,38 @@ async function tap(screen, find) {
 	await sleep(700);
 }
 
-/** Does a tap reach the app? Open the session's options menu and close it again. */
+/** Does a tap reach the app? Toggle the session's options menu twice and check
+ * that each tap changed it, leaving it closed. */
 async function tapsReachApp(screen) {
-	await tap(screen, (el) => label(el) === "Session options");
-	await sleep(800);
-	if (!has("Close menu")(await settled(screen))) return false;
-	await tap(screen, (el) => label(el) === "Close menu");
+	for (let i = 0; i < 2; i++) {
+		const open = has("Close menu")(await settled(screen));
+		await tap(screen, (el) => label(el) === (open ? "Close menu" : "Session options"));
+		await sleep(800);
+		if (has("Close menu")(await settled(screen)) === open) return false;
+	}
+	if (has("Close menu")(await settled(screen))) await tap(screen, (el) => label(el) === "Close menu");
 	return true;
 }
 
 /** After the Pair screen's secure field, iOS offers to save the password in a
- * system sheet that AXe's tree does not list and that takes every touch. A real
- * user answers it once; this answers Not Now (where it sits on an iPhone 17). */
+ * system sheet that AXe's tree does not list and that takes every touch. It can
+ * arrive several seconds after pairing. A real user answers it once; this
+ * answers Not Now (where it sits on an iPhone 17) whenever a probe fails, and
+ * goes on only after two passing probes 8 s apart. */
 async function dismissSavePassword(screen) {
-	await sleep(6000);
-	if (await tapsReachApp(screen)) return;
-	log("a system sheet takes the taps (iOS's Save Password? offer); answering Not Now");
-	await axe(["tap", "--label", "Not Now"]).catch(() => axe(["tap", "-x", String(Math.round(screenSize.width * 0.315)),
-		"-y", String(Math.round(screenSize.height * 0.626)), "--tap-style", "physical"]));
-	await sleep(1500);
-	if (!(await tapsReachApp(screen))) fail(screen, "a system sheet over the app takes every tap and Not Now did not close it");
+	let passes = 0;
+	for (let probe = 1; probe <= 6 && passes < 2; probe++) {
+		await sleep(8000);
+		if (await tapsReachApp(screen)) {
+			passes++;
+			continue;
+		}
+		passes = 0;
+		log("a system sheet takes the taps (iOS's Save Password? offer); answering Not Now");
+		await axe(["tap", "--label", "Not Now"]).catch(() => axe(["tap", "-x", String(Math.round(screenSize.width * 0.315)),
+			"-y", String(Math.round(screenSize.height * 0.626)), "--tap-style", "physical"]));
+	}
+	if (passes < 2) fail(screen, "a system sheet over the app takes the taps and Not Now did not close it");
 }
 
 /** Type into a text field a few keys at a time, and check what landed: with
