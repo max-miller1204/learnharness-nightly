@@ -1271,6 +1271,36 @@ describe("the update control's toasts (T3's desktopUpdate.toast.tsx and SidebarU
 		assert.deepEqual([toastTitles(), toastLines()], [["Could not install update"], ["Couldn’t install the update."]], "the notice's text, not whatever message the state holds now");
 	});
 
+	it("a claim reply that arrives once the page is hidden shows and acks nothing until the page is visible again", async () => {
+		await unmountAll();
+		await act(async () => { toastManager.clear(); });
+		const calls: string[] = [];
+		let release!: (first: boolean) => void;
+		bridge(state({ status: "available", version: "0.3.8", revision: 1, availableVersion: "0.3.8", notAppliedVersion: "0.3.8" }));
+		window.lh!.claimUpdateNotice = (key: string) => { calls.push(`claim ${key}`); return new Promise((resolve) => { release = resolve; }); };
+		window.lh!.ackUpdateNotice = async (key: string) => { calls.push(`ack ${key}`); return true; };
+		const visibility = Object.getOwnPropertyDescriptor(document, "visibilityState");
+		const setVisibility = async (value: string) => {
+			Object.defineProperty(document, "visibilityState", { configurable: true, get: () => value });
+			await act(async () => { document.dispatchEvent(new window.Event("visibilitychange")); });
+		};
+		try {
+			await mount(<><UpdateLaunchNotice current="0.3.7" /><Toaster /></>);
+			await settle();
+			assert.deepEqual(calls, ["claim not-applied:0.3.8"], "claimed while visible");
+			await setVisibility("hidden");
+			await act(async () => { release(true); });
+			await settle();
+			assert.deepEqual([calls, toastTitles()], [["claim not-applied:0.3.8"], []], "hidden when the reply came: not shown, not acked");
+			await setVisibility("visible");
+			await settle();
+			assert.deepEqual(toastTitles(), ["Update did not apply"], "shown once visible");
+			assert.deepEqual(calls, ["claim not-applied:0.3.8", "ack not-applied:0.3.8"], "and only then acked");
+		} finally {
+			if (visibility) Object.defineProperty(document, "visibilityState", visibility); else Reflect.deleteProperty(document, "visibilityState");
+		}
+	});
+
 	it("the sidebar's Install tells main it started it; Settings' Install doesn't (its failure raises no toast)", async () => {
 		await unmountAll();
 		const sources: unknown[] = [];

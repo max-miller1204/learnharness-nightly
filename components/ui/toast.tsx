@@ -120,6 +120,9 @@ function ToastItem({ toast, paused }: { toast: ToastRecord; paused: boolean }) {
 			data-type={toast.type}
 			tabIndex={-1}
 			aria-label={announcement(toast)}
+			// A pointer press never moves focus here (Chromium would focus the pressed button, and its
+			// removal on Close would drop focus to the page): a mouse dismiss leaves focus where it was.
+			onMouseDown={(event) => event.preventDefault()}
 			className="pointer-events-auto flex items-start gap-2 rounded-lg border border-border bg-popover p-3 text-sm text-popover-foreground shadow-lg outline-hidden ring-ring focus-visible:ring-2"
 		>
 			<Icon aria-hidden className={cn("mt-0.5 size-4 shrink-0", toast.type === "error" ? "text-destructive" : toast.type === "success" ? "text-success" : "text-muted-foreground")} />
@@ -157,6 +160,14 @@ export function Toaster() {
 	const items = useSyncExternalStore(toastManager.subscribe, toastManager.getSnapshot, () => EMPTY);
 	const region = useRef<HTMLOListElement>(null);
 	const [hovered, setHovered] = useState(false);
+	// Timers stop while the page is hidden: a toast never runs out unseen.
+	const [pageHidden, setPageHidden] = useState(false);
+	useEffect(() => {
+		const update = () => setPageHidden(document.visibilityState === "hidden");
+		update();
+		document.addEventListener("visibilitychange", update);
+		return () => document.removeEventListener("visibilitychange", update);
+	}, []);
 	const [focused, setFocused] = useState(false);
 	// Where focus was before F6, to go back to when the toasts are left or gone; and whether the
 	// region was entered with F6 (only then does focus move on to the next toast when one goes).
@@ -260,7 +271,7 @@ export function Toaster() {
 				}}
 			>
 				{items.map((toast) => (
-					<ToastItem key={toast.id} toast={toast} paused={hovered || focused} />
+					<ToastItem key={toast.id} toast={toast} paused={hovered || focused || pageHidden} />
 				))}
 			</ol>
 		</section>

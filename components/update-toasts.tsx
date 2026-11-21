@@ -101,21 +101,40 @@ export function UpdateLaunchNotice({ current = APP_VERSION }: { current?: string
 	return null;
 }
 
-/** Once the page is visible: claim the notice from main, show it, ack it. Returns a cancel. */
+const pageHidden = () => document.visibilityState === "hidden";
+
+/**
+ * Once the page is visible: claim the notice from main, show it, ack it. Visibility is checked
+ * again when main's reply arrives: a page hidden by then keeps its reservation and shows the toast
+ * (then acks it) only once it is visible again, so a hidden window never spends a notice unseen.
+ * (A toast's timer also stops while the page is hidden, components/ui/toast.tsx.) Returns a cancel.
+ */
 function showNotice(key: string, show: () => void): () => void {
 	let live = true;
+	let claimed = false;
+	const reveal = () => {
+		if (!live || pageHidden()) return;
+		document.removeEventListener("visibilitychange", reveal);
+		show();
+		void window.lh?.ackUpdateNotice?.(key)?.catch?.(() => {});
+	};
 	const attempt = () => {
-		if (!live || document.visibilityState === "hidden") return;
+		if (!live || claimed || pageHidden()) return;
+		claimed = true;
 		document.removeEventListener("visibilitychange", attempt);
 		void claim(key).then((first) => {
 			if (!first || !live) return;
-			show();
-			void window.lh?.ackUpdateNotice?.(key)?.catch?.(() => {});
+			if (pageHidden()) document.addEventListener("visibilitychange", reveal);
+			else reveal();
 		});
 	};
 	document.addEventListener("visibilitychange", attempt);
 	attempt();
-	return () => { live = false; document.removeEventListener("visibilitychange", attempt); };
+	return () => {
+		live = false;
+		document.removeEventListener("visibilitychange", attempt);
+		document.removeEventListener("visibilitychange", reveal);
+	};
 }
 
 /** Main's claim; no bridge (or a throw) means no toast rather than a repeat. */

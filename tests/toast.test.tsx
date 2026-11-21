@@ -103,6 +103,44 @@ describe("the toast primitive (T3's ui/toast.tsx)", () => {
 		assert.deepEqual(titles(), [], "and it wasn't left paused");
 	});
 
+	it("a native mouse click on Close leaves focus where it was (Chromium focuses a pressed button unless mousedown is prevented)", async () => {
+		const host = await mount(<><button type="button" data-testid="pill">pill</button><Toaster /></>);
+		const pill = host.querySelector<HTMLElement>("[data-testid='pill']")!;
+		await act(async () => { pill.focus(); });
+		await act(async () => { toastManager.add({ title: "Clicked away" }); });
+		const close = q("toast-close")!;
+		// Chromium: mousedown focuses the pressed button unless its default is prevented, then click.
+		await act(async () => {
+			const down = new dom.window.Event("mousedown", { bubbles: true, cancelable: true });
+			close.dispatchEvent(down);
+			if (!down.defaultPrevented) close.focus();
+			close.dispatchEvent(new dom.window.Event("mouseup", { bubbles: true, cancelable: true }));
+			close.click();
+		});
+		assert.deepEqual(titles(), []);
+		assert.ok(document.activeElement === pill, "focus stayed on the pill, not the page");
+	});
+
+	it("timers stop while the page is hidden, so a toast never runs out unseen", async () => {
+		await mount(<Toaster />);
+		const visibility = Object.getOwnPropertyDescriptor(document, "visibilityState");
+		const setVisibility = async (value: string) => {
+			Object.defineProperty(document, "visibilityState", { configurable: true, get: () => value });
+			await act(async () => { document.dispatchEvent(new dom.window.Event("visibilitychange")); });
+		};
+		try {
+			await setVisibility("hidden");
+			await act(async () => { toastManager.add({ title: "Brief", timeout: 30 }); });
+			await wait(80);
+			assert.deepEqual(titles(), ["Brief"], "still there while hidden");
+			await setVisibility("visible");
+			await wait(80);
+			assert.deepEqual(titles(), [], "it runs out once seen");
+		} finally {
+			if (visibility) Object.defineProperty(document, "visibilityState", visibility); else Reflect.deleteProperty(document, "visibilityState");
+		}
+	});
+
 	it("Tab past the end with the old place hidden goes to the composer, or the page, and the timer runs again", async () => {
 		const host = await mount(<><button type="button" data-testid="before">before</button><div role="textbox" contentEditable="true" data-testid="composer" /><Toaster /></>);
 		const before = host.querySelector<HTMLElement>("[data-testid='before']")!;
