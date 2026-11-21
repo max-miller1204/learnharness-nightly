@@ -24,6 +24,8 @@ import nextConfig from "../next.config.ts";
 import { Toaster, toastManager } from "../components/ui/toast.tsx";
 import { UpdateLaunchNotice } from "../components/update-toasts.tsx";
 import { TOOLTIP_DELAY_MS } from "../components/ui/tooltip.tsx";
+import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime.js";
+import { KeyboardShortcuts } from "../components/keyboard-shortcuts.tsx";
 
 const dom = parseHTML("<html><body></body></html>");
 Object.assign(globalThis, { window: dom.window, document: dom.document, Element: dom.window.Element,
@@ -133,6 +135,19 @@ async function key(element: Element, name: string, { shiftKey = false, altKey = 
 		}
 		element.dispatchEvent(event);
 	});
+}
+
+/** A Tab keydown the way the browser delivers it: the window's capture listeners (the layers
+ *  provider prevents native Tab there), then the target and the bubble to the app's shortcuts. */
+async function keyTab(element: Element) {
+	const event = Object.assign(new window.Event("keydown", { bubbles: true, cancelable: true }), { key: "Tab", shiftKey: false, altKey: false, ctrlKey: false, metaKey: false });
+	await act(async () => {
+		for (const listener of [...windowKeyCapture]) {
+			if (typeof listener === "function") listener.call(window, event); else listener.handleEvent(event);
+		}
+		element.dispatchEvent(event);
+	});
+	return event;
 }
 
 /** Keyboard focus (linkedom can't match :focus-visible). */
@@ -1879,6 +1894,42 @@ describe("Settings integration", () => {
 		assert.ok(!host.textContent!.includes("automatically"));
 		await click(q(host, "update-button")); assert.equal(b.calls.check, 1);
 		assert.deepEqual(requests.filter((request) => !request.startsWith("GET")), [], "the old value is left as it is (not migrated)");
+	});
+
+	it("Tab in Settings reaches the busy update button and opens its progress tooltip (the app's own Tab, native Tab being prevented)", async () => {
+		const b = bridge(state({ status: "downloading", version: "0.3.8", downloadPercent: 40, revision: 1 }));
+		globalThis.fetch = async () => Response.json({ settings: { version: 1 } });
+		const router = { bfcacheId: "settings-tab", back() {}, forward() {}, refresh() {}, push() {}, replace() {}, prefetch() {} };
+		const host = await mount(<><AppRouterContext.Provider value={router}><KeyboardShortcuts /></AppRouterContext.Provider><SettingsDialogBody initialSection="general" onClose={() => {}} /></>);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const start = q(host, "settings-nav-general")!;
+		const button = keyboardFocusable(q(host, "update-button")!);
+		assert.equal(button.textContent, "Downloading…");
+		/** Tab from `from` until focus is on the button (or a full lap): the controls passed on the way. */
+		const tabToButton = async (from: HTMLElement) => {
+			await act(async () => { from.focus(); });
+			const passed: Element[] = [];
+			for (let i = 0; i < 40 && document.activeElement !== button; i++) {
+				const before = document.activeElement;
+				const tab = await keyTab(before as HTMLElement);
+				assert.equal(tab.defaultPrevented, true, "native Tab stays prevented");
+				if (document.activeElement === before || passed.includes(document.activeElement!)) break;
+				passed.push(document.activeElement!);
+			}
+			return passed;
+		};
+		const passed = await tabToButton(start);
+		assert.equal(document.activeElement, button, "a Tab sequence from the General nav lands on the busy button");
+		assert.ok(passed.every((element) => q(host, "settings-dialog")!.contains(element)), "through Settings' own controls");
+		assert.equal(button.getAttribute("data-state"), "instant-open", "and its tooltip (the percent) opens on keyboard focus");
+		await keyTab(button);
+		assert.notEqual(document.activeElement, button, "the next Tab moves on");
+		assert.ok(q(host, "settings-dialog")!.contains(document.activeElement), "within Settings");
+		assert.deepEqual([b.calls.check, b.calls.download, b.calls.install], [0, 0, 0], "moving through it presses nothing");
+		// An idle button is in the same order.
+		await b.push(state({ status: "idle", revision: 2 }));
+		await tabToButton(start);
+		assert.equal(document.activeElement, button);
 	});
 
 	it("the shell's navigation request opens General, but opening alone never checks", async () => {

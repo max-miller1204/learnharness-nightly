@@ -35,6 +35,8 @@ import {
 } from "react";
 import { BotIcon, KeyIcon, KeyboardIcon, MonitorSmartphoneIcon, PaletteIcon, PlugIcon, PuzzleIcon, SettingsIcon, WaypointsIcon, type LucideIcon } from "lucide-react";
 import { HostDialog } from "@/components/host-dialog";
+import { useFieldCycle } from "@/components/field-cycle";
+import { isInteractionScopeEligible } from "@/components/plugin-input-focus";
 import { useInteractionLayers, type CloseOutcome } from "@/components/interaction-layers";
 import {
 	CURRENT_SETTINGS_VERSION,
@@ -170,6 +172,17 @@ function SettingsDialog({
 
 /** The dialog without the portal/backdrop — the SSR-testable frame
  *  (portals render nothing under renderToStaticMarkup). */
+/** What Tab moves through in Settings: its links, buttons and fields, not ones taken out of the order. */
+const SETTINGS_TABBABLE = 'a[href], button, input:not([type="hidden"]), select, textarea, [role="switch"], [tabindex]:not([tabindex="-1"])';
+
+/** The strict command scope, except that an aria-disabled control (busy, such as the update
+ *  button while it downloads) stays reachable, as aria-disabled means: its tooltip has the progress. */
+function settingsControlEligible(el: HTMLElement, controller: Parameters<typeof isInteractionScopeEligible>[1]): boolean {
+	if (el.getAttribute("tabindex") === "-1") return false;
+	if (el.getAttribute("aria-disabled") !== "true") return isInteractionScopeEligible(el, controller);
+	return !el.matches(":disabled, [disabled]") && !el.hidden && isInteractionScopeEligible(el.parentElement, controller);
+}
+
 export function SettingsDialogBody({
 	onClose,
 	initialSection = "keys",
@@ -200,6 +213,11 @@ export function SettingsDialogBody({
 	// MenuShell open-count — drives the content column's scroll lock.
 	const [openMenus, setOpenMenus] = useState(0);
 	const contentRef = useRef<HTMLDivElement | null>(null);
+	const dialogRef = useRef<HTMLDivElement | null>(null);
+	// Tab in Settings: the app's own Tab (forward-only, wrapping, field-cycle.ts) through every
+	// control of the dialog in page order, native Tab being prevented app-wide.
+	const settingsControls = useCallback(() => dialogRef.current ? [...dialogRef.current.querySelectorAll<HTMLElement>(SETTINGS_TABBABLE)] : [], []);
+	useFieldCycle(settingsControls, settingsControlEligible);
 	// Scroll-lock (fix wave, owner ruling: the scrollbar MAY stay,
 	// scrolling must NOT happen, nothing may move): the content column
 	// keeps overflow-y-auto — the scrollbar and every width stay exactly
@@ -345,6 +363,7 @@ export function SettingsDialogBody({
 
 	const frame = (
 		<div
+			ref={dialogRef}
 			tabIndex={-1}
 			role="dialog"
 			aria-modal="true"

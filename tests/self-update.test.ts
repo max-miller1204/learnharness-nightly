@@ -365,6 +365,33 @@ describe("self-hosted updater", () => {
 		assert.deepEqual(u.state().releaseNotes.map((g) => g.version), [NEWER, NEXT], "with its own notes, not the failed build's");
 	});
 
+	it("a feed that goes below a staged version offers the version it names, with its own notes; the withdrawn one is never a fallback", async () => {
+		const { f, failing } = disk();
+		const u = createSelfUpdater(f.deps);
+		f.flags.latest = NEWER;
+		await u.check(); await u.download();
+		assert.deepEqual([u.state().status, u.state().version], ["downloaded", NEWER]);
+		f.flags.latest = NEXT;
+		await u.check();
+		assert.deepEqual([u.state().status, u.state().version, u.state().availableVersion], ["available", NEXT, NEXT], "the feed now names NEXT (T3's reduceOnUpdateAvailable)");
+		assert.deepEqual(u.state().releaseNotes.map((g) => g.version), [NEXT], "the version and its notes agree");
+		// NEXT's download fails at Install: NEWER was withdrawn, so nothing installs.
+		failing.push(NEXT);
+		await u.install();
+		assert.deepEqual(f.sent, [], "a withdrawn version is never a fallback");
+		// NEXT once it is staged: it shows as downloaded, and Install takes it.
+		failing.splice(0);
+		await u.download();
+		assert.deepEqual([u.state().status, u.state().version], ["downloaded", NEXT]);
+		f.flags.latest = NEWER;
+		await u.check();
+		f.flags.latest = NEXT;
+		await u.check();
+		assert.deepEqual([u.state().status, u.state().version], ["downloaded", NEXT], "a staged NEXT shows as downloaded when the feed names it");
+		await u.install();
+		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }]);
+	});
+
 	it("no fallback when Install's own check finds nothing newer (a pulled release) or can't read the feed", async () => {
 		const pulled = disk([NEWER]);
 		const u = createSelfUpdater(pulled.f.deps);

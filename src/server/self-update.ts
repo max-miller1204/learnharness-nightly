@@ -231,10 +231,15 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			}
 			// A staged copy built from another archive than the feed names (a republished build) is stale.
 			const stale = deps.isStale(feed);
-			if (ready && (compareVersions(feed.version, ready) < 0 || (feed.version === ready && !stale) || skipped)) {
+			if (ready && ((feed.version === ready && !stale) || skipped)) {
 				if (!skipped) set(notesFor(feed));
 				return;
 			}
+			// Otherwise the feed's version is what shows, with its own notes, even below a ready one
+			// (T3's reduceDesktopUpdateStateOnUpdateAvailable, apps/desktop/src/updates/updateMachine.ts:89-111
+			// at df09ced7: "downloaded" only when the downloaded version is that version). A ready
+			// version the feed went below is withdrawn: Install falls back only to a version older
+			// than a newer one its own check found (install()), never to it.
 			const notes = notesFor(feed);
 			// Already on disk (staged before a restart): ready at once. Otherwise offered exactly as the
 			// feed now names it, asset included (T3's reduceOnUpdateAvailable), never downloaded here.
