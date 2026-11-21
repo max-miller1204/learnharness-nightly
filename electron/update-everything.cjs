@@ -17,6 +17,7 @@
  */
 
 const { compareVersions, bridgeNotes } = require("./release-notes.cjs");
+const { hasDownloadableOffer } = require("./update-machine.cjs");
 
 const EXACT = /^\d+\.\d+\.\d+(?:-[a-z]+\.\d{8}\.\d+)?$/;
 const isNewerVersion = (a, b) => typeof a === "string" && typeof b === "string" && EXACT.test(a) && EXACT.test(b) && compareVersions(a, b) > 0;
@@ -99,8 +100,9 @@ function createUpdateEverything(deps) {
 		// A run shows no notes, also in its download step, which the page can't tell from a
 		// plain download (T3's `!isRunningEverything`, SidebarUpdatePill.tsx:279-280).
 		if (run) return { version: deps.appVersion, target: run.target, phase: run.step === "downloading" ? "downloading" : "updating", error: null, downloadPercent, releaseNotes: [], omittedReleaseCount: 0 };
-		// The offered version's notes (main keeps them only while available, downloading or
-		// downloaded), bounded: the sidebar's hover shows them for this app's states, as T3's does.
+		// The offered version's notes (the reducers keep them until a new check or "no update"
+		// clears them, electron/update-machine.cjs), bounded: the sidebar's hover shows them for this
+		// app's states, as T3's does.
 		const notes = bridgeNotes(state.releaseNotes, state.omittedReleaseCount);
 		return {
 			version: deps.appVersion,
@@ -227,6 +229,12 @@ function createUpdateEverything(deps) {
 			// `retried`: if this install fails too (seen only after the relaunch, on every platform),
 			// the next launch says so instead of offering Try Again again.
 			deps.saveResult({ savedAt: deps.now(), server: deps.selection()?.origin ?? retry.server, updated: retry.updated ?? retry.server, from: deps.appVersion, target: retry.target, retried: true });
+			// An installer error main recovers from (installFailed): the same failure text, once.
+			run.installFailed = async () => {
+				run = null;
+				forgetResult();
+				await retryFailed(retry);
+			};
 			deps.updater.installPinned(retry.target);
 		} catch {
 			run = null;
@@ -304,6 +312,18 @@ function createUpdateEverything(deps) {
 			}
 			// Reopen the server that is open now (the user may have switched); `updated` is the one the run moved.
 			deps.saveResult({ savedAt: deps.now(), server: deps.selection()?.origin ?? selection.origin, updated: selection.origin, from: deps.appVersion, target });
+			// An installer error main recovers from (installFailed) ends the run as a failed app install
+			// would: with the server on the target, its page and the app-only retry; else a notice.
+			run.installFailed = async () => {
+				run = null;
+				forgetResult();
+				if (serverDone) {
+					deps.reconnect(selection.origin, target);
+					await offerRetry({ target, server: selection.origin, updated: selection.origin });
+				} else {
+					await deps.tell({ message: "Couldn’t update everything.", detail: "Couldn’t install the app update. Try again." });
+				}
+			};
 			deps.updater.installPinned(target);
 		} catch (error) {
 			const saved = run?.step === "restarting";
@@ -325,13 +345,20 @@ function createUpdateEverything(deps) {
 		status,
 		/** A run, or its confirmation, is going: the plain install and the menu wait. */
 		running: () => run !== null || asking,
+		/** Main recovered from an installer error (T3's recoverFailedInstall): a run waiting on its
+		 *  app install ends with a retryable failure instead of "Restarting" for good. */
+		installFailed() {
+			const fail = run?.step === "restarting" ? run.installFailed : null;
+			if (fail) void fail();
+		},
 		/** The origin a run is updating, from its confirmation to its end, or null. */
 		server: () => against,
 		check() {
 			if (!run) deps.updater.check();
 		},
 		download() {
-			if (!run && deps.updater.state().status === "available") deps.updater.download();
+			// Also a retry of a failed download (T3's download retry), never a dead click.
+			if (!run && hasDownloadableOffer(deps.updater.state())) deps.updater.download();
 		},
 		/** The page's install(): resolves once the confirmation is answered. */
 		async install() {

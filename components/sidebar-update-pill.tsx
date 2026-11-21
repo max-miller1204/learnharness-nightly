@@ -121,8 +121,13 @@ export function resolveUpdateControl(state: UpdateState | null, { showCheckIcon 
 		return desktop.phase === "downloaded" ? "app-install" : "app-download";
 	}
 	if (state.status === "downloading") return "downloading";
-	if (state.status === "downloaded") return installing ? "restarting" : "install";
+	// A failed install (T3's recovery: still downloaded, with the install context) leaves Restarting.
+	if (state.status === "downloaded") return installing && state.errorContext !== "install" ? "restarting" : "install";
 	if (state.status === "available") return "download";
+	// T3's retry actions (resolveDesktopUpdateButtonAction, desktopUpdate.logic.ts:49-69 at df09ced7):
+	// an error that kept a download installs it, a failed download downloads again.
+	if (state.status === "error" && state.downloadedVersion && (state.errorContext == null || state.errorContext === "install")) return installing ? "restarting" : "install";
+	if (state.status === "error" && state.errorContext === "download" && state.availableVersion) return "download";
 	if (state.notice?.kind === "rolled-back") return "dismiss-notice";
 	if (state.status === "disabled") return "unavailable";
 	return "check";
@@ -139,16 +144,35 @@ export function updateControlTooltip(state: UpdateState, kind: UpdateControlKind
 			: `Server is on ${state.runningVersion}. Click to reload.`;
 		case "checking": return "Checking for updates…";
 		case "unavailable": return UNAVAILABLE_TITLE;
-		case "download": return state.version ? `Update ${state.version} ready to download` : "Update available ready to download";
+		case "download": return retryTooltip(state) ?? (state.version ? `Update ${state.version} ready to download` : "Update available ready to download");
 		// Owner decision 2026-11-19: once the server has every byte it checks and unpacks it.
 		case "downloading": return state.preparing ? PREPARING_LABEL : downloadingTooltip(state.downloadPercent);
-		case "install": return `Update ${state.version ?? "ready"} downloaded. Click to restart and install.`;
+		case "install": return retryTooltip(state) ?? `Update ${state.version ?? "ready"} downloaded. Click to restart and install.`;
 		case "restarting": return restartingTooltip(state.version);
 		case "dismiss-notice": return state.notice?.text ?? "";
 		// T3's updateTargetsSentence for this app and one server (updateEverything.logic.ts:765-772).
 		case "everything": return "Update this app and 1 server";
 		default: return "Check for updates";
 	}
+}
+
+/**
+ * T3's retry lines of getDesktopUpdateButtonTooltip (desktopUpdate.logic.ts:109-160 at df09ced7),
+ * or null for the plain download or install line. Only the desktop's state has these fields.
+ */
+export function retryTooltip(state: UpdateState): string | null {
+	const offered = state.downloadedVersion ?? state.availableVersion ?? null;
+	if (state.notAppliedVersion && (state.status === "available" || state.status === "downloaded") && offered === state.notAppliedVersion) {
+		return `Update ${state.notAppliedVersion} did not apply. Click to retry.`;
+	}
+	if ((state.status === "available" || state.status === "error") && state.errorContext === "download" && state.availableVersion) {
+		return `Download failed for ${state.availableVersion}. Click to retry.`;
+	}
+	if (state.status === "error") {
+		if (state.errorContext === "install" && state.downloadedVersion) return `Install failed for ${state.downloadedVersion}. Click to retry.`;
+		if (state.downloadedVersion) return `Update ${state.downloadedVersion} downloaded. Click to restart and install.`;
+	}
+	return null;
 }
 
 export const PREPARING_LABEL = "Preparing update";
@@ -204,7 +228,8 @@ export function shownReleaseNotes(state: UpdateState | null, kind: UpdateControl
 		releaseNotes,
 		omittedReleaseCount: source?.omittedReleaseCount ?? 0,
 		offeredVersion: appOwned ? desktop?.target ?? null : state?.version ?? null,
-		available: appOwned ? desktop?.phase === "available" : state?.status === "available",
+		// A retry or did-not-apply state heads the notes with its own line (the control's hover text).
+		available: appOwned ? desktop?.phase === "available" : state?.status === "available" && !!state && retryTooltip(state) === null,
 	};
 }
 
@@ -641,7 +666,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 				</Tooltip>
 			</TooltipProvider>
 			<InstallUpdateDialog
-				open={confirming && state.status === "downloaded"}
+				open={confirming && (kind === "install" || state.status === "downloaded")}
 				version={state.version}
 				onClose={() => setConfirming(false)}
 				onConfirm={() => {

@@ -7,10 +7,10 @@
  *
  * deps:
  *   updater()            electron-updater's autoUpdater, or null when updates are off
- *   state()              main's update snapshot { status, version }
- *   offerAgain(version)  show `version` as "available" again (the cache is gone)
- *   report(status)       reportUpdateStatus
- *   downloadStarted(version)  report "downloading" at 0%, as the Download button does
+ *   state()              main's update snapshot (electron/update-machine.cjs: { status, version, ... })
+ *   report(status)       "error": a failed check (T3's check-failure state)
+ *   downloadStarted(version)  "downloading" `version` at 0%, as the Download button does
+ *   downloadFailed(version)   the download failed: offer `version` again with T3's retry
  *   installing()         an install is already under way
  *   startInstall()       quit and install the staged update, no re-check
  *   adoptNotes(info)     keep the offered version's release notes
@@ -44,7 +44,6 @@ function createUpdateActions(deps) {
 		const ready = () => deps.state().status === "downloaded" && deps.state().version === target;
 		// A download of an older offer already under way finishes first; then fetch the pinned one.
 		for (let attempt = 0; attempt < 2 && !ready(); attempt++) {
-			const older = deps.state().status === "downloaded" ? deps.state().version : null;
 			let listener;
 			const downloaded = new Promise((resolve) => { listener = resolve; updater.once("update-downloaded", listener); });
 			try {
@@ -53,9 +52,9 @@ function createUpdateActions(deps) {
 				await updater.downloadUpdate();
 				await Promise.race([downloaded, wait(1000)]);
 			} catch (error) {
-				// electron-updater empties its cache when it starts another version, so an
-				// older download shown as ready is gone: offer the pinned one again instead.
-				if (older && older !== target && deps.state().status === "downloaded") deps.offerAgain(target);
+				// electron-updater empties its cache when it starts another version, so an older
+				// download shown as ready is gone too: offer the pinned one again, to retry.
+				deps.downloadFailed?.(target);
 				throw error;
 			} finally {
 				updater.removeListener("update-downloaded", listener);
@@ -94,6 +93,8 @@ function createUpdateActions(deps) {
 	/** T3's native dialogs for the app menu's check (DesktopApplicationMenu.ts:71-165 at 3ce2145). */
 	async function checkNatively() {
 		const show = deps.show;
+		// An install is under way: its own updater errors must not meet a check's.
+		if (deps.installing()) return;
 		if (deps.running()) {
 			// The run already pinned, downloaded and owns the restart.
 			await show({ type: "info", title: "Update in progress", message: "Update everything is running.", detail: "LearnHarness restarts by itself when the server is back.", buttons: ["OK"] });
