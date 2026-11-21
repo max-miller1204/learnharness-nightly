@@ -24,12 +24,13 @@ Preconditions: the baseline, `scripts/ensure-axe.sh` run once.
 
 1. `node scripts/web-teach.mjs "$B"` then `node scripts/web-teach.mjs "$H"` (about 15 s each). Each prints a line per step:
    - goal typed, Enter -> URL becomes `/chat/<id>`, sessions +1.
-   - fake prober calls `read` on the fixture -> `model-requests.jsonl` request 2 carries a `tool` message with the fixture's two lines.
+   - fake prober calls `read` twice in one turn, on the no-final-newline fixture and then on the fixture -> `model-requests.jsonl` request 2 carries both `tool` messages, each equal to its file byte for byte.
    - fake prober calls `probe` -> `[data-testid="question-dock"]` shows "zz-prove-it: which colour of sunlight scatters most in air?" with options Blue and Red (shuffled).
    - click Blue, Submit answer -> request 3 carries `{"kind":"quiz","answers":[{"index":..,"label":"Blue"}],"correct":true,...}`; the page shows "zz-prove-it acknowledged your answer"; the card closes.
-   - stored shape: `user, assistant[read], toolResult(read), assistant[probe], toolResult(probe), assistant[]`.
+   - stored shape: `user, assistant[read,read], toolResult(read), toolResult(read), assistant[probe], toolResult(probe), assistant[]`.
    - reload `/chat/<id>` -> the reply is still there.
    - from `/chat/new`, right-click the row, `ctx-delete`, `delete-confirm` -> row, list entry and file gone.
+   - three more sessions and a turn on the first -> the sidebar lists them first, third, second (`observations.sidebarOrder`), then they are deleted.
 2. `node scripts/compare.mjs "$RUN/base/web-teach/result.json" "$RUN/head/web-teach/result.json" --out "$RUN/compare-web.md"`.
 3. API side: `node scripts/api-check.mjs "$B"`, `"$H"`, compare.
 4. Evidence: `$RUN/<side>/web-teach/0*.png`, `result.json`, `model-requests.jsonl`, `app.log`.

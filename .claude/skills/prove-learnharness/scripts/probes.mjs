@@ -4,6 +4,9 @@
 //  A. model failure mid-turn (broken-stream): recorded error, the UI says so,
 //     the composer stays usable and a follow-up turn works.
 //  B. doing it twice: Enter twice on Submit answer -> one answer stored.
+//  C. Retry after a failed turn (http500), by mouse and from the keyboard:
+//     one POST whose stream closes, the question card, Retry gone.
+//  However a probe ends, the fake model's fail mode is set back to none.
 // Writes <side dir>/probes/result.json (compare.mjs format: steps,
 // observations) and screenshots. Run on base and head, then compare.
 import * as fs from "node:fs";
@@ -50,15 +53,21 @@ try {
 
 	// A. broken stream
 	await fake("/__prove/reset");
-	const failSet = await fake("/__prove/fail?mode=broken-stream");
-	const idA = await newSession(`zz-prove-it ${Date.now().toString(36)} broken stream probe`);
-	const errored = await until(() => { const r = record(idA); const last = r?.messages?.at(-1); return last?.role === "assistant" && last.stopReason === "error" ? last : null; }, 60_000);
-	await new Promise((r) => setTimeout(r, 1000));
-	await page.screenshot({ path: path.join(OUT, "A1-broken-stream.png") });
-	const uiText = await page.evaluate(() => document.body.innerText);
-	const retryShown = Boolean(await page.$('[data-testid="retry-failed-turn"]')); // before the follow-up clears the banner
-	const composerState = await page.evaluate((sel) => { const el = document.querySelector(sel); return el ? { present: true, editable: el.isContentEditable, ariaDisabled: el.getAttribute("aria-disabled") } : { present: false }; }, composer);
-	const errShape = shape(record(idA)?.messages ?? []);
+	let failSet, idA, errored, uiText, retryShown, composerState, errShape;
+	try {
+		failSet = await fake("/__prove/fail?mode=broken-stream");
+		idA = await newSession(`zz-prove-it ${Date.now().toString(36)} broken stream probe`);
+		errored = await until(() => { const r = record(idA); const last = r?.messages?.at(-1); return last?.role === "assistant" && last.stopReason === "error" ? last : null; }, 60_000);
+		await new Promise((r) => setTimeout(r, 1000));
+		await page.screenshot({ path: path.join(OUT, "A1-broken-stream.png") });
+		uiText = await page.evaluate(() => document.body.innerText);
+		retryShown = Boolean(await page.$('[data-testid="retry-failed-turn"]')); // before the follow-up clears the banner
+		composerState = await page.evaluate((sel) => { const el = document.querySelector(sel); return el ? { present: true, editable: el.isContentEditable, ariaDisabled: el.getAttribute("aria-disabled") } : { present: false }; }, composer);
+		errShape = shape(record(idA)?.messages ?? []);
+	} finally {
+		// However the probe ends, later probes and later scripts get a working model.
+		await fake("/__prove/fail?mode=none");
+	}
 	// recover: switch the failure off, send a follow-up from the same composer
 	await fake("/__prove/fail?mode=none");
 	await fake("/__prove/reset");
@@ -101,28 +110,45 @@ try {
 	res.probes.doubleSubmit = { storedShape: shape(msgsB), quizAnswerMessages: quizAnswers, acknowledgementsShown: ackShown, questionCardClosed: !(await page.$('[data-testid="question-dock"]')) };
 	save();
 
-	// C. Retry after a failed turn: the button must resend, not just be there
-	await fake("/__prove/reset");
-	await fake("/__prove/fail?mode=http500");
-	const idC = await newSession(`zz-prove-it ${Date.now().toString(36)} retry probe`);
-	await until(() => { const last = record(idC)?.messages?.at(-1); return last?.role === "assistant" && last.stopReason === "error" ? last : null; }, 60_000);
-	const retryButton = await page.waitForSelector('[data-testid="retry-failed-turn"]', { timeout: 30_000 }).catch(() => null);
-	const shapeBeforeRetry = shape(record(idC)?.messages ?? []);
-	await fake("/__prove/fail?mode=none");
-	await fake("/__prove/reset");
-	const chatPosts = [];
-	const onRequest = (r) => { const u = new URL(r.url()); if (u.origin === APP && u.pathname === "/api/chat" && r.method() === "POST") chatPosts.push(u.pathname); };
-	page.on("request", onRequest);
-	if (retryButton) await retryButton.click();
-	const retried = await until(() => { const m = record(idC)?.messages ?? []; return m.length > shapeBeforeRetry.length && m.at(-1)?.role !== "user" ? m : null; }, 60_000);
-	await page.waitForSelector('[data-testid="question-dock"]', { timeout: 30_000 }).catch(() => null);
-	const bannerGone = !(await page.$('[data-testid="retry-failed-turn"]'));
-	page.off("request", onRequest);
-	await page.screenshot({ path: path.join(OUT, "C1-retry.png") });
-	res.probes.retry = { buttonShown: Boolean(retryButton), chatPosts: chatPosts.length, shapeBeforeRetry, shapeAfterRetry: shape(record(idC)?.messages ?? []), turnCompleted: Boolean(retried), bannerGone };
+	// C. Retry after a failed turn: the button must resend, not just be there.
+	// Once by mouse, once from the keyboard (focus it, Enter). A retried turn
+	// counts only once it has really finished: its POST's stream closed, the
+	// scenario's question card is up, Retry is gone and the record ends on the
+	// question, not an error.
+	const retryCase = async (how) => {
+		await fake("/__prove/reset");
+		let id, button = null, shapeBefore = [];
+		try {
+			await fake("/__prove/fail?mode=http500");
+			id = await newSession(`zz-prove-it ${Date.now().toString(36)} retry probe (${how})`);
+			await until(() => { const last = record(id)?.messages?.at(-1); return last?.role === "assistant" && last.stopReason === "error" ? last : null; }, 60_000);
+			button = await page.waitForSelector('[data-testid="retry-failed-turn"]', { timeout: 30_000 }).catch(() => null);
+			shapeBefore = shape(record(id)?.messages ?? []);
+		} finally {
+			await fake("/__prove/fail?mode=none");
+		}
+		await fake("/__prove/reset");
+		const posts = { started: 0, finished: 0 };
+		const isChatPost = (r) => { const u = new URL(r.url()); return u.origin === APP && u.pathname === "/api/chat" && r.method() === "POST"; };
+		const onStart = (r) => { if (isChatPost(r)) posts.started++; };
+		const onDone = (r) => { if (isChatPost(r)) posts.finished++; };
+		page.on("request", onStart);
+		page.on("requestfinished", onDone);
+		if (button && how === "click") await button.click();
+		if (button && how === "keyboard") { await button.focus(); await page.keyboard.press("Enter"); }
+		const dockShown = await page.waitForFunction(() => document.querySelector('[data-testid="question-dock"]')?.textContent?.includes("zz-prove-it: which colour"), { timeout: 60_000 }).then(() => true, () => false);
+		const streamClosed = Boolean(await until(() => posts.finished >= 1, 30_000));
+		const finished = await until(() => { const last = record(id)?.messages?.at(-1); return last?.role === "assistant" && last.stopReason !== "error" && (last.content ?? []).some((c) => c.type === "toolCall" && c.name === "probe") ? last : null; }, 30_000);
+		const bannerGone = !(await page.$('[data-testid="retry-failed-turn"]'));
+		page.off("request", onStart);
+		page.off("requestfinished", onDone);
+		await page.screenshot({ path: path.join(OUT, `C-retry-${how}.png`) });
+		return { id, how, buttonShown: Boolean(button), posts, dockShown, streamClosed, turnFinished: Boolean(finished), bannerGone, shapeBeforeRetry: shapeBefore, shapeAfterRetry: shape(record(id)?.messages ?? []) };
+	};
+	res.probes.retry = [await retryCase("click"), await retryCase("keyboard")];
 	save();
 	// leave no sessions behind on the instance
-	for (const id of [idA, idB, idC]) await fetch(`${APP}/api/chats/${id}?mode=preserve-graph`, { method: "DELETE", headers: { origin: APP } });
+	for (const id of [idA, idB, ...res.probes.retry.map((r) => r.id)]) if (id) await fetch(`${APP}/api/chats/${id}?mode=preserve-graph`, { method: "DELETE", headers: { origin: APP } });
 	res.cleanup = { remaining: (await (await fetch(`${APP}/api/chats`)).json()).chats.length };
 	const a = res.probes.brokenStream, b = res.probes.doubleSubmit, c = res.probes.retry;
 	res.steps.push(
@@ -130,14 +156,16 @@ try {
 		{ name: "broken stream: the UI says so and the composer stays usable", ok: a.uiShowsError && a.composerAfterFailure.present && a.composerAfterFailure.editable, note: a.uiErrorSnippet },
 		{ name: "broken stream: a follow-up turn works", ok: a.followUpAccepted, note: a.shapeAfterFollowUp.join(" ") },
 		{ name: "Enter twice on Submit answer: one answer stored and shown", ok: b.quizAnswerMessages === 1 && b.acknowledgementsShown === 1 && b.questionCardClosed, note: JSON.stringify(b) },
-		{ name: "Retry after a failed turn resends it: a POST, the turn completes, the banner goes", ok: c.buttonShown && c.chatPosts >= 1 && c.turnCompleted && c.bannerGone, note: JSON.stringify(c) },
+		...c.map((r) => ({ name: `Retry (${r.how}) after a failed turn resends it: one POST whose stream closes, the question card, Retry gone`, ok: r.buttonShown && r.posts.started === 1 && r.streamClosed && r.dockShown && r.turnFinished && r.bannerGone, note: JSON.stringify({ ...r, id: undefined }) })),
 	);
-	res.observations = { brokenStream: [a.shapeAfterFailure.join(" "), a.shapeAfterFollowUp.join(" "), `uiShowsError ${a.uiShowsError}`], doubleSubmit: [b.storedShape.join(" "), `answers ${b.quizAnswerMessages}`, `acks ${b.acknowledgementsShown}`], retry: [c.shapeBeforeRetry.join(" "), c.shapeAfterRetry.join(" "), `posts ${c.chatPosts >= 1 ? "1+" : 0}`, `completed ${c.turnCompleted}`, `bannerGone ${c.bannerGone}`] };
+	res.observations = { brokenStream: [a.shapeAfterFailure.join(" "), a.shapeAfterFollowUp.join(" "), `uiShowsError ${a.uiShowsError}`], doubleSubmit: [b.storedShape.join(" "), `answers ${b.quizAnswerMessages}`, `acks ${b.acknowledgementsShown}`], retry: c.flatMap((r) => [`${r.how}: ${r.shapeBeforeRetry.join(" ")} -> ${r.shapeAfterRetry.join(" ")}`, `${r.how}: posts ${r.posts.started}, stream closed ${r.streamClosed}, question card ${r.dockShown}, finished ${r.turnFinished}, banner gone ${r.bannerGone}`]) };
 } catch (e) {
 	code = 1;
 	res.error = String(e?.stack ?? e).slice(0, 800);
 	res.steps.push({ name: "probes", ok: false, note: res.error });
 } finally {
+	// A probe that threw mid-failure must not leave the fake model failing for the next script.
+	await fake("/__prove/fail?mode=none").catch(() => null);
 	save();
 	await browser.close();
 	fs.rmSync(chromePid, { force: true });

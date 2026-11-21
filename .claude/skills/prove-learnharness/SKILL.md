@@ -26,7 +26,7 @@ node scripts/scope.mjs        # the diff, the surfaces and tiers it reaches, and
 
 `scope.mjs` runs `git merge-base HEAD origin/main`, `git diff --name-only <base>` and `git ls-files --others --exclude-standard`, then applies the map below and prints the plan: only the surfaces and tiers the diff reaches.
 
-Run the whole plan in one go with `scripts/run-plan.sh <slug> [same args as scope.mjs]`: it makes the run folder, runs every planned step in order, carries on past failing checks (they are evidence), always cleans up, and prints a summary (each compare's result, the failed commands) with the run folder on its last line. If the change itself fails to build, start or launch, it stops and reports BROKEN (back to the builder); if the base build, the environment or a planned surface fails, it stops as BLOCKED. Files `scope.mjs` can't map stop it as BLOCKED before anything runs: decide by hand and add a rule. `--base <ref>` applies to the whole run. Exit 0 all checks passed, 1 a check failed or the change is BROKEN, 2 BLOCKED, 3 no app surface, 4 the scripted checks passed and a step by hand is next (the summary's `MANUAL` line: a mobile device proof, or driving a changed CI script's CLI; not BLOCKED and not a verdict). For a mobile change the scripted part is `scripts/mobile-checks.sh`: the app's unit tests and this skill's phone checks, under Node 22 (`MOBILE_NODE_BIN`). The plan has stopped its instances by then, so drive a device recipe in a run folder of its own (`scripts/new-run.sh <slug>-device`, then `start.sh` there with the recipe's scenario) and name both run folders in one receipt. Then read the evidence: a script pass is not the verdict. Break-it probes beyond `probes.mjs` and recipe steps the plan doesn't script still need their own instances.
+Run the whole plan in one go with `scripts/run-plan.sh <slug> [same args as scope.mjs]`: it makes the run folder, runs every planned step in order, carries on past failing checks (they are evidence), always cleans up, and prints a summary (each compare's result, the failed commands) with the run folder on its last line. If the change itself fails to build, start or launch, it stops and reports BROKEN (back to the builder); if the base build, the environment or a planned surface fails, it stops as BLOCKED. Files `scope.mjs` can't map stop it as BLOCKED before anything runs: decide by hand and add a rule. `--base <ref>` applies to the whole run. Exit 0 all checks passed, 1 a check failed or the change is BROKEN, 2 BLOCKED, 3 no app surface, 4 the scripted checks passed and a step by hand is next (the summary's `MANUAL` line: a mobile device proof, or driving a changed CI script's CLI; not BLOCKED and not a verdict). For a mobile change the scripted part is `scripts/mobile-checks.sh`: the app's unit tests and this skill's phone checks, under Node 22 (mise's `node@22`, or `MOBILE_NODE_BIN`; any other major is BLOCKED). The plan has stopped its instances by then, so drive a device recipe in a run folder of its own (`scripts/new-run.sh <slug>-device`, then `start.sh` there with the recipe's scenario) and name both run folders in one receipt. Then read the evidence: a script pass is not the verdict. Break-it probes beyond `probes.mjs` and recipe steps the plan doesn't script still need their own instances.
 
 If the user names a flow instead ("prove the update banner"), prove that flow and skip the diff.
 
@@ -34,6 +34,7 @@ Follow each changed file to the surfaces and flows it reaches. Internal code cou
 
 | Changed path | Shared? | Reaches | Flows |
 |---|---|---|---|
+| `app/globals.css`, `components/sidebar.tsx`, `components/side-thread.tsx` | yes: they also lay out the desktop window's chrome (`data-lh-platform`, the window-control gutters) | web, electron dev | [teaching session](references/features/teaching-session.md) and [desktop window](references/features/desktop-window.md) |
 | `app/**` (not api), `components/**`, `public/**` | no | web | [teaching session](references/features/teaching-session.md) and the page the file renders |
 | `src/client-protocol/**`, `app/.well-known/**` | yes: the client protocol contract and server info | api, web, agent | [client protocol](references/features/client-protocol.md) |
 | `app/api/attachments/**`, `src/store/attachment*.ts`, `src/server/attachment-*.ts`, `src/core/attachment*.ts`, `components/attach*`, `components/file-path-drop-zone.tsx`, `src/agent/tools/{learner-file,fs-shared,ls,find,grep}.ts` | yes: uploads, claimed copies and the learner-file tools | api, web, agent | [remote attachments](references/features/remote-attachments.md) |
@@ -141,8 +142,8 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 - the transcript can show text before it is stored: `web-teach.mjs` also reads `data/chats/<id>.json`.
 - the question card shuffles its options on purpose: compare them as a set.
 - one session hides "lists only the newest": the drive uses a unique goal per run and checks the count before and after.
-- one session also hides the list's order: a list sorted oldest first passed every drive (audit 2026-11-21). `api-check.mjs` makes three sessions and records the order (`listOrder`), which the sidebar and the phone list show as is.
-- a Retry button that is there but does nothing passed a probe that only looked for it (audit 2026-11-21): `probes.mjs` C presses Retry and requires a `POST /api/chat`, the turn completed and the banner gone.
+- one session also hides the list's order: a list sorted oldest first passed every drive (audit 2026-11-21). `api-check.mjs` makes three sessions, then a turn on the first, and records the order before and after (`listOrder`); `web-teach.mjs` does the same in the rendered sidebar (`sidebarOrder`). The turn tells ordering by last activity from ordering by creation.
+- a Retry button that is there but does nothing passed a probe that only looked for it (audit 2026-11-21): `probes.mjs` C presses Retry by mouse and from the keyboard (focus, Enter), and each counts only once its one `POST /api/chat` stream has closed, the question card is up and Retry is gone.
 
 ### API (`app/api`)
 
@@ -193,7 +194,7 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 **Could fool you**:
 - the dev shell skips the packaged server spawn, the desktop secret and the updater: changes there need `packaged`.
 - runs use `--no-sandbox` (ELECTRON_NO_SANDBOX=1): sandbox-only bugs are not covered.
-- browser parity can't see the bridge or the native window chrome: a bridge reporting `darwin` on Linux (macOS gutters, native buttons over the header) passed parity (audit 2026-11-21). The drive asserts the platform matches the host, and `compare-desktop.md` diffs the desktop-only observations against the base desktop window.
+- browser parity can't see the bridge or the native window chrome: a bridge reporting `darwin` on Linux (macOS gutters, native buttons over the header) passed parity (audit 2026-11-21). The drive asserts the platform matches the host, and `compare-desktop.md` diffs the desktop-only observations against the base desktop window. The plan opens the base desktop window for every desktop change, including the web files that lay out the window's chrome (Scope map).
 
 ### Planned surfaces
 

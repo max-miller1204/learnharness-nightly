@@ -85,7 +85,11 @@ for (const key of keys) {
 	row(false, `observation ${key} differs from base`, `added ${JSON.stringify(added)}, removed ${JSON.stringify(removed)}${!added.length && !removed.length ? `, order or values changed: base ${b} head ${h}` : ""}`);
 }
 
-// 3. budgets
+// 3. budgets. Not with --only: that compares two different kinds of window
+// (a base dev shell with a packaged head), and the head's budgets are judged
+// in its own comparison with the browser.
+if (only.length) lines.push(`- [SKIPPED] budgets: --only ${only.join(", ")} compares those observations alone`);
+else {
 const known = budgets.consoleErrors.known;
 const isKnown = (e) => known.some((k) => (e.url ?? "").endsWith(k.urlEndsWith) && e.text.includes(`status of ${k.status}`));
 const unknown = (head.budgets?.consoleErrors ?? []).filter((e) => !isKnown(e));
@@ -111,6 +115,7 @@ for (const [pageName, list] of Object.entries(head.budgets?.axe ?? {})) {
 	const baseIds = new Set((Array.isArray(base.budgets?.axe?.[pageName]) ? base.budgets.axe[pageName] : []).map((v) => v.id));
 	const fresh = list.filter((v) => budgets.axe.impacts.includes(v.impact) && !baseIds.has(v.id));
 	row(fresh.length === 0, `axe ${pageName}: ${list.length} serious/critical on head, ${fresh.length} not on base`, fresh.map((v) => `${v.id} (${v.impact}, ${v.nodes} nodes)`).join("; ") || list.map((v) => v.id).join(", "));
+}
 }
 
 lines.push("", failed ? `checks failed: ${failed}` : "checks passed (not a verdict: look at the evidence)");

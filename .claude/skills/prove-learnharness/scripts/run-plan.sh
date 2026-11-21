@@ -91,7 +91,8 @@ for step in "${STEPS[@]}"; do
 					head_failed="the change failed to build: $part"; break 2
 				fi
 				blocked="setup step failed: $part"; break 2 ;;
-			*'electron.sh "$RUN" dev-base'*)
+			*'electron.sh "$RUN" dev-base'*|*'web-teach.mjs "$EB"'*)
+				# The base desktop window is an answer key: its failure is BLOCKED, not the change's.
 				blocked="setup step failed (the base desktop window): $part"; break 2 ;;
 			*'start.sh "$RUN" head'*|*'health.sh "$H"'*|*'electron.sh'*)
 				head_failed="the change failed to start: $part"; break 2 ;;

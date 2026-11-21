@@ -14,9 +14,18 @@ RUN=$(canon_run "${1:?usage: mobile-checks.sh <RUN>}")
 APP=$REPO/apps/mobile
 OUT=$RUN/mobile-checks
 mkdir -p "$OUT"
-[ -x "$MOBILE_NODE_BIN/node" ] || die "BLOCKED: no Node at MOBILE_NODE_BIN=$MOBILE_NODE_BIN (set it to a Node 22 bin folder)"
-export PATH="$MOBILE_NODE_BIN:$PATH"
-say "[mobile] node $(node -v)"
+# Node 22, found at run time: MOBILE_NODE_BIN if set, else whatever 22.x mise has.
+NODE_BIN=$MOBILE_NODE_BIN
+if [ -z "$NODE_BIN" ] && command -v mise >/dev/null 2>&1; then
+	NODE_BIN=$(mise where node@22 2>/dev/null)/bin || NODE_BIN=
+fi
+[ -n "$NODE_BIN" ] && [ -x "$NODE_BIN/node" ] || die "BLOCKED: no Node 22 found (MOBILE_NODE_BIN unset and \`mise where node@22\` has none): install it with \`mise install node@22\`, or set MOBILE_NODE_BIN to a Node 22 bin folder"
+export PATH="$NODE_BIN:$PATH"
+NODE_VERSION=$(node -v)
+case "$NODE_VERSION" in v22.*) ;; *) die "BLOCKED: $NODE_BIN/node is $NODE_VERSION, not Node 22 (the Mobile CI job's major)" ;; esac
+say "[mobile] node $NODE_VERSION ($NODE_BIN)"
+# "# pass N" / "# fail N" from node --test; a log without both is a run that never reported.
+summary() { local p f; p=$(grep -E '^# pass [0-9]+$' "$1" | tail -1); f=$(grep -E '^# fail [0-9]+$' "$1" | tail -1); [ -n "$p" ] && [ -n "$f" ] && echo "$p $f"; }
 cd "$APP"
 if [ ! -d node_modules ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then
 	say "[mobile] npm ci"
@@ -24,8 +33,10 @@ if [ ! -d node_modules ] || [ package-lock.json -nt node_modules/.package-lock.j
 fi
 ok=0
 npm test >"$OUT/unit-tests.log" 2>&1 || ok=1
-say "[mobile] unit tests: $(grep -E '^# (pass|fail) ' "$OUT/unit-tests.log" | tr '\n' ' ')"
 npx tsx --import ./tests/shared-modules.mjs --test "$PROVE_SCRIPTS/mobile-link-check.test.ts" >"$OUT/link-check.log" 2>&1 || ok=1
-say "[mobile] link prompt check: $(grep -E '^# (pass|fail) ' "$OUT/link-check.log" | tr '\n' ' ')"
+for part in unit-tests link-check; do
+	s=$(summary "$OUT/$part.log") || { tail -20 "$OUT/$part.log" >&2; die "BLOCKED: $part printed no '# pass N' and '# fail N' summary (see $OUT/$part.log)"; }
+	say "[mobile] $part: $s"
+done
 grep -E '^not ok' "$OUT/unit-tests.log" "$OUT/link-check.log" >&2 || true
 exit $ok

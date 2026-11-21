@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# electron.sh <RUN> dev|packaged
+# electron.sh <RUN> dev|packaged|dev-base
 #
 # Starts the Electron desktop app on Linux under xvfb-run, with its own
 # XDG_CONFIG_HOME (your ~/.config/LearnHarness is never used) and a CDP port,
@@ -10,15 +10,16 @@
 #             then the real desktop binary, which spawns its own bundled
 #             server with a per-launch API secret. Fake model: the head
 #             instance's, seeded from inside the window.
-# Needs the head instance running (start.sh <RUN> head). Returns once the
-# window shows the app. stop.sh <RUN> stops it (xvfb-run leads its group).
+#   dev-base: the base commit's own dev shell pointed at the base instance:
+#             the answer key for desktop-only output (the bridge, native
+#             window chrome), which browser parity can't see.
+# Needs the head instance running (start.sh <RUN> head), or the base one for
+# dev-base. Returns once the window shows the app. stop.sh <RUN> stops it
+# (xvfb-run leads its group).
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 RUN=$(canon_run "${1:?usage: electron.sh <RUN> dev|packaged|dev-base}")
 MODE=${2:?usage: electron.sh <RUN> dev|packaged|dev-base}
-# dev-base: the base commit's own dev shell on the base instance, the answer
-# key for desktop-only output (the bridge, native window chrome) that browser
-# parity can't see.
 SIDE_INST=$RUN/head/instance.env
 [ "$MODE" = dev-base ] && SIDE_INST=$RUN/base/instance.env
 [ -f "$SIDE_INST" ] || die "start that instance first: start.sh $RUN $([ "$MODE" = dev-base ] && echo base || echo head)"
@@ -32,12 +33,24 @@ SANDBOX=()
 [ "$ELECTRON_NO_SANDBOX" = 1 ] && SANDBOX=(--no-sandbox)
 CDP=$(free_port)
 
+# Electron downloads its binary on first use, into the tree's node_modules.
+# Head and base trees are shared by every run and worktree, so two cold runs
+# would download into the same folder at once: one at a time, under a lock.
+ensure_electron() { # <tree>
+	local tree=$1
+	[ -x "$tree/node_modules/electron/dist/electron" ] && return 0
+	(
+		flock 9
+		[ -x "$tree/node_modules/electron/dist/electron" ] || (cd "$tree" && node node_modules/electron/install.js)
+	) 9>"$tree/node_modules/electron/.prove-install.lock" >>"$ED/electron.log" 2>&1
+}
+
 case "$MODE" in
 	dev)
 		BIN=$REPO/node_modules/.bin/electron
 		[ -x "$BIN" ] || die "no electron in node_modules; run npm ci"
 		# Electron downloads its binary on first use.
-		[ -x "$REPO/node_modules/electron/dist/electron" ] || (cd "$REPO" && node node_modules/electron/install.js) >>"$ED/electron.log" 2>&1
+		ensure_electron "$REPO"
 		ARGS=("$REPO" "${SANDBOX[@]}" "--remote-debugging-port=$CDP")
 		ENVS=(LH_DEV_URL="$APP_URL")
 		WANT_URL=$APP_URL
@@ -52,7 +65,7 @@ APP_TOKEN=$APP_TOKEN"
 		# BUILD_DIR comes from the base instance.env: the base commit's tree.
 		BIN=$BUILD_DIR/node_modules/.bin/electron
 		[ -x "$BIN" ] || die "no electron in the base build's node_modules ($BUILD_DIR)"
-		[ -x "$BUILD_DIR/node_modules/electron/dist/electron" ] || (cd "$BUILD_DIR" && node node_modules/electron/install.js) >>"$ED/electron.log" 2>&1
+		ensure_electron "$BUILD_DIR"
 		ARGS=("$BUILD_DIR" "${SANDBOX[@]}" "--remote-debugging-port=$CDP")
 		ENVS=(LH_DEV_URL="$APP_URL")
 		WANT_URL=$APP_URL
@@ -63,7 +76,7 @@ APP_TOKEN=$APP_TOKEN"
 		;;
 	packaged)
 		t0=$SECONDS
-		[ -x "$REPO/node_modules/electron/dist/electron" ] || (cd "$REPO" && node node_modules/electron/install.js) >>"$ED/electron.log" 2>&1
+		ensure_electron "$REPO"
 		(cd "$REPO" && npx electron-builder --linux dir --publish never) >"$ED/package.log" 2>&1 || { tail -30 "$ED/package.log" >&2; die "electron-builder --linux dir failed"; }
 		say "[electron] packaged in $((SECONDS - t0))s"
 		BIN=$REPO/dist/linux-unpacked/learnharness-nightly

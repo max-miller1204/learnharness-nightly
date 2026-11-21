@@ -5,20 +5,24 @@
  * Drives the main flow in Chrome like a user, against one instance started by
  * start.sh with scenarios/teach-read.json:
  *   1. /chat/new, type a goal, Enter            -> a session is created
- *   2. the fake prober calls `read` on the fixture, then `probe`
+ *   2. the fake prober calls `read` on both fixtures, then `probe`
+ *                                               -> each tool result equals its file
  *                                               -> the question card shows,
  *                                                  with no layout shift from the dock
  *   3. pick "Blue", submit                      -> the answer reaches the model,
  *                                                  its reply shows
  *   4. reload the session                       -> transcript persists
  *   5. delete the session (reverse action)      -> gone from list and disk
- *       (skipped with --keep)
+ *   6. three sessions, a turn on the first      -> the sidebar orders them by
+ *                                                  last activity, then they go
+ *       (5 and 6 skipped with --keep)
  * Budgets measured on every page it drives: console errors, CLS, axe.
  *
  * With CDP_URL in the instance file (electron.sh writes one), it attaches to
  * that running Electron window instead of launching Chrome, and seeds the
  * fake model from inside the page when SEED_IN_PAGE=1 (the packaged app's
- * API only answers its own window).
+ * API only answers its own window). In a desktop window it also records the
+ * bridge's platform and the window-control gutter (`observations.desktop`).
  *
  * Writes <side dir>/web-teach/result.json and screenshots. `observations` in
  * the result is what compare.mjs diffs between base and head; `budgets` is
@@ -303,6 +307,28 @@ try {
 		await shot("06-deleted");
 		result.observations.deleted = { rowGone, listed: afterDelete.some((c) => c.id === chatId), fileExists: fs.existsSync(file) };
 		result.observations.apiCalls = [...new Set(http)].sort();
+
+		// 6. the sidebar's order (after apiCalls, so these calls don't count there):
+		// three sessions, then a turn on the first, so ordering by last activity
+		// (first, third, second) differs from ordering by creation (third, second, first).
+		const api = async (method, p, body) => attached
+			? page.evaluate(async (m, u, b) => { const r = await fetch(u, { method: m, headers: { "content-type": "application/json" }, body: b }); return { status: r.status, text: await r.text() }; }, method, p, body)
+			: fetch(`${APP}${p}`, { method, headers: { origin: APP, "content-type": "application/json" }, body }).then(async (r) => ({ status: r.status, text: await r.text() }));
+		const made = [];
+		for (const label of ["first", "second", "third"]) {
+			const r = await api("POST", "/api/chats", JSON.stringify({ title: `zz-prove-it sidebar ${label}` }));
+			made.push({ label, id: r.status === 200 ? JSON.parse(r.text).id : null });
+			await new Promise((res) => setTimeout(res, 50));
+		}
+		const touch = await api("POST", "/api/chat", JSON.stringify({ chatId: made[0].id, input: { type: "text", text: "sidebar order touch" } }));
+		await page.goto(`${APP}/chat/new`, { waitUntil: "domcontentloaded" });
+		await page.waitForSelector('[data-testid="session-row"]', { timeout: 30_000 });
+		await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="session-row"]')].filter((e) => e.textContent.includes("zz-prove-it sidebar")).length >= 3, { timeout: 10_000 }).catch(() => null);
+		const sidebarOrder = await page.$$eval('[data-testid="session-row"]', (els) => els.map((e) => e.textContent.match(/zz-prove-it sidebar (first|second|third)/)?.[1]).filter(Boolean));
+		await shot("07-sidebar-order");
+		for (const m of made) if (m.id) await api("DELETE", `/api/chats/${m.id}?mode=preserve-graph`);
+		result.observations.sidebarOrder = sidebarOrder;
+		step("the sidebar lists sessions by last activity: a session with a new turn moves to the top", touch.status === 200 && JSON.stringify(sidebarOrder) === JSON.stringify(["first", "third", "second"]), { note: `turn ${touch.status}, order ${JSON.stringify(sidebarOrder)}` });
 	}
 } catch (error) {
 	exitCode = 1;

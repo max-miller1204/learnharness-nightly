@@ -144,10 +144,15 @@ try {
 		made.push({ label, id: r.status === 200 ? JSON.parse(r.body).id : null });
 		await new Promise((res) => setTimeout(res, 50));
 	}
-	const listedOrder = JSON.parse((await raw("GET", "/api/chats")).body).chats.map((c) => made.find((m) => m.id === c.id)?.label).filter(Boolean);
+	const labelsOf = async () => JSON.parse((await raw("GET", "/api/chats")).body).chats.map((c) => made.find((m) => m.id === c.id)?.label).filter(Boolean);
+	const listedOrder = await labelsOf();
+	// A turn on the first one: ordering by last activity (first, third, second)
+	// now differs from ordering by creation (third, second, first).
+	const touch = await raw("POST", "/api/chat", { body: JSON.stringify({ chatId: made[0].id, input: { type: "text", text: "list order touch" } }) });
+	const touchedOrder = await labelsOf();
 	for (const m of made) if (m.id) await raw("DELETE", `/api/chats/${m.id}?mode=preserve-graph`);
-	result.observations.listOrder = listedOrder;
-	step("the session list is newest first", JSON.stringify(listedOrder) === JSON.stringify(["third", "second", "first"]), `order ${JSON.stringify(listedOrder)}`);
+	result.observations.listOrder = [`created: ${listedOrder.join(",")}`, `after a turn on first: ${touchedOrder.join(",")}`];
+	step("the session list is newest first, by last activity", JSON.stringify(listedOrder) === JSON.stringify(["third", "second", "first"]) && touch.status === 200 && JSON.stringify(touchedOrder) === JSON.stringify(["first", "third", "second"]), `created ${JSON.stringify(listedOrder)}, turn ${touch.status}, then ${JSON.stringify(touchedOrder)}`);
 
 	// model failure is reported, not swallowed
 	await fetch(`${inst.FAKE_CONTROL}/__prove/fail?mode=http500`, { method: "POST" });
