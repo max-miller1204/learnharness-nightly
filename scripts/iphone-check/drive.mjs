@@ -28,6 +28,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { inflateSync } from "node:zlib";
 import puppeteer from "puppeteer-core";
+import { toEnd, toTop } from "./paging.mjs";
 
 const run = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -310,68 +311,62 @@ async function scrollBars(screen) {
 }
 
 /** Screenshot a session in full, numbered top to bottom. Each area (the
- * transcript, then a dock that scrolls) is flicked to its top, then paged
- * down until its scroll bar reads 100%. An area gives the screen fractions a
- * finger drags between (top, bottom) and the band its scroll bar sits in
- * (within). Fails if an area never reaches its top or end, so a picture set
- * is never cut short. */
+ * transcript, then a dock that scrolls) is flicked to its top, then paged to
+ * its end (paging.mjs says what counts as each). An area gives the screen
+ * fractions a finger drags between (top, bottom) and the band its scroll bar
+ * sits in (within). A stalled or unfinished area fails the job, named. */
 async function phonePages(screen, mode, marker, areas) {
 	await waitFor(screen, marker);
 	const x = String(Math.round(screenSize.width / 2));
-	let page = 0, previous = "";
+	const probe = path.join(OUT, `.probe-${screen}-${mode}.png`);
+	// kept: the hash of the last page kept, across areas (paging.mjs compares the same way).
+	let page = 0, kept = null;
 	for (const [index, area] of areas.entries()) {
+		const name = `${screen} ${mode} ${index === 0 ? "transcript" : "dock"}`;
 		const top = String(Math.round(screenSize.height * area.top));
 		const bottom = String(Math.round(screenSize.height * area.bottom));
 		const bar = async () => (await scrollBars(screen))
-			.find((b) => b.y >= screenSize.height * area.within[0] && b.y < screenSize.height * area.within[1]);
-		if (!(await bar())) {
-			// Nothing to scroll: the first area is one page; a later one is in it already.
-			if (index === 0) {
-				const file = path.join(OUT, "iphone", `${screen}-${mode}-${++page}.png`);
-				previous = await settledShot(screen, mode, file);
-				shots.push({ screen, mode, side: "iphone", file });
-			}
+			.find((b) => b.y >= screenSize.height * area.within[0] && b.y < screenSize.height * area.within[1])?.at ?? null;
+		// A dock that doesn't scroll is already in the transcript's pictures.
+		if (index > 0 && (await bar()) == null) {
+			log(`${name}: no scroll bar, nothing to scroll`);
 			continue;
 		}
-		await toTop(screen, mode, index, x, top, bottom);
-		for (let step = 0; ; step++) {
-			if (step === 25) fail(screen, `${mode}: area ${index + 1} did not reach its end in 25 pages`);
-			const file = path.join(OUT, "iphone", `${screen}-${mode}-${page + 1}.png`);
-			const hash = await settledShot(screen, mode, file);
-			// A page the drag didn't change is the end of the area (or the
-			// previous area's last page, for a dock that doesn't scroll yet).
-			const repeated = hash === previous;
-			if (repeated) unlinkSync(file);
-			else {
-				page++;
-				previous = hash;
-				shots.push({ screen, mode, side: "iphone", file });
-			}
-			if ((await bar()).at >= 100 || (repeated && step > 0)) break;
+		const hash = async () => {
+			await simctl("io", UDID, "screenshot", probe);
+			return createHash("sha256").update(readFileSync(probe)).digest("hex");
+		};
+		const flick = async () => {
+			await axe(["swipe", "--start-x", x, "--start-y", top, "--end-x", x, "--end-y", bottom]);
+			await sleep(900);
+		};
+		const drag = async () => {
 			await axe(["drag", "--start-x", x, "--start-y", bottom, "--end-x", x, "--end-y", top]);
 			await sleep(900);
+		};
+		let file = "";
+		const shoot = async () => {
+			file = path.join(OUT, "iphone", `${screen}-${mode}-${page + 1}.png`);
+			const shot = await settledShot(screen, mode, file);
+			if (shot !== kept) {
+				page++;
+				kept = shot;
+				shots.push({ screen, mode, side: "iphone", file });
+			}
+			return shot;
+		};
+		const discard = async () => unlinkSync(file);
+		try {
+			log(await toTop({ area: name, hash, bar, flick }));
+			const done = await toEnd({ area: name, bar, shoot, discard, drag, previous: kept });
+			log(done.line);
+			// A dock goes back to its top, where its choices and their checks are.
+			if (index > 0) log(await toTop({ area: name, hash, bar, flick }));
+		} catch (error) {
+			fail(screen, error.message);
 		}
-		// A dock goes back to its top, where its choices and their checks are.
-		if (index > 0) await toTop(screen, mode, index, x, top, bottom);
 	}
-}
-
-/** Flick an area toward its top until the screen stops changing: the top.
- * (The scroll bar's value can read 0% before the top.) */
-async function toTop(screen, mode, index, x, top, bottom) {
-	const probe = path.join(OUT, `.probe-${screen}-${mode}.png`);
-	const hashOf = () => createHash("sha256").update(readFileSync(probe)).digest("hex");
-	await simctl("io", UDID, "screenshot", probe);
-	for (let flick = 0, before = hashOf(); ; flick++) {
-		if (flick === 25) fail(screen, `${mode}: area ${index + 1} did not reach its top after 25 flicks`);
-		await axe(["swipe", "--start-x", x, "--start-y", top, "--end-x", x, "--end-y", bottom]);
-		await sleep(900);
-		await simctl("io", UDID, "screenshot", probe);
-		const now = hashOf();
-		if (now === before) break;
-		before = now;
-	}
-	unlinkSync(probe);
+	try { unlinkSync(probe); } catch { /* no probe was taken */ }
 }
 
 /** Goal 4: each choice is one accessibility item that speaks its math. The
