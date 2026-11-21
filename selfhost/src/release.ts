@@ -307,6 +307,16 @@ export function isInstalled(home: string, version: string): boolean {
 	}
 }
 
+/** The SHA-256 of the archive `version` was staged from, when it was recorded. */
+export function stagedAssetSha256(home: string, version: string): string | undefined {
+	try {
+		const value = fs.readFileSync(versionPaths(home, version).assetSha256, "utf8").trim();
+		return /^[0-9a-f]{64}$/.test(value) ? value : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export function installedVersions(home: string): string[] {
 	let entries: string[];
 	try {
@@ -332,18 +342,28 @@ export interface StageOptions {
 	onProgress?: (phase: "downloading" | "verifying" | "extracting") => void;
 	/** The archive's bytes as they arrive. */
 	onBytes?: DownloadBytes;
+	/** Stage again a version installed from another archive than the feed names (its recorded
+	 *  SHA-256 differs), unless it is the active version. */
+	replaceStale?: boolean;
 }
 
 /**
  * Download the arch tarball, check its SHA-256, extract it into
  * versions/<v>.tmp, check its VERSION file, rename it into place and write
- * .install-complete. Idempotent: an installed version returns immediately.
+ * .install-complete, recording the archive's SHA-256. Idempotent: an installed
+ * version returns immediately, unless replaceStale finds it staged from another archive.
  */
 export async function stageVersion(home: string, feed: LatestFeed, arch: Arch, options: StageOptions = {}): Promise<string> {
 	const { version } = feed;
 	if (options.badVersions?.includes(version)) throw new Error(`Version ${version} is marked bad on this install.`);
-	if (isInstalled(home, version)) return version;
 	const asset = feed.assets[arch];
+	if (isInstalled(home, version)) {
+		// With replaceStale, a copy staged from another archive than the feed names now is staged
+		// again; never the running version's.
+		const recorded = stagedAssetSha256(home, version);
+		const stale = options.replaceStale && !!asset && recorded !== undefined && recorded !== asset.sha256 && readState(home)?.activeVersion !== version;
+		if (!stale) return version;
+	}
 	if (!asset) throw new Error(`Version ${version} has no ${arch} build.`);
 	const dirs = layout(home);
 	fs.mkdirSync(dirs.downloads, { recursive: true });
@@ -366,6 +386,7 @@ export async function stageVersion(home: string, feed: LatestFeed, arch: Arch, o
 		await run("tar", ["-xzf", archive, "-C", temp, "--no-same-owner"]);
 		const declared = fs.readFileSync(path.join(temp, "VERSION"), "utf8").trim();
 		if (declared !== version) throw new Error(`Archive declares version ${declared}, expected ${version}.`);
+		fs.writeFileSync(path.join(temp, path.basename(versionPaths(home, version).assetSha256)), `${asset.sha256}\n`);
 		fs.rmSync(final, { recursive: true, force: true });
 		fs.renameSync(temp, final);
 		writeFileDurably(versionPaths(home, version).complete, `${version}\n`);

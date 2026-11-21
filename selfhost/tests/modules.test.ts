@@ -18,7 +18,7 @@ import { lockIsHeld, tryAcquireLock } from "../src/locks.ts";
 import { boundLog } from "../src/logs.ts";
 import { layout, versionPaths } from "../src/paths.ts";
 import { ENV, parseChildMessage, parseParentMessage } from "../src/protocol.ts";
-import { compareVersions, currentArch, FEED_NOTES_KEEP, installedVersions, isInstalled, mergeFeedNotes, parseFeed, readState, stageVersion, writeState, type LatestFeed } from "../src/release.ts";
+import { compareVersions, currentArch, FEED_NOTES_KEEP, installedVersions, isInstalled, mergeFeedNotes, parseFeed, readState, stagedAssetSha256, stageVersion, writeState, type LatestFeed } from "../src/release.ts";
 import { launchdLabel, launchdPath, parseLaunchdState, renderPlist, renderUnit, repointService, repointUnitText, serviceManager, shimPath, unitVersion } from "../src/service.ts";
 import { MAC_APP_CLI, tailscaleBin } from "../src/tailscale.ts";
 import { pruneVersions } from "../src/versions.ts";
@@ -102,12 +102,12 @@ describe("versions and feed", () => {
 	});
 });
 
-function buildArchive(dir: string, version: string, declared = version): { file: string; sha256: string } {
+function buildArchive(dir: string, version: string, declared = version, server = "// server\n"): { file: string; sha256: string } {
 	const stage = fs.mkdtempSync(path.join(os.tmpdir(), "lh-stage-"));
 	fs.mkdirSync(path.join(stage, "node", "bin"), { recursive: true });
 	fs.writeFileSync(path.join(stage, "node", "bin", "node"), "#!/bin/sh\n");
 	fs.mkdirSync(path.join(stage, "server"), { recursive: true });
-	fs.writeFileSync(path.join(stage, "server", "server.js"), "// server\n");
+	fs.writeFileSync(path.join(stage, "server", "server.js"), server);
 	fs.writeFileSync(path.join(stage, "VERSION"), `${declared}\n`);
 	const file = path.join(dir, `lh-${version}.tar.gz`);
 	execFileSync("tar", ["-czf", file, "-C", stage, "."]);
@@ -128,6 +128,30 @@ describe("staging", () => {
 		assert.ok(isInstalled(home, version));
 		assert.deepEqual(installedVersions(home), [version]);
 		await stageVersion(home, feedFor(version, file, "0".repeat(64)), "linux-x64");
+	});
+
+	it("records the archive's checksum; replaceStale stages a republished archive again, never the active version", async () => {
+		const version = V("20261116", 4);
+		const first = buildArchive(home, version);
+		await stageVersion(home, feedFor(version, first.file, first.sha256), "linux-x64");
+		assert.equal(stagedAssetSha256(home, version), first.sha256);
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lh-republish-"));
+		try {
+			const second = buildArchive(dir, version, version, "// republished\n");
+			assert.notEqual(second.sha256, first.sha256);
+			await stageVersion(home, feedFor(version, second.file, second.sha256), "linux-x64");
+			assert.equal(stagedAssetSha256(home, version), first.sha256, "without replaceStale an installed version stays (idempotent)");
+			writeState(home, { protocol: 1, activeVersion: version, badVersions: [] });
+			await stageVersion(home, feedFor(version, second.file, second.sha256), "linux-x64", { replaceStale: true });
+			assert.equal(stagedAssetSha256(home, version), first.sha256, "the running version is never replaced");
+			writeState(home, { protocol: 1, activeVersion: V("20261116", 1), badVersions: [] });
+			await stageVersion(home, feedFor(version, second.file, second.sha256), "linux-x64", { replaceStale: true });
+			assert.equal(stagedAssetSha256(home, version), second.sha256);
+			assert.equal(fs.readFileSync(path.join(versionPaths(home, version).serverDir, "server.js"), "utf8"), "// republished\n");
+			assert.ok(isInstalled(home, version));
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("refuses a checksum mismatch, a wrong VERSION file and a bad version", async () => {

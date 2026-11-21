@@ -27,12 +27,15 @@ let answer: { status: string; version: string | null; message: string | null };
 /** The HTTP status of the update routes' answers, and whether /api/health answers. */
 let routeStatus = 200;
 let healthy = true;
+/** A refusal's body, as JSON text. */
+let refusal = JSON.stringify({ error: "Cross-site requests to LearnHarness are not allowed." });
 
 beforeEach(async () => {
 	home = fs.mkdtempSync(path.join(os.tmpdir(), "lh-update-cmd-"));
 	posts = [];
 	routeStatus = 200;
 	healthy = true;
+	refusal = JSON.stringify({ error: "Cross-site requests to LearnHarness are not allowed." });
 	server = http.createServer((request, response) => {
 		response.setHeader("Content-Type", "application/json");
 		if (request.url === "/api/health") {
@@ -41,7 +44,7 @@ beforeEach(async () => {
 		}
 		posts.push(`${request.method} ${request.url} ${/^Bearer \S+$/.test(request.headers.authorization ?? "") ? "bearer" : "none"}`);
 		response.statusCode = routeStatus;
-		response.end(JSON.stringify(routeStatus === 200 ? answer : { error: "Cross-site requests to LearnHarness are not allowed." }));
+		response.end(routeStatus === 200 ? JSON.stringify(answer) : refusal);
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	writeState(home, { protocol: 1, activeVersion: "0.6.1-nightly.20261120.1", badVersions: [] });
@@ -107,6 +110,26 @@ describe("lh update", () => {
 		const check = await run("update");
 		assert.notEqual(check.code, 0, "a refused check too");
 		assert.match(check.stderr, /refused the update check \(HTTP 403\)/);
+	});
+
+	it("with the server not answering, a version marked bad is not offered", async () => {
+		healthy = false;
+		writeState(home, { protocol: 1, activeVersion: "0.6.1-nightly.20261120.1", badVersions: [NEXT] });
+		const output = await lh("update");
+		assert.deepEqual(output.trimEnd().split("\n"), [
+			"The server isn't answering; checking the feed from the launcher.",
+			`up-to-date: Version ${NEXT} failed to start earlier and is skipped.`,
+		]);
+	});
+
+	it("a refusal with any body (null, an array, not JSON) still names its HTTP status", async () => {
+		routeStatus = 502;
+		for (const body of ["null", "[]", "Bad Gateway", "{\"error\":7}"]) {
+			refusal = body;
+			const result = await run("update", "--now");
+			assert.equal(result.code, 1, body);
+			assert.equal(result.stderr, "lh: the server refused the update install (HTTP 502)\n", body);
+		}
 	});
 
 	it("--now installs (the server re-checks and downloads first)", async () => {

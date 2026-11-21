@@ -41,6 +41,7 @@ import {
 	isInstalled,
 	readState,
 	stageVersion,
+	stagedAssetSha256,
 	type DownloadBytes,
 	type LatestFeed,
 	type ServiceState,
@@ -123,6 +124,9 @@ export interface SelfUpdaterDeps {
 	fetchRelease(version: string, feedUrl: string): Promise<LatestFeed>;
 	stage(feed: LatestFeed, badVersions: readonly string[], onBytes?: DownloadBytes, onPhase?: StageOptions["onProgress"]): Promise<void>;
 	isInstalled(version: string): boolean;
+	/** True when `version` is on disk from another archive than the one `feed` names (a
+	 *  republished build): that copy is stale, and staging replaces it. */
+	isStale(feed: LatestFeed): boolean;
 	readState(): ServiceState | undefined;
 	/** Merge the feed's notes into the data folder's notes cache (What's new reads it). */
 	mergeNotes(groups: ReleaseNoteGroup[]): void;
@@ -150,8 +154,12 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 	/** The feed entry of the version on offer ("available"), what Download stages: always the
 	 *  one the last successful check read, asset included. */
 	let offer: LatestFeed | null = null;
-	/** The newest version staged on disk this run (Install's fallback when a newer one fails to stage). */
-	let staged: string | null = null;
+	/** Every version staged on disk this run, with the notes it was offered with: Install's
+	 *  fallback when a newer one its own check found fails to stage. */
+	const staged = new Map<string, Pick<SelfUpdateState, "releaseNotes" | "omittedReleaseCount">>();
+	/** Checks started, and the last one that read the feed: Install falls back only after its own. */
+	let checkRuns = 0;
+	let lastReadRun = 0;
 	/** A Download queued or running: a second click joins it. */
 	let downloading: Promise<void> | undefined;
 
@@ -178,10 +186,10 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		});
 	};
 
-	const requestUpdate = (version: string) => {
+	const requestUpdate = (version: string, shown: Partial<SelfUpdateState> = {}) => {
 		if (requested) return;
 		requested = true;
-		set({ status: "downloaded", version, message: `Restarting to install version ${version}…` });
+		set({ status: "downloaded", version, message: `Restarting to install version ${version}…`, ...shown });
 		try {
 			deps.send({ type: "request-update", targetVersion: version });
 		} catch (error) {
@@ -199,6 +207,7 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 
 	const runCheck = async (): Promise<void> => {
 		if (!deps.enabled || requested) return;
+		const run = ++checkRuns;
 		// A ready or offered version stays on screen (no "checking" flicker) while the feed is read.
 		const ready = state.status === "downloaded" && state.version ? state.version : null;
 		const kept = ready ?? (state.status === "available" && offer ? offer.version : null);
@@ -206,11 +215,13 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		try {
 			const feed = await deps.fetchLatest(deps.feedUrl);
 			if (requested) return;
+			lastReadRun = run;
 			const known = isExactVersion(deps.currentVersion);
 			const bad = deps.readState()?.badVersions ?? [];
 			// Nothing newer to offer (the release was pulled, or the feed rolled back): T3's
-			// reduceOnNoUpdate clears an offer that isn't downloaded. A staged version stays (Install
-			// re-checks for itself).
+			// reduceOnNoUpdate clears an offer that isn't downloaded. A version shown as downloaded
+			// stays shown (T3 keeps a download through "no update"); Install's own check is what
+			// decides what it installs, and this answer never makes it fall back.
 			const skipped = bad.includes(feed.version);
 			if ((known && compareVersions(feed.version, deps.currentVersion) <= 0) || (skipped && !ready)) {
 				if (ready) return;
@@ -218,18 +229,21 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 				set({ status: "up-to-date", version: null, availableVersion: null, message: skipped ? `Version ${feed.version} failed to start earlier and is skipped.` : null, releaseNotes: [], omittedReleaseCount: 0 });
 				return;
 			}
-			if (ready && (compareVersions(feed.version, ready) <= 0 || skipped)) {
+			// A staged copy built from another archive than the feed names (a republished build) is stale.
+			const stale = deps.isStale(feed);
+			if (ready && (compareVersions(feed.version, ready) < 0 || (feed.version === ready && !stale) || skipped)) {
 				if (!skipped) set(notesFor(feed));
 				return;
 			}
 			const notes = notesFor(feed);
 			// Already on disk (staged before a restart): ready at once. Otherwise offered exactly as the
 			// feed now names it, asset included (T3's reduceOnUpdateAvailable), never downloaded here.
-			if (deps.isInstalled(feed.version)) {
+			if (deps.isInstalled(feed.version) && !stale) {
 				offer = null;
-				staged = feed.version;
+				staged.set(feed.version, notes);
 				set({ status: "downloaded", version: feed.version, availableVersion: feed.version, message: null, ...notes });
 			} else {
+				staged.delete(feed.version);
 				offer = feed;
 				set({ status: "available", version: feed.version, availableVersion: feed.version, message: null, errorContext: null, ...notes });
 			}
@@ -254,7 +268,7 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		}
 		if (requested) return;
 		if (offer === feed) offer = null;
-		staged = feed.version;
+		staged.set(feed.version, { releaseNotes: state.releaseNotes, omittedReleaseCount: state.omittedReleaseCount });
 		set({ status: "downloaded", version: feed.version, availableVersion: feed.version, message: null });
 	};
 
@@ -281,11 +295,13 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		return pending;
 	};
 
-	/** A version staged this run that the launcher can still switch to. */
-	const stagedFallback = (): string | null => {
-		if (!staged || !deps.isInstalled(staged)) return null;
-		if (isExactVersion(deps.currentVersion) && compareVersions(staged, deps.currentVersion) <= 0) return null;
-		return (deps.readState()?.badVersions ?? []).includes(staged) ? null : staged;
+	/** The newest version staged this run that the launcher can still switch to: on disk, newer
+	 *  than the running one, not marked bad. */
+	const newestStaged = (): string | null => {
+		const bad = deps.readState()?.badVersions ?? [];
+		const known = isExactVersion(deps.currentVersion);
+		const valid = [...staged.keys()].filter((version) => deps.isInstalled(version) && !bad.includes(version) && (!known || compareVersions(version, deps.currentVersion) > 0));
+		return valid.sort(compareVersions).at(-1) ?? null;
 	};
 
 	const scheduleChecks = () => {
@@ -343,21 +359,30 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		download,
 		/** Install / POST /api/updates/install: always a fresh look at the feed first (a download
 		 *  can be hours old; work already running finishes first), download a newer offer it finds,
-		 *  then apply the ready version. A newer one that fails to stage installs the version
-		 *  staged before it. */
+		 *  then apply the ready version. When this Install's own check read a version newer than
+		 *  anything staged and that download fails, the newest valid staged version installs
+		 *  instead. A check that finds nothing newer (the release was pulled) or can't read the
+		 *  feed never falls back. */
 		async install(): Promise<void> {
 			if (!deps.enabled || requested) return;
 			// Wait out a running check, download or pinned staging, then start a check of our own:
 			// checking is empty here, so this one reads the feed.
 			while (checking) await checking.catch(() => {});
 			if (requested) return;
+			const before = checkRuns;
 			await check();
+			const offered = lastReadRun > before && state.status === "available" ? state.version : null;
 			if (state.status === "available") await download();
 			if (requested) return;
-			if (state.status === "downloaded" && state.version) requestUpdate(state.version);
-			else {
-				const fallback = stagedFallback();
-				if (fallback) requestUpdate(fallback);
+			if (state.status === "downloaded" && state.version) {
+				requestUpdate(state.version);
+				return;
+			}
+			const failed = offered && state.status === "available" && state.version === offered && state.errorContext === "download";
+			const fallback = failed ? newestStaged() : null;
+			if (offered && fallback && compareVersions(offered, fallback) > 0) {
+				// The state shows what restarts: the fallback and its notes, not the failed build.
+				requestUpdate(fallback, { availableVersion: fallback, ...(staged.get(fallback) ?? { releaseNotes: [], omittedReleaseCount: 0 }) });
 			}
 		},
 		/** POST /api/updates/install-version (Update everything, roadmap item 23): checks the
@@ -523,9 +548,15 @@ export function selfUpdater(): SelfUpdater {
 		fetchRelease: (version, url) => fetchRelease(version, url),
 		stage: async (feed, badVersions, onBytes, onPhase) => {
 			if (!arch) throw new Error("This platform has no self-hosted builds.");
-			await stageVersion(home, feed, arch, { badVersions, onBytes, onProgress: onPhase });
+			// The server stages only what it offers, so an installed copy here is a stale one to replace.
+			await stageVersion(home, feed, arch, { badVersions, onBytes, onProgress: onPhase, replaceStale: true });
 		},
 		isInstalled: (version) => isInstalled(home, version),
+		isStale: (feed) => {
+			const asset = arch ? feed.assets[arch] : undefined;
+			const recorded = stagedAssetSha256(home, feed.version);
+			return !!asset && recorded !== undefined && recorded !== asset.sha256 && isInstalled(home, feed.version);
+		},
 		readState: () => {
 			try { return readState(home); } catch { return undefined; }
 		},

@@ -307,6 +307,7 @@ export const CHECK_FOR_UPDATES_LABEL = "Check for Updates";
 /** A self-hosted server's request that failed (main's fixed texts, electron/main.cjs). */
 export const REQUEST_CHECK_FAILED = "Couldn’t check for updates. Try again later.";
 export const REQUEST_DOWNLOAD_FAILED = "Couldn’t download the update. Try again.";
+export const REQUEST_INSTALL_FAILED = "Couldn’t install the update.";
 const ACTION_LABELS = { download: "Download", install: "Install" } as const;
 const STATUS_LABELS: Partial<Record<string, string>> = { checking: "Checking…", downloading: "Downloading…", "up-to-date": "Up to Date" };
 
@@ -416,16 +417,16 @@ export function UpdateSettings({
 	const desktop = useDesktopAppUpdate();
 	const [confirming, setConfirming] = useState(false);
 	const [installing, setInstalling] = useState(false);
-	// A self-hosted server's Check or Download whose request failed (unreachable, signed out):
-	// said in the row until the state changes or the next press (its updater raises no toasts).
-	const [requestFailed, setRequestFailed] = useState<"check" | "download" | null>(null);
+	// A self-hosted server's Check, Download or Install whose request failed (unreachable, signed
+	// out): said in the row until the state changes or the next press (its updater raises no toasts).
+	const [requestFailed, setRequestFailed] = useState<"check" | "download" | "install" | null>(null);
 	const button = aboutButton(state);
 	const releaseNotes = version && homepage ? `${homepage}/releases/tag/v${version}` : null;
 	const local = transport === "desktop";
 	// The confirm belongs to an Install: a state that offers something else closes it for good.
 	useEffect(() => { if (button.action !== "install") setConfirming(false); }, [button.action]);
 	useEffect(() => setRequestFailed(null), [state]);
-	const description = requestFailed === "check" ? REQUEST_CHECK_FAILED : requestFailed === "download" ? REQUEST_DOWNLOAD_FAILED : button.description;
+	const description = requestFailed === "check" ? REQUEST_CHECK_FAILED : requestFailed === "download" ? REQUEST_DOWNLOAD_FAILED : requestFailed === "install" ? REQUEST_INSTALL_FAILED : button.description;
 
 	const onClick = () => {
 		setRequestFailed(null);
@@ -478,7 +479,10 @@ export function UpdateSettings({
 					setConfirming(false);
 					setInstalling(true);
 					// T3: a bridge that threw says "Could not install update"; Settings' install raises no notice.
-					void install({ onError: () => { if (local) showUpdateErrorToast(INSTALL_FAILED_TITLE, UNEXPECTED_ERROR); } }).finally(() => setInstalling(false));
+					void install({ onError: () => {
+						if (local) showUpdateErrorToast(INSTALL_FAILED_TITLE, UNEXPECTED_ERROR);
+						else setRequestFailed("install");
+					} }).finally(() => setInstalling(false));
 				}}
 			/>
 		</>

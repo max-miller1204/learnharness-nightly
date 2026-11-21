@@ -58,6 +58,8 @@ export function versionPaths(home: string, version: string) {
 	return {
 		dir,
 		complete: path.join(dir, ".install-complete"),
+		/** The SHA-256 of the archive this version was staged from (versions staged before it was recorded have none). */
+		assetSha256: path.join(dir, ".asset-sha256"),
 		node: path.join(dir, "node", "bin", "node"),
 		serverDir: path.join(dir, "server"),
 		serverEntry: path.join(dir, "server", "server.js"),

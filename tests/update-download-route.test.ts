@@ -23,7 +23,7 @@ const deps: SelfUpdaterDeps = {
 	fetchLatest: async () => { fetches++; return feed(NEXT); },
 	fetchRelease: async (version) => feed(version),
 	stage: (f) => new Promise<void>((resolve) => { releaseStage = () => { staged.push(f.version); resolve(); }; }),
-	isInstalled: () => false, readState: () => undefined, mergeNotes: () => {},
+	isInstalled: () => false, isStale: () => false, readState: () => undefined, mergeNotes: () => {},
 	dismissedNotice: () => undefined, recordDismissedNotice: () => {},
 	waitUntilServing: async () => {}, notify: () => {}, now: () => 0,
 	setTimeout: () => 0, clearTimeout: () => {},

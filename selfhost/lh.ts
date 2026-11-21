@@ -528,7 +528,9 @@ async function updateCommand(flags: Flags): Promise<void> {
 	if (h?.ok && h.selfhost) {
 		const route = flags.now === true ? "install" : "check";
 		const response = await withCliSession(home, (authorization) => fetch(`http://127.0.0.1:${config.port}/api/updates/${route}`, { method: "POST", headers: { Authorization: authorization } }));
-		const body = (await response.json().catch(() => ({}))) as { status?: string; version?: string | null; message?: string | null; error?: string };
+		const parsed: unknown = await response.json().catch(() => null);
+		// Any body shape (none, null, an array): read only the fields that are there.
+		const body = (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}) as { status?: string; version?: string | null; message?: string | null; error?: unknown };
 		if (!response.ok) fail(`the server refused the update ${route} (HTTP ${response.status})${typeof body.error === "string" && body.error ? `: ${body.error}` : ""}`);
 		out(`${body.status ?? "unknown"}${body.version ? ` ${body.version}` : ""}${body.message ? `: ${body.message}` : ""}`);
 		if (flags.now !== true) { const hint = updateCheckHint(body.status); if (hint) out(hint); }
@@ -539,6 +541,8 @@ async function updateCommand(flags: Flags): Promise<void> {
 		out("The server isn't answering; checking the feed from the launcher.");
 		const feed = await fetchLatest(config.feedUrl ?? DEFAULT_FEED_URL);
 		if (compareVersions(feed.version, state.activeVersion) <= 0) { out(`Already on the newest version (${state.activeVersion}).`); return; }
+		// The server's own line for a version marked bad (src/server/self-update.ts): never offered.
+		if (state.badVersions.includes(feed.version)) { out(`up-to-date: Version ${feed.version} failed to start earlier and is skipped.`); return; }
 		out(`available ${feed.version}`);
 		out("Run `lh update --now` to download and install it through the launcher.");
 		return;

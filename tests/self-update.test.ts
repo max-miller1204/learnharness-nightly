@@ -23,6 +23,7 @@ const CURRENT = "0.6.1-nightly.20261116.1";
 const NEXT = "0.6.1-nightly.20261117.2";
 const NEWER = "0.6.1-nightly.20261118.3";
 const OLDER = "0.6.1-nightly.20261115.1";
+const NEWEST = "0.6.1-nightly.20261119.4";
 const NOTES = [NEWER, NEXT, CURRENT, OLDER].map((version) => ({ version, publishedAt: "2026-11-17T00:00:00Z", items: [`**${version}.** changed`] }));
 const feed = (version: string): LatestFeed => ({ version, tag: `v${version}`, sha: "x", publishedAt: "now", launcherProtocol: 1, minLauncherProtocol: 1, assets: {}, notes: NOTES });
 
@@ -47,6 +48,7 @@ function fake(overrides: Partial<SelfUpdaterDeps> = {}) {
 		fetchRelease: async (version) => { if (flags.fetchFails) throw new Error("offline"); flags.pinned.push(version); return feed(version); },
 		stage: async (f) => { flags.staged.push(f.version); },
 		isInstalled: () => flags.installed,
+		isStale: () => false,
 		readState: () => flags.state,
 		mergeNotes: (groups) => { flags.merged.push(groups); },
 		dismissedNotice: () => flags.dismissed,
@@ -333,6 +335,71 @@ describe("self-hosted updater", () => {
 		await v.install();
 		assert.deepEqual(g.sent, []);
 		assert.deepEqual([v.state().status, v.state().errorContext], ["available", "download"]);
+	});
+
+	/** A fake whose disk holds what it staged, from which archive, and whose stage fails for `failing`. */
+	const disk = (failing: string[] = []) => {
+		const f = fake();
+		const archives = new Map<string, string>();
+		const sha = (fd: LatestFeed) => fd.assets["linux-x64"]?.sha256 ?? "none";
+		f.deps.stage = async (fd) => { if (failing.includes(fd.version)) throw new Error("HTTP 503"); archives.set(fd.version, sha(fd)); f.flags.staged.push(fd.version); };
+		f.deps.isInstalled = (version) => archives.has(version);
+		f.deps.isStale = (fd) => archives.has(fd.version) && archives.get(fd.version) !== sha(fd);
+		return { f, failing, archives };
+	};
+
+	it("the fallback is the newest staged version, not one a later check pointed at", async () => {
+		const { f, failing } = disk();
+		const u = createSelfUpdater(f.deps);
+		for (const version of [NEXT, NEWER]) { f.flags.latest = version; await u.check(); await u.download(); }
+		f.flags.latest = NEWEST;
+		await u.check();
+		f.flags.latest = NEXT; // the feed points back for a moment: NEXT is on disk
+		await u.check();
+		assert.deepEqual([u.state().status, u.state().version], ["downloaded", NEXT]);
+		f.flags.latest = NEWEST;
+		failing.push(NEWEST);
+		await u.install();
+		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEWER }], "NEWER is staged and valid");
+		assert.deepEqual([u.state().version, u.state().availableVersion], [NEWER, NEWER], "the state names what restarts");
+		assert.deepEqual(u.state().releaseNotes.map((g) => g.version), [NEWER, NEXT], "with its own notes, not the failed build's");
+	});
+
+	it("no fallback when Install's own check finds nothing newer (a pulled release) or can't read the feed", async () => {
+		const pulled = disk([NEWER]);
+		const u = createSelfUpdater(pulled.f.deps);
+		await u.check(); await u.download();
+		pulled.f.flags.latest = NEWER;
+		await u.check();
+		pulled.f.flags.latest = CURRENT;
+		await u.install();
+		assert.deepEqual(pulled.f.sent, [], "the feed withdrew everything newer: nothing installs");
+		assert.equal(u.state().status, "up-to-date");
+
+		const offline = disk([NEWER]);
+		const v = createSelfUpdater(offline.f.deps);
+		await v.check(); await v.download();
+		offline.f.flags.latest = NEWER;
+		await v.check();
+		offline.f.flags.fetchFails = true;
+		await v.install();
+		assert.deepEqual(offline.f.sent, [], "a check that failed never falls back");
+	});
+
+	it("a staged version the feed republishes from another archive is stale: it is offered and staged again", async () => {
+		const { f, archives } = disk();
+		const asset = (c: string) => ({ "linux-x64": { url: `https://example.test/${c}.tar.gz`, sha256: c.repeat(64) } });
+		let assets = asset("a");
+		f.deps.fetchLatest = async () => { f.flags.fetches++; return { ...feed(NEXT), assets }; };
+		const u = createSelfUpdater(f.deps);
+		await u.check(); await u.download();
+		assert.equal(u.state().status, "downloaded");
+		assets = asset("b");
+		await u.check();
+		assert.deepEqual([u.state().status, u.state().version], ["available", NEXT], "the copy on disk is from the old archive");
+		await u.install();
+		assert.equal(archives.get(NEXT), "b".repeat(64), "staged again from the republished archive");
+		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }]);
 	});
 
 	it("a double click on a Download that fails is one attempt", async () => {

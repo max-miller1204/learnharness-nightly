@@ -343,6 +343,21 @@ describe("General update rows", () => {
 		assert.equal(q(document, "toast"), null);
 	});
 
+	it("a self-hosted server's Install that can't be sent says so in the row", async () => {
+		globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+			if (init?.method === "POST") return new Response(JSON.stringify({ error: "Sign in required" }), { status: 401 });
+			if (String(input) === "/api/updates/running") return Response.json({ items: [] });
+			return Response.json(state({ status: "downloaded", version: "0.3.8", revision: 1 }));
+		};
+		const tick = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const host = await mount(<UpdateSettings {...props} />);
+		await tick();
+		await click(q(host, "update-button")); await click(q(document, "install-update-confirm")); await tick();
+		assert.equal(q(host, "update-description")!.textContent, "Couldn’t install the update.");
+		assert.equal(inert(q(host, "update-button")), false, "Install can be pressed again");
+		assert.equal(q(document, "toast"), null);
+	});
+
 	it("Cancel in the confirm dialog installs nothing", async () => {
 		const b = bridge(state({ status: "downloaded", version: "0.3.8", revision: 1 }));
 		const host = await mount(<UpdateSettings {...props} />);
