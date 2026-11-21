@@ -2,8 +2,8 @@ import { useMemo } from "react";
 import Svg, { Defs, FeGaussianBlur, Filter, G, Path, Rect, Text as SvgText } from "react-native-svg";
 import type { PlanNodeStatus } from "../../../src/core/contracts/plan.ts";
 import {
-  ARROW_HEAD, GLOW_BLUR, GLOW_MARGIN, HEAD_H, LINE_H, NODE_H, NODE_W_MIN, STROKE_W,
-  blockLayout, edgePathD, wrapTitle, type PlanLayoutNode,
+  ARROW_HEAD, GLOW_BLUR, GLOW_MARGIN, HEAD_H, NODE_W_MIN, STROKE_W,
+  blockLayout, edgePathD, type PlanLayoutNode,
 } from "../../../src/core/plan-layout.ts";
 import { pathEnd } from "./lesson";
 import { alpha, fonts, useTheme } from "./theme";
@@ -18,6 +18,7 @@ export function PlanDiagram({ nodes, edges, statusOf, glowId, monochrome, pad, w
   glowId?: string | null; monochrome?: boolean; pad: number; width?: number;
 }) {
   const { c } = useTheme();
+  // The chart measure (blockLayout's default): the phone can't measure its labels before drawing.
   const layout = useMemo(() => blockLayout(nodes, edges), [nodes, edges]);
   const vbW = Math.max(layout.width, 1) + 2 * pad;
   const vbH = Math.max(layout.height, 1) + 2 * pad;
@@ -39,7 +40,7 @@ export function PlanDiagram({ nodes, edges, statusOf, glowId, monochrome, pad, w
         if (!points) return null;
         const tx = layout.x.get(edge.to), ty = layout.y.get(edge.to);
         const target = tx !== undefined && ty !== undefined
-          ? { x: tx, y: ty, w: layout.nodeW.get(edge.to) ?? NODE_W_MIN, h: layout.nodeH.get(edge.to) ?? NODE_H } : undefined;
+          ? { x: tx, y: ty, w: layout.nodeW.get(edge.to) ?? NODE_W_MIN, h: layout.nodeH.get(edge.to) ?? 0 } : undefined;
         const d = edgePathD(points, target);
         const end = pathEnd(d);
         const dim = !monochrome && (statusOf(edge.from) === "upcoming" || statusOf(edge.to) === "upcoming");
@@ -54,10 +55,11 @@ export function PlanDiagram({ nodes, edges, statusOf, glowId, monochrome, pad, w
       })}
       {nodes.map((node) => {
         const status = statusOf(node.id);
-        const lines = wrapTitle(node.title);
-        const h = layout.nodeH.get(node.id) ?? NODE_H;
+        // The layout's own line breaks, as the web block draws them.
+        const lines = layout.lines.get(node.id) ?? [node.title];
+        const h = layout.nodeH.get(node.id) ?? 0;
         const w = layout.nodeW.get(node.id) ?? NODE_W_MIN;
-        const top = (h - lines.length * LINE_H) / 2 + 10;
+        const top = (h - lines.length * layout.lineH) / 2 + 10;
         const { fill, stroke } = box(status);
         return (
           <G key={node.id} transform={`translate(${layout.x.get(node.id) ?? 0} ${layout.y.get(node.id) ?? 0})`}>
@@ -65,7 +67,7 @@ export function PlanDiagram({ nodes, edges, statusOf, glowId, monochrome, pad, w
             {node.id === glowId && !monochrome && <Rect x={-GLOW_MARGIN} y={-GLOW_MARGIN} width={w + 2 * GLOW_MARGIN} height={h + 2 * GLOW_MARGIN}
               fill="rgba(250, 204, 21, 0.25)" filter="url(#plan-glow)" />}
             {lines.map((line, i) => (
-              <SvgText key={i} x={w / 2} y={top + i * LINE_H} textAnchor="middle" fontFamily={fonts.prose} fontSize={11}
+              <SvgText key={i} x={w / 2} y={top + i * layout.lineH} textAnchor="middle" fontFamily={fonts.prose} fontSize={layout.fontSize}
                 fontWeight={status === "current" && !monochrome ? "500" : "400"} fill={ink(status)}>{line}</SvgText>
             ))}
           </G>

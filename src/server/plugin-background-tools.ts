@@ -97,7 +97,8 @@ export function createPluginBackgroundTool<T extends TSchema>(deps: PluginBackgr
 		// preparation or execution when this host-derived acceptance is known.
 		let snapshot = workers.list().find((task) => task.requestId === requestId);
 		if (snapshot && (snapshot.definitionId !== workerId || snapshot.purpose !== "background")) throw new Error("Background request identity belongs to a different worker or purpose");
-		// Pi has already checked input against this TypeBox schema, so it is Static<T>.
+		// Pi already validated the model arguments against definition.parameters.
+		// Keep the public TypeBox callback type; Pi's generic JSON Schema inference differs.
 		const options = snapshot ? undefined : await abortable(() => prepare.call(definition, input as Static<T>, context), preacceptSignal);
 		const accepted = jobStore.findJobByToolCallId(context.chatId, toolCallId);
 		if (accepted) return acknowledge(accepted);

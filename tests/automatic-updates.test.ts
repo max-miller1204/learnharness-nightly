@@ -822,6 +822,36 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 		assert.equal(f.updater.checks, 1);
 	});
 
+	it("restart-to-install IPC accepts only a live owned main frame at the exact app origin (upstream's hardening, on the fork's invoke channel)", async () => {
+		const f = fixture(); await f.run("main()");
+		const win = f.windows[0]!;
+		const sender = win.webContents;
+		const install = f.handles.get("lh:update-install")!;
+		const foreign = f.untrustedWindow().webContents; // not registered by createWindow
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		f.run("serverProcess = fixtureChild");
+		for (const bad of [
+			{ sender: {}, senderFrame: sender.mainFrame },
+			{ sender, senderFrame: { url: sender.mainFrame.url } },
+			{ sender, senderFrame: undefined },
+			{ sender: foreign, senderFrame: foreign.mainFrame },
+		]) assert.throws(() => install(bad), (error) => /Untrusted|Cannot read|undefined/.test(String(error)));
+		const ownUrl = sender.mainFrame.url;
+		for (const url of ["https://untrusted.invalid/", "http://127.0.0.1:9001/", "not a URL"]) {
+			sender.mainFrame.url = url; // Navigation changes the current frame's URL, not its identity.
+			// Errors from the main.cjs context are another realm's: match by message.
+			assert.throws(() => install({ sender, senderFrame: sender.mainFrame }), (error) => /Untrusted|Invalid URL/.test(String(error)), url);
+		}
+		await settleMenu();
+		assert.deepEqual(f.order, [], "untrusted requests neither kill the server nor reach quit-and-install");
+		sender.mainFrame.url = ownUrl;
+		assert.equal(install({ sender, senderFrame: sender.mainFrame }), true);
+		await settleMenu();
+		assert.deepEqual(f.order, ["SIGTERM", "install"], "legitimate Restart still stops the server before installation");
+		win.emit("closed");
+		assert.throws(() => install({ sender, senderFrame: sender.mainFrame }), /Untrusted/, "closing the window revokes its membership");
+	});
+
 	it("the menu restores and focuses the window first, then shows T3's dialog over it, and never opens Settings", async () => {
 		const f = fixture(); await f.run("main()"); await settleMenu();
 		const win = f.windows[0]!; win.minimized = true;

@@ -217,6 +217,11 @@ describe("provider-neutral raw agent loops", { concurrency: false }, () => {
 						const expected = transport.provider === "openrouter" ? OR_KEY : round === 0 ? "dummy-selected-key-first" : "dummy-selected-key-rotated";
 						assert.equal(request.headers.get(transport.authHeader), transport.authHeader === "authorization" ? `Bearer ${expected}` : expected);
 						if (transport.provider !== "openrouter") assert.ok(!JSON.stringify({ ...request, headers: Object.fromEntries(request.headers) }).includes(OR_KEY));
+						if (transport.provider === "anthropic") {
+							assert.ok(!Object.hasOwn(request.body, "thread"), "key rotation must not reuse a server-side thread");
+							assert.doesNotMatch(request.headers.get("anthropic-beta") ?? "", /message-threads/);
+							assert.match(JSON.stringify(request.body), /cache_control/, "native prompt caching is independent of threads");
+						}
 						assertPayload(transport, loop, round, request.body);
 					}
 				});
@@ -285,31 +290,17 @@ function closedFetch(transport: Transport, loop: Loop, requests: RecordedRequest
 
 function assertPayload(transport: Transport, loop: Loop, round: number, body: Record<string, unknown>) {
 	if (transport.api !== "google-generative-ai") assert.equal(body.model, transport.id);
-	// Only Anthropic's own endpoint gets message threads: later rounds
-	// continue the thread, sending just the new turn, and the server keeps
-	// the tools and earlier messages.
-	const thread = body.thread as { type?: string; previous_message_id?: string } | undefined;
-	assert.equal(thread?.type, transport.provider === "anthropic" ? (round === 0 ? "create" : "continue") : undefined);
+	// No provider gets a server-side message thread here: direct Anthropic
+	// auth resolves per request (this suite rotates the key), and Pi's thread
+	// fingerprint doesn't include that credential, so every round replays the
+	// whole conversation (upstream 0.7.0, src/agent/models.ts).
+	assert.equal(body.thread, undefined);
 	const json = JSON.stringify(body);
-	if (thread?.type === "continue") {
-		// A continue builds on the previous reply and carries exactly that
-		// reply's tool results: nothing earlier (the server has it), nothing
-		// missing (or the thread would lose the conversation).
-		assert.equal(thread.previous_message_id, `msg_offline_${round - 1}`);
-		assert.equal(body.system, undefined, "the thread keeps its system prompt");
-		assert.equal(body.tools, undefined, "the thread keeps its tools");
-		const messages = body.messages as { role: string; content: { type: string; tool_use_id?: string }[] }[];
-		assert.ok(messages.every((message) => message.role === "user"), "the assistant reply is already in the thread");
-		const results = messages.flatMap((message) => message.content).filter((part) => part.type === "tool_result").map((part) => part.tool_use_id);
-		assert.deepEqual(results, callsFor(loop, round - 1).map((_, i) => `call_${round - 1}_${i}`));
-		assert.doesNotMatch(json, new RegExp(loop === "visual" ? "white square" : "Read page 1"), "the opening prompt is not resent");
-	} else {
-		// Native Responses models may declare tools in additional_tools input
-		// items rather than top-level tools; assert the SDK's complete payload.
-		assert.match(json, new RegExp(loop === "visual" ? "write_svg" : "pdf_extract"));
-		assert.match(json, new RegExp(loop === "visual" ? "render_svg" : "pdf_render"));
-		assert.match(json, new RegExp(loop === "visual" ? "white square" : "Read page 1"));
-	}
+	// Native Responses models may declare tools in additional_tools input
+	// items rather than top-level tools; assert the SDK's complete payload.
+	assert.match(json, new RegExp(loop === "visual" ? "write_svg" : "pdf_extract"));
+	assert.match(json, new RegExp(loop === "visual" ? "render_svg" : "pdf_render"));
+	assert.match(json, new RegExp(loop === "visual" ? "white square" : "Read page 1"));
 	if (transport.api === "google-generative-ai") assert.ok(Array.isArray(body.contents));
 	else if (transport.api === "openai-responses") assert.ok(Array.isArray(body.input));
 	else assert.ok(Array.isArray(body.messages));

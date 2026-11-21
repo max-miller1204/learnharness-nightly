@@ -6,29 +6,20 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { InteractionLayersProvider } from "../components/interaction-layers.tsx";
-import {
-	PlanBlock,
-	PlanDiagram,
-	PlanPopup,
-	blockLayout,
-	edgePathD,
-	latestTree,
-	nodeWidth,
-	topoFor,
-	wrapTitle,
-	type PopupMessage,
-} from "../components/plan-block.tsx";
+import { PlanBlock, PlanDiagram, PlanPopup, latestTree, type PopupMessage } from "../components/plan-block.tsx";
+import { blockLayout, chartMeasure, edgePathD, topoFor } from "../components/plan-layout.ts";
 import { PlanMarginalia } from "../components/plan-window.tsx";
 import { derivePlanStatuses, derivedNodeStatus, type PlanBlockData, type PlanTree } from "../src/core/contracts.ts";
 
 /**
  * THE PLAN DIAGRAM GOLDEN (mobile follow-up 1): the web and desktop plan
- * diagram must render exactly as before when its layout math became shared
- * with the phone. The golden file was recorded from the web plan code BEFORE
- * the move. Any difference in node positions, edge paths, statuses or the
- * rendered markup (pinned by hash) of the block, the live popup and the
- * marginalia fails here.
- * Record again (PLAN_GOLDEN_RECORD=1) only for an intended visual change.
+ * diagram, laid out with the chart measure (the server render, and the phone,
+ * which can't measure), from the layout shared with the phone. Any difference
+ * in node positions, line breaks, edge paths, statuses or the rendered markup
+ * (pinned by hash) of the block, the live popup and the marginalia fails here.
+ * Recorded again for upstream 0.7.0's measured plan labels (an intended
+ * change); record again (PLAN_GOLDEN_RECORD=1) only for an intended visual
+ * change.
  */
 const GOLDEN = path.join(import.meta.dirname, "fixtures/plan-diagram-golden.json");
 const render = (node: ReactNode) => renderMarkup(<InteractionLayersProvider>{node}</InteractionLayersProvider>);
@@ -124,7 +115,7 @@ function progressions(tree: PlanTree): string[][] {
 function snapshot() {
 	const out: Record<string, unknown> = {};
 	for (const [name, tree] of Object.entries(PLANS)) {
-		const layout = blockLayout(tree.nodes, tree.edges);
+		const layout = blockLayout(tree.nodes, tree.edges, chartMeasure);
 		const box = (id: string) => ({ x: layout.x.get(id), y: layout.y.get(id), w: layout.nodeW.get(id), h: layout.nodeH.get(id) });
 		const steps = progressions(tree).map((taught) => {
 			const messages = lesson(tree, taught);
@@ -140,7 +131,7 @@ function snapshot() {
 				current: statuses.current,
 				latestTree: latestTree(messages)?.version ?? null,
 				block: markup(<PlanBlock data={block} onOpen={() => {}} />),
-				diagram: markup(<PlanDiagram nodes={tree.nodes} edges={tree.edges} statusOf={(id) => status[id] ?? "upcoming"}
+				diagram: markup(<PlanDiagram layout={layout} nodes={tree.nodes} edges={tree.edges} statusOf={(id) => status[id] ?? "upcoming"}
 					glowId={statuses.current} markerId="golden" pad={23} naturalSize />),
 				marginalia: markup(<PlanMarginalia messages={messages} />),
 				popup: markup(<PlanPopup messages={messages} onClose={() => {}} />),
@@ -148,7 +139,7 @@ function snapshot() {
 		});
 		out[name] = {
 			topo: topoFor(tree.nodes, tree.edges).order.map(({ id }) => id),
-			nodes: Object.fromEntries(tree.nodes.map(({ id, title }) => [id, { ...box(id), lines: wrapTitle(title), width: nodeWidth(wrapTitle(title)) }])),
+			nodes: Object.fromEntries(tree.nodes.map(({ id }) => [id, { ...box(id), lines: layout.lines.get(id) }])),
 			edges: Object.fromEntries([...layout.edgePts].map(([key, points]) => {
 				const to = key.split("->")[1]!;
 				const target = box(to);
