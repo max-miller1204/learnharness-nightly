@@ -759,13 +759,16 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 	}, [ctxFolderId, interactions]);
 	// A folder deletion's success: the session Delete's, for every session
 	// that went (list patch, home if the open one died, graph refetch).
-	const onFolderDeleted = useCallback(({ deletedChatIds, graphRevision }: { deletedChatIds: string[]; graphRevision: number }) => {
-		setDeletingFolder(null);
+	const dropDeletedChats = useCallback((deletedChatIds: string[]) => {
 		const gone = new Set(deletedChatIds);
 		setChats((prev) => (prev ? prev.filter((c) => !gone.has(c.id)) : prev));
 		leaveDeletedSession(pathname, gone, onViewedSessionDeleted, (href) => router.replace(href));
-		window.dispatchEvent(new CustomEvent("lh:graph-revision", { detail: { revision: graphRevision } }));
 	}, [pathname, router, onViewedSessionDeleted]);
+	const onFolderDeleted = useCallback(({ deletedChatIds, graphRevision }: { deletedChatIds: string[]; graphRevision: number }) => {
+		setDeletingFolder(null);
+		dropDeletedChats(deletedChatIds);
+		window.dispatchEvent(new CustomEvent("lh:graph-revision", { detail: { revision: graphRevision } }));
+	}, [dropDeletedChats]);
 	// The folder Delete (owner, 2026-11-18): the folder, its subfolders and
 	// every session inside go — practice sessions hidden by the type filter
 	// included — after the session dialog's confirmation; imported notes
@@ -1230,6 +1233,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 						reportFolderFailure(message);
 					}}
 					onDeleted={onFolderDeleted}
+					onPartlyDeleted={dropDeletedChats}
 				/>
 			</aside>
 	);

@@ -231,13 +231,29 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 			// Direct Anthropic auth is resolved per request, and Pi keys a message
 			// thread by the session id alone. A thread belongs to the key that made
 			// it, so the session id Pi sees carries a fingerprint of the credential
-			// in use (a hash, never the key): the same key continues its thread, a
+			// sent (a hash, never the key): the same key continues its thread, a
 			// rotated key starts a new one (the owner keeps threads on, #278).
+			// The credential is resolved once here and that exact key and those
+			// headers are what the request sends, so a rotation or refresh after
+			// this point can't put another key on this thread.
 			if (requestModel.provider === "anthropic" && requestModel.api === "anthropic-messages" && typeof requestOptions.sessionId === "string") {
 				const sessionId = requestOptions.sessionId;
 				return lazyStream(requestModel, async () => {
 					const resolved = await models.getAuth(requestModel, { apiKey: requestOptions.apiKey, env: requestOptions.env, signal: requestOptions.signal });
-					return stream(requestModel, context, { ...requestOptions, sessionId: anthropicThreadSession(sessionId, resolved?.auth) });
+					// What Pi's request uses: explicit options win per field.
+					const apiKey = requestOptions.apiKey ?? resolved?.auth.apiKey;
+					const headers = mergeHeaders(resolved?.auth.headers, requestOptions.headers);
+					const credential = credentialHeaders(headers);
+					return stream(requestModel, context, {
+						...requestOptions,
+						apiKey,
+						headers,
+						// Pi resolves auth again inside the request. With the key given it
+						// takes that key as is, and this drops any credential header the
+						// second resolution added, so only the fingerprinted ones go out.
+						transformHeaders: (sent: Record<string, string | null>) => ({ ...withoutCredentialHeaders(sent), ...credential }),
+						sessionId: anthropicThreadSession(sessionId, apiKey, credential),
+					});
 				}, undefined, requestOptions.signal);
 			}
 			return stream(requestModel, context, requestOptions);
@@ -246,11 +262,35 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 }
 
 /** The session id Pi keys an Anthropic message thread by: the chat's, plus a
- *  short hash of the credential that request uses, so a thread is never
+ *  short hash of the credential that request sends (its key and any
+ *  credential header, such as an `x-api-key` override), so a thread is never
  *  continued with another key. Exported for tests. */
-export function anthropicThreadSession(sessionId: string, auth: { apiKey?: string; headers?: Record<string, string | null> } | undefined): string {
-	const credential = JSON.stringify([auth?.apiKey ?? null, auth?.headers ?? null]);
+export function anthropicThreadSession(sessionId: string, apiKey: string | undefined, headers: Record<string, string | null> = {}): string {
+	const credential = JSON.stringify([apiKey ?? null, Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]).sort()]);
 	return `${sessionId}:key-${createHash("sha256").update(credential).digest("hex").slice(0, 16)}`;
+}
+
+/** The headers Anthropic requests authenticate with (Pi's anthropic-messages
+ *  checks the same three). */
+const CREDENTIAL_HEADERS = new Set(["authorization", "x-api-key", "cf-aig-authorization"]);
+
+function credentialHeaders(headers: Record<string, string | null> | undefined): Record<string, string | null> {
+	return Object.fromEntries(Object.entries(headers ?? {}).filter(([name]) => CREDENTIAL_HEADERS.has(name.toLowerCase())));
+}
+
+function withoutCredentialHeaders(headers: Record<string, string | null>): Record<string, string | null> {
+	return Object.fromEntries(Object.entries(headers).filter(([name]) => !CREDENTIAL_HEADERS.has(name.toLowerCase())));
+}
+
+/** Pi's header merge: a later name replaces an earlier one whatever its case. */
+function mergeHeaders(base: Record<string, string | null> | undefined, override: Record<string, string | null> | undefined): Record<string, string | null> | undefined {
+	if (!base && !override) return undefined;
+	const merged: Record<string, string | null> = { ...base };
+	for (const [name, value] of Object.entries(override ?? {})) {
+		for (const existing of Object.keys(merged)) if (existing.toLowerCase() === name.toLowerCase()) delete merged[existing];
+		merged[name] = value;
+	}
+	return merged;
 }
 
 /** The LEGACY role entry point — BYOK made it an honest THROWER (owner,

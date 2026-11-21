@@ -8,7 +8,10 @@ import { deleteIdleChatRecord, runningWorkBlocker, scheduleChatAttachmentRemoval
 import { graphRevision } from "./graph.ts";
 
 export class SourceDeletionError extends Error {
-	constructor(message: string, public status = 400, public code = "invalid_source_deletion") { super(message); }
+	/** Sessions already removed when a delete failed partway: they are gone
+	 *  even though the request failed, so their views must be left. */
+	deletedChatIds?: string[];
+	constructor(message: string, public status = 400, public code = "invalid_source_deletion", options?: ErrorOptions) { super(message, options); }
 }
 export interface SourceDeletionRequest { sourceIds: string[]; folderIds: string[]; deleteSessions: boolean }
 export function parseSourceDeletion(raw: unknown): SourceDeletionRequest {
@@ -142,9 +145,17 @@ export async function deleteFolderWithSessions(folderId: string, mode: ChatDelet
 	// The sessions' uploads go with them (docs/specs/remote-safe-attachments.md), as in deleteSources.
 	for (const id of chatIds) scheduleChatAttachmentRemoval(id);
 	deleteSourcesTraces(stores.graphStore, chatIds, mode);
-	for (const id of chatIds) {
-		const outcome = deleteIdleChatRecord(id);
-		if (!outcome.ok) throw new SourceDeletionError(outcome.error, outcome.status, outcome.code);
+	try {
+		for (const id of chatIds) {
+			const outcome = deleteIdleChatRecord(id);
+			if (!outcome.ok) throw new SourceDeletionError(outcome.error, outcome.status, outcome.code);
+		}
+	} catch (error) {
+		// Partway through, earlier records are already gone. Say which, by
+		// what is actually left, so the window drops a view that went.
+		const failure = error instanceof SourceDeletionError ? error : new SourceDeletionError("Could not finish deleting the folder. Some sessions may already have been removed; refresh or retry.", 500, "error", { cause: error });
+		failure.deletedChatIds = [...chatIds].filter((id) => !stores.chatStore.getChat(id));
+		throw failure;
 	}
 	const state = structuredClone(directory.organization);
 	const folderIds = new Set(targets.folderIds);

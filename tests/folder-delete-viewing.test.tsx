@@ -38,7 +38,7 @@ async function readOf(id: string): Promise<"now" | "ran" | "held"> {
 	return Promise.race([hold.then(() => "ran" as const), new Promise<"held">((resolve) => setTimeout(() => resolve("held"), 30))]);
 }
 
-async function openDialog(chatIds: string[], answer: Promise<Response>) {
+async function openDialog(chatIds: string[], answer: Promise<Response>, partly: string[][] = []) {
 	const calls: Array<{ deletedChatIds: string[] }> = [];
 	globalThis.fetch = (async () => answer) as typeof fetch;
 	const host = document.createElement("div");
@@ -51,7 +51,7 @@ async function openDialog(chatIds: string[], answer: Promise<Response>) {
 		scope: { parentId: null, folderIds: ["physics"], chatIds, noteIds: [] },
 	};
 	await act(async () => {
-		root.render(<InteractionLayersProvider><DeleteFolderDialog folder={folder} onClose={() => {}} onStale={() => {}} onDeleted={(result) => calls.push(result)} /></InteractionLayersProvider>);
+		root.render(<InteractionLayersProvider><DeleteFolderDialog folder={folder} onClose={() => {}} onStale={() => {}} onDeleted={(result) => calls.push(result)} onPartlyDeleted={(ids) => partly.push(ids)} /></InteractionLayersProvider>);
 	});
 	const confirm = document.querySelector<HTMLElement>("[data-testid='delete-confirm']");
 	assert.ok(confirm, "the folder dialog's Delete");
@@ -76,6 +76,16 @@ describe("the folder Delete while a session in it is open", () => {
 		await tick();
 		assert.deepEqual(calls, []);
 		assert.equal(await readOf("chat_folder_c"), "now", "nothing deleted, nothing held");
+	});
+
+	it("a Delete that failed partway keeps the removed sessions' reads held and reports them; the rest run", async () => {
+		const partly: string[][] = [];
+		const calls = await openDialog(["chat_folder_gone", "chat_folder_left"], Promise.resolve(Response.json({ error: "Could not finish", code: "error", deletedChatIds: ["chat_folder_gone"] }, { status: 500 })), partly);
+		await tick();
+		assert.deepEqual(calls, []);
+		assert.deepEqual(partly, [["chat_folder_gone"]], "the sidebar hears which went, to leave the open one");
+		assert.equal(await readOf("chat_folder_gone"), "held", "removed: its reads never run");
+		assert.equal(await readOf("chat_folder_left"), "now", "still there: its reads run");
 	});
 
 	it("leaves an open session that went with a replace, after dropping its view; any other page stays", () => {

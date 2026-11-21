@@ -22,6 +22,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { absorbed, pendingCallTool, SessionModel } from "../components/session-core.ts";
+import { beginSessionDelete } from "../components/session-deletion.ts";
 import type { ChatInput } from "../src/core/input-events.ts";
 import type { LhMessage } from "../src/core/native-messages.ts";
 import { newUserMessage, newAnswerResult, newThinkingMessage, needsContinuation, endsInDismissal, pendingQuestionOf } from "../src/core/native-messages.ts";
@@ -49,6 +50,26 @@ it("usage-only reads neither adopt a transcript nor supersede a canonical read",
 	cancel.abort();
 	lateStats.resolve(Response.json({ turns: [] }));
 	assert.equal(await read, undefined, "ignore a late stats response even if the fetch completed despite cancellation");
+});
+
+it("a usage-only read holds while this window deletes the session, like the record reads", async () => {
+	const urls: string[] = [];
+	const fetch = (async (url: RequestInfo | URL) => { urls.push(String(url)); return Response.json({ turns: [] }); }) as typeof globalThis.fetch;
+	const settled = async (read: Promise<unknown>) => Promise.race([read.then(() => "ran"), new Promise((resolve) => setTimeout(() => resolve("held"), 30))]);
+	// Deleted: the stats read never reaches the server (it would 404).
+	const settleDeleted = beginSessionDelete("chat_stats_deleted");
+	const deletedRead = new SessionModel({ chatId: "chat_stats_deleted", initialMessages: [], fetch }).readStats();
+	assert.equal(await settled(deletedRead), "held", "in flight: the stats read waits");
+	settleDeleted(true);
+	assert.equal(await settled(deletedRead), "held", "deleted: it never runs");
+	assert.deepEqual(urls, []);
+	// Refused: it runs as normal.
+	const settleRefused = beginSessionDelete("chat_stats_kept");
+	const keptRead = new SessionModel({ chatId: "chat_stats_kept", initialMessages: [], fetch }).readStats();
+	assert.equal(await settled(keptRead), "held");
+	settleRefused(false);
+	assert.deepEqual((await keptRead)?.turns, []);
+	assert.deepEqual(urls, ["/api/chats/chat_stats_kept?view=stats"]);
 });
 
 const realFetch = globalThis.fetch;

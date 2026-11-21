@@ -487,6 +487,10 @@ export class SessionModel {
 	async readStats(signal?: AbortSignal): Promise<SessionStatsSnapshot | undefined> {
 		const ticket = ++this.canonicalIssued;
 		const epoch = this.canonicalEpoch;
+		// Holds while this window deletes the session, as the record and stream
+		// reads do (fetchView): a turn ending during a Delete must not 404 here.
+		const hold = sessionReadHold(this.chatId);
+		if (hold) await hold;
 		const response = await this.fetch(`/api/chats/${encodeURIComponent(this.chatId)}?view=stats`, { signal });
 		if (!response.ok) throw new Error("Could not refresh session stats.");
 		const stats = await response.json() as SessionStatsSnapshot;

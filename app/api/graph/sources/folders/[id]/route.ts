@@ -15,7 +15,8 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
 	const mode = new URL(request.url).searchParams.get("mode") as ChatDeleteMode;
 	try { return Response.json({ ok: true, ...(await deleteFolderWithSessions(id, mode, await readOrganizationAction(request))) }); }
 	catch (error) {
-		if (error instanceof SourceDeletionError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
+		// A failure partway still names the sessions already removed.
+		if (error instanceof SourceDeletionError) return Response.json({ error: error.message, code: error.code, ...(error.deletedChatIds?.length ? { deletedChatIds: error.deletedChatIds } : {}) }, { status: error.status });
 		if (error instanceof SourceOrganizationInputError) return Response.json({ error: error.message, code: "bad_folder_scope" }, { status: 400 });
 		return Response.json({ error: "Could not finish deleting the folder. Some sessions may already have been removed; refresh or retry.", code: "error" }, { status: 500 });
 	} finally {

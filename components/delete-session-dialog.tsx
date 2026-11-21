@@ -270,12 +270,15 @@ export function DeleteFolderDialog({
 	folder,
 	onClose,
 	onDeleted,
+	onPartlyDeleted,
 	onStale,
 }: {
 	folder: { id: string; name: string; copy: DeleteDialogCopy; scope: FolderDeletionScope } | null;
 	onStale: (message: string) => void;
 	onClose: () => void;
 	onDeleted: (result: { deletedChatIds: string[]; graphRevision: number }) => void;
+	/** A Delete that failed partway: these sessions went anyway. */
+	onPartlyDeleted?: (deletedChatIds: string[]) => void;
 }) {
 	const [traces, setTraces] = useState(false);
 	const [busy, setBusy] = useState(false);
@@ -306,12 +309,14 @@ export function DeleteFolderDialog({
 			});
 			// An unreadable body never undoes a delete the status confirmed: the scope is exact.
 			const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string; graphRevision?: number; deletedChatIds?: string[] };
-			settle(res.ok ? body.deletedChatIds ?? folder.scope.chatIds : []);
+			// A failure partway names the sessions it already removed; they stay gone.
+			settle(res.ok ? body.deletedChatIds ?? folder.scope.chatIds : body.deletedChatIds ?? []);
 			if (body.code === "folder_scope_changed" || body.code === "not_found") {
 				onStale(body.error ?? "This folder changed. Nothing was deleted.");
 				return;
 			}
 			if (!res.ok) {
+				if (body.deletedChatIds?.length) onPartlyDeleted?.(body.deletedChatIds);
 				setFailure({ code: body.code ?? "error", error: body.error ?? `Delete failed (${res.status})` });
 				setBusy(false);
 				return;

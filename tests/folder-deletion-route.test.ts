@@ -141,3 +141,22 @@ it("rechecks after yielding for extraction wind-down, before starting destructiv
 	assert.ok([teach, practice, kept].every((chat) => stores.chatStore.getChat(chat.id)));
 	assert.equal(stores.graphStore.readNodes().length, 3);
 });
+
+it("a Delete that fails partway names the sessions it already removed", async () => {
+	const { teach, practice, kept } = setup();
+	// The store swallows an unlink failure on the second session (chats.ts deleteIdleChatRecord).
+	const deleteChat = stores.chatStore.deleteChat.bind(stores.chatStore);
+	let calls = 0;
+	stores.chatStore.deleteChat = ((id: string) => (++calls === 2 ? false : deleteChat(id))) as typeof stores.chatStore.deleteChat;
+	try {
+		const res = await remove("outer", "preserve-graph");
+		assert.equal(res.status, 500);
+		const body = await res.json() as { code: string; deletedChatIds?: string[] };
+		const gone = [teach, practice].filter((chat) => !stores.chatStore.getChat(chat.id)).map((chat) => chat.id);
+		assert.equal(gone.length, 1, "one removed before the failure");
+		assert.deepEqual(body.deletedChatIds, gone);
+		assert.ok(stores.chatStore.getChat(kept.id));
+	} finally {
+		stores.chatStore.deleteChat = deleteChat;
+	}
+});
