@@ -409,6 +409,11 @@ async function createServerList({
 			if (first && !held(first)) return connect(first, undefined, { quiet: true });
 			show();
 		},
+		/** The app's content window (a server's page, the bundled app's, or its problem screen),
+		 *  never the Switch server… panel or a popup; null while none is open. */
+		appWindow() {
+			return window && !window.isDestroyed() ? window : null;
+		},
 		/** The open window onto a paired server, for Update everything and its bridge. */
 		current() {
 			return window && !window.isDestroyed() && active?.token && removing !== active.server ? { win: window, origin: active.server, token: active.token } : null;

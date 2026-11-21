@@ -747,7 +747,9 @@ function checkForUpdates() {
  *  offer, which still downloads; a re-check that finds nothing (the release was pulled) clears
  *  the offer and downloads nothing. Resolves T3's action result (DesktopUpdates.ts:628-768):
  *  `accepted` once admitted, `completed` once downloaded; the sidebar's toasts read it. */
-async function downloadUpdateNow() {
+/** `expect`: the menu's Download names the version its dialog showed; a re-check that finds
+ *  another one downloads nothing (the state then offers what the feed names). */
+async function downloadUpdateNow({ expect = null } = {}) {
 	const refused = { accepted: false, completed: false };
 	if (!autoUpdater || installing || updateEverything?.running()) return refused;
 	if (activeAction === "check" && activeCheck) await activeCheck.catch(() => {});
@@ -774,6 +776,10 @@ async function downloadUpdateNow() {
 		if (!updateMachine.hasDownloadableOffer(updateState)) {
 			if (updateState.status !== "checking") return { accepted: true, completed: false };
 			setUpdateState({ ...clicked });
+		}
+		if (expect !== null && updateState.availableVersion !== expect) {
+			log(`menu download: the feed now offers ${updateState.availableVersion}, not ${expect}; nothing downloads`);
+			return { accepted: true, completed: false, superseded: true };
 		}
 		setUpdateState(updateMachine.reduceOnDownloadStart(updateState));
 		try {
@@ -802,8 +808,12 @@ function installAccepted() {
 /** The user confirmed Install: re-check, take a newer build if one appeared, then quit and install. */
 /** `fromSidebar`: the sidebar control started it, so its failure is the page's notice (Settings,
  *  the menu and Update everything report theirs their own way). */
-async function installUpdateNow({ fromSidebar = false } = {}) {
-	if (installing || !installAccepted()) return;
+/** `expect`: the menu's Restart names the version its dialog showed. Another one staged, or a
+ *  newer one the re-check finds, installs nothing: the state then offers what the feed names,
+ *  and it resolves { superseded: true } for the menu to say so. */
+async function installUpdateNow({ fromSidebar = false, expect = null } = {}) {
+	if (installing || !installAccepted()) return undefined;
+	if (expect !== null && updateState.downloadedVersion !== expect) return { superseded: true };
 	installing = true;
 	installNotifies = fromSidebar;
 	// Installing again after a failed install: the last failure no longer applies.
@@ -817,6 +827,14 @@ async function installUpdateNow({ fromSidebar = false } = {}) {
 	} catch (err) {
 		// A failed re-check (feed unreachable) installs what is already downloaded.
 		log(`install re-check failed: ${err?.message ?? err}; installing ${downloaded}`);
+	}
+	if (offered && expect !== null) {
+		log(`menu install: the feed now offers ${offered.version}, not the ${expect} its dialog named; nothing installs`);
+		installing = false;
+		adoptOfferedNotes(offered);
+		const notes = offeredNotes();
+		setUpdateState(updateMachine.reduceOnUpdateAvailable({ ...updateState, downloadedVersion: null }, offered.version, nowIso(), notes.releaseNotes, notes.omittedReleaseCount));
+		return { superseded: true };
 	}
 	if (offered) {
 		log(`install: ${offered.version} is newer than the downloaded ${downloaded}; downloading it first`);
@@ -894,8 +912,12 @@ let updateEverything = null;
 const updateActions = createUpdateActions({
 	updater: () => autoUpdater,
 	state: () => updateState,
-	// The menu's failed check, never over a download or an install under way.
-	report: (status) => { if (status === "error" && updateState.status !== "downloading" && updateState.status !== "available" && !installing) setUpdateState(updateMachine.reduceOnCheckFailure(updateState, CHECK_FAILED, nowIso())); },
+	// The menu's check is main's own (the sidebar's): its failure handling, and its { checked }.
+	check: () => checkForUpdates(),
+	activate: () => activateWindow(),
+	// Every menu dialog's parent, read as it is about to show: the app window while it is alive and
+	// shown (also for Update in progress and Updates unavailable, which restore nothing).
+	appWindow: () => dialogParent(appWindow()),
 	// A pinned download names its version from the start: electron-updater drops an older staged
 	// download once it starts another, so the state no longer claims it.
 	downloadStarted: (version) => {
@@ -913,12 +935,15 @@ const updateActions = createUpdateActions({
 	// Read when used: main.cjs loads before Electron's app is ready (and under test fakes).
 	get appVersion() { return app.getVersion(); },
 	compareVersions: releaseNotes.compareVersions,
-	show: (options) => {
-		const parent = BrowserWindow.getFocusedWindow();
-		return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
+	// `parent`: the app window the menu activated (focus arrives late on Linux and Windows). With
+	// none, no parent at all: the focused window may be the Switch server… panel.
+	show: (options, parent) => {
+		const owner = dialogParent(parent);
+		return owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options);
 	},
-	download: () => downloadUpdateNow(),
-	install: () => installUpdateNow(),
+	// The menu's Download and Restart name the version their dialog showed: never another one.
+	download: (version) => downloadUpdateNow({ expect: version }),
+	install: (version) => installUpdateNow({ expect: version }),
 	running: () => updateEverything?.running() ?? false,
 	pinFeed: (version) => require("./nightly-updater.cjs").pinFeed(autoUpdater, version, { override: process.env.LH_UPDATE_FEED }),
 	log,
@@ -1040,24 +1065,38 @@ function setupAutoUpdater() {
 	});
 }
 
-/** One result surface for manual checks. Preload buffers the navigation
- * request until React subscribes, including when all macOS windows closed. */
-async function checkForUpdatesFromMenu() {
-	try {
-		const win = [...trustedAppWindows][0] ?? await reopenWindow?.();
-		if (trustedAppWindows.has(win)) {
-			if (win.isMinimized()) win.restore();
-			win.focus();
-			const openSettings = () => {
-				try { win.webContents.send("lh:open-settings", "general"); } catch { /* window closed */ }
-			};
-			if (win.webContents.isLoadingMainFrame()) win.webContents.once("did-finish-load", openSettings);
-			else openSettings();
+/** The app's own window: the server list's content window, or the dev shell's local one; never
+ *  the Switch server… panel, a popup or any other window. */
+function appWindow() {
+	if (serverList) return serverList.appWindow();
+	return [...trustedAppWindows].find((win) => !win.isDestroyed()) ?? null;
+}
+
+/** A window a menu dialog may sit on: alive and shown. A replacement window that exists but isn't
+ *  shown yet (its first paint is pending) is still opening: no parent then. */
+function dialogParent(win) {
+	return win && !win.isDestroyed() && win.isVisible() ? win : null;
+}
+
+/** The menu's check shows its dialog over the app's window: restore and focus it, or start
+ *  reopening it when it is gone, without waiting for a reconnect (T3's desktopWindow.activate,
+ *  DesktopWindow.ts:1169-1189 at df09ced7, reveals its splash and returns). The window to
+ *  parent the dialog on, or null while one is still opening. */
+function activateWindow() {
+	let win = appWindow();
+	if (!win) {
+		try {
+			const opening = reopenWindow?.();
+			if (opening && typeof opening.then === "function") opening.catch((err) => log(`menu reopen failed: ${err?.message ?? err}`));
+		} catch (err) {
+			log(`menu reopen failed: ${err?.message ?? err}`);
 		}
-	} catch {
-		/* Navigation failure must not prevent the manual check. */
+		win = appWindow();
+		if (!win) return null;
 	}
-	checkForUpdates();
+	if (win.isMinimized()) win.restore();
+	win.focus();
+	return dialogParent(win);
 }
 
 function zoomStep(win, dir) {
@@ -1077,16 +1116,17 @@ function applyZoom(win, factor) {
 
 /** macOS needs an application menu with the Edit roles — without one,
  *  Cmd+C/V/A do nothing in the renderer. Everything else stays minimal. */
-function installMenu({ local = true } = {}) {
+function installMenu() {
 	const template = [
 		{
 			label: app.name,
 			submenu: [
 				{ role: "about" },
-				// Manual checks report their result in Settings → General.
-				// Connected to a server there is no local Settings page: native dialogs instead,
-				// also the way out when this app is too old to open the server (owner, 2026-11-18).
-				{ label: "Check for Updates…", click: () => (local ? checkForUpdatesFromMenu() : updateActions.checkNatively()) },
+				// T3's native dialogs, in the local window and onto a server (revision PR 6). In every
+				// platform's menu, unlike T3 (macOS only, DesktopApplicationMenu.ts:217-225 at df09ced7):
+				// it is the way out when this app is too old to open its server, when there is no server
+				// page, so no sidebar control or Settings (owner, 2026-11-18 and 2026-11-21).
+				{ label: "Check for Updates…", click: () => { void updateActions.checkNatively(); } },
 				...(serverList ? [{ label: "Switch server…", click: () => serverList.show({ check: true }) }] : []),
 				{ type: "separator" },
 				{ role: "hide" },
@@ -1327,10 +1367,10 @@ async function main() {
 		serverList = await createServerList({
 			app, BrowserWindow, WebContentsView, ipcMain, session, shell, safeStorage, dialog,
 			startLocal: startLocalServer, stopLocal: killServer, createLocalWindow: () => createWindow(),
-			setLocalMenu: (enabled) => installMenu({ local: enabled }), themeMode: () => appearance.mode,
+			setLocalMenu: () => installMenu(), themeMode: () => appearance.mode,
 			updatingServer: () => updateEverything?.server() ?? null,
 		});
-		installMenu({ local: false });
+		installMenu();
 		reopenWindow = () => serverList.reopen();
 		updateEverything = createUpdateEverything(updateEverythingDeps(serverList));
 		registerDesktopUpdateIPC(ipcMain, { current: () => serverList.current(), updateEverything });

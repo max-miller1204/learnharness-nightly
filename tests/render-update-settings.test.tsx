@@ -19,7 +19,7 @@ import { ServerEventsProvider } from "../components/server-events.tsx";
 import { formatReleaseAge, ReleaseNoteSections, UpdateReleaseNotes } from "../components/release-notes-view.tsx";
 import WhatsNewDialog, { WhatsNewBody } from "../components/whats-new-dialog.tsx";
 import { InstallUpdateDialog } from "../components/install-update-dialog.tsx";
-import { SettingsDialogBody, SettingsDialogProvider } from "../components/settings/settings-dialog.tsx";
+import { SettingsDialogBody } from "../components/settings/settings-dialog.tsx";
 import nextConfig from "../next.config.ts";
 import { Toaster, toastManager } from "../components/ui/toast.tsx";
 import { UpdateLaunchNotice } from "../components/update-toasts.tsx";
@@ -58,7 +58,6 @@ function deferred<T>() {
 function bridge(initial = state(), snapshot = Promise.resolve(initial)) {
 	const listeners = new Set<(value: UpdateState) => void>();
 	const calls = { check: 0, install: 0, get: 0, download: 0 };
-	let onOpen: ((section: string) => void) | null = null;
 	let checkFailure: Error | null = null;
 	window.lh = {
 		expandWindow() {},
@@ -67,13 +66,11 @@ function bridge(initial = state(), snapshot = Promise.resolve(initial)) {
 		checkForUpdates: async () => { calls.check++; if (checkFailure) throw checkFailure; },
 		installUpdate: async () => { calls.install++; return true; },
 		downloadUpdate: async () => { calls.download++; },
-		onOpenSettings: cb => { onOpen = cb; return () => { onOpen = null; }; },
 	};
 	return {
 		calls, listeners,
 		failCheck: () => { checkFailure = new Error("sensitive raw diagnostics"); },
 		push: async (value: UpdateState) => { await act(async () => { for (const listener of listeners) listener(value); }); },
-		open: async () => { await act(async () => onOpen?.("general")); },
 	};
 }
 
@@ -1965,14 +1962,12 @@ describe("Settings integration", () => {
 		assert.ok(visits.length > nested.length + 5, "the controls after the links are reached");
 	});
 
-	it("the shell's navigation request opens General, but opening alone never checks", async () => {
+	it("opening Settings on General never checks", async () => {
 		const b = bridge();
 		globalThis.fetch = async () => Response.json({ settings: { version: 1 } });
-		const host = await mount(<SettingsDialogProvider><span>app</span></SettingsDialogProvider>);
-		assert.equal(q(document, "settings-dialog"), null);
-		await b.open();
+		await mount(<SettingsDialogBody initialSection="general" onClose={() => {}} />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 		assert.equal(q(document, "settings-nav-general")!.getAttribute("aria-current"), "true");
 		assert.ok(q(document, "row-version")); assert.equal(b.calls.check, 0);
-		assert.ok(host.textContent!.includes("app"));
 	});
 });

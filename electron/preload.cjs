@@ -25,11 +25,9 @@
  *   server and quit-and-install (after the renderer's confirm dialog), and
  *   resolves whether main took it (false while Update everything owns it).
  *   getUpdateState retrieves the snapshot for a late subscriber;
- *   checkForUpdates requests a manual check (even with automatic checks
- *   OFF). docs/specs/t3-style-updates.md.
+ *   checkForUpdates requests a check now. docs/specs/t3-style-updates.md.
  *
- *   window.lh.onOpenSettings(cb) — menu navigation, buffered until React
- *   subscribes after a window is reopened. Browser builds have no bridge.
+ *   Browser builds have no bridge.
  *
  *   window.lh.setAppearance(a) — the active theme's { mode, background }
  *   (theme wave, 2026-11-04): main sets nativeTheme.themeSource and
@@ -41,13 +39,6 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 // The bundled ghost dashboard (a local file page) gets no bridge at all.
 if (globalThis.location?.protocol !== "file:") {
-	let openSettingsListener = null;
-	let pendingOpenSettings = null;
-	ipcRenderer.on("lh:open-settings", (_event, section) => {
-		if (openSettingsListener) openSettingsListener(section);
-		else pendingOpenSettings = section;
-	});
-
 	contextBridge.exposeInMainWorld("lh", {
 		platform: process.platform,
 		// Resolve only a renderer-supplied, OS-backed File. No filesystem API,
@@ -110,16 +101,5 @@ if (globalThis.location?.protocol !== "file:") {
 		claimUpdateNotice: (key) => ipcRenderer.invoke("lh:update:claim-notice", typeof key === "string" ? key : ""),
 		// The claimed notice's toast is showing: no page shows it again this launch.
 		ackUpdateNotice: (key) => ipcRenderer.invoke("lh:update:ack-notice", typeof key === "string" ? key : ""),
-		onOpenSettings: (cb) => {
-			openSettingsListener = cb;
-			if (pendingOpenSettings !== null) {
-				const section = pendingOpenSettings;
-				pendingOpenSettings = null;
-				cb(section);
-			}
-			return () => {
-				if (openSettingsListener === cb) openSettingsListener = null;
-			};
-		},
 	});
 }
