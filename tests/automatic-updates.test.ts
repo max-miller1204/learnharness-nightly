@@ -636,6 +636,33 @@ describe("status observation never controls the updater", () => {
 		assert.equal(f.record.removed, true);
 	});
 
+	it("the check and Download IPC resolve T3's results with the state, for the sidebar's toasts", async () => {
+		const f = fixture(); await f.run("main()");
+		const sender = f.windows[0]!.webContents;
+		const event = { sender, senderFrame: sender.mainFrame };
+		const check = f.handles.get("lh:update:check")!;
+		const ran = await check(event) as { checked: boolean; state: { status: string } };
+		assert.deepEqual([ran.checked, ran.state.status], [true, "up-to-date"]);
+		f.updater.failure = new Error("https://private.example 500");
+		const failed = await check(event) as { checked: boolean; state: { status: string; message: string } };
+		assert.deepEqual([failed.checked, failed.state.status], [true, "error"], "it ran; the state says how it went");
+		assert.ok(!JSON.stringify(failed).includes("private"));
+		f.updater.failure = null;
+		const download = f.handles.get("lh:update:download")!;
+		const refused = await download(event) as { accepted: boolean; completed: boolean; state: { status: string } };
+		assert.deepEqual([refused.accepted, refused.completed, refused.state.status], [false, false, "error"], "nothing offered: refused, with the state");
+		f.updater.emit("update-available", { version: "0.3.8" });
+		f.updater.offer = { version: "0.3.8" }; f.updater.downloadFails = true;
+		const failedDownload = await download(event) as { accepted: boolean; completed: boolean; state: { message: string } };
+		assert.deepEqual([failedDownload.accepted, failedDownload.completed, failedDownload.state.message], [true, false, "Couldn’t download the update. Try again."]);
+		f.updater.downloadFails = false;
+		const done = await download(event) as { accepted: boolean; completed: boolean; state: { status: string } };
+		assert.deepEqual([done.accepted, done.completed, done.state.status], [true, true, "downloaded"]);
+		const none = fixture({ updaterMissing: true }); await none.run("main()");
+		const noneSender = none.windows[0]!.webContents;
+		assert.equal((await none.handles.get("lh:update:check")!({ sender: noneSender, senderFrame: noneSender.mainFrame }) as { checked: boolean }).checked, false, "no updater: no check ran");
+	});
+
 	it("Install is a trusted IPC call that answers whether main took it", async () => {
 		const f = fixture(); f.setSettings({ general: { autoUpdate: false } }); await f.run("main()");
 		const sender = f.windows[0]!.webContents;

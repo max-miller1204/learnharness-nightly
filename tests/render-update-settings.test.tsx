@@ -20,6 +20,8 @@ import WhatsNewDialog, { WhatsNewBody } from "../components/whats-new-dialog.tsx
 import { InstallUpdateDialog } from "../components/install-update-dialog.tsx";
 import { SettingsDialogBody, SettingsDialogProvider } from "../components/settings/settings-dialog.tsx";
 import nextConfig from "../next.config.ts";
+import { Toaster, toastManager } from "../components/ui/toast.tsx";
+import { NOT_APPLIED_KEY, resetNotAppliedNotice, UpdateLaunchNotice } from "../components/update-toasts.tsx";
 import { TOOLTIP_DELAY_MS } from "../components/ui/tooltip.tsx";
 
 const dom = parseHTML("<html><body></body></html>");
@@ -1117,6 +1119,120 @@ describe("General update rows", () => {
 		await act(async () => { snapshot.reject(new Error("sensitive error")); });
 		assert.equal(q(host, "update-status")!.textContent, "Couldn’t check for updates. Try again later.");
 		assert.ok(!host.textContent!.includes("sensitive"));
+	});
+});
+
+describe("the update control's toasts (T3's desktopUpdate.toast.tsx and SidebarUpdatePill.tsx)", () => {
+	const toastTitles = () => [...document.querySelectorAll("[data-testid='toast-title']")].map((node) => node.textContent);
+	const toastLines = () => [...document.querySelectorAll("[data-testid='toast-description']")].map((node) => node.textContent);
+	const settle = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+	// One pill and one toast region at a time: each case unmounts the one before.
+	const unmountAll = async () => { for (const { root, host } of roots.splice(0)) { await act(async () => { root.unmount(); }); host.remove(); } };
+	const pillWithToasts = async (initial: UpdateState) => {
+		await unmountAll();
+		await act(async () => { toastManager.clear(); });
+		const b = bridge(initial);
+		const host = await mount(<><SidebarUpdatePill /><Toaster /></>);
+		await settle();
+		return { b, host, pill: () => q(host, "update-pill")! };
+	};
+	const offered = state({ status: "available", version: "0.3.8", revision: 1, availableVersion: "0.3.8" });
+	const downloaded = state({ status: "downloaded", version: "0.3.8", revision: 2, availableVersion: "0.3.8", downloadedVersion: "0.3.8" });
+
+	it("Download: Update downloaded when it completes; Could not download update with the fixed message when it fails; Could not start update download when the bridge throws", async () => {
+		const done = await pillWithToasts(offered);
+		window.lh!.downloadUpdate = async () => ({ accepted: true, completed: true, state: downloaded });
+		await click(done.pill()); await settle();
+		assert.deepEqual(toastTitles(), ["Update downloaded"]);
+		const failed = await pillWithToasts(offered);
+		window.lh!.downloadUpdate = async () => ({ accepted: true, completed: false, state: { ...offered, errorContext: "download", message: "Couldn’t download the update. Try again." } });
+		await click(failed.pill()); await settle();
+		assert.deepEqual([toastTitles(), toastLines()], [["Could not download update"], ["Couldn’t download the update. Try again."]]);
+		const threw = await pillWithToasts(offered);
+		window.lh!.downloadUpdate = async () => { throw new Error("ipc /private/path"); };
+		await click(threw.pill()); await settle();
+		assert.deepEqual([toastTitles(), toastLines()], [["Could not start update download"], ["An unexpected error occurred."]], "never the raw error");
+		const pulled = await pillWithToasts(offered);
+		window.lh!.downloadUpdate = async () => ({ accepted: true, completed: false, state: state({ status: "up-to-date", revision: 3 }) });
+		await click(pulled.pill()); await settle();
+		assert.deepEqual(toastTitles(), [], "nothing to say when the release was pulled");
+	});
+
+	it("Check: Could not check for updates when no check ran or the bridge threw; nothing when it ran", async () => {
+		const ran = await pillWithToasts(state({ status: "up-to-date", revision: 1 }));
+		window.lh!.checkForUpdates = async () => ({ checked: true, state: state({ status: "up-to-date", revision: 2 }) });
+		await click(ran.pill()); await settle();
+		assert.deepEqual(toastTitles(), []);
+		const skipped = await pillWithToasts(state({ status: "up-to-date", revision: 1 }));
+		window.lh!.checkForUpdates = async () => ({ checked: false, state: state({ status: "up-to-date", revision: 2 }) });
+		await click(skipped.pill()); await settle();
+		assert.deepEqual([toastTitles(), toastLines()], [["Could not check for updates"], ["Automatic updates are not available in this build."]]);
+		const threw = await pillWithToasts(state({ status: "up-to-date", revision: 1 }));
+		window.lh!.checkForUpdates = async () => { throw new Error("raw diagnostics"); };
+		await click(threw.pill()); await settle();
+		assert.deepEqual([toastTitles(), toastLines()], [["Could not check for updates"], ["Update check failed."]]);
+	});
+
+	it("Install: a refused install shows Update downloaded, a bridge that throws Could not install update, and so does an install main recovered from", async () => {
+		const refused = await pillWithToasts(downloaded);
+		window.lh!.installUpdate = async () => false;
+		await click(refused.pill()); await click(q(document, "install-update-confirm")); await settle();
+		assert.deepEqual(toastTitles(), ["Update downloaded"]);
+		const threw = await pillWithToasts(downloaded);
+		window.lh!.installUpdate = async () => { throw new Error("raw"); };
+		await click(threw.pill()); await click(q(document, "install-update-confirm")); await settle();
+		assert.deepEqual([toastTitles(), toastLines()], [["Could not install update"], ["An unexpected error occurred."]]);
+		const recovered = await pillWithToasts(downloaded);
+		await click(recovered.pill()); await click(q(document, "install-update-confirm")); await settle();
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+		assert.equal(recovered.pill().getAttribute("data-action"), "restarting");
+		assert.deepEqual(toastTitles(), []);
+		await recovered.b.push({ ...downloaded, revision: 3, errorContext: "install", canRetry: true, message: "Couldn’t install the update." });
+		assert.deepEqual([toastTitles(), toastLines()], [["Could not install update"], ["Couldn’t install the update."]]);
+	});
+
+	it("Update did not apply: once per launch (across reloads), again for another version, never on the self-hosted server", async () => {
+		await act(async () => { toastManager.clear(); });
+		resetNotAppliedNotice();
+		const notApplied = state({ status: "available", version: "0.3.8", revision: 1, availableVersion: "0.3.8", notAppliedVersion: "0.3.8" });
+		bridge(notApplied);
+		const first = await mount(<><UpdateLaunchNotice current="0.3.7" /><Toaster /></>);
+		await settle();
+		assert.deepEqual([toastTitles(), toastLines()], [["Update did not apply"], ["LearnHarness is still on 0.3.7. Install 0.3.8 again from the update button."]]);
+		assert.equal(tabStorage.get(NOT_APPLIED_KEY), "0.3.8");
+		const { root } = roots.pop()!; await act(async () => { root.unmount(); }); first.remove();
+		await act(async () => { toastManager.clear(); });
+		resetNotAppliedNotice();
+		// A reload: the same window's sessionStorage remembers it.
+		bridge(notApplied);
+		await mount(<><UpdateLaunchNotice current="0.3.7" /><Toaster /></>);
+		await settle();
+		assert.deepEqual(toastTitles(), [], "not again after a reload");
+		await unmountAll();
+		const b = bridge(notApplied);
+		await mount(<><UpdateLaunchNotice current="0.3.7" /><Toaster /></>);
+		await settle();
+		await b.push({ ...notApplied, revision: 2, notAppliedVersion: "0.3.9" });
+		assert.ok(toastTitles().includes("Update did not apply"), "another version says so again");
+		await act(async () => { toastManager.clear(); });
+		delete window.lh;
+		globalThis.fetch = async () => Response.json({ ...notApplied, revision: 5 });
+		tabStorage.clear();
+		await unmountAll();
+		await mount(<><UpdateLaunchNotice current="0.3.7" /><Toaster /></>);
+		await settle();
+		assert.deepEqual(toastTitles(), [], "the server's state never says it");
+	});
+
+	it("Settings' own buttons raise no toast (that is revision PR 5)", async () => {
+		await act(async () => { toastManager.clear(); });
+		bridge(offered);
+		window.lh!.downloadUpdate = async () => ({ accepted: true, completed: true, state: downloaded });
+		const host = await mount(<><UpdateSettings {...props} /><Toaster /></>);
+		await settle();
+		await click(q(host, "update-download"));
+		await settle();
+		assert.deepEqual(toastTitles(), []);
 	});
 });
 

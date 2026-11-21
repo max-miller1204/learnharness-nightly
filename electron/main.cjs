@@ -665,17 +665,21 @@ function automaticUpdatesEnabled() {
 	}
 }
 
+/** Resolves T3's check result (DesktopUpdates.ts:576-626): `checked` false when no check ran
+ *  (updates unavailable, or another action of ours is under way), true once one ran, whatever it
+ *  found (a failed check shows in the state). The sidebar's "Could not check for updates" toast
+ *  reads it. */
 function checkForUpdates({ manual = false } = {}) {
-	if (!autoUpdater) return;
+	if (!autoUpdater) return Promise.resolve({ checked: false });
 	if (!manual && !automaticUpdatesEnabled()) {
 		log("auto-update: automatic check skipped (turned off in Settings)");
-		return;
+		return Promise.resolve({ checked: false });
 	}
 	// Do not gate on display state: a stale spinner or error must never disable future background
 	// checks. Only a check or download of ours still running skips this one, as T3's active action
 	// does (DesktopUpdates.ts:583-591); electron-updater owns the rest of its in-flight work.
 	// Nor during an install: its feed errors must never read as the install's.
-	if (activeAction || installing) return;
+	if (activeAction || installing) return Promise.resolve({ checked: false });
 	activeAction = "check";
 	activeCheck = autoUpdater
 		.checkForUpdates()
@@ -691,6 +695,7 @@ function checkForUpdates({ manual = false } = {}) {
 			if (updateState.status !== "downloading" && updateState.status !== "available") setUpdateState(updateMachine.reduceOnCheckFailure(updateState, CHECK_FAILED, nowIso()));
 		})
 		.finally(() => { activeAction = null; activeCheck = null; });
+	return activeCheck.then(() => ({ checked: true }));
 }
 
 /** Download the offered version (the user clicked Download, also to retry a failed download).
@@ -698,11 +703,13 @@ function checkForUpdates({ manual = false } = {}) {
  *  DesktopUpdates.ts:526-540, 640-644). Re-checks first, as T3 does (:658-674): electron-updater
  *  downloads what its last check found, which can be hours old. A failed re-check keeps the known
  *  offer, which still downloads; a re-check that finds nothing (the release was pulled) clears
- *  the offer and downloads nothing. */
+ *  the offer and downloads nothing. Resolves T3's action result (DesktopUpdates.ts:628-768):
+ *  `accepted` once admitted, `completed` once downloaded; the sidebar's toasts read it. */
 async function downloadUpdateNow() {
-	if (!autoUpdater || installing || updateEverything?.running()) return;
+	const refused = { accepted: false, completed: false };
+	if (!autoUpdater || installing || updateEverything?.running()) return refused;
 	if (activeAction === "check" && activeCheck) await activeCheck.catch(() => {});
-	if (activeAction || installing || updateEverything?.running() || !updateMachine.hasDownloadableOffer(updateState)) return;
+	if (activeAction || installing || updateEverything?.running() || !updateMachine.hasDownloadableOffer(updateState)) return refused;
 	activeAction = "download";
 	// The offer as clicked: a failed re-check downloads it as known (from "error" too).
 	const clicked = updateState;
@@ -720,10 +727,10 @@ async function downloadUpdateNow() {
 		if (pulled) {
 			log("download re-check: the feed no longer offers it; nothing downloads");
 			setUpdateState(updateMachine.reduceOnNoUpdate(updateState, nowIso()));
-			return;
+			return { accepted: true, completed: false };
 		}
 		if (!updateMachine.hasDownloadableOffer(updateState)) {
-			if (updateState.status !== "checking") return;
+			if (updateState.status !== "checking") return { accepted: true, completed: false };
 			setUpdateState({ ...clicked });
 		}
 		setUpdateState(updateMachine.reduceOnDownloadStart(updateState));
@@ -732,7 +739,9 @@ async function downloadUpdateNow() {
 		} catch (err) {
 			log(`update download failed: ${err?.message ?? err}`);
 			setUpdateState(updateMachine.reduceOnDownloadFailure(updateState, DOWNLOAD_FAILED));
+			return { accepted: true, completed: false };
 		}
+		return { accepted: true, completed: updateState.status === "downloaded" };
 	} finally {
 		activeAction = null;
 	}
@@ -1203,8 +1212,8 @@ async function main() {
 	});
 	ipcMain.handle("lh:update:download", (event) => {
 		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
-		// Re-checks, then downloads; the page follows the pushed state, not this promise.
-		return downloadUpdateNow();
+		// Re-checks, then downloads; resolves T3's { accepted, completed } with the state for the toasts.
+		return downloadUpdateNow().then((result) => ({ ...result, state: updateState }));
 	});
 	ipcMain.handle("lh:update:get", (event) => {
 		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
@@ -1212,7 +1221,8 @@ async function main() {
 	});
 	ipcMain.handle("lh:update:check", (event) => {
 		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
-		checkForUpdates({ manual: true });
+		// T3's { checked } with the state, once the check ends: the sidebar's toast reads it.
+		return checkForUpdates({ manual: true }).then((result) => ({ ...result, state: updateState }));
 	});
 
 	// Sidebar-at-narrow-window (owner, 2026-09-17): the renderer auto-closes

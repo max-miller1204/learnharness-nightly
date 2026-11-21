@@ -52,6 +52,7 @@ import { useOptionalInteractionLayers } from "@/components/interaction-layers";
 import { hasLegacyInteractionForeground } from "@/components/plugin-input-focus";
 import { InstallUpdateDialog } from "@/components/install-update-dialog";
 import { UpdateReleaseNotes } from "@/components/release-notes-view";
+import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateDownloadedToast, showUpdateErrorToast, UNEXPECTED_ERROR } from "@/components/update-toasts";
 import { APP_VERSION, HOMEPAGE, desktopOffer, useDesktopAppUpdate, useUpdateState, type DesktopAppStatus, type UpdateState } from "@/components/settings/update-settings";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -451,7 +452,18 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	const kind = resolveUpdateControl(state, { showCheckIcon, pageVersion, desktop: desktopStatus, installing });
 	// Anything but the restart (an error, a newer version to download, a rollback notice) is the normal
 	// button again. A check spin started elsewhere (this app's own timer) outranks it only for a moment.
-	useEffect(() => { if (kind !== "restarting" && kind !== "checking") setInstalling(false); }, [kind]);
+	// A confirmed install that main recovered from (T3's recoverFailedInstall) says so, as T3's
+	// installLocalUpdate does with its failed result (SidebarUpdatePill.tsx:172-195 at df09ced7).
+	const installingRef = useRef(installing);
+	installingRef.current = installing;
+	const stateRef = useRef(state);
+	stateRef.current = state;
+	useEffect(() => {
+		if (kind === "restarting" || kind === "checking") return;
+		const failedInstall = stateRef.current?.errorContext === "install";
+		if (installingRef.current && transport === "desktop" && failedInstall) showUpdateErrorToast(INSTALL_FAILED_TITLE, stateRef.current?.message ?? UNEXPECTED_ERROR);
+		setInstalling(false);
+	}, [kind, transport]);
 	const autoReloadTo = autoReloadVersion(state, pageVersion);
 	useEffect(() => {
 		if (autoReloadTo && claimAutoReload(autoReloadTo)) reload();
@@ -576,14 +588,27 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 			setPending(true);
 			void desktop.install().catch(() => {}).finally(() => setPending(false));
 		} else if (desktop && kind === "app-download") void desktop.download().catch(() => {});
-		else if (kind === "download") download();
+		else if (kind === "download") {
+			// T3's downloadLocalUpdate (SidebarUpdatePill.tsx:147-170 at df09ced7), with LearnHarness's fixed messages.
+			void download().then((result) => {
+				if (result === "threw") showUpdateErrorToast(DOWNLOAD_START_FAILED_TITLE, UNEXPECTED_ERROR);
+				else if (result?.completed) showUpdateDownloadedToast(result.state?.downloadedVersion ?? result.state?.version ?? state.version);
+				else if (result?.accepted && result.state?.message) showUpdateErrorToast(DOWNLOAD_FAILED_TITLE, result.state.message);
+			});
+		}
 		else if (kind === "install") { setOpen(false); setConfirming(true); }
 		else if (kind === "dismiss-notice") dismissNotice();
 		else if (kind === "check") {
 			if (!reducedMotion) { setLatched(true); setSpinKey((key) => key + 1); }
 			setPending(true);
-			// A failed check comes back as the "error" state, which shows the refresh button again.
-			void Promise.all([check().catch(() => {}), desktop?.check().catch(() => {})]).finally(() => setPending(false));
+			// A failed check comes back as the "error" state, which shows the refresh button again. A check
+			// that didn't run, or a bridge that threw, says so (T3's, SidebarUpdatePill.tsx:340-368 at df09ced7).
+			const appCheck = check()
+				.then((result) => {
+					if (transport === "desktop" && result && !result.checked) showUpdateErrorToast(CHECK_FAILED_TITLE, result.state?.message ?? CHECK_UNAVAILABLE);
+				})
+				.catch(() => { if (transport === "desktop") showUpdateErrorToast(CHECK_FAILED_TITLE, CHECK_ERROR); });
+			void Promise.all([appCheck, desktop?.check().catch(() => {})]).finally(() => setPending(false));
 		}
 	};
 
@@ -684,7 +709,13 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 					if (transport === "desktop") {
 						// The app can turn it down (an Update everything run owns its updater): Restarting
 						// only after its yes, and until then the normal button, focus untouched.
-						void install().then((accepted) => { if (accepted) startRestarting(); });
+						// T3's installLocalUpdate: a refused install shows the downloaded toast, a bridge that threw
+						// "Could not install update" (SidebarUpdatePill.tsx:172-195 at df09ced7).
+						let threw = false;
+						void install({ onError: () => { threw = true; showUpdateErrorToast(INSTALL_FAILED_TITLE, UNEXPECTED_ERROR); } }).then((accepted) => {
+							if (accepted) startRestarting();
+							else if (!threw) showUpdateDownloadedToast(state.downloadedVersion ?? state.version);
+						});
 						return;
 					}
 					startRestarting();

@@ -52,6 +52,11 @@ export type UpdateState = {
 	omittedReleaseCount?: number;
 };
 
+/** T3's check result (main's lh:update:check): whether a check ran, and the state after it. */
+export type UpdateCheckResult = { checked: boolean; state?: UpdateState };
+/** T3's action result (main's lh:update:download): admitted, finished, and the state after it. */
+export type UpdateActionResult = { accepted: boolean; completed: boolean; state?: UpdateState };
+
 /** Which updater this window talks to: the Electron shell, or the self-hosted server. */
 export type UpdateTransport = "desktop" | "web";
 
@@ -152,16 +157,18 @@ export function useUpdateState() {
 		return () => { live = false; offEvent?.(); offResync?.(); };
 	}, [accept, hub]);
 
-	const check = useCallback(async (): Promise<void> => {
+	/** Desktop: resolves T3's check result once the check ended (rejects when the bridge throws). */
+	const check = useCallback(async (): Promise<UpdateCheckResult | undefined> => {
 		const lh = localDesktopBridge();
-		if (lh) return lh.checkForUpdates?.();
+		if (lh) return (await lh.checkForUpdates?.()) ?? undefined;
 		accept(await fetchWebState("/api/updates/check", "POST"));
+		return undefined;
 	}, [accept]);
 
 	/** Apply now. Callers confirm first (InstallUpdateDialog). Resolves false when the request
 	 *  failed or the app turned it down (the sidebar control then shows its normal button again),
 	 *  never rejects. */
-	const install = useCallback(async (): Promise<boolean> => {
+	const install = useCallback(async ({ onError }: { onError?: () => void } = {}): Promise<boolean> => {
 		try {
 			const lh = localDesktopBridge();
 			// The app can turn it down (an Update everything run owns the updater): only its yes counts.
@@ -170,14 +177,22 @@ export function useUpdateState() {
 			return true;
 		} catch {
 			setFailed(true);
+			onError?.();
 			return false;
 		}
 	}, [accept]);
 
-	/** Desktop only: download the "available" version. */
-	const download = useCallback((): void => {
+	/** Desktop only: download the "available" version. Resolves T3's action result, or "threw"
+	 *  when the bridge rejected (never rejects itself). */
+	const download = useCallback(async (): Promise<UpdateActionResult | "threw" | undefined> => {
 		const pending = localDesktopBridge()?.downloadUpdate?.();
-		if (pending) void pending.catch(() => setFailed(true));
+		if (!pending) return undefined;
+		try {
+			return (await pending) ?? undefined;
+		} catch {
+			setFailed(true);
+			return "threw";
+		}
 	}, []);
 
 	/** Self-hosted only: hide the rollback notice on every browser of this server. */
