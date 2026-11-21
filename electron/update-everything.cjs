@@ -16,7 +16,7 @@
  * server's new version, not when its restart starts (owner decision).
  */
 
-const { compareVersions } = require("./release-notes.cjs");
+const { compareVersions, bridgeNotes } = require("./release-notes.cjs");
 
 const EXACT = /^\d+\.\d+\.\d+(?:-[a-z]+\.\d{8}\.\d+)?$/;
 const isNewerVersion = (a, b) => typeof a === "string" && typeof b === "string" && EXACT.test(a) && EXACT.test(b) && compareVersions(a, b) > 0;
@@ -96,13 +96,19 @@ function createUpdateEverything(deps) {
 		const state = deps.updater.state();
 		// The sidebar's progress ring: how far this app's own download is, or null (not downloading, or no size).
 		const downloadPercent = state.status === "downloading" && typeof state.downloadPercent === "number" ? state.downloadPercent : null;
-		if (run) return { version: deps.appVersion, target: run.target, phase: run.step === "downloading" ? "downloading" : "updating", error: null, downloadPercent };
+		// A run shows no notes, also in its download step, which the page can't tell from a
+		// plain download (T3's `!isRunningEverything`, SidebarUpdatePill.tsx:279-280).
+		if (run) return { version: deps.appVersion, target: run.target, phase: run.step === "downloading" ? "downloading" : "updating", error: null, downloadPercent, releaseNotes: [], omittedReleaseCount: 0 };
+		// The offered version's notes (main keeps them only while available, downloading or
+		// downloaded), bounded: the sidebar's hover shows them for this app's states, as T3's does.
+		const notes = bridgeNotes(state.releaseNotes, state.omittedReleaseCount);
 		return {
 			version: deps.appVersion,
 			target: typeof state.version === "string" ? state.version : null,
 			phase: state.status,
 			error: state.status === "error" ? "Couldn’t check for updates. Try again later." : null,
 			downloadPercent,
+			...notes,
 		};
 	}
 
