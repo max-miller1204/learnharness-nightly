@@ -82,13 +82,13 @@ test("each answered quiz shows its confidence right after the answer, as one sto
 });
 
 test("a confidence from 0 to 100 shows, off the stops too; anything else, or a skipped quiz, shows none", async () => {
-  for (const [value, color] of [[0, confidenceColors[0]], [55, confidenceColors[2]], [100, confidenceColors[5]]] as const) {
+  for (const [value, shown, color] of [[0, 0, confidenceColors[0]], [55, 55, confidenceColors[2]], [100, 100, confidenceColors[5]], [55.5, 56, confidenceColors[2]]] as const) {
     const [record] = await records(withFirst({ confidence: value }));
-    assert.equal(record?.label, `Confidence ${value}%`);
-    assert.deepEqual(record?.texts, [`${value}%`]);
-    assert.deepEqual(record?.fills, [[`${value}%`, color]]);
+    assert.equal(record?.label, `Confidence ${shown}%`);
+    assert.deepEqual(record?.texts, [`${shown}%`]);
+    assert.deepEqual(record?.fills, [[`${shown}%`, color]]);
   }
-  for (const details of [{ confidence: 140 }, { confidence: -5 }, { confidence: Number.POSITIVE_INFINITY }, { confidence: "70" }, { dismissed: true }, { confidence: undefined }]) {
+  for (const details of [{ dontKnow: true }, { confidence: 140 }, { confidence: -5 }, { confidence: Number.POSITIVE_INFINITY }, { confidence: "70" }, { dismissed: true }, { confidence: undefined }]) {
     const shown = await records(withFirst(details));
     assert.deepEqual(shown.map(({ label }) => label), ["Confidence 50%"], JSON.stringify(details));
   }
@@ -97,7 +97,7 @@ test("a confidence from 0 to 100 shows, off the stops too; anything else, or a s
   assert.deepEqual(await records(ask), []);
 });
 
-test("the dock's slider widens its percentage on one line at larger text too", async () => {
+test("the dock's slider keeps room for 100% at any text size, so its rail never changes width", async () => {
   const call = (quiz().messages[5] as { content: { type: string; name?: string; arguments?: unknown; id?: string }[] }).content.find(({ type }) => type === "toolCall");
   assert.ok(call);
   const question = { tool: call.name, input: call.arguments, toolCallId: call.id, messageId: "m", contentIndex: 0, key: "k" } as unknown as PendingQuestion;
@@ -106,11 +106,21 @@ test("the dock's slider widens its percentage on one line at larger text too", a
     tree = create(createElement(BuiltinQuestion, { question, disabled: false, submit: () => {}, reveal: false, openAtStart: true }));
   });
   try {
-    const percent = (tree as ReactTestRenderer).root.findAll((node) => String(node.type) === "Text" && texts(node).join("") === "50%");
-    assert.equal(percent.length, 1);
-    assert.equal(percent[0]?.props.numberOfLines, 1);
-    assert.equal(flat(percent[0]?.props.style).minWidth, 40);
-    assert.equal(flat(percent[0]?.props.style).width, undefined);
+    const root = (tree as ReactTestRenderer).root;
+    const [percent] = root.findAll((node) => String(node.type) === "Text" && texts(node).join("") === "50%");
+    const [widest] = root.findAll((node) => String(node.type) === "Text" && texts(node).join("") === "100%");
+    assert.ok(percent && widest);
+    // An unseen "100%" in the read-out's own style holds the box open; the value sits over it.
+    const box = widest.parent as ReactTestInstance;
+    assert.ok(box.findAll((node) => node === percent).length === 1, "the value and the unseen 100% share one box");
+    assert.equal(flat(box.props.style).minWidth, 40);
+    assert.equal(flat(widest.props.style).opacity, 0);
+    assert.equal(widest.props.accessibilityElementsHidden, true);
+    assert.equal(widest.props.importantForAccessibility, "no");
+    for (const name of ["fontFamily", "fontSize", "lineHeight"]) assert.equal(flat(widest.props.style)[name], flat(percent.props.style)[name], name);
+    assert.equal(flat(percent.props.style).position, "absolute");
+    assert.equal(percent.props.numberOfLines, 1);
+    assert.equal(widest.props.numberOfLines, 1);
   } finally {
     act(() => tree?.unmount());
   }

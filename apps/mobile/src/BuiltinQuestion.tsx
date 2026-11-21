@@ -48,7 +48,7 @@ function ConfidenceRail({ value, disabled, onChange }: { value: number; disabled
           <View style={{ position: "absolute", left: `${value}%`, marginLeft: -8, width: 16, height: 16, borderRadius: 8, backgroundColor: color }} />
         </View>
       </View>
-      <Percent value={value} width={40} style={s.ui} />
+      <Percent value={value} width={40} style={s.ui} widest="100%" />
     </View>
   );
 }

@@ -22,9 +22,18 @@ export function RailPaint({ value, style }: { value: number; style?: StyleProp<V
 }
 
 /** The percentage beside a rail: at least `width` wide, and wider on one line when larger
- *  text needs it, the rail taking what is left. */
-export function Percent({ value, width, style }: { value: number; width: number; style: StyleProp<TextStyle> }) {
-  return <Text numberOfLines={1} style={[style, { minWidth: width, textAlign: "right", fontVariant: ["tabular-nums"] }]}>{`${value}%`}</Text>;
+ *  text needs it, the rail taking what is left. With `widest`, the box is always as wide as
+ *  that text would be (an unseen copy holds it open), so a slider's rail keeps its width as
+ *  the value changes at any text size. */
+export function Percent({ value, width, style, widest }: { value: number; width: number; style: StyleProp<TextStyle>; widest?: string }) {
+  const shown = { textAlign: "right", fontVariant: ["tabular-nums"] } as const;
+  if (!widest) return <Text numberOfLines={1} style={[style, shown, { minWidth: width }]}>{`${value}%`}</Text>;
+  return (
+    <View style={{ minWidth: width }}>
+      <Text numberOfLines={1} accessibilityElementsHidden importantForAccessibility="no" style={[style, shown, { opacity: 0 }]}>{widest}</Text>
+      <Text numberOfLines={1} style={[style, shown, { position: "absolute", top: 0, right: 0, left: 0 }]}>{`${value}%`}</Text>
+    </View>
+  );
 }
 
 /** The answered quiz card's confidence, as the web's (components/answered-card.tsx): the rail
