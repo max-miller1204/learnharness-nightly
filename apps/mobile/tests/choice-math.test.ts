@@ -146,6 +146,10 @@ test("a rule is drawn in the text's color or its own \\color, and kept when a th
     assert.ok(svg, tex);
     assert.deepEqual([...new Set([...fills(svg.light), ...fills(svg.dark)])], ["red"], tex);
   }
+  // A strut draws nothing, so it never decides whether colors stand out: black on yellow does.
+  const strut = drawTex("\\colorbox{yellow}{\\rule{0pt}{1.2em}\\color{black}{x}}", false)?.svg;
+  assert.ok(strut);
+  for (const svg of [strut.light, strut.dark]) assert.ok(fills(svg).includes("yellow") && fills(svg).includes("black"), svg.slice(0, 120));
   // A box behind text is still a box, and still dropped where its color doesn't stand out.
   const box = drawTex("\\colorbox{yellow}{x}", false)?.svg;
   assert.ok(box && box.light.includes('<rect fill="yellow"') && !box.dark.includes("<rect"));

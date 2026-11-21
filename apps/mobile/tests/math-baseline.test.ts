@@ -145,10 +145,10 @@ test("ios: lines keep the line height they have on Android, and tall or deep mat
 test("ios: math in a Text of its own shows whole, at every pixel density", async () => {
 	// #315. React Native lays a Text with no text out as one line exactly as tall as its
 	// pictures' boxes, each box's size rounded up to the pixel grid after adding 0.01 pt
-	// (ParagraphShadowNode.cpp:121-126), and puts a box's top 2.76 pt above the line's (its
-	// bottom at the line's bottom plus TextKit's Helvetica 12 descender), that origin rounded to
-	// the nearest pixel (:423-424). The Text cuts off what lies outside it (Text.js: overflow
-	// hidden). Before this, the top 2.76 pt and the depth were cut off.
+	// (ParagraphShadowNode's getContentWithMeasuredAttachments), and puts a box's top 2.76 pt
+	// above the line's (its bottom at the line's bottom plus TextKit's Helvetica 12 descender),
+	// that origin rounded to the nearest pixel (ParagraphShadowNode's layout). The Text cuts
+	// off what lies outside it (Text.js: overflow hidden).
 	for (const [name, element] of [
 		["choice", choice("$(-0.10, +0.20)$")],
 		["answered card", card(["$(+0.20, -0.10)$"])],
@@ -167,6 +167,19 @@ test("ios: math in a Text of its own shows whole, at every pixel density", async
 	}
 	const [android] = await boxesOn("android", choice("$(-0.10, +0.20)$"));
 	assert.equal(android?.padding, 0, "Android keeps its layout");
+});
+
+test("ios: math alone on the last line of a Text with text keeps room for its depth", async () => {
+	// A last line holding only math in a Text with text is laid out taller than its pictures,
+	// so only the bottom can cut: the box's bottom sits 2.76 pt above that line's bottom, give
+	// or take half a pixel of rounding, and the depth hangs below it.
+	const [after] = await boxesOn("ios", message("Earlier text\n$(+0.20, -0.10)$"));
+	assert.ok(after);
+	assert.equal(after.lift, 0);
+	for (const scale of [1, 2, 3]) {
+		const below = after.size.depth - VIEW_FONT_DESCENT + 0.5 / scale;
+		assert.ok(below <= after.padding, `after text at ${scale}x: ${(below - after.padding).toFixed(2)} pt cut off at the bottom`);
+	}
 });
 
 test("ios: a cell holding only math keeps its own padding and adds room for the depth", async () => {

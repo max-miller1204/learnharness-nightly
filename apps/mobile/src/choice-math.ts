@@ -170,6 +170,14 @@ const THEMES = Object.fromEntries((["dark", "light"] as const).map((mode) => {
   return [mode, { text: colors.text, surfaces }];
 })) as Record<ThemeMode, { text: string; surfaces: string[] }>;
 
+/** Whether a space draws a rule: it has a background and a size. \rule{0pt}{1.2em}, a strut,
+ * only holds the line open. */
+function drawnRule(node: MmlNode): boolean {
+  if (!node.isKind("mspace") || node.attributes?.getExplicit("mathbackground") === undefined) return false;
+  const size = (name: string) => parseFloat(String(node.attributes.getExplicit(name) ?? 0));
+  return size("width") > 0 && (size("height") > 0 || size("depth") > 0);
+}
+
 /** A \rule is a space MathJax fills with the \color in effect where the rule is parsed, or
  * with black when there is none (BaseMethods' Rule). That black stands for the color around
  * it: the nearest \color above it, which math inside \text doesn't see while it is parsed,
@@ -177,7 +185,7 @@ const THEMES = Object.fromEntries((["dark", "light"] as const).map((mode) => {
 function rulesInTextColor(node: MmlNode, color?: string) {
   const own = ["mathcolor", "color"].map((name) => node.attributes?.getExplicit(name)).find((value) => value !== undefined);
   color = own === undefined ? color : String(own);
-  if (node.isKind("mspace") && String(node.attributes?.getExplicit("mathbackground")).trim().toLowerCase() === "black") {
+  if (drawnRule(node) && String(node.attributes.getExplicit("mathbackground")).trim().toLowerCase() === "black") {
     node.attributes.set("mathbackground", color ?? "currentColor");
   }
   if (!node.isToken) for (const child of children(node)) if (child) rulesInTextColor(child, color);
@@ -199,9 +207,9 @@ function rulesAsInk(adaptor: LiteAdaptor, node: LiteElement) {
 function inks(node: MmlNode, color: string | undefined, behind: string | undefined, found: { color?: string; behind?: string }[]) {
   if (node.isKind("mphantom")) return found;
   const explicit = (names: string[]) => names.map((name) => node.attributes?.getExplicit(name)).find((value) => value !== undefined);
-  // A rule's background is its ink: currentColor is the text's color.
-  const rule = node.isKind("mspace") ? explicit(["mathbackground", "background"]) as string | undefined : undefined;
-  if (rule !== undefined) {
+  // A rule's background is its ink: currentColor is the text's color. A strut draws nothing.
+  if (drawnRule(node)) {
+    const rule = String(explicit(["mathbackground", "background"]));
     found.push({ color: rule === "currentColor" ? undefined : rule, behind });
     return found;
   }
