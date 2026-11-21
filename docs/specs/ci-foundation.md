@@ -68,7 +68,7 @@ Outputs: `typecheck`, `test`, `selfhost`, `standalone` (`true`/`false`). Each ch
 
 So a docs-only PR runs only `changes`, `lint` and `Check`; a tests-only PR skips the three standalone builds.
 
-The classifier gets a small `node:test` suite (`.github/scripts/ci-changes.test.cjs`) that the `lint` job runs: docs-only, shipped docs, tests-only, native test, unknown path, `--full`, no `--paths` (fail open).
+The classifier gets a small `node:test` suite (`.github/scripts/ci-changes.test.cjs`) that the `lint` job runs: docs-only, shipped docs, tests-only, native test, unknown path, `--full`, no `--paths` (fail open), a `--paths` file that isn't NUL-separated (fail open), and names Git would quote (non-ASCII, a newline) from a pull request's paths file and from a push.
 
 ### Caching
 
