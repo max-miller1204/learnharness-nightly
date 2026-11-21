@@ -344,15 +344,18 @@ async function createServerList({
 			publish();
 			return;
 		}
-		// Not busy: a failing check of the open server still shows its problem meanwhile.
+		// Not busy: a failing check of another open server still shows its problem meanwhile.
 		removing = server;
-		// Its bearer is never sent again: a check still running for it stops now.
+		// Its bearer is never sent again: a check still running for it stops now, and so does
+		// its ChatGPT sign-in, without the cancel that would carry the bearer.
+		chatgpt.forget(server);
 		if (window && rechecks.get(window)?.server === server) rechecks.get(window).stop.abort();
+		// Its window closes before the write: its page's own requests carry the bearer too.
+		// The list comes first, so the app always has a window, and stays in front for the keyboard.
+		if (active?.server === server) { show(); destroyContent(); }
 		publish();
 		try {
 			await store.remove(server);
-			// Its window closes; the list stays in front for the keyboard.
-			if (active?.server === server) { destroyContent(); show(); }
 			if (problem?.server === server) problem = null;
 			notice = "";
 		} catch { notice = "Couldn’t remove the saved server."; }

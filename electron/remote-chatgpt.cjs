@@ -11,18 +11,24 @@ const LOGIN_PATH = "/api/subscriptions";
 const ENDED = "ChatGPT sign-in ended. Try again.";
 
 // `accountId`: sign in again to that saved account (the server's own `login` id).
+// `revoked`: aborts once `token` must never be sent again (its server is being removed).
+// The attempt then ends at once and sends nothing more, not even its own cancel.
 async function remoteChatGPTSignIn(origin, token, {
-	openExternal, signal, request, createListener = () => http.createServer(),
+	openExternal, signal, revoked, request, createListener = () => http.createServer(),
 	timeoutMs = 180000, accountId,
 }) {
 	const listener = createListener();
 	const timeout = AbortSignal.timeout(timeoutMs);
-	const lifetime = signal ? AbortSignal.any([signal, timeout]) : timeout;
+	const lifetime = AbortSignal.any([timeout, ...(signal ? [signal] : []), ...(revoked ? [revoked] : [])]);
 	const headers = { origin, "x-learnharness-subscriptions": "1" };
-	const send = (pathname, options) => requestServer(origin, pathname, { ...options, signal: lifetime, token, request });
+	const send = (pathname, options) => {
+		revoked?.throwIfAborted();
+		return requestServer(origin, pathname, { ...options, signal: lifetime, token, request });
+	};
 	const control = async (op, fields, operationSignal = lifetime) => {
+		revoked?.throwIfAborted();
 		const response = await requestServer(origin, LOGIN_PATH, {
-			request, token, signal: operationSignal,
+			request, token, signal: revoked ? AbortSignal.any([operationSignal, revoked]) : operationSignal,
 			method: "POST", headers: { ...headers, "content-type": "application/json" },
 			body: JSON.stringify({ providerId: "chatgpt", op, ...fields }),
 		});
@@ -94,7 +100,7 @@ async function remoteChatGPTSignIn(origin, token, {
 		});
 		const opened = openExternal(target.href).then(() => callback);
 		const exact = await Promise.race([opened, interrupted]);
-		if (!exact) throw new ServerProblem("sign-in", ENDED);
+		if (!exact || lifetime.aborted) throw new ServerProblem("sign-in", ENDED);
 		const { value } = await control("complete", { url: exact });
 		pending = false;
 		if (!value?.activeId || value.error) throw new ServerProblem("sign-in", "ChatGPT sign-in did not complete. Check Providers on the server.");
@@ -102,7 +108,9 @@ async function remoteChatGPTSignIn(origin, token, {
 		settling?.();
 		listener.close();
 		listener.closeAllConnections();
-		if (pending) {
+		// A revoked credential is never sent, not even to cancel: the server's attempt can't
+		// complete without this listener, and ends at its own sign-in timeout.
+		if (pending && !revoked?.aborted) {
 			await control("cancel", attemptId ? { attemptId } : undefined, AbortSignal.timeout(5000)).catch(() => {});
 		}
 	}
@@ -117,6 +125,9 @@ async function remoteChatGPTSignIn(origin, token, {
  */
 function createRemoteChatGPTSignIn({ selection, openExternal, run = remoteChatGPTSignIn, ...options }) {
 	let current = null;
+	// Every attempt that hasn't settled, the current one and any older one still ending:
+	// { origin, operation, revoked }.
+	const attempts = new Set();
 	// Settles after the latest attempt, including any cancel it sends.
 	let last = Promise.resolve();
 	async function signIn(accountId) {
@@ -124,6 +135,8 @@ function createRemoteChatGPTSignIn({ selection, openExternal, run = remoteChatGP
 		if (!selected) return { error: "Open this server in the desktop app to sign in to ChatGPT." };
 		current?.abort();
 		const operation = new AbortController();
+		const attempt = { origin: selected.origin, operation, revoked: new AbortController() };
+		attempts.add(attempt);
 		current = operation;
 		const previous = last;
 		let settled;
@@ -134,12 +147,13 @@ function createRemoteChatGPTSignIn({ selection, openExternal, run = remoteChatGP
 			// Queued behind a slow cancel: the window may have switched, or its server be held, by now.
 			const still = selection();
 			if (!still || still.origin !== selected.origin || still.token !== selected.token) return { error: ENDED };
-			await run(selected.origin, selected.token, { ...options, accountId, openExternal, signal: operation.signal });
+			await run(selected.origin, selected.token, { ...options, accountId, openExternal, signal: operation.signal, revoked: attempt.revoked.signal });
 			return { ok: true };
 		} catch (error) {
 			if (operation.signal.aborted) return { error: ENDED };
 			return { error: error instanceof ServerProblem ? error.message : "ChatGPT sign-in failed. Try again." };
 		} finally {
+			attempts.delete(attempt);
 			settled();
 			if (current === operation) current = null;
 		}
@@ -149,6 +163,16 @@ function createRemoteChatGPTSignIn({ selection, openExternal, run = remoteChatGP
 		signIn,
 		/** The window closed or switched, or an update covers its server: its sign-in ends. */
 		abort,
+		/** `origin` is being removed: every attempt for it ends now, also one still ending after
+		 *  a switch, and none sends another request with its bearer, not even its cancel. */
+		forget(origin) {
+			for (const attempt of attempts) {
+				if (attempt.origin !== origin) continue;
+				attempt.revoked.abort();
+				attempt.operation.abort();
+				if (current === attempt.operation) current = null;
+			}
+		},
 		/** Settings' Cancel: ends this window's sign-in, also while its login is in flight, and
 		 *  resolves once that attempt's own cancel reached its server. `ended`: there was one,
 		 *  so the page sends no cancel of its own (that would end whatever is pending). */

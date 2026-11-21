@@ -16,6 +16,7 @@ const { createRemoteWindow } = require("../electron/remote-window.cjs");
 const { createServerList } = require("../electron/server-list.cjs");
 const { registerChatGPTSignInIPC } = require("../electron/remote-chatgpt-ipc.cjs");
 const { openServerList } = require("../electron/server-list-store.cjs");
+const { AUTHORIZE } = require("../electron/chatgpt.cjs");
 const { hostLabel, coverWindow, firstFrame } = require("../electron/skeleton.cjs");
 // Quiet retries wait 15 s in the app; the fixtures need only a few steps.
 Object.assign(wire.retryTiming, { windowMs: 60, stepMs: 5 });
@@ -1292,11 +1293,29 @@ async function removalFixture(t: test.TestContext, { defaultServer = beta as str
 		/** Runs on each snapshot as it is sent. */
 		onPublish: (_state: Published) => {},
 		localStarts: 0,
+		/** While set, each confirm dialog waits for the next of these before it answers. */
+		dialogGates: [] as Promise<void>[],
+		/** The ChatGPT sign-in relay's server side: its ops as "origin op", and what it opened. */
+		signIn: { ops: [] as string[], opened: [] as string[], port: 0, holdLogin: null as Promise<void> | null },
 	};
 	globalThis.fetch = async (input, options) => {
 		const url = new URL(String(input));
 		const bearer = new Headers(options?.headers).get("authorization");
 		fixture.calls.push(`${url.origin} ${url.pathname} ${bearer ?? "-"}`);
+		if (url.pathname === "/api/subscriptions") {
+			const body = JSON.parse(String(options?.body));
+			fixture.signIn.ops.push(`${url.origin} ${body.op}`);
+			if (body.op !== "login") return Response.json({ value: {} });
+			fixture.signIn.port = body.desktopRedirectPort;
+			await fixture.signIn.holdLogin;
+			return Response.json({ value: {}, attemptId: "attempt-1", browserAction: "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001" });
+		}
+		if (url.pathname === "/api/subscriptions/browser") {
+			const target = new URL(AUTHORIZE);
+			target.searchParams.set("redirect_uri", `http://127.0.0.1:${fixture.signIn.port}/auth/callback`);
+			target.searchParams.set("state", "fixture-state");
+			return new Response(null, { status: 303, headers: { Location: target.href } });
+		}
 		if (url.pathname === PROTOCOL_ROUTES.serverInfo) await fixture.holdDescriptor.get(url.origin);
 		const key = fixture.unavailable.has(`${url.origin}${url.pathname}`) ? `${url.origin}${url.pathname}` : url.origin;
 		const busyFor = fixture.unavailable.get(key) ?? 0;
@@ -1316,9 +1335,12 @@ async function removalFixture(t: test.TestContext, { defaultServer = beta as str
 		app: { getPath: () => directory }, BrowserWindow: TestWindow, WebContentsView: TestView, safeStorage: fakeSafeStorage,
 		ipcMain: { handle: (_channel: string, callback: typeof handler) => { handler = callback; } },
 		session: { fromPartition: () => new TestSession() },
+		shell: { openExternal: async (url: string) => { fixture.signIn.opened.push(url); } },
 		dialog: {
 			showMessageBox: async (parent: unknown, options: (typeof fixture.asked)[number]["options"]) => {
 				fixture.asked.push({ parent, options });
+				const gate = fixture.dialogGates.shift();
+				if (gate) await gate;
 				return { response: fixture.answer };
 			},
 		},
@@ -1678,6 +1700,110 @@ test("a check's session retries stop once its server is being removed", async (t
 	assert.ok(removalStarted >= 0);
 	assert.deepEqual(list.calls.slice(removalStarted).filter((call) => call.includes("beta-secret")), []);
 	assert.deepEqual((await list.state()).servers, [alpha]);
+});
+
+const ENDED = { error: "ChatGPT sign-in ended. Try again." };
+/** The requests sent since `from` that carry the removed server's bearer. */
+const removedBearer = (list: { calls: string[] }, from: number) => list.calls.slice(from).filter((call) => call.includes("beta-secret"));
+
+test("removing the open server ends its running ChatGPT sign-in without sending its bearer again, not even to cancel", { timeout: 10000 }, async (t) => {
+	for (const when of ["waiting for the browser", "waiting for its login reply"]) {
+		const list = await removalFixture(t);
+		t.after(() => { list.controller.close(); for (const window of TestWindow.all) if (!window.destroyed) window.destroy(); });
+		await list.controller.launch();
+		let release = () => {};
+		if (when === "waiting for its login reply") list.signIn.holdLogin = new Promise<void>((resolve) => { release = resolve; });
+		const signing = list.controller.chatgptSignIn();
+		if (when === "waiting for the browser") await until(() => list.signIn.opened.length === 1);
+		else await until(() => list.signIn.ops.includes(`${beta} login`));
+		assert.ok(list.signIn.ops.includes(`${beta} login`), `${when}: the sign-in is running`);
+		const sent = list.calls.length;
+		let atWrite: string[] | null = null;
+		list.onPublish = (state) => { if (state.removing && !atWrite) atWrite = removedBearer(list, sent); };
+		await list.send("remove", beta);
+		release();
+		assert.deepEqual(await signing, ENDED, `${when}: the sign-in ends`);
+		await settle();
+		assert.deepEqual(atWrite, [], `${when}: nothing carried the bearer before the write`);
+		assert.deepEqual(removedBearer(list, sent), [], `${when}: no request carries the removed bearer`);
+		assert.equal(list.signIn.ops.includes(`${beta} cancel`), false, `${when}: no cancel with the forgotten credential`);
+		assert.deepEqual((await list.state()).servers, [alpha]);
+	}
+});
+
+test("a sign-in still ending after a switch away sends no cancel once its server is removed", { timeout: 10000 }, async (t) => {
+	const list = await removalFixture(t);
+	t.after(() => { list.controller.close(); for (const window of TestWindow.all) if (!window.destroyed) window.destroy(); });
+	await list.controller.launch();
+	let release!: () => void;
+	list.signIn.holdLogin = new Promise<void>((resolve) => { release = resolve; });
+	const signing = list.controller.chatgptSignIn();
+	await until(() => list.signIn.ops.includes(`${beta} login`));
+	// Switching away ends the sign-in, but its login reply is still collected so it can cancel.
+	await list.send("connect", alpha);
+	assert.equal(list.controller.current()?.origin, alpha);
+	const sent = list.calls.length;
+	await list.send("remove", beta);
+	release();
+	assert.deepEqual(await signing, ENDED);
+	await settle();
+	assert.deepEqual(removedBearer(list, sent), [], "the old attempt never cancels with the removed bearer");
+	assert.equal(list.signIn.ops.includes(`${beta} cancel`), false);
+	assert.equal(list.controller.current()?.origin, alpha, "the open server stays");
+});
+
+test("the open server's page sends no request with its bearer while its removal writes", async (t) => {
+	const list = await removalFixture(t);
+	await list.controller.launch();
+	const win = list.controller.current()!.win as TestWindow;
+	const requests = win.options.webPreferences!.session!;
+	const beforeSend = requests.beforeSend!;
+	// The page's own fetch, as Chromium hands it to the window's session.
+	const pageRequest = () => {
+		let headers: Record<string, string> | undefined;
+		beforeSend({
+			webContentsId: win.webContents.id, resourceType: "xhr", method: "GET", url: `${beta}/api/events`,
+			frame: win.webContents.mainFrame, requestHeaders: {},
+		}, (value: object) => { headers = (value as { requestHeaders?: Record<string, string> }).requestHeaders; });
+		return headers;
+	};
+	assert.equal(pageRequest()?.authorization, "Bearer beta-secret", "the fixture's page request carries the bearer while connected");
+	let during: Record<string, string> | undefined | "unset" = "unset";
+	list.onPublish = (state) => { if (state.removing && during === "unset") during = pageRequest(); };
+	await list.send("remove", beta);
+	assert.notEqual(during, "unset", "the page asked while the removal wrote");
+	assert.equal(JSON.stringify(during ?? {}).includes("beta-secret"), false, "no bearer on the page's request");
+	assert.equal(win.destroyed, true);
+	assert.equal(list.panel().destroyed, false, "the list stays in front");
+});
+
+test("removing the same server twice sends nothing with its bearer and forgets it once", { timeout: 10000 }, async (t) => {
+	const list = await removalFixture(t);
+	t.after(() => { list.controller.close(); for (const window of TestWindow.all) if (!window.destroyed) window.destroy(); });
+	await list.controller.launch();
+	const signing = list.controller.chatgptSignIn();
+	await until(() => list.signIn.opened.length === 1);
+	let first!: () => void;
+	let second!: () => void;
+	list.dialogGates.push(new Promise<void>((resolve) => { first = resolve; }), new Promise<void>((resolve) => { second = resolve; }));
+	const sent = list.calls.length;
+	const removals = [list.send("remove", beta), list.send("remove", beta)];
+	await settle();
+	assert.equal(list.asked.length, 2, "both confirms are open");
+	// Both confirmed at once, then a third confirmed after the first finished.
+	first();
+	second();
+	await Promise.all(removals);
+	await list.send("remove", beta);
+	assert.deepEqual(await signing, ENDED);
+	await settle();
+	assert.equal(list.asked.length, 2, "a removed server isn't asked about again");
+	assert.deepEqual(removedBearer(list, sent), []);
+	assert.equal(list.signIn.ops.includes(`${beta} cancel`), false);
+	const state = await list.state();
+	assert.deepEqual(state.servers, [alpha]);
+	assert.equal(state.busy, false);
+	assert.equal(state.removing, false);
 });
 
 test("a list emptied while This computer is open shows the setup screen, and only a pick there makes the default", async (t) => {
