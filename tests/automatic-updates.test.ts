@@ -61,8 +61,11 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 		quitAndInstall(...args: unknown[]) { installArgs.push(args); order.push("install"); }
 	}
 	const updater = new FakeUpdater();
+	let nextContentsId = 1;
 	class FakeWebContents extends EventEmitter {
+		id = nextContentsId++;
 		mainFrame = { url: "http://127.0.0.1:9000/" };
+		isDestroyed() { return false; }
 		messages: { channel: string; value: unknown }[] = [];
 		loading = false;
 		fails = false;
@@ -469,14 +472,51 @@ describe("status observation never controls the updater", () => {
 		const loaded: string[] = [];
 		const original = win.loadURL.bind(win);
 		win.loadURL = ((url: string) => { loaded.push(url); original(); }) as typeof win.loadURL;
-		f.run("startLocalServer = async () => 'http://127.0.0.1:9555'");
+		f.run("startLocalServer = async () => { localOrigin = 'http://127.0.0.1:9555'; desktopSessionToken = 'session-token'; return 'http://127.0.0.1:9555'; }");
 		await f.run("restartLocalAfterFailedInstall()");
-		assert.deepEqual(loaded, ["http://127.0.0.1:9555"]);
+		assert.deepEqual(loaded, ["about:blank", "http://127.0.0.1:9555"]);
 		assert.equal(f.permissions.check!(null, "media", "http://127.0.0.1:9555"), true, "the new origin's permissions");
 		assert.equal(f.permissions.check!(null, "media", "http://127.0.0.1:9000"), false, "not the old one's");
 		let prevented = false;
 		win.webContents.emit("will-navigate", { preventDefault: () => { prevented = true; } }, "http://127.0.0.1:9555/chat");
 		assert.equal(prevented, false, "same-origin navigation on the new port stays in the window");
+	});
+
+	it("the reloaded window's first request to the new server carries the desktop session, as at launch (no Pair this device)", async () => {
+		const f = fixture(); const win = f.window();
+		// The window shows the old port's page; the navigation's request asks for the bearer at load time.
+		win.webContents.mainFrame.url = "http://127.0.0.1:9000/chat";
+		const bearers: unknown[] = [];
+		win.loadURL = ((url: string) => {
+			if (url !== "about:blank") {
+				const headers = f.run(`desktopAPIHeaders({ url: ${JSON.stringify(url)}, requestHeaders: {}, webContentsId: [...trustedAppWindows][0].webContents.id, webContents: [...trustedAppWindows][0].webContents, frame: [...trustedAppWindows][0].webContents.mainFrame }, localOrigin, desktopSessionToken, [...trustedAppWindows])`) as Record<string, string>;
+				bearers.push(headers.authorization);
+			}
+			win.webContents.mainFrame.url = url;
+		}) as typeof win.loadURL;
+		f.run("startLocalServer = async () => { localOrigin = 'http://127.0.0.1:9555'; desktopSessionToken = 'session-token'; return 'http://127.0.0.1:9555'; }");
+		await f.run("restartLocalAfterFailedInstall()");
+		assert.deepEqual(bearers, ["Bearer session-token"]);
+		// And nothing loads before the server has its desktop session.
+		const g = fixture(); const other = g.window();
+		const otherLoads: string[] = [];
+		other.loadURL = ((url: string) => { otherLoads.push(url); }) as typeof other.loadURL;
+		g.run("startLocalServer = async () => { localOrigin = null; desktopSessionToken = null; return 'http://127.0.0.1:9556'; }");
+		await assert.rejects(g.run("restartLocalAfterFailedInstall()") as Promise<void>, /no desktop session/);
+		assert.deepEqual(otherLoads, []);
+	});
+
+	it("an offer that isn't downloaded stays on screen through a failed background check, notes and all", async () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.updater.emit("update-available", { version: "0.3.8", releaseNotes: "- A change" });
+		const offered = f.state();
+		f.updater.failure = new Error("offline");
+		await f.check(true);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepEqual([f.state().status, f.state().availableVersion], ["available", "0.3.8"]);
+		assert.deepEqual(f.state().releaseNotes, offered.releaseNotes);
+		await (f.run("updateActions.checkNatively()") as Promise<void>).catch(() => {});
+		assert.equal(f.state().status, "available", "the menu's failed check too");
 	});
 
 	it("a failed pinned install ends the Update everything run instead of leaving it on Restarting", async () => {

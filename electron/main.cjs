@@ -569,14 +569,25 @@ function recoverFailedInstall() {
 	}
 }
 
-/** The bundled server again, and each local window loaded onto its new origin through its own
- *  load(), so permissions and same-origin navigation follow the new port. */
+/**
+ * The bundled server again, then each local window onto it, the way a launch loads one: only once
+ * startLocalServer has it answering with this app's desktop session (waitUntilUp, then the session
+ * exchange), and from a blank page, as a new window starts. The desktop session's bearer goes only
+ * to the main frame of a page that is blank, the ghost dashboard or the server's own origin
+ * (electron/desktop-api.cjs); straight from the old port's page the first request would carry none
+ * and the app would ask to pair. Each window loads through its own load(), so its permissions and
+ * same-origin navigation follow the new port.
+ */
 async function restartLocalAfterFailedInstall() {
 	const url = await startLocalServer(new AbortController().signal);
+	if (!desktopSessionToken || !localOrigin) throw new Error("The bundled server has no desktop session.");
 	for (const win of trustedAppWindows) {
 		if (win.isDestroyed()) continue;
 		const load = windowLoaders.get(win);
-		try { await (load ? load(url) : win.loadURL(url)); } catch { /* its own load error stays in the window */ }
+		try {
+			await win.loadURL("about:blank");
+			await (load ? load(url) : win.loadURL(url));
+		} catch { /* its own load error stays in the window */ }
 	}
 }
 const offeredNotes = () => releaseNotes.capGroups(offeredGroups);
@@ -675,8 +686,9 @@ function checkForUpdates({ manual = false } = {}) {
 		})
 		.catch((err) => {
 			log(`update check failed: ${err?.message ?? err}`);
-			// A download under way stays on screen; its own promise reports how it ends.
-			if (updateState.status !== "downloading") setUpdateState(updateMachine.reduceOnCheckFailure(updateState, CHECK_FAILED, nowIso()));
+			// A download under way stays on screen, its own promise reports how it ends; and an offer
+			// stays through a failed check, with its notes (docs/specs/t3-style-updates.md, PR 3).
+			if (updateState.status !== "downloading" && updateState.status !== "available") setUpdateState(updateMachine.reduceOnCheckFailure(updateState, CHECK_FAILED, nowIso()));
 		})
 		.finally(() => { activeAction = null; activeCheck = null; });
 }
@@ -826,7 +838,7 @@ const updateActions = createUpdateActions({
 	updater: () => autoUpdater,
 	state: () => updateState,
 	// The menu's failed check, never over a download or an install under way.
-	report: (status) => { if (status === "error" && updateState.status !== "downloading" && !installing) setUpdateState(updateMachine.reduceOnCheckFailure(updateState, CHECK_FAILED, nowIso())); },
+	report: (status) => { if (status === "error" && updateState.status !== "downloading" && updateState.status !== "available" && !installing) setUpdateState(updateMachine.reduceOnCheckFailure(updateState, CHECK_FAILED, nowIso())); },
 	// A pinned download names its version from the start: electron-updater drops an older staged
 	// download once it starts another, so the state no longer claims it.
 	downloadStarted: (version) => {
