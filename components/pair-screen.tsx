@@ -7,12 +7,33 @@
  * any site can open this page with a code of its own. Without a code, or
  * after an error, a code field.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { browserAlreadyPaired, plainLinkStep, readPairingLocation, redeemBrowserCode } from "@/lib/browser-pair-handoff";
 
 const WRONG_CODE = "That code is wrong, expired or already used. Make a new one.";
+
+/** The app has no native Tab (docs/keyboard.md), so the confirmation moves
+ * focus between its two buttons itself: Tab, Shift+Tab and the arrow keys
+ * wrap, Home and End jump, Enter and Space press the focused button, Esc
+ * cancels. Handled here, so the app's own Tab and Shift+Tab never see it. */
+function confirmKeys(event: ReactKeyboardEvent<HTMLElement>, buttons: (HTMLButtonElement | null)[], cancel: () => void) {
+	if (event.altKey || event.ctrlKey || event.metaKey) return;
+	const live = buttons.filter((button): button is HTMLButtonElement => !!button && !button.disabled);
+	const at = live.indexOf(document.activeElement as HTMLButtonElement);
+	let next: number | undefined;
+	if (event.key === "Tab") next = event.shiftKey ? at - 1 : at + 1;
+	else if (event.key === "ArrowRight" || event.key === "ArrowDown") next = at + 1;
+	else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = at - 1;
+	else if (event.key === "Home") next = 0;
+	else if (event.key === "End") next = live.length - 1;
+	else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancel(); return; }
+	if (next === undefined || !live.length) return;
+	event.preventDefault();
+	event.stopPropagation();
+	live[(next + live.length) % live.length]?.focus();
+}
 
 function enterApp(target?: string) {
 	if (target) window.location.replace(target);
@@ -30,6 +51,8 @@ export function PairScreen() {
 	const started = useRef(false);
 	const target = useRef<string | undefined>(undefined);
 	const handoffCode = useRef<string | undefined>(undefined);
+	const cancelRef = useRef<HTMLButtonElement>(null);
+	const acceptRef = useRef<HTMLButtonElement>(null);
 
 	const submit = async (credential: string) => {
 		setBusy(true);
@@ -79,7 +102,8 @@ export function PairScreen() {
 
 	if (confirming !== null) return (
 		<main data-testid="pair-screen" className="flex min-h-dvh items-center justify-center px-4">
-			<section data-testid="pair-confirm" aria-labelledby="pair-confirm-title" className="flex w-full max-w-sm flex-col gap-4">
+			<section data-testid="pair-confirm" aria-labelledby="pair-confirm-title" className="flex w-full max-w-sm flex-col gap-4"
+				onKeyDown={(event) => confirmKeys(event, [cancelRef.current, acceptRef.current], () => enterApp())}>
 				<h1 id="pair-confirm-title" className="text-lg font-medium">Sign in with this link?</h1>
 				<p className="text-sm text-muted-foreground">
 					{confirming.signedIn
@@ -88,10 +112,10 @@ export function PairScreen() {
 					{" "}Continue only if you opened the link yourself.
 				</p>
 				<div className="flex justify-end gap-2">
-					<Button type="button" variant="outline" data-testid="pair-confirm-cancel" autoFocus onClick={() => enterApp()}>
+					<Button ref={cancelRef} type="button" variant="outline" data-testid="pair-confirm-cancel" autoFocus onClick={() => enterApp()}>
 						Cancel
 					</Button>
-					<Button type="button" data-testid="pair-confirm-accept" disabled={busy} onClick={() => { if (handoffCode.current) void submit(handoffCode.current); }}>
+					<Button ref={acceptRef} type="button" data-testid="pair-confirm-accept" disabled={busy} onClick={() => { if (handoffCode.current) void submit(handoffCode.current); }}>
 						Sign in with this link
 					</Button>
 				</div>

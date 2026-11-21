@@ -26,7 +26,9 @@ const location = {
 };
 Object.defineProperty(dom.window, "location", { configurable: true, value: location });
 Object.defineProperty(dom.window, "history", { configurable: true, value: { state: null, replaceState: (_s: unknown, _t: string, url: string) => { href = new URL(url, href).href; } } });
-dom.window.HTMLElement.prototype.focus = function () { focusedId = this.getAttribute("data-testid"); };
+let focused: Element | undefined;
+dom.window.HTMLElement.prototype.focus = function () { focused = this; focusedId = this.getAttribute("data-testid"); };
+Object.defineProperty(dom.document, "activeElement", { configurable: true, get: () => (focused?.isConnected ? focused : dom.document.body) });
 Object.assign(globalThis, { window: dom.window, document: dom.document, Element: dom.window.Element, IS_REACT_ACT_ENVIRONMENT: true });
 
 type Session = "signed-in" | "signed-out" | "broken";
@@ -53,7 +55,7 @@ async function settle() {
 	for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 async function open(url: string, as: Session) {
-	href = url; session = as; posts = []; replacedWith = undefined; focusedId = null;
+	href = url; session = as; posts = []; replacedWith = undefined; focusedId = null; focused = undefined;
 	host = document.createElement("div");
 	document.body.appendChild(host);
 	root = createRoot(host);
@@ -87,6 +89,43 @@ describe("a plain pairing link", () => {
 		await click("pair-confirm-cancel");
 		assert.deepEqual(posts, []);
 		assert.equal(replacedWith, "/", "Cancel loads the app in the current session");
+	});
+
+	it("works from the keyboard although the app has no native Tab", async () => {
+		await open(`https://box.tail.ts.net:8443/pair#token=${CODE}`, "signed-in");
+		let reachedWindow = 0;
+		const onWindow = () => { reachedWindow++; };
+		window.addEventListener("keydown", onWindow);
+		const press = async (key: string, shiftKey = false) => {
+			const target = (focusedId && byId(focusedId)) || byId("pair-confirm")!;
+			const event = new dom.window.Event("keydown", { bubbles: true, cancelable: true });
+			Object.defineProperties(event, { key: { value: key }, shiftKey: { value: shiftKey } });
+			await act(async () => { target.dispatchEvent(event); });
+			return event.defaultPrevented;
+		};
+		try {
+			assert.equal(focusedId, "pair-confirm-cancel");
+			assert.equal(await press("Tab"), true);
+			assert.equal(focusedId, "pair-confirm-accept", "Tab");
+			assert.equal(await press("Tab"), true);
+			assert.equal(focusedId, "pair-confirm-cancel", "Tab wraps");
+			await press("Tab", true);
+			assert.equal(focusedId, "pair-confirm-accept", "Shift+Tab goes back (and doesn't cycle the thinking level)");
+			await press("ArrowLeft");
+			assert.equal(focusedId, "pair-confirm-cancel", "ArrowLeft");
+			await press("End");
+			assert.equal(focusedId, "pair-confirm-accept", "End");
+			await press("Home");
+			assert.equal(focusedId, "pair-confirm-cancel", "Home");
+			assert.equal(reachedWindow, 0, "the app's own Tab handling never saw these keys");
+			assert.deepEqual(posts, []);
+			await press("Escape");
+			await settle();
+			assert.equal(replacedWith, "/", "Esc cancels and keeps the session");
+			assert.deepEqual(posts, []);
+		} finally {
+			window.removeEventListener("keydown", onWindow);
+		}
 	});
 
 	it("signs in with the link only after the person chooses it", async () => {
