@@ -327,10 +327,15 @@ export function Chat({
 	const submissionMounted = useRef(true);
 	useEffect(() => { submissionMounted.current = true; return () => { submissionMounted.current = false; submissionRunner.dispose(); }; }, [submissionRunner]);
 	useEffect(() => () => submissionRunner.dispose(), [surfaceTarget, submissionRunner]);
-	const inputViewReader = useRef<(() => PluginSessionViewInput) | null>(null) as SessionInputViewReader;
 	const refreshPluginActions = useRef<(() => void) | null>(null);
-	const notifyViewChanged = useCallback(() => { if (submissionMounted.current) refreshPluginActions.current?.(); }, []);
-	inputViewReader.changed = notifyViewChanged;
+	// A plain object made once, not a useRef: React's development build seals
+	// ref objects, so adding `changed` to one during render threw, and `next
+	// dev` answered session pages with 500 (#333). The mounted input owner
+	// sets `current`; `changed` refreshes the plugin actions.
+	const [inputViewReader] = useState<SessionInputViewReader>(() => ({
+		current: null,
+		changed: () => { if (submissionMounted.current) refreshPluginActions.current?.(); },
+	}));
 	const submissionLive = useRef({ nativeMessages, surfaceTarget, ready: true });
 	submissionLive.current = { nativeMessages, surfaceTarget, ready: true };
 	const runSubmission = async (target: PluginSubmissionTarget, capture: () => PluginSubmission | Promise<PluginSubmission>, current: () => boolean, deliver: (prepared: PluginSubmission, attempt: SubmissionAttempt) => Promise<boolean>): Promise<boolean> => {
@@ -2520,10 +2525,19 @@ export function DockOverlay({
 	const readingInputRef = useRef<HTMLDivElement>(null);
 	const ownsDock = !!pending || !!pluginQuestion || unreadablePlugin || !!practice;
 	const initialPendingRef = useRef(pendingId);
-	const nativeViewReader = useRef<(() => NativeQuestionViewState) | null>(null) as ViewReaderRef<NativeQuestionViewState>;
-	const practiceViewReader = useRef<(() => string) | null>(null) as ViewReaderRef<string>;
-	const customViewReader = useRef<(() => { available: boolean }) | null>(null) as ViewReaderRef<{ available: boolean }>;
-	nativeViewReader.changed = practiceViewReader.changed = customViewReader.changed = viewReader?.changed;
+	// Plain objects made once, not useRefs (sealed in React's development
+	// build, #333). Each `changed` forwards to the session's reader as of the
+	// latest render, as before.
+	const latestViewReader = useRef(viewReader);
+	latestViewReader.current = viewReader;
+	const [{ nativeViewReader, practiceViewReader, customViewReader }] = useState(() => {
+		const changed = () => latestViewReader.current?.changed?.();
+		return {
+			nativeViewReader: { current: null, changed } as ViewReaderRef<NativeQuestionViewState>,
+			practiceViewReader: { current: null, changed } as ViewReaderRef<string>,
+			customViewReader: { current: null, changed } as ViewReaderRef<{ available: boolean }>,
+		};
+	});
 
 	// Teach-question ARRIVAL state, applied during render — BEFORE the
 	// first paint (owner, scroll-honesty round 2026-09-25). Until now the
