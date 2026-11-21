@@ -189,12 +189,17 @@ export function useUpdateState() {
 
 	/** Download the "available" version. Desktop: resolves T3's action result, or "threw" when
 	 *  the bridge rejected. The server (POST /api/updates/download) answers with its state, which
-	 *  says how it went: no result, so no toasts (its updater raises none). Never rejects. */
-	const download = useCallback(async (): Promise<UpdateActionResult | "threw" | undefined> => {
+	 *  says how it went: no result, so no toasts (its updater raises none), or "failed" when the
+	 *  request itself failed (offline, signed out). Never rejects. */
+	const download = useCallback(async (): Promise<UpdateActionResult | "threw" | "failed" | undefined> => {
 		const lh = localDesktopBridge();
 		if (!lh) {
-			try { accept(await fetchWebState("/api/updates/download", "POST")); } catch { /* offline: the state stays as it was */ }
-			return undefined;
+			try {
+				accept(await fetchWebState("/api/updates/download", "POST"));
+				return undefined;
+			} catch {
+				return "failed";
+			}
 		}
 		const pending = lh.downloadUpdate?.();
 		if (!pending) return undefined;
@@ -299,6 +304,9 @@ export function desktopOffer(status: DesktopAppStatus | null): string | null {
 export const DESKTOP_APP_DESCRIPTION = "Current version of the application.";
 export const UPDATE_AVAILABLE_DESCRIPTION = "Update available.";
 export const CHECK_FOR_UPDATES_LABEL = "Check for Updates";
+/** A self-hosted server's request that failed (main's fixed texts, electron/main.cjs). */
+export const REQUEST_CHECK_FAILED = "Couldn’t check for updates. Try again later.";
+export const REQUEST_DOWNLOAD_FAILED = "Couldn’t download the update. Try again.";
 const ACTION_LABELS = { download: "Download", install: "Install" } as const;
 const STATUS_LABELS: Partial<Record<string, string>> = { checking: "Checking…", downloading: "Downloading…", "up-to-date": "Up to Date" };
 
@@ -334,8 +342,8 @@ export function aboutButton(state: UpdateState | null): AboutButton {
 	return { action, label, disabled, description, tooltip: state ? updateButtonTooltip(state) : null };
 }
 
-/** The same button for this app, from the remote bridge's status. The bridge carries no retry
- *  fields (revision PR 7), so its tooltip is the plain line; none during Update everything. */
+/** The same button for this app, from the remote bridge's status. The bridge's status has no
+ *  retry fields, so its tooltip is the plain line; none during Update everything. */
 export function desktopAppButton(status: DesktopAppStatus | null): AboutButton {
 	const offered = desktopOffer(status);
 	if (!status || status.phase === "updating") {
@@ -352,13 +360,16 @@ export function desktopAppButton(status: DesktopAppStatus | null): AboutButton {
 }
 
 /** T3's About button: one outline button whose label changes, with the update tooltip. The
- *  same element through every state, so keyboard focus stays on it. */
+ *  same element through every state, so keyboard focus stays on it. While it can't be
+ *  pressed it is aria-disabled, not disabled, as the sidebar control is: it stays focusable,
+ *  so the keyboard still reaches its tooltip (the download's percent), and a press does nothing. */
 function AboutUpdateButton({ button, pending, testid, onClick }: { button: AboutButton; pending: boolean; testid: string; onClick: () => void }) {
+	const inert = button.disabled || pending;
 	return (
 		<TooltipProvider>
 			<Tooltip>
 				<TooltipTrigger asChild>
-					<Button type="button" size="xs" variant="outline" className="cursor-pointer disabled:cursor-not-allowed" data-testid={testid} data-action={button.action} disabled={button.disabled || pending} onClick={onClick}>
+					<Button type="button" size="xs" variant="outline" className="cursor-pointer aria-disabled:cursor-not-allowed aria-disabled:opacity-50" data-testid={testid} data-action={button.action} aria-disabled={inert || undefined} onClick={() => { if (!inert) onClick(); }}>
 						{button.label}
 					</Button>
 				</TooltipTrigger>
@@ -405,15 +416,24 @@ export function UpdateSettings({
 	const desktop = useDesktopAppUpdate();
 	const [confirming, setConfirming] = useState(false);
 	const [installing, setInstalling] = useState(false);
+	// A self-hosted server's Check or Download whose request failed (unreachable, signed out):
+	// said in the row until the state changes or the next press (its updater raises no toasts).
+	const [requestFailed, setRequestFailed] = useState<"check" | "download" | null>(null);
 	const button = aboutButton(state);
 	const releaseNotes = version && homepage ? `${homepage}/releases/tag/v${version}` : null;
 	const local = transport === "desktop";
+	// The confirm belongs to an Install: a state that offers something else closes it for good.
+	useEffect(() => { if (button.action !== "install") setConfirming(false); }, [button.action]);
+	useEffect(() => setRequestFailed(null), [state]);
+	const description = requestFailed === "check" ? REQUEST_CHECK_FAILED : requestFailed === "download" ? REQUEST_DOWNLOAD_FAILED : button.description;
 
 	const onClick = () => {
+		setRequestFailed(null);
 		if (button.action === "download") {
 			// T3's downloadLocalUpdate(bridge, { notifyDownloaded: false }): its error toasts only.
 			void download().then((result) => {
-				if (!local) return;
+				if (result === "failed") setRequestFailed("download");
+				if (!local || result === "failed") return;
 				if (result === "threw") showUpdateErrorToast(DOWNLOAD_START_FAILED_TITLE, UNEXPECTED_ERROR);
 				else if (result?.accepted && !result.completed && result.state?.message?.trim()) showUpdateErrorToast(DOWNLOAD_FAILED_TITLE, result.state.message.trim());
 			});
@@ -428,7 +448,10 @@ export function UpdateSettings({
 			.then((result) => {
 				if (local && result && !result.checked) showUpdateErrorToast(CHECK_FAILED_TITLE, result.state?.message ?? CHECK_UNAVAILABLE);
 			})
-			.catch(() => { if (local) showUpdateErrorToast(CHECK_FAILED_TITLE, CHECK_ERROR); });
+			.catch(() => {
+				if (local) showUpdateErrorToast(CHECK_FAILED_TITLE, CHECK_ERROR);
+				else setRequestFailed("check");
+			});
 	};
 
 	return (
@@ -439,7 +462,7 @@ export function UpdateSettings({
 				testid="row-version"
 				hint={
 					<>
-						<span className="block" data-testid="update-description">{button.description}</span>
+						<span className="block" data-testid="update-description">{description}</span>
 						{releaseNotes && <a href={releaseNotes} target="_blank" rel="noopener noreferrer" className="underline-offset-2 hover:text-foreground hover:underline" data-testid="release-notes">Release notes</a>}
 					</>
 				}

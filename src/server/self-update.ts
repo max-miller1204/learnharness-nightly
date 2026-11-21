@@ -147,12 +147,20 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 	// The `pinned` attempt whose request-update the launcher is answering, if any.
 	let pinnedRequest: string | null = null;
 	let started = false;
-	/** The feed entry of the version on offer ("available"), what Download stages. */
+	/** The feed entry of the version on offer ("available"), what Download stages: always the
+	 *  one the last successful check read, asset included. */
 	let offer: LatestFeed | null = null;
+	/** The newest version staged on disk this run (Install's fallback when a newer one fails to stage). */
+	let staged: string | null = null;
+	/** A Download queued or running: a second click joins it. */
+	let downloading: Promise<void> | undefined;
 
 	const set = (next: Partial<SelfUpdateState>) => {
 		state = { ...state, ...next, revision: state.revision + 1 };
 		if (state.status !== "downloading") state = { ...state, downloadPercent: null, preparing: false };
+		// The download retry belongs to an offer only ("available" with `offer`, what Download
+		// stages): any other state shows Check, never a Download that would do nothing.
+		if (state.status !== "available") state = { ...state, errorContext: null };
 		deps.notify();
 	};
 
@@ -191,31 +199,36 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 
 	const runCheck = async (): Promise<void> => {
 		if (!deps.enabled || requested) return;
-		// An offered or ready version stays on screen (no "checking" flicker) while a newer one is looked for.
-		const kept = (state.status === "downloaded" || state.status === "available") && state.version ? state.version : null;
-		if (!kept) set({ status: "checking", message: null, errorContext: null });
+		// A ready or offered version stays on screen (no "checking" flicker) while the feed is read.
+		const ready = state.status === "downloaded" && state.version ? state.version : null;
+		const kept = ready ?? (state.status === "available" && offer ? offer.version : null);
+		if (!kept) set({ status: "checking", message: null });
 		try {
 			const feed = await deps.fetchLatest(deps.feedUrl);
 			if (requested) return;
 			const known = isExactVersion(deps.currentVersion);
-			if (known && compareVersions(feed.version, deps.currentVersion) <= 0) {
-				if (!kept) set({ status: "up-to-date", version: null, availableVersion: null, message: null, releaseNotes: [], omittedReleaseCount: 0 });
-				return;
-			}
-			if (kept && compareVersions(feed.version, kept) <= 0) {
-				set(notesFor(feed));
-				return;
-			}
 			const bad = deps.readState()?.badVersions ?? [];
-			if (bad.includes(feed.version)) {
-				if (!kept) set({ status: "up-to-date", version: null, availableVersion: null, message: `Version ${feed.version} failed to start earlier and is skipped.`, releaseNotes: [], omittedReleaseCount: 0 });
+			// Nothing newer to offer (the release was pulled, or the feed rolled back): T3's
+			// reduceOnNoUpdate clears an offer that isn't downloaded. A staged version stays (Install
+			// re-checks for itself).
+			const skipped = bad.includes(feed.version);
+			if ((known && compareVersions(feed.version, deps.currentVersion) <= 0) || (skipped && !ready)) {
+				if (ready) return;
+				offer = null;
+				set({ status: "up-to-date", version: null, availableVersion: null, message: skipped ? `Version ${feed.version} failed to start earlier and is skipped.` : null, releaseNotes: [], omittedReleaseCount: 0 });
+				return;
+			}
+			if (ready && (compareVersions(feed.version, ready) <= 0 || skipped)) {
+				if (!skipped) set(notesFor(feed));
 				return;
 			}
 			const notes = notesFor(feed);
-			// Already on disk (staged before a restart): ready at once. Otherwise offered, never downloaded here.
+			// Already on disk (staged before a restart): ready at once. Otherwise offered exactly as the
+			// feed now names it, asset included (T3's reduceOnUpdateAvailable), never downloaded here.
 			if (deps.isInstalled(feed.version)) {
 				offer = null;
-				set({ status: "downloaded", version: feed.version, availableVersion: feed.version, message: null, errorContext: null, ...notes });
+				staged = feed.version;
+				set({ status: "downloaded", version: feed.version, availableVersion: feed.version, message: null, ...notes });
 			} else {
 				offer = feed;
 				set({ status: "available", version: feed.version, availableVersion: feed.version, message: null, errorContext: null, ...notes });
@@ -241,7 +254,8 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		}
 		if (requested) return;
 		if (offer === feed) offer = null;
-		set({ status: "downloaded", version: feed.version, availableVersion: feed.version, message: null, errorContext: null });
+		staged = feed.version;
+		set({ status: "downloaded", version: feed.version, availableVersion: feed.version, message: null });
 	};
 
 	/** One check, download or pinned staging at a time: a check while one runs joins it. */
@@ -253,12 +267,25 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		return checking;
 	};
 
-	/** A download queues behind whatever runs, so a second click (or one during a check)
-	 *  finds the version downloaded, or the check's newer offer, and never stages twice. */
+	/** A download queues behind whatever runs, so a click during a check downloads what it
+	 *  offers. A second click while one is queued or running joins it: one attempt, whatever
+	 *  its result. */
 	const download = (): Promise<void> => {
-		const pending: Promise<void> = (checking ?? Promise.resolve()).then(runDownload, runDownload).finally(() => { if (checking === pending) checking = undefined; });
+		if (downloading) return downloading;
+		const pending: Promise<void> = (checking ?? Promise.resolve()).then(runDownload, runDownload).finally(() => {
+			if (checking === pending) checking = undefined;
+			if (downloading === pending) downloading = undefined;
+		});
 		checking = pending;
+		downloading = pending;
 		return pending;
+	};
+
+	/** A version staged this run that the launcher can still switch to. */
+	const stagedFallback = (): string | null => {
+		if (!staged || !deps.isInstalled(staged)) return null;
+		if (isExactVersion(deps.currentVersion) && compareVersions(staged, deps.currentVersion) <= 0) return null;
+		return (deps.readState()?.badVersions ?? []).includes(staged) ? null : staged;
 	};
 
 	const scheduleChecks = () => {
@@ -314,13 +341,24 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		check,
 		/** Download / POST /api/updates/download: stage the offered version. */
 		download,
-		/** Install / POST /api/updates/install: re-check first (a download can be hours old),
-		 *  download a newer offer it finds, then apply the ready version. */
+		/** Install / POST /api/updates/install: always a fresh look at the feed first (a download
+		 *  can be hours old; work already running finishes first), download a newer offer it finds,
+		 *  then apply the ready version. A newer one that fails to stage installs the version
+		 *  staged before it. */
 		async install(): Promise<void> {
 			if (!deps.enabled || requested) return;
+			// Wait out a running check, download or pinned staging, then start a check of our own:
+			// checking is empty here, so this one reads the feed.
+			while (checking) await checking.catch(() => {});
+			if (requested) return;
 			await check();
 			if (state.status === "available") await download();
+			if (requested) return;
 			if (state.status === "downloaded" && state.version) requestUpdate(state.version);
+			else {
+				const fallback = stagedFallback();
+				if (fallback) requestUpdate(fallback);
+			}
 		},
 		/** POST /api/updates/install-version (Update everything, roadmap item 23): checks the
 		 *  request at once, then stages exactly `target` from its own release in the background

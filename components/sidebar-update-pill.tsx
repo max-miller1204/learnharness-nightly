@@ -560,6 +560,8 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 		else if (kind === "download") {
 			// T3's downloadLocalUpdate (SidebarUpdatePill.tsx:147-170 at df09ced7), with LearnHarness's fixed messages.
 			void download().then((result) => {
+				// "failed": the server's own request; its updater raises no toasts.
+				if (result === "failed") return;
 				if (result === "threw") showUpdateErrorToast(DOWNLOAD_START_FAILED_TITLE, UNEXPECTED_ERROR);
 				else if (result?.completed) showUpdateDownloadedToast(result.state?.downloadedVersion ?? result.state?.version ?? state.version);
 				else if (result?.accepted && result.state?.message) showUpdateErrorToast(DOWNLOAD_FAILED_TITLE, result.state.message);

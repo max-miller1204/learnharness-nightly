@@ -528,9 +528,19 @@ async function updateCommand(flags: Flags): Promise<void> {
 	if (h?.ok && h.selfhost) {
 		const route = flags.now === true ? "install" : "check";
 		const response = await withCliSession(home, (authorization) => fetch(`http://127.0.0.1:${config.port}/api/updates/${route}`, { method: "POST", headers: { Authorization: authorization } }));
-		const body = (await response.json().catch(() => ({}))) as { status?: string; version?: string | null; message?: string | null };
+		const body = (await response.json().catch(() => ({}))) as { status?: string; version?: string | null; message?: string | null; error?: string };
+		if (!response.ok) fail(`the server refused the update ${route} (HTTP ${response.status})${typeof body.error === "string" && body.error ? `: ${body.error}` : ""}`);
 		out(`${body.status ?? "unknown"}${body.version ? ` ${body.version}` : ""}${body.message ? `: ${body.message}` : ""}`);
 		if (flags.now !== true) { const hint = updateCheckHint(body.status); if (hint) out(hint); }
+		return;
+	}
+	if (flags.now !== true) {
+		// A check only, as with a running server: nothing downloads or restarts without --now.
+		out("The server isn't answering; checking the feed from the launcher.");
+		const feed = await fetchLatest(config.feedUrl ?? DEFAULT_FEED_URL);
+		if (compareVersions(feed.version, state.activeVersion) <= 0) { out(`Already on the newest version (${state.activeVersion}).`); return; }
+		out(`available ${feed.version}`);
+		out("Run `lh update --now` to download and install it through the launcher.");
 		return;
 	}
 	out("The server isn't answering; updating through the launcher.");
@@ -800,7 +810,7 @@ const HELP = `lh: run LearnHarness as a self-hosted server
   lh up [--port N] [--tailscale|--no-tailscale] [--tailscale-port N] [--chrome-path P] [--no-linger] [--no-open] [--yes]
   lh pair [--label NAME]         a one-time pairing link and QR code for a new device
   lh status                      versions, service, health, URLs
-  lh update [--now]              check now; --now installs right away
+  lh update [--now]              check now; --now downloads and installs right away
   lh rollback                    switch back to the previous version
   lh use <version>               switch to an installed version
   lh restart                     restart the service (never required)

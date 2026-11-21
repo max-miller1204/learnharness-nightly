@@ -39,6 +39,12 @@ const roots: { root: Root; host: HTMLElement }[] = [];
 const state = (over: Partial<UpdateState> = {}): UpdateState => ({ status: "idle", version: null, revision: 0, ...over });
 const props = { version: "0.3.7", homepage: "https://github.com/amosblomqvist/learnharness" };
 const q = (host: ParentNode, id: string) => host.querySelector<HTMLElement>(`[data-testid='${id}']`);
+/** Settings' update buttons can't be pressed (aria-disabled), yet stay focusable (never `disabled`). */
+const inert = (element: HTMLElement | null) => {
+	assert.ok(element, "missing button");
+	assert.equal(element.hasAttribute("disabled"), false, "never natively disabled: the keyboard keeps it");
+	return element.getAttribute("aria-disabled") === "true";
+};
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -196,7 +202,7 @@ describe("General update rows", () => {
 	it("an unavailable updater: the button can't be pressed and the description says why", async () => {
 		const b = bridge(state({ status: "disabled" })); const host = await mount(<UpdateSettings {...props} />);
 		assert.equal(q(host, "update-button")!.textContent, "Check for Updates");
-		assert.equal((q(host, "update-button") as HTMLButtonElement).disabled, true);
+		assert.equal(inert(q(host, "update-button")), true);
 		assert.equal(q(host, "update-description")!.textContent, "Automatic updates are not available in this build.");
 		await click(q(host, "update-button")); assert.equal(b.calls.check, 0);
 	});
@@ -213,7 +219,7 @@ describe("General update rows", () => {
 	it("one button goes through the labels, the same element throughout, and Install confirms first", async () => {
 		const b = bridge(); const host = await mount(<UpdateSettings {...props} />);
 		const button = q(host, "update-button")! as HTMLButtonElement;
-		const seen = async (next: UpdateState) => { await b.push(next); assert.equal(q(host, "update-button"), button, "the same element"); return [button.textContent, button.disabled, q(host, "update-description")!.textContent]; };
+		const seen = async (next: UpdateState) => { await b.push(next); assert.equal(q(host, "update-button"), button, "the same element"); return [button.textContent, inert(button), q(host, "update-description")!.textContent]; };
 		assert.deepEqual(await seen(state({ status: "checking", revision: 1 })), ["Checking…", true, "Current version of the application."]);
 		assert.deepEqual(await seen(state({ status: "available", version: "0.3.8", availableVersion: "0.3.8", revision: 2 })), ["Download", false, "Update available."]);
 		await click(button); assert.equal(b.calls.download, 1, "Download downloads, only on the click");
@@ -221,7 +227,7 @@ describe("General update rows", () => {
 		assert.deepEqual(await seen(state({ status: "downloaded", version: "0.3.8", revision: 4 })), ["Install", false, "Update available."]);
 		await click(button);
 		assert.equal(b.calls.install, 0, "Install confirms first");
-		assert.equal(button.disabled, true, "pending while the confirm is open (T3's isUpdateActionPending)");
+		assert.equal(inert(button), true, "pending while the confirm is open (T3's isUpdateActionPending)");
 		assert.equal(q(document, "install-update-title")!.textContent, "Install update 0.3.8 and restart LearnHarness?");
 		await click(q(document, "install-update-confirm")); assert.equal(b.calls.install, 1);
 		assert.deepEqual(await seen(state({ status: "up-to-date", revision: 5 })), ["Up to Date", false, "Current version of the application."]);
@@ -285,6 +291,58 @@ describe("General update rows", () => {
 		assert.equal(q(sidebar, "update-pill")!.getAttribute("aria-label"), "Download failed for 0.3.8. Click to retry.", "the sidebar retries it too");
 	});
 
+	it("a state that offers something else closes the Install confirm for good, and the button works again", async () => {
+		const b = bridge(state({ status: "downloaded", version: "0.3.8", revision: 1 }));
+		const host = await mount(<UpdateSettings {...props} />);
+		await click(q(host, "update-button"));
+		assert.ok(q(document, "install-update-title"), "the confirm is open");
+		await b.push(state({ status: "available", version: "0.3.9", availableVersion: "0.3.9", revision: 2 }));
+		assert.equal(q(document, "install-update-title"), null, "a newer offer closes it");
+		assert.deepEqual([q(host, "update-button")!.textContent, inert(q(host, "update-button"))], ["Download", false], "not left pending");
+		await click(q(host, "update-button")); assert.equal(b.calls.download, 1);
+		await b.push(state({ status: "downloaded", version: "0.3.9", revision: 3 }));
+		assert.equal(q(document, "install-update-title"), null, "it never reopens by itself (another client downloaded it)");
+		assert.equal(b.calls.install, 0);
+	});
+
+	it("while checking or downloading the button keeps keyboard focus, shows its tooltip and a press does nothing", async () => {
+		const b = bridge(); const host = await mount(<UpdateSettings {...props} />);
+		const button = keyboardFocusable(q(host, "update-button")!);
+		await act(async () => { button.focus(); });
+		await b.push(state({ status: "downloading", version: "0.3.8", downloadPercent: 40, revision: 1 }));
+		assert.equal(document.activeElement, button, "focus stays on it");
+		assert.equal(inert(button), true);
+		assert.equal(aboutButton(state({ status: "downloading", downloadPercent: 40 })).tooltip, "Downloading update (40%)");
+		await act(async () => { button.blur(); button.focus(); });
+		assert.equal(button.getAttribute("data-state"), "instant-open", "keyboard focus opens the tooltip with the percent");
+		await click(button);
+		await b.push(state({ status: "checking", revision: 2 }));
+		await click(button);
+		assert.deepEqual([b.calls.check, b.calls.download, b.calls.install], [0, 0, 0], "a press while busy does nothing");
+	});
+
+	it("a self-hosted server's Check or Download that can't be sent says so in the row", async () => {
+		globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+			if (init?.method === "POST") return new Response(JSON.stringify({ error: "Sign in required" }), { status: 401 });
+			return Response.json(state({ status: "idle", revision: 1 }));
+		};
+		const tick = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const host = await mount(<UpdateSettings {...props} />);
+		await tick();
+		await click(q(host, "update-button")); await tick();
+		assert.equal(q(host, "update-description")!.textContent, "Couldn’t check for updates. Try again later.");
+		await unmountAllRoots();
+		globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+			if (init?.method === "POST") throw new TypeError("Failed to fetch");
+			return Response.json(state({ status: "available", version: "0.3.8", availableVersion: "0.3.8", revision: 1 }));
+		};
+		const offered = await mount(<UpdateSettings {...props} />);
+		await tick();
+		await click(q(offered, "update-button")); await tick();
+		assert.equal(q(offered, "update-description")!.textContent, "Couldn’t download the update. Try again.");
+		assert.equal(q(document, "toast"), null);
+	});
+
 	it("Cancel in the confirm dialog installs nothing", async () => {
 		const b = bridge(state({ status: "downloaded", version: "0.3.8", revision: 1 }));
 		const host = await mount(<UpdateSettings {...props} />);
@@ -292,7 +350,7 @@ describe("General update rows", () => {
 		await click(q(document, "install-update-cancel"));
 		assert.equal(q(document, "install-update-title"), null);
 		assert.equal(b.calls.install, 0);
-		assert.equal((q(host, "update-button") as HTMLButtonElement).disabled, false, "no longer pending");
+		assert.equal(inert(q(host, "update-button")), false, "no longer pending");
 	});
 
 	it("bridge command rejection is handled without exposing raw diagnostics", async () => {
@@ -1153,7 +1211,7 @@ describe("General update rows", () => {
 		const host = await mount(<UpdateSettings {...props} />);
 		await act(async () => { snapshot.reject(new Error("sensitive error")); });
 		assert.equal(q(host, "update-description")!.textContent, "Current version of the application.");
-		assert.equal((q(host, "update-button") as HTMLButtonElement).disabled, true);
+		assert.equal(inert(q(host, "update-button")), true);
 		assert.ok(!host.textContent!.includes("sensitive"));
 	});
 });
@@ -1424,7 +1482,7 @@ describe("the update control's toasts (T3's desktopUpdate.toast.tsx and SidebarU
 		window.lh!.installUpdate = async () => { throw new Error("sensitive raw diagnostics"); };
 		await click(r.button()); await click(q(document, "install-update-confirm")); await settle();
 		assert.deepEqual(shown(), [["Could not install update"], ["An unexpected error occurred."]]);
-		assert.equal((r.button() as HTMLButtonElement).disabled, false, "pending ends with the install (T3's .finally)");
+		assert.equal(inert(r.button()), false, "pending ends with the install (T3's .finally)");
 		r = await settingsWithToasts(downloaded);
 		window.lh!.installUpdate = async () => false;
 		await click(r.button()); await click(q(document, "install-update-confirm")); await settle();
@@ -1673,12 +1731,12 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		r.set({ version: V71, target: V72, phase: "downloading", error: null, downloadPercent: 40 });
 		await act(async () => { document.dispatchEvent(new dom.window.Event("visibilitychange")); });
 		await settle();
-		assert.deepEqual([button.textContent, (button as HTMLButtonElement).disabled], ["Downloading…", true]);
+		assert.deepEqual([button.textContent, inert(button)], ["Downloading…", true]);
 		assert.equal(desktopAppButton({ version: V71, target: V72, phase: "downloading", error: null, downloadPercent: 40 }).tooltip, "Downloading update (40%)");
 		r.set({ version: V71, target: null, phase: "checking", error: null });
 		await act(async () => { document.dispatchEvent(new dom.window.Event("visibilitychange")); });
 		await settle();
-		assert.deepEqual([button.textContent, (button as HTMLButtonElement).disabled], ["Checking…", true]);
+		assert.deepEqual([button.textContent, inert(button)], ["Checking…", true]);
 		r.set({ version: V71, target: null, phase: "error", error: "Couldn’t check for updates. Try again later." });
 		await act(async () => { document.dispatchEvent(new dom.window.Event("visibilitychange")); });
 		await settle();
@@ -1694,7 +1752,7 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		await act(async () => { document.dispatchEvent(new dom.window.Event("visibilitychange")); });
 		await settle();
 		assert.equal(q(host, "desktop-app-status")!.textContent, "Automatic updates are not available in this build.");
-		assert.equal((q(host, "desktop-app-update") as HTMLButtonElement).disabled, true);
+		assert.equal(inert(q(host, "desktop-app-update")), true);
 	});
 
 	it("an app from before installApp: This app's Install falls back to its own confirmation", async () => {

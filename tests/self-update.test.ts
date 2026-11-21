@@ -229,13 +229,161 @@ describe("self-hosted updater", () => {
 		assert.match(u.state().message ?? "", /SHA-256/, "signed in: the details");
 		assert.equal(publicUpdateState(u.state()).message, null, "not without a session");
 		await u.check();
-		assert.equal(u.state().errorContext, "download", "a re-check finding the same offer keeps the retry");
+		assert.deepEqual([u.state().status, u.state().errorContext, u.state().message], ["available", null, null], "a re-check offers it afresh (T3's reduceOnUpdateAvailable)");
 		fails = false;
 		await u.download();
 		assert.equal(u.state().status, "downloaded");
 		assert.equal(u.state().errorContext, null);
 		assert.equal(u.state().message, null);
 		assert.deepEqual(f.flags.staged, [NEXT]);
+	});
+
+	it("a pulled release stops being offered: a feed rolled back to the running version clears the offer", async () => {
+		const f = fake();
+		f.flags.latest = NEWER;
+		const u = createSelfUpdater(f.deps);
+		await u.check();
+		assert.equal(u.state().status, "available");
+		f.flags.latest = CURRENT;
+		await u.check();
+		assert.deepEqual([u.state().status, u.state().version, u.state().availableVersion, u.state().releaseNotes.length], ["up-to-date", null, null, 0], "T3's reduceOnNoUpdate with nothing downloaded");
+		await u.download();
+		assert.deepEqual(f.flags.staged, [], "nothing left to download");
+		// A feed rolled back to an older nightly that is still newer than the running one: that one is offered.
+		f.flags.latest = NEWER;
+		await u.check();
+		f.flags.latest = NEXT;
+		await u.check();
+		assert.equal(u.state().version, NEXT);
+		await u.download();
+		assert.deepEqual(f.flags.staged, [NEXT], "the version the feed now names");
+		// A version marked bad since it was offered is dropped too.
+		const g = fake();
+		const v = createSelfUpdater(g.deps);
+		await v.check();
+		g.flags.state = { protocol: 1, activeVersion: CURRENT, badVersions: [NEXT] };
+		await v.check();
+		assert.equal(v.state().status, "up-to-date");
+		// A staged version stays as it was.
+		const h = fake();
+		const w = createSelfUpdater(h.deps);
+		await w.check(); await w.download();
+		h.flags.latest = CURRENT;
+		await w.check();
+		assert.deepEqual([w.state().status, w.state().version], ["downloaded", NEXT]);
+	});
+
+	it("a re-check that finds the offered version at a corrected asset downloads the new asset", async () => {
+		const f = fake();
+		const asset = (sha256: string) => ({ "linux-x64": { url: `https://example.test/${sha256.slice(0, 4)}.tar.gz`, sha256 } });
+		let assets = asset("a".repeat(64));
+		f.deps.fetchLatest = async () => ({ ...feed(NEXT), assets });
+		const seen: string[] = [];
+		let fails = true;
+		f.deps.stage = async (fd) => { seen.push(fd.assets["linux-x64"]!.sha256); if (fails) throw new Error("HTTP 404"); };
+		const u = createSelfUpdater(f.deps);
+		await u.check();
+		await u.download();
+		assert.equal(u.state().errorContext, "download");
+		assets = asset("b".repeat(64));
+		fails = false;
+		await u.check();
+		await u.download();
+		assert.deepEqual(seen, ["a".repeat(64), "b".repeat(64)], "the repaired asset, not the first one's URL and checksum");
+		assert.equal(u.state().status, "downloaded");
+	});
+
+	it("Install always reads the feed again, even with a download running: it waits for it, then takes the newer version", async () => {
+		const f = fake();
+		let release: () => void = () => {};
+		f.deps.stage = (fd) => new Promise<void>((resolve) => { release = () => { f.flags.staged.push(fd.version); resolve(); }; });
+		const u = createSelfUpdater(f.deps);
+		await u.check();
+		const downloading = u.download();
+		await settle();
+		f.flags.latest = NEWER;
+		const installing = u.install();
+		await settle();
+		assert.equal(f.flags.fetches, 1, "it waits for the download");
+		release();
+		await downloading;
+		await settle();
+		assert.equal(f.flags.fetches, 2, "then reads the feed itself, never joining the download");
+		release();
+		await installing;
+		assert.deepEqual(f.flags.staged, [NEXT, NEWER]);
+		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEWER }]);
+	});
+
+	it("Install falls back to the staged version when the newer one fails to download", async () => {
+		const f = fake();
+		f.deps.stage = async (fd) => { if (fd.version === NEWER) throw new Error("HTTP 503"); f.flags.staged.push(fd.version); };
+		f.deps.isInstalled = (version) => f.flags.staged.includes(version);
+		const u = createSelfUpdater(f.deps);
+		await u.check(); await u.download();
+		f.flags.latest = NEWER;
+		await u.check();
+		assert.deepEqual([u.state().status, u.state().version], ["available", NEWER], "the newer one is offered");
+		await u.install();
+		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEXT }], "the staged one installs (as `lh update --now` did)");
+		// Nothing staged to fall back to: nothing installs.
+		const g = fake();
+		g.deps.stage = async () => { throw new Error("HTTP 503"); };
+		const v = createSelfUpdater(g.deps);
+		await v.install();
+		assert.deepEqual(g.sent, []);
+		assert.deepEqual([v.state().status, v.state().errorContext], ["available", "download"]);
+	});
+
+	it("a double click on a Download that fails is one attempt", async () => {
+		const f = fake();
+		let attempts = 0;
+		let reject: (error: Error) => void = () => {};
+		f.deps.stage = () => { attempts++; return new Promise<void>((_resolve, no) => { reject = no; }); };
+		const u = createSelfUpdater(f.deps);
+		await u.check();
+		const first = u.download();
+		const second = u.download();
+		await settle();
+		reject(new Error("HTTP 503"));
+		await Promise.all([first, second]);
+		assert.equal(attempts, 1);
+		assert.equal(u.state().errorContext, "download");
+	});
+
+	/** An offer whose download failed: the state shows Download with the retry. */
+	const failedDownload = async (f: ReturnType<typeof fake>) => {
+		const u = createSelfUpdater(f.deps);
+		u.start();
+		const stage = f.deps.stage;
+		f.deps.stage = async () => { throw new Error("HTTP 503"); };
+		await u.check(); await u.download();
+		f.deps.stage = stage;
+		assert.equal(u.state().errorContext, "download");
+		return u;
+	};
+
+	it("no dead Download after a failed pinned install (startInstallVersion's failure): the retry is cleared", async () => {
+		const f = fake();
+		const u = await failedDownload(f);
+		f.flags.fetchFails = true;
+		assert.equal(await pin(u, NEWER), "offline");
+		assert.deepEqual([u.state().status, u.state().errorContext], ["error", null]);
+	});
+
+	it("no dead Download after the launcher refuses the install (update-rejected): the retry is cleared", async () => {
+		const f = fake();
+		const u = await failedDownload(f);
+		assert.equal(await pin(u, NEWER), null);
+		f.toParent({ type: "update-rejected", reason: "Not enough disk space" });
+		assert.deepEqual([u.state().status, u.state().errorContext], ["error", null]);
+	});
+
+	it("no dead Download when the launcher can't be reached (requestUpdate's catch): the retry is cleared", async () => {
+		const f = fake({ send: () => { throw new Error("channel closed"); } });
+		const u = await failedDownload(f);
+		assert.match(await pin(u, NEWER) ?? "", /Couldn't reach the launcher/);
+		assert.deepEqual([u.state().status, u.state().errorContext], ["error", null]);
 	});
 
 	it("install re-checks first and takes a newer build; a failed re-check installs the ready one", async () => {
