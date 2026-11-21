@@ -513,6 +513,13 @@ async function statusCommand(): Promise<void> {
 	for (const url of urls(config)) out(`URL:       ${url}`);
 }
 
+/** What `lh update` (a check only) says after the status line: how to go on from it. */
+function updateCheckHint(status: string | undefined): string | null {
+	if (status === "available") return "Download it with Download in the app (the update button or Settings → General), or run `lh update --now` to download and install it now.";
+	if (status === "downloaded") return "It installs when you click Install in the app, or run `lh update --now`.";
+	return null;
+}
+
 async function updateCommand(flags: Flags): Promise<void> {
 	const home = lhHome();
 	const state = requireState(home);
@@ -523,7 +530,7 @@ async function updateCommand(flags: Flags): Promise<void> {
 		const response = await withCliSession(home, (authorization) => fetch(`http://127.0.0.1:${config.port}/api/updates/${route}`, { method: "POST", headers: { Authorization: authorization } }));
 		const body = (await response.json().catch(() => ({}))) as { status?: string; version?: string | null; message?: string | null };
 		out(`${body.status ?? "unknown"}${body.version ? ` ${body.version}` : ""}${body.message ? `: ${body.message}` : ""}`);
-		if (flags.now !== true && body.status === "downloaded") out("It installs when you click Install in the app, or run `lh update --now`.");
+		if (flags.now !== true) { const hint = updateCheckHint(body.status); if (hint) out(hint); }
 		return;
 	}
 	out("The server isn't answering; updating through the launcher.");

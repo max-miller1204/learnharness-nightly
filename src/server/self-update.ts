@@ -12,19 +12,20 @@
  * announced on the event bus ("update-changed"); clients fetch
  * GET /api/updates (notify, then fetch).
  *
- * T3 style (docs/specs/t3-style-updates.md): check at start and every 4
- * hours, download in the background, and apply ONLY when the user clicks
- * Install (the confirm dialog lists runningWork()). A server started by an
- * update checks 15 s after the launcher commits it. Checks keep running
- * while a version is ready, so a newer nightly replaces it; install()
- * re-checks first. Applying = asking the launcher over IPC
- * ("request-update"). The launcher owns runtime/service-state.json; this
- * module only reads it.
+ * T3 style (docs/specs/t3-style-updates.md): check 15 s after start and
+ * every 4 hours. A check that finds a newer version offers it ("available", with its
+ * notes); it downloads only when the user clicks Download (download(), POST
+ * /api/updates/download) and applies ONLY when the user clicks Install. A
+ * server started by an update checks 15 s after the launcher commits it
+ * instead.
+ * Checks keep running while a version is offered or ready, and a newer
+ * nightly replaces it; install() re-checks first, downloading a newer offer
+ * itself. Applying = asking the launcher over IPC ("request-update"). The
+ * launcher owns runtime/service-state.json; this module only reads it.
  */
 import { emit } from "../core/events.ts";
 import type { ReleaseNoteGroup } from "../core/release-notes.ts";
 import { feedNotesToGroups, groupsBetween, mergeNotesCache, readUpdateRecord, writeUpdateRecord } from "./update-records.ts";
-import { readSettings } from "../store/settings.ts";
 import { listChats } from "./chats.ts";
 import { compactionInFlight } from "./compaction.ts";
 import { activityFeed } from "./observability.ts";
@@ -46,7 +47,7 @@ import {
 	type StageOptions,
 } from "../../selfhost/src/release.ts";
 
-export type SelfUpdateStatus = "idle" | "checking" | "downloading" | "up-to-date" | "downloaded" | "error" | "disabled";
+export type SelfUpdateStatus = "idle" | "checking" | "available" | "downloading" | "up-to-date" | "downloaded" | "error" | "disabled";
 
 /** A rolled-back switch, shown by the sidebar pill until dismissed (per server). */
 export interface UpdateNotice {
@@ -79,6 +80,12 @@ export interface SelfUpdateState {
 	preparing: boolean;
 	/** Detail for the Settings row (errors, rejections, progress). */
 	message: string | null;
+	/** The version a check offered ("available"), kept while it downloads and once it is ready;
+	 *  null with nothing offered (T3's availableVersion). */
+	availableVersion: string | null;
+	/** "download" while an offer stays "available" after its download failed, so the button
+	 *  retries it ("Download failed for X. Click to retry.", T3's errorContext); else null. */
+	errorContext: "download" | null;
 	/** A rolled-back switch until dismissed. */
 	notice: UpdateNotice | null;
 	/** Versions newer than the running one up to the offered one, newest first, at most 6. */
@@ -87,8 +94,10 @@ export interface SelfUpdateState {
 }
 
 export const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
-/** A server started by an update checks this long after the launcher commits it. */
-export const CHECK_AFTER_COMMIT_MS = 15_000;
+/** The first check runs this long after start (T3's 15 s after launch), or for a server
+ *  started by an update, this long after the launcher commits it. */
+export const CHECK_AFTER_START_MS = 15_000;
+export const CHECK_AFTER_COMMIT_MS = CHECK_AFTER_START_MS;
 
 /** T3's shouldBroadcastDownloadProgress (apps/desktop/src/updates/DesktopUpdates.ts:325-341 at
  *  3ce21458), for a state already "downloading": report the first known percent, then each
@@ -109,7 +118,6 @@ export interface SelfUpdaterDeps {
 	trialUpdateId?: string;
 	send(message: ChildMessage): void;
 	onParentMessage(cb: (message: unknown) => void): void;
-	autoUpdateEnabled(): boolean;
 	fetchLatest(feedUrl: string): Promise<LatestFeed>;
 	/** One exact version's own feed entry (selfhost/src/release.ts fetchRelease). */
 	fetchRelease(version: string, feedUrl: string): Promise<LatestFeed>;
@@ -130,15 +138,17 @@ export interface SelfUpdaterDeps {
 
 export function createSelfUpdater(deps: SelfUpdaterDeps) {
 	let state: SelfUpdateState = {
-		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, instance: globalThis.crypto.randomUUID(), runningVersion: deps.currentVersion, committed: !deps.trialUpdateId, pinned: null, downloadPercent: null, preparing: false, message: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
+		status: deps.enabled ? "idle" : "disabled", version: null, revision: 0, instance: globalThis.crypto.randomUUID(), runningVersion: deps.currentVersion, committed: !deps.trialUpdateId, pinned: null, downloadPercent: null, preparing: false, message: null, availableVersion: null, errorContext: null, notice: null, releaseNotes: [], omittedReleaseCount: 0,
 	};
 	let checkTimer: unknown;
-	let commitCheckTimer: unknown;
+	let firstCheckTimer: unknown;
 	let checking: Promise<void> | undefined;
 	let requested = false;
 	// The `pinned` attempt whose request-update the launcher is answering, if any.
 	let pinnedRequest: string | null = null;
 	let started = false;
+	/** The feed entry of the version on offer ("available"), what Download stages. */
+	let offer: LatestFeed | null = null;
 
 	const set = (next: Partial<SelfUpdateState>) => {
 		state = { ...state, ...next, revision: state.revision + 1 };
@@ -181,39 +191,60 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 
 	const runCheck = async (): Promise<void> => {
 		if (!deps.enabled || requested) return;
-		// A ready version stays offered (no "checking" flicker) while a newer one is looked for and staged.
-		const ready = state.status === "downloaded" && state.version ? state.version : null;
-		if (!ready) set({ status: "checking", message: null });
+		// An offered or ready version stays on screen (no "checking" flicker) while a newer one is looked for.
+		const kept = (state.status === "downloaded" || state.status === "available") && state.version ? state.version : null;
+		if (!kept) set({ status: "checking", message: null, errorContext: null });
 		try {
 			const feed = await deps.fetchLatest(deps.feedUrl);
 			if (requested) return;
 			const known = isExactVersion(deps.currentVersion);
 			if (known && compareVersions(feed.version, deps.currentVersion) <= 0) {
-				if (!ready) set({ status: "up-to-date", version: null, message: null, releaseNotes: [], omittedReleaseCount: 0 });
+				if (!kept) set({ status: "up-to-date", version: null, availableVersion: null, message: null, releaseNotes: [], omittedReleaseCount: 0 });
 				return;
 			}
-			if (ready && compareVersions(feed.version, ready) <= 0) {
+			if (kept && compareVersions(feed.version, kept) <= 0) {
 				set(notesFor(feed));
 				return;
 			}
 			const bad = deps.readState()?.badVersions ?? [];
 			if (bad.includes(feed.version)) {
-				if (!ready) set({ status: "up-to-date", version: null, message: `Version ${feed.version} failed to start earlier and is skipped.`, releaseNotes: [], omittedReleaseCount: 0 });
+				if (!kept) set({ status: "up-to-date", version: null, availableVersion: null, message: `Version ${feed.version} failed to start earlier and is skipped.`, releaseNotes: [], omittedReleaseCount: 0 });
 				return;
 			}
 			const notes = notesFor(feed);
-			if (!deps.isInstalled(feed.version)) {
-				if (!ready) set({ status: "downloading", version: feed.version, downloadPercent: null, preparing: false, ...notes });
-				await stage(feed, bad);
-				if (requested) return;
+			// Already on disk (staged before a restart): ready at once. Otherwise offered, never downloaded here.
+			if (deps.isInstalled(feed.version)) {
+				offer = null;
+				set({ status: "downloaded", version: feed.version, availableVersion: feed.version, message: null, errorContext: null, ...notes });
+			} else {
+				offer = feed;
+				set({ status: "available", version: feed.version, availableVersion: feed.version, message: null, errorContext: null, ...notes });
 			}
-			set({ status: "downloaded", version: feed.version, message: null, ...notes });
 		} catch (error) {
-			// A failed look for something newer keeps the ready version offered.
-			if (!ready) set({ status: "error", message: error instanceof Error ? error.message : String(error) });
+			// A failed look for something newer keeps the offered or ready version.
+			if (!kept) set({ status: "error", message: error instanceof Error ? error.message : String(error) });
 		}
 	};
 
+	/** Stage the offered version (the Download click). A failure keeps the offer with the
+	 *  download context, so the button retries it (T3's reduceOnDownloadFailure). */
+	const runDownload = async (): Promise<void> => {
+		if (!deps.enabled || requested) return;
+		const feed = offer;
+		if (state.status !== "available" || !feed || feed.version !== state.version) return;
+		set({ status: "downloading", message: null, errorContext: null, downloadPercent: null, preparing: false });
+		try {
+			await stage(feed, deps.readState()?.badVersions ?? []);
+		} catch (error) {
+			if (!requested) set({ status: "available", message: error instanceof Error ? error.message : String(error), errorContext: "download" });
+			return;
+		}
+		if (requested) return;
+		if (offer === feed) offer = null;
+		set({ status: "downloaded", version: feed.version, availableVersion: feed.version, message: null, errorContext: null });
+	};
+
+	/** One check, download or pinned staging at a time: a check while one runs joins it. */
 	const check = (): Promise<void> => {
 		if (!checking) {
 			const pending: Promise<void> = runCheck().finally(() => { if (checking === pending) checking = undefined; });
@@ -222,10 +253,18 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		return checking;
 	};
 
+	/** A download queues behind whatever runs, so a second click (or one during a check)
+	 *  finds the version downloaded, or the check's newer offer, and never stages twice. */
+	const download = (): Promise<void> => {
+		const pending: Promise<void> = (checking ?? Promise.resolve()).then(runDownload, runDownload).finally(() => { if (checking === pending) checking = undefined; });
+		checking = pending;
+		return pending;
+	};
+
 	const scheduleChecks = () => {
 		const loop = () => {
 			checkTimer = deps.setTimeout(() => {
-				if (deps.autoUpdateEnabled()) void check();
+				void check();
 				loop();
 			}, CHECK_INTERVAL_MS);
 		};
@@ -248,7 +287,7 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			// A trial skips the startup check; once it is the active server it checks like any other
 			// start, after a pause: the launcher prunes leftover *.tmp version folders right after the
 			// commit, which would delete a download being unpacked (T3 also waits 15 s after launch).
-			commitCheckTimer = deps.setTimeout(() => { if (deps.autoUpdateEnabled()) void check(); }, CHECK_AFTER_COMMIT_MS);
+			firstCheckTimer = deps.setTimeout(() => { void check(); }, CHECK_AFTER_COMMIT_MS);
 		}
 	};
 
@@ -269,14 +308,18 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 
 	return {
 		state: (): SelfUpdateState => state,
-		/** A check (feed fetch, and any download it starts) is running. True even while a ready
-		 *  version stays offered as "downloaded" during a look for a newer one. */
+		/** A check, a download or a pinned staging is running. True even while a ready version
+		 *  stays offered as "downloaded" during a look for a newer one. */
 		busy: (): boolean => checking !== undefined,
 		check,
-		/** Install / POST /api/updates/install: re-check first (a download can be hours old), then apply the ready version. */
+		/** Download / POST /api/updates/download: stage the offered version. */
+		download,
+		/** Install / POST /api/updates/install: re-check first (a download can be hours old),
+		 *  download a newer offer it finds, then apply the ready version. */
 		async install(): Promise<void> {
 			if (!deps.enabled || requested) return;
 			await check();
+			if (state.status === "available") await download();
 			if (state.status === "downloaded" && state.version) requestUpdate(state.version);
 		},
 		/** POST /api/updates/install-version (Update everything, roadmap item 23): checks the
@@ -359,14 +402,14 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 					() => deps.send({ type: "prepared", updateId: id }),
 					() => { /* never serving: the launcher's trial timeout rolls back */ },
 				);
-			} else if (deps.autoUpdateEnabled()) {
-				void check();
+			} else {
+				firstCheckTimer = deps.setTimeout(() => { void check(); }, CHECK_AFTER_START_MS);
 			}
 			scheduleChecks();
 		},
 		stop(): void {
 			if (checkTimer !== undefined) deps.clearTimeout(checkTimer);
-			if (commitCheckTimer !== undefined) deps.clearTimeout(commitCheckTimer);
+			if (firstCheckTimer !== undefined) deps.clearTimeout(firstCheckTimer);
 		},
 	};
 }
@@ -438,7 +481,6 @@ export function selfUpdater(): SelfUpdater {
 			process.send(message);
 		},
 		onParentMessage: (cb) => { process.on("message", cb); },
-		autoUpdateEnabled: () => readSettings()?.general?.autoUpdate !== false,
 		fetchLatest: (url) => fetchLatest(url),
 		fetchRelease: (version, url) => fetchRelease(version, url),
 		stage: async (feed, badVersions, onBytes, onPhase) => {
@@ -480,7 +522,7 @@ export function healthIdle(appIdle: boolean, updateBusy: boolean): boolean {
 export function publicUpdateState(state: SelfUpdateState): SelfUpdateState {
 	return {
 		...state,
-		message: state.status === "error" ? null : state.message,
+		message: state.status === "error" || state.errorContext ? null : state.message,
 		pinned: state.pinned ? { ...state.pinned, error: state.pinned.error ? "The update failed." : null } : null,
 		notice: state.notice ? { ...state.notice, text: `Update to version ${state.notice.version} failed to start and was rolled back.` } : null,
 	};

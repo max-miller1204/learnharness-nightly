@@ -375,7 +375,9 @@ export const ROLE_SLOT: Readonly<Record<ModelRole, ModelSlotName>> = {
 /** General settings — app-level behavior. Version DISPLAY and plans login
  *  live outside the record (package.json / auth.json) by owner decision. */
 export interface GeneralSettings {
-	/** Automatic startup/24h update checks (default ON). Manual checks bypass this. */
+	/** The removed "Check for updates automatically" toggle. Ignored: updates have no toggle
+	 *  (docs/specs/t3-style-updates.md, revision PR 5). Kept in the schema so a stored value
+	 *  reads back unchanged and an older client's write still succeeds. */
 	autoUpdate?: boolean;
 }
 

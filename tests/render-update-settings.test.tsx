@@ -11,7 +11,8 @@ import { InteractionLayersProvider, useInteractionLayer } from "../components/in
 import { installModalDom } from "./modal-dom.ts";
 import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
-import { UpdateSettings, readDesktopAppStatus, updateStatusText, MANUAL_UPDATE_HINT, AUTO_UPDATE_HINT, type UpdateState } from "../components/settings/update-settings.tsx";
+import { aboutButton, desktopAppButton, UpdateSettings, readDesktopAppStatus, type UpdateState } from "../components/settings/update-settings.tsx";
+import { updateButtonTooltip } from "../components/update-tooltips.ts";
 import { AUTO_RELOAD_KEY, AUTO_RELOAD_MEMORY, claimAutoReload, downloadingTooltip, downloadRingOffset, hasUnsentMessage, resolveUpdateControl, retryTooltip, shownReleaseNotes, SidebarUpdatePill, updateControlTooltip } from "../components/sidebar-update-pill.tsx";
 import { createRequire } from "node:module";
 import { ServerEventsProvider } from "../components/server-events.tsx";
@@ -36,7 +37,7 @@ after(restoreModalDom);
 const originalFetch = globalThis.fetch;
 const roots: { root: Root; host: HTMLElement }[] = [];
 const state = (over: Partial<UpdateState> = {}): UpdateState => ({ status: "idle", version: null, revision: 0, ...over });
-const props = { autoUpdate: true, onAutoUpdateChange: () => {}, version: "0.3.7", homepage: "https://github.com/amosblomqvist/learnharness" };
+const props = { version: "0.3.7", homepage: "https://github.com/amosblomqvist/learnharness" };
 const q = (host: ParentNode, id: string) => host.querySelector<HTMLElement>(`[data-testid='${id}']`);
 
 function deferred<T>() {
@@ -73,6 +74,10 @@ async function mount(element: React.ReactElement) {
 	const root = createRoot(host); roots.push({ root, host });
 	await act(async () => { root.render(<InteractionLayersProvider>{element}</InteractionLayersProvider>); });
 	return host;
+}
+
+async function unmountAllRoots() {
+	for (const { root, host } of roots.splice(0)) { await act(async () => { root.unmount(); }); host.remove(); }
 }
 
 async function click(element: HTMLElement | null) {
@@ -149,68 +154,86 @@ describe("version and contextual copy", () => {
 		assert.deepEqual(nextConfig.env, { LH_VERSION: pkg.version, LH_HOMEPAGE: pkg.homepage });
 	});
 
-	it("never claims live/latest information and keeps updater errors generic", () => {
-		assert.equal(updateStatusText(null), null);
-		assert.equal(updateStatusText(state()), null);
-		assert.equal(updateStatusText(state({ status: "disabled" })), null);
-		assert.equal(updateStatusText(state({ status: "checking" })), "Checking for updates…");
-		assert.equal(updateStatusText(state({ status: "downloading", version: "0.3.8" })), "Downloading version 0.3.8…");
-		assert.equal(updateStatusText(state({ status: "up-to-date" })), "No newer version was found at the last check.");
-		assert.equal(updateStatusText(state({ status: "downloaded", version: "0.3.8" })), "Version 0.3.8 is ready to install.");
-		assert.equal(updateStatusText(state({ status: "available", version: "0.3.8" })), "Version 0.3.8 is available.");
-		assert.equal(updateStatusText(state({ status: "error" })), "Couldn’t check for updates. Try again later.");
-		assert.equal(updateStatusText(state({ status: "downloading" })), "Downloading an update…");
-		assert.equal(updateStatusText(state({ status: "downloaded" })), "An update is ready to install.");
+	it("T3's About button (SettingsPanels.tsx:300-328): six labels, three descriptions, and when it can be pressed", () => {
+		const row = (over: Partial<UpdateState>) => { const b = aboutButton(state(over)); return [b.action, b.label, b.disabled, b.description]; };
+		assert.deepEqual(row({ status: "available", version: "0.3.8", availableVersion: "0.3.8" }), ["download", "Download", false, "Update available."]);
+		assert.deepEqual(row({ status: "downloaded", version: "0.3.8" }), ["install", "Install", false, "Update available."]);
+		assert.deepEqual(row({ status: "checking" }), ["none", "Checking…", true, "Current version of the application."]);
+		assert.deepEqual(row({ status: "downloading", version: "0.3.8" }), ["none", "Downloading…", true, "Current version of the application."]);
+		assert.deepEqual(row({ status: "up-to-date" }), ["none", "Up to Date", false, "Current version of the application."]);
+		for (const status of ["idle", "error"] as const) assert.deepEqual(row({ status }), ["none", "Check for Updates", false, "Current version of the application."], status);
+		assert.deepEqual(row({ status: "disabled" }), ["none", "Check for Updates", true, "Automatic updates are not available in this build."], "the reason updates are off");
+		assert.deepEqual(row({ status: "disabled", message: "This server isn't run by the lh launcher." }), ["none", "Check for Updates", true, "This server isn't run by the lh launcher."]);
+		assert.deepEqual([aboutButton(null).label, aboutButton(null).disabled, aboutButton(null).tooltip], ["Check for Updates", true, null], "no state yet");
+		// T3's retries: a failed download downloads again, an error that kept a download installs it.
+		assert.deepEqual(row({ status: "error", errorContext: "download", availableVersion: "0.3.8" }), ["download", "Download", false, "Update available."]);
+		assert.deepEqual(row({ status: "error", errorContext: "install", downloadedVersion: "0.3.8" }), ["install", "Install", false, "Update available."]);
+	});
+
+	it("the button's tooltip is the sidebar's (T3's getDesktopUpdateButtonTooltip)", () => {
+		const tip = (over: Partial<UpdateState>) => updateButtonTooltip(state(over));
+		assert.equal(tip({ status: "available", version: "0.3.8", availableVersion: "0.3.8" }), "Update 0.3.8 ready to download");
+		assert.equal(tip({ status: "available", availableVersion: "0.3.8", errorContext: "download" }), "Download failed for 0.3.8. Click to retry.");
+		assert.equal(tip({ status: "downloading", downloadPercent: 42.9 }), "Downloading update (42%)");
+		assert.equal(tip({ status: "downloading", preparing: true }), "Preparing update");
+		assert.equal(tip({ status: "downloaded", version: "0.3.8" }), "Update 0.3.8 downloaded. Click to restart and install.");
+		assert.equal(tip({ status: "downloaded", downloadedVersion: "0.3.8", notAppliedVersion: "0.3.8" }), "Update 0.3.8 did not apply. Click to retry.");
+		assert.equal(tip({ status: "error", message: "Couldn’t check for updates. Try again later." }), "Couldn’t check for updates. Try again later.");
+		assert.equal(tip({ status: "error" }), "Update failed");
+		for (const status of ["idle", "up-to-date", "checking", "disabled"] as const) assert.equal(tip({ status }), "Up to date", status);
 	});
 });
 
 describe("General update rows", () => {
-	it("browser/SSR shows version and installed-version release notes, without inactive controls or claims", () => {
+	it("browser/SSR shows the version, its release notes and T3's button, with no toggle", () => {
 		const html = renderToStaticMarkup(<UpdateSettings {...props} />);
 		assert.ok(html.includes("Version 0.3.7"));
 		assert.ok(html.includes(`${props.homepage}/releases/tag/v0.3.7`));
-		assert.ok(!html.includes("update-check")); assert.ok(!html.includes("row-auto-update"));
-		assert.ok(!html.includes(MANUAL_UPDATE_HINT)); assert.ok(!html.includes("update-status"));
+		assert.ok(html.includes("Check for Updates")); assert.ok(html.includes("Current version of the application."));
+		assert.ok(!html.includes("row-auto-update")); assert.ok(!html.includes("automatically"));
 	});
 
-	it("unpackaged/unavailable updater shows the version-only surface", async () => {
+	it("an unavailable updater: the button can't be pressed and the description says why", async () => {
 		const b = bridge(state({ status: "disabled" })); const host = await mount(<UpdateSettings {...props} />);
-		assert.ok(q(host, "row-version")); assert.equal(q(host, "update-check"), null);
-		assert.equal(q(host, "row-auto-update"), null); assert.equal(b.calls.check, 0);
+		assert.equal(q(host, "update-button")!.textContent, "Check for Updates");
+		assert.equal((q(host, "update-button") as HTMLButtonElement).disabled, true);
+		assert.equal(q(host, "update-description")!.textContent, "Automatic updates are not available in this build.");
+		await click(q(host, "update-button")); assert.equal(b.calls.check, 0);
 	});
 
-	it("idle shows two rows and clear consequences; opening Settings never checks", async () => {
-		const b = bridge(); const seen: boolean[] = [];
-		const host = await mount(<UpdateSettings {...props} onAutoUpdateChange={value => seen.push(value)} />);
-		assert.deepEqual([...host.children].map(el => el.getAttribute("data-testid")), ["row-version", "row-auto-update"]);
-		assert.ok(q(host, "row-version")!.contains(q(host, "update-check")));
-		assert.ok(host.textContent!.includes(MANUAL_UPDATE_HINT)); assert.ok(host.textContent!.includes(AUTO_UPDATE_HINT));
-		assert.equal(q(host, "update-status"), null); assert.equal(b.calls.check, 0);
-		await click(q(host, "toggle-auto-update")); assert.deepEqual(seen, [false]);
-		await click(q(host, "update-check")); assert.equal(b.calls.check, 1);
-	});
-
-	it("manual check remains available while automatic checks are OFF", async () => {
-		const b = bridge(); const host = await mount(<UpdateSettings {...props} autoUpdate={false} />);
-		assert.equal(q(host, "toggle-auto-update")!.getAttribute("aria-checked"), "false");
-		await click(q(host, "update-check")); assert.equal(b.calls.check, 1);
-	});
-
-	it("checking/downloading shows context and disables only the UI button; ready offers Restart", async () => {
+	it("one row and no toggle; opening Settings never checks; the button checks", async () => {
 		const b = bridge(); const host = await mount(<UpdateSettings {...props} />);
-		await b.push(state({ status: "checking", revision: 1 }));
-		assert.equal((q(host, "update-check") as HTMLButtonElement).disabled, true);
-		assert.equal(q(host, "update-check")!.getAttribute("aria-busy"), "true");
-		assert.equal(q(host, "update-status")!.textContent, "Checking for updates…");
-		await b.push(state({ status: "downloading", version: "0.3.8", revision: 2 }));
-		assert.equal(q(host, "update-status")!.textContent, "Downloading version 0.3.8…");
-		assert.equal((q(host, "update-check") as HTMLButtonElement).disabled, true);
-		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 3 }));
-		assert.equal(q(host, "update-check"), null); assert.equal(q(host, "update-status")!.textContent, "Version 0.3.8 is ready to install.");
-		await click(q(host, "update-install"));
+		assert.deepEqual([...host.children].map(el => el.getAttribute("data-testid")), ["row-version"]);
+		assert.ok(q(host, "row-version")!.contains(q(host, "update-button")));
+		assert.equal(q(host, "toggle-auto-update"), null);
+		assert.equal(b.calls.check, 0);
+		await click(q(host, "update-button")); assert.equal(b.calls.check, 1);
+	});
+
+	it("one button goes through the labels, the same element throughout, and Install confirms first", async () => {
+		const b = bridge(); const host = await mount(<UpdateSettings {...props} />);
+		const button = q(host, "update-button")! as HTMLButtonElement;
+		const seen = async (next: UpdateState) => { await b.push(next); assert.equal(q(host, "update-button"), button, "the same element"); return [button.textContent, button.disabled, q(host, "update-description")!.textContent]; };
+		assert.deepEqual(await seen(state({ status: "checking", revision: 1 })), ["Checking…", true, "Current version of the application."]);
+		assert.deepEqual(await seen(state({ status: "available", version: "0.3.8", availableVersion: "0.3.8", revision: 2 })), ["Download", false, "Update available."]);
+		await click(button); assert.equal(b.calls.download, 1, "Download downloads, only on the click");
+		assert.deepEqual(await seen(state({ status: "downloading", version: "0.3.8", revision: 3 })), ["Downloading…", true, "Current version of the application."]);
+		assert.deepEqual(await seen(state({ status: "downloaded", version: "0.3.8", revision: 4 })), ["Install", false, "Update available."]);
+		await click(button);
 		assert.equal(b.calls.install, 0, "Install confirms first");
+		assert.equal(button.disabled, true, "pending while the confirm is open (T3's isUpdateActionPending)");
 		assert.equal(q(document, "install-update-title")!.textContent, "Install update 0.3.8 and restart LearnHarness?");
 		await click(q(document, "install-update-confirm")); assert.equal(b.calls.install, 1);
+		assert.deepEqual(await seen(state({ status: "up-to-date", revision: 5 })), ["Up to Date", false, "Current version of the application."]);
+		assert.deepEqual(await seen(state({ status: "error", revision: 6 })), ["Check for Updates", false, "Current version of the application."]);
+		await click(button); assert.equal(b.calls.check, 1);
+	});
+
+	it("hovering the button shows its tooltip", async () => {
+		bridge(state({ status: "downloaded", version: "0.3.8", revision: 1 })); const host = await mount(<UpdateSettings {...props} />);
+		const button = q(host, "update-button")!;
+		await hover(button);
+		assert.equal(await plainTooltipOpens(button), true, "its text is aboutButton's tooltip, pinned above");
 	});
 
 	it("a restarted self-hosted server (new instance) is not ignored for counting revisions from 0 again", async () => {
@@ -227,50 +250,62 @@ describe("General update rows", () => {
 		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "check", "the new server's lower revision is accepted");
 	});
 
-	it("an undismissed rollback stays explained in Settings after a later check clears the message", () => {
-		const notice = { kind: "rolled-back" as const, version: "0.3.8", text: "Update to version 0.3.8 failed to start and was rolled back.", at: 1 };
-		assert.equal(updateStatusText(state({ status: "up-to-date", notice, message: null })), notice.text);
-		assert.equal(updateStatusText(state({ status: "downloaded", version: "0.3.9", notice })), "Version 0.3.9 is ready to install.");
-	});
+	it("the server's Download posts /api/updates/download and shows what it answers; a failed download offers the retry", async () => {
+		const serve = (answer: UpdateState) => {
+			const posts: string[] = [];
+			const offer = state({ status: "available", version: "0.3.8", availableVersion: "0.3.8", revision: 1 });
+			globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+				if (init?.method === "POST") { posts.push(String(input)); return Response.json(answer); }
+				return Response.json(offer);
+			};
+			return posts;
+		};
+		const tick = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const posts = serve(state({ status: "downloaded", version: "0.3.8", availableVersion: "0.3.8", revision: 3 }));
+		const host = await mount(<UpdateSettings {...props} />);
+		await tick();
+		assert.equal(q(host, "update-button")!.textContent, "Download");
+		await click(q(host, "update-button")); await tick();
+		assert.deepEqual(posts, ["/api/updates/download"]);
+		assert.equal(q(host, "update-button")!.textContent, "Install");
 
-	it("desktop available offers Download (downloads only on click)", async () => {
-		const b = bridge(); const host = await mount(<UpdateSettings {...props} />);
-		await b.push(state({ status: "available", version: "0.3.8", revision: 1 }));
-		assert.equal(q(host, "update-status")!.textContent, "Version 0.3.8 is available.");
-		assert.equal(b.calls.download, 0);
-		await click(q(host, "update-download")); assert.equal(b.calls.download, 1);
+		await unmountAllRoots();
+		serve(state({ status: "available", version: "0.3.8", availableVersion: "0.3.8", errorContext: "download", message: "SHA-256 mismatch", revision: 3 }));
+		const failed = await mount(<UpdateSettings {...props} />);
+		await tick();
+		await click(q(failed, "update-button")); await tick();
+		assert.equal(q(failed, "update-button")!.textContent, "Download", "the offer stays");
+		assert.equal(aboutButton(state({ status: "available", availableVersion: "0.3.8", errorContext: "download" })).tooltip, "Download failed for 0.3.8. Click to retry.");
+		assert.equal(q(document, "toast"), null, "the server's updater raises no toasts");
+		// The other pages read it after the server's update-changed event.
+		await unmountAllRoots();
+		globalThis.fetch = async () => Response.json(state({ status: "available", version: "0.3.8", availableVersion: "0.3.8", errorContext: "download", revision: 3 }));
+		const sidebar = await mount(<SidebarUpdatePill />);
+		await tick();
+		assert.equal(q(sidebar, "update-pill")!.getAttribute("aria-label"), "Download failed for 0.3.8. Click to retry.", "the sidebar retries it too");
 	});
 
 	it("Cancel in the confirm dialog installs nothing", async () => {
 		const b = bridge(state({ status: "downloaded", version: "0.3.8", revision: 1 }));
 		const host = await mount(<UpdateSettings {...props} />);
-		await click(q(host, "update-install"));
+		await click(q(host, "update-button"));
 		await click(q(document, "install-update-cancel"));
 		assert.equal(q(document, "install-update-title"), null);
 		assert.equal(b.calls.install, 0);
-	});
-
-	it("up-to-date and failure statuses allow another manual check", async () => {
-		const b = bridge(); const host = await mount(<UpdateSettings {...props} />);
-		await b.push(state({ status: "up-to-date", revision: 1 }));
-		assert.equal(q(host, "update-status")!.textContent, "No newer version was found at the last check.");
-		await b.push(state({ status: "error", revision: 2 }));
-		assert.equal((q(host, "update-check") as HTMLButtonElement).disabled, false);
-		assert.equal(q(host, "update-status")!.textContent, "Couldn’t check for updates. Try again later.");
-		await click(q(host, "update-check")); assert.equal(b.calls.check, 1);
+		assert.equal((q(host, "update-button") as HTMLButtonElement).disabled, false, "no longer pending");
 	});
 
 	it("bridge command rejection is handled without exposing raw diagnostics", async () => {
 		const b = bridge(); b.failCheck(); const host = await mount(<UpdateSettings {...props} />);
-		await click(q(host, "update-check"));
-		assert.equal(q(host, "update-status")!.textContent, "Couldn’t check for updates. Try again later.");
+		await click(q(host, "update-button"));
+		assert.equal(b.calls.check, 1);
 		assert.ok(!host.textContent!.includes("sensitive"));
 	});
 
 	it("late Settings and pill subscribers recover the staged update without an event", async () => {
 		const b = bridge(state({ status: "downloaded", version: "0.3.8", revision: 5 }));
 		const host = await mount(<><UpdateSettings {...props} /><SidebarUpdatePill /></>);
-		assert.ok(q(host, "update-install")); assert.ok(q(host, "update-pill"));
+		assert.equal(q(host, "update-button")!.textContent, "Install"); assert.ok(q(host, "update-pill"));
 		assert.equal(q(host, "update-pill")!.getAttribute("aria-label"), "Update 0.3.8 downloaded. Click to restart and install.");
 		await click(q(host, "update-pill"));
 		assert.equal(b.calls.install, 0, "the pill confirms first");
@@ -337,7 +372,7 @@ describe("General update rows", () => {
 		assert.equal(pill().getAttribute("aria-label"), "Preparing update", "every byte is in: checked and unpacked next");
 		assert.equal(offset(), 0, "a full ring");
 		assert.equal(pill().getAttribute("aria-disabled"), "true");
-		assert.equal(updateStatusText(state({ status: "downloading", version: "0.3.8", preparing: true })), "Preparing version 0.3.8…");
+		assert.equal(updateButtonTooltip(state({ status: "downloading", version: "0.3.8", preparing: true })), "Preparing update", "Settings' tooltip says so too");
 		assert.equal(updateControlTooltip(state({ status: "downloading", preparing: true }), "downloading"), "Preparing update");
 		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 5 }));
 		assert.equal(pill().querySelector("circle"), null, "no ring once downloaded");
@@ -712,7 +747,7 @@ describe("General update rows", () => {
 		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 2, availableVersion: "0.3.8", downloadedVersion: "0.3.8", errorContext: "install", canRetry: true, message: "Couldn’t install the update." }));
 		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "install", "not stuck on Restarting");
 		assert.equal(q(host, "update-pill")!.getAttribute("aria-label"), "Update 0.3.8 downloaded. Click to restart and install.", "T3's line for that state");
-		assert.ok(q(host, "update-install"), "Settings shows Install");
+		assert.equal(q(host, "update-button")!.textContent, "Install", "Settings shows Install");
 	});
 
 	it("the notes popover heads a retry with its own line, not Update ready to download", async () => {
@@ -1100,7 +1135,7 @@ describe("General update rows", () => {
 		const host = await mount(<><UpdateSettings {...props} /><SidebarUpdatePill /></>);
 		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 4 }));
 		await act(async () => { snapshot.resolve(state({ status: "checking", revision: 3 })); });
-		assert.ok(q(host, "update-install")); assert.ok(q(host, "update-pill"));
+		assert.equal(q(host, "update-button")!.textContent, "Install"); assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "install");
 	});
 
 	it("snapshot rejection cannot erase an already received event and late callbacks are unsubscribed", async () => {
@@ -1108,16 +1143,17 @@ describe("General update rows", () => {
 		const host = await mount(<UpdateSettings {...props} />);
 		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 1 }));
 		await act(async () => { snapshot.reject(new Error("IPC disconnected")); });
-		assert.ok(q(host, "update-install"));
+		assert.equal(q(host, "update-button")!.textContent, "Install");
 		const { root } = roots.pop()!; await act(async () => { root.unmount(); }); host.remove();
 		assert.equal(b.listeners.size, 0);
 	});
 
-	it("snapshot rejection without an event is handled with a generic message", async () => {
+	it("snapshot rejection without an event shows T3's no-state row, never the error", async () => {
 		const snapshot = deferred<UpdateState>(); bridge(state(), snapshot.promise);
 		const host = await mount(<UpdateSettings {...props} />);
 		await act(async () => { snapshot.reject(new Error("sensitive error")); });
-		assert.equal(q(host, "update-status")!.textContent, "Couldn’t check for updates. Try again later.");
+		assert.equal(q(host, "update-description")!.textContent, "Current version of the application.");
+		assert.equal((q(host, "update-button") as HTMLButtonElement).disabled, true);
 		assert.ok(!host.textContent!.includes("sensitive"));
 	});
 });
@@ -1309,7 +1345,7 @@ describe("the update control's toasts (T3's desktopUpdate.toast.tsx and SidebarU
 		const host = await mount(<><SidebarUpdatePill /><UpdateSettings {...props} /></>);
 		await settle();
 		await click(q(host, "update-pill")); await click(q(document, "install-update-confirm")); await settle();
-		await click(q(host, "update-install")); await click(q(document, "install-update-confirm")); await settle();
+		await click(q(host, "update-button")); await click(q(document, "install-update-confirm")); await settle();
 		assert.deepEqual(sources, ["sidebar", undefined]);
 	});
 
@@ -1350,14 +1386,59 @@ describe("the update control's toasts (T3's desktopUpdate.toast.tsx and SidebarU
 		assert.ok(q(document, "update-pill-notes"), "the notes stayed open");
 	});
 
-	it("Settings' own buttons raise no toast (that is revision PR 5)", async () => {
-		await act(async () => { toastManager.clear(); });
-		bridge(offered);
+	it("Settings raises T3's Settings toasts: failed checks, downloads and installs, never a downloaded one", async () => {
+		const settingsWithToasts = async (initial: UpdateState) => {
+			await unmountAll();
+			await act(async () => { toastManager.clear(); });
+			const b = bridge(initial);
+			const host = await mount(<><UpdateSettings {...props} /><Toaster /></>);
+			await settle();
+			return { b, button: () => q(host, "update-button")! };
+		};
+		const shown = () => [toastTitles(), toastLines()];
+		let r = await settingsWithToasts(offered);
 		window.lh!.downloadUpdate = async () => ({ accepted: true, completed: true, state: downloaded });
+		await click(r.button()); await settle();
+		assert.deepEqual(toastTitles(), [], "notifyDownloaded: false");
+		r = await settingsWithToasts(offered);
+		window.lh!.downloadUpdate = async () => ({ accepted: true, completed: false, state: { ...offered, errorContext: "download", message: "Couldn’t download the update. Try again." } });
+		await click(r.button()); await settle();
+		assert.deepEqual(shown(), [["Could not download update"], ["Couldn’t download the update. Try again."]]);
+		r = await settingsWithToasts(offered);
+		window.lh!.downloadUpdate = async () => { throw new Error("sensitive raw diagnostics"); };
+		await click(r.button()); await settle();
+		assert.deepEqual(shown(), [["Could not start update download"], ["An unexpected error occurred."]]);
+		r = await settingsWithToasts(state({ status: "idle", revision: 1 }));
+		window.lh!.checkForUpdates = async () => ({ checked: false, state: state({ status: "idle", revision: 1 }) });
+		await click(r.button()); await settle();
+		assert.deepEqual(shown(), [["Could not check for updates"], ["Automatic updates are not available in this build."]]);
+		r = await settingsWithToasts(state({ status: "idle", revision: 1 }));
+		window.lh!.checkForUpdates = async () => { throw new Error("sensitive raw diagnostics"); };
+		await click(r.button()); await settle();
+		assert.deepEqual(shown(), [["Could not check for updates"], ["Update check failed."]]);
+		r = await settingsWithToasts(state({ status: "idle", revision: 1 }));
+		window.lh!.checkForUpdates = async () => ({ checked: true, state: state({ status: "up-to-date", revision: 2 }) });
+		await click(r.button()); await settle();
+		assert.deepEqual(toastTitles(), [], "a check that ran raises none");
+		r = await settingsWithToasts(downloaded);
+		window.lh!.installUpdate = async () => { throw new Error("sensitive raw diagnostics"); };
+		await click(r.button()); await click(q(document, "install-update-confirm")); await settle();
+		assert.deepEqual(shown(), [["Could not install update"], ["An unexpected error occurred."]]);
+		assert.equal((r.button() as HTMLButtonElement).disabled, false, "pending ends with the install (T3's .finally)");
+		r = await settingsWithToasts(downloaded);
+		window.lh!.installUpdate = async () => false;
+		await click(r.button()); await click(q(document, "install-update-confirm")); await settle();
+		assert.deepEqual(toastTitles(), [], "a refused install raises none from Settings (T3's About has no refused branch)");
+		assert.ok(!document.body.textContent!.includes("sensitive"));
+	});
+
+	it("Settings on a self-hosted server raises none (the server's updater raises no toasts)", async () => {
+		await unmountAll();
+		await act(async () => { toastManager.clear(); });
+		globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => { if (init?.method === "POST") throw new Error("offline"); return Response.json(state({ status: "idle", revision: 1 })); };
 		const host = await mount(<><UpdateSettings {...props} /><Toaster /></>);
 		await settle();
-		await click(q(host, "update-download"));
-		await settle();
+		await click(q(host, "update-button")); await settle();
 		assert.deepEqual(toastTitles(), []);
 	});
 });
@@ -1366,14 +1447,15 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 	const V71 = "0.6.1-nightly.20261118.71";
 	const V72 = "0.6.1-nightly.20261118.72";
 	type Status = { version: string; target: string | null; phase: string; error: string | null; downloadPercent?: number | null; releaseNotes?: unknown; omittedReleaseCount?: unknown };
-	function remote(status: Status, server: UpdateState) {
+	function remote(status: Status, server: UpdateState, { installApp = true } = {}) {
 		let current = status;
-		const calls = { getStatus: 0, check: 0, download: 0, install: 0, fetches: [] as string[] };
+		const calls = { getStatus: 0, check: 0, download: 0, install: 0, installApp: 0, fetches: [] as string[] };
 		window.lh = { desktopUpdate: {
 			getStatus: async () => { calls.getStatus++; return current as never; },
 			check: async () => { calls.check++; },
 			download: async () => { calls.download++; },
 			install: async () => { calls.install++; },
+			...(installApp ? { installApp: async () => { calls.installApp++; } } : {}),
 		} };
 		globalThis.fetch = async (input) => { calls.fetches.push(String(input)); return Response.json(server); };
 		return { calls, set: (next: Status) => { current = next; } };
@@ -1578,8 +1660,31 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		assert.equal(q(host, "desktop-app-status")!.textContent, "Update available.");
 		const button = q(host, "desktop-app-update")!;
 		assert.equal(button.textContent, "Install");
+		assert.equal(desktopAppButton({ version: V71, target: V72, phase: "downloaded", error: null }).tooltip, `Update ${V72} downloaded. Click to restart and install.`, "the sidebar's tooltip");
 		await click(button); await settle();
-		assert.equal(r.calls.install, 1, "Install opens the app's Update everything confirmation");
+		assert.deepEqual([r.calls.installApp, r.calls.install], [1, 0], "Install installs only this app (the app asks with T3's confirm), not Update everything");
+		assert.equal(q(document, "install-update-title"), null, "the app asks, not the page");
+		r.set({ version: V71, target: V72, phase: "available", error: null });
+		await act(async () => { document.dispatchEvent(new dom.window.Event("visibilitychange")); });
+		await settle();
+		assert.equal(q(host, "desktop-app-update"), button, "the same element");
+		assert.equal(button.textContent, "Download");
+		await click(button); assert.equal(r.calls.download, 1);
+		r.set({ version: V71, target: V72, phase: "downloading", error: null, downloadPercent: 40 });
+		await act(async () => { document.dispatchEvent(new dom.window.Event("visibilitychange")); });
+		await settle();
+		assert.deepEqual([button.textContent, (button as HTMLButtonElement).disabled], ["Downloading…", true]);
+		assert.equal(desktopAppButton({ version: V71, target: V72, phase: "downloading", error: null, downloadPercent: 40 }).tooltip, "Downloading update (40%)");
+		r.set({ version: V71, target: null, phase: "checking", error: null });
+		await act(async () => { document.dispatchEvent(new dom.window.Event("visibilitychange")); });
+		await settle();
+		assert.deepEqual([button.textContent, (button as HTMLButtonElement).disabled], ["Checking…", true]);
+		r.set({ version: V71, target: null, phase: "error", error: "Couldn’t check for updates. Try again later." });
+		await act(async () => { document.dispatchEvent(new dom.window.Event("visibilitychange")); });
+		await settle();
+		assert.deepEqual([button.textContent, q(host, "desktop-app-status")!.textContent], ["Check for Updates", "Current version of the application."], "T3's description has no error line");
+		assert.equal(desktopAppButton({ version: V71, target: null, phase: "error", error: "Couldn’t check for updates. Try again later." }).tooltip, "Couldn’t check for updates. Try again later.", "the error is the tooltip");
+		await click(button); assert.equal(r.calls.check, 1);
 		r.set({ version: V71, target: null, phase: "up-to-date", error: null });
 		await act(async () => { document.dispatchEvent(new dom.window.Event("visibilitychange")); });
 		await settle();
@@ -1590,6 +1695,14 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		await settle();
 		assert.equal(q(host, "desktop-app-status")!.textContent, "Automatic updates are not available in this build.");
 		assert.equal((q(host, "desktop-app-update") as HTMLButtonElement).disabled, true);
+	});
+
+	it("an app from before installApp: This app's Install falls back to its own confirmation", async () => {
+		const r = remote({ version: V71, target: V72, phase: "downloaded", error: null }, state({ status: "up-to-date", runningVersion: V71 }), { installApp: false });
+		const host = await mount(<UpdateSettings {...props} version={V71} />);
+		await settle();
+		await click(q(host, "desktop-app-update")); await settle();
+		assert.equal(r.calls.install, 1);
 	});
 
 	it("browsers and the local desktop window keep one Version row and no app row", async () => {
@@ -1678,24 +1791,21 @@ describe("What's new waits for the reload", () => {
 });
 
 describe("Settings integration", () => {
-	it("the toggle sends the complete General section and follows stored server truth", async () => {
-		bridge();
-		// A synthetic future sibling exercises the caller's section-preserving
-		// contract without introducing a new product setting or changing its API.
-		const record = { version: 1, general: { autoUpdate: true, futureSibling: "keep" } };
-		const puts: unknown[] = [];
+	it("a stored autoUpdate: false changes nothing: no toggle, the button checks, and nothing is written", async () => {
+		const b = bridge();
+		const record = { version: 1, general: { autoUpdate: false } };
+		const requests: string[] = [];
 		globalThis.fetch = async (input, init) => {
-			assert.equal(String(input), init?.method === "PUT" ? "/api/settings/general" : "/api/settings");
-			if (init?.method === "PUT") {
-				const body = JSON.parse(String(init.body)); puts.push(body);
-				return Response.json({ settings: { ...record, general: body } });
-			}
+			requests.push(`${init?.method ?? "GET"} ${String(input)}`);
 			return Response.json({ settings: record });
 		};
 		const host = await mount(<SettingsDialogBody initialSection="general" onClose={() => {}} />);
-		await click(q(host, "toggle-auto-update"));
-		assert.deepEqual(puts, [{ autoUpdate: false, futureSibling: "keep" }]);
-		assert.equal(q(host, "toggle-auto-update")!.getAttribute("aria-checked"), "false");
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		assert.ok(q(host, "row-version"));
+		assert.equal(q(host, "toggle-auto-update"), null);
+		assert.ok(!host.textContent!.includes("automatically"));
+		await click(q(host, "update-button")); assert.equal(b.calls.check, 1);
+		assert.deepEqual(requests.filter((request) => !request.startsWith("GET")), [], "the old value is left as it is (not migrated)");
 	});
 
 	it("the shell's navigation request opens General, but opening alone never checks", async () => {

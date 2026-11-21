@@ -55,6 +55,7 @@ import { UpdateReleaseNotes } from "@/components/release-notes-view";
 import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateDownloadedToast, showUpdateErrorToast, UNEXPECTED_ERROR } from "@/components/update-toasts";
 import { APP_VERSION, HOMEPAGE, desktopOffer, useDesktopAppUpdate, useUpdateState, type DesktopAppStatus, type UpdateState } from "@/components/settings/update-settings";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { downloadingTooltip, PREPARING_LABEL, retryTooltip } from "@/components/update-tooltips";
 import { cn } from "@/lib/utils";
 import { isExactVersion, isNewerVersion } from "@/selfhost/src/version-order.ts";
 import type { ReleaseNoteGroup } from "@/src/core";
@@ -157,35 +158,10 @@ export function updateControlTooltip(state: UpdateState, kind: UpdateControlKind
 	}
 }
 
-/**
- * T3's retry lines of getDesktopUpdateButtonTooltip (desktopUpdate.logic.ts:109-160 at df09ced7),
- * or null for the plain download or install line. Only the desktop's state has these fields.
- */
-export function retryTooltip(state: UpdateState): string | null {
-	const offered = state.downloadedVersion ?? state.availableVersion ?? null;
-	if (state.notAppliedVersion && (state.status === "available" || state.status === "downloaded") && offered === state.notAppliedVersion) {
-		return `Update ${state.notAppliedVersion} did not apply. Click to retry.`;
-	}
-	if ((state.status === "available" || state.status === "error") && state.errorContext === "download" && state.availableVersion) {
-		return `Download failed for ${state.availableVersion}. Click to retry.`;
-	}
-	if (state.status === "error") {
-		if (state.errorContext === "install" && state.downloadedVersion) return `Install failed for ${state.downloadedVersion}. Click to retry.`;
-		if (state.downloadedVersion) return `Update ${state.downloadedVersion} downloaded. Click to restart and install.`;
-	}
-	return null;
-}
-
-export const PREPARING_LABEL = "Preparing update";
+export { downloadingTooltip, PREPARING_LABEL, retryTooltip } from "@/components/update-tooltips";
 
 /** Owner decision 2026-11-19: the label between the confirmed install and the restart. */
 export const restartingTooltip = (version: string | null | undefined) => `Restarting to install ${version || "the update"}…`;
-
-/** T3's downloading label (desktopUpdate.logic.ts:134-139 at 3ce21458): the percent floored,
- *  or the plain label while the size is unknown. */
-export function downloadingTooltip(percent: number | null | undefined): string {
-	return typeof percent === "number" && Number.isFinite(percent) ? `Downloading update (${Math.floor(percent)}%)` : "Downloading update";
-}
 
 /** How far the download shown by the "downloading" state is: this app's own when it is the
  *  one downloading (resolveUpdateControl checks it first), else the server's. */

@@ -17,7 +17,7 @@
  */
 
 const { compareVersions, bridgeNotes } = require("./release-notes.cjs");
-const { hasDownloadableOffer } = require("./update-machine.cjs");
+const { hasDownloadableOffer, hasInstallableDownload } = require("./update-machine.cjs");
 
 const EXACT = /^\d+\.\d+\.\d+(?:-[a-z]+\.\d{8}\.\d+)?$/;
 const isNewerVersion = (a, b) => typeof a === "string" && typeof b === "string" && EXACT.test(a) && EXACT.test(b) && compareVersions(a, b) > 0;
@@ -54,6 +54,17 @@ function confirmation({ label, target, serverBehind, running }) {
 	};
 }
 
+/** Settings' This app Install: T3's install confirm (getDesktopUpdateInstallConfirmationMessage,
+ *  apps/web/src/components/desktopUpdate.logic.ts:180-197 at df09ced7), worded as
+ *  components/install-update-dialog.tsx words it, in a native dialog. */
+function installAppConfirmation(version) {
+	return {
+		message: `Install update${version ? ` ${version}` : ""} and restart LearnHarness?`,
+		detail: "Any running tasks will be interrupted. Make sure you're ready before continuing.",
+		buttons: ["Install and restart", "Cancel"],
+	};
+}
+
 class RunProblem extends Error {
 	/** `server` failures leave the app as it is and offer Retry (or Pair again) and Switch server…. */
 	constructor(message, { server = false, kind = "retry" } = {}) {
@@ -77,6 +88,7 @@ async function readJSON(response) {
  *   updater.downloadPinned(v)  make sure exactly v is downloaded (throws otherwise)
  *   updater.downloadExact(v)   the app-only retry: check for exactly v (not the newest), download it
  *   updater.installPinned(v)   quit and install exactly v (never a newer one)
+ *   updater.install()          the plain Install: re-check, then quit and install this app
  *   selection()                { origin, token } of the open remote window, or null
  *   request(origin, path, { token, method, body, timeoutMs }) a fetch to that exact origin
  *   confirm({ message, detail, buttons, signal }) -> button index (native dialog)
@@ -360,6 +372,20 @@ function createUpdateEverything(deps) {
 			// Also a retry of a failed download (T3's download retry), never a dead click.
 			if (!run && hasDownloadableOffer(deps.updater.state())) deps.updater.download();
 		},
+		/** Settings' This app Install (revision PR 5): only this app, after T3's confirm. Main asks,
+		 *  never the page, and the page names nothing. Resolves once the confirm is answered. */
+		async installApp() {
+			if (run || asking || !hasInstallableDownload(deps.updater.state())) return;
+			asking = true;
+			let choice;
+			try {
+				const state = deps.updater.state();
+				choice = await deps.confirm(installAppConfirmation(state.downloadedVersion ?? state.version));
+			} finally {
+				asking = false;
+			}
+			if (choice === 0 && !run && hasInstallableDownload(deps.updater.state())) deps.updater.install();
+		},
 		/** The page's install(): resolves once the confirmation is answered. */
 		async install() {
 			if (run || asking) return;
@@ -393,4 +419,4 @@ function createUpdateEverything(deps) {
 	};
 }
 
-module.exports = { createUpdateEverything, serverLabel, confirmation, HANDOFF_TIMEOUT_MS, RESTART_DELAY_MS, SAVED_RESULT_MAX_AGE_MS, INSTALL_VERSION_PATH };
+module.exports = { createUpdateEverything, serverLabel, confirmation, installAppConfirmation, HANDOFF_TIMEOUT_MS, RESTART_DELAY_MS, SAVED_RESULT_MAX_AGE_MS, INSTALL_VERSION_PATH };

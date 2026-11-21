@@ -7,7 +7,7 @@ Roadmap item 23 PR 2 (answer key: [docs/specs/desktop-server-list.md](../../../.
 - `bridge`: the remote page has only `window.lh.desktopUpdate` (`getStatus`, `check`, `download`, `install`); the ghost page and other origins get nothing.
 - `states`: `[data-testid=update-pill]` `data-action` `everything` (server behind), `app-download` / `app-install` (server already on it), disabled `everything` while a run goes.
 - `hover`: in the `everything` state, hovering the control shows this app's release notes under the summary (answer key: [docs/specs/t3-style-updates.md](../../../../../docs/specs/t3-style-updates.md), revision PR 1).
-- `settings`: Settings > General rows `row-version` ("Server X") and `row-desktop-app` ("This app Y", button `desktop-app-update`).
+- `settings`: Settings > General rows `row-version` ("Server X", button `update-button`) and `row-desktop-app` ("This app Y", button `desktop-app-update`), each T3's About button. This app's Install (`window.lh.desktopUpdate.installApp`) shows the app's native "Install update Y and restart LearnHarness?" confirm and installs only this app, never the server (docs/specs/t3-style-updates.md revision PR 5).
 - `confirm`: the native "Update everything?" dialog with the running task count; Cancel changes nothing.
 - `pinned`: the server installs exactly the app's version, even after a newer one is published mid-run.
 - `commit`: the app waits for `committed: true` on `GET /api/updates`, not health alone.

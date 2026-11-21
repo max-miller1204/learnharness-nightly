@@ -14,7 +14,7 @@ const mainSource = readFileSync(mainFile, "utf8");
 const mainRequire = createRequire(mainFile);
 
 function fixture({ packaged = true, updaterMissing = false, installRecord = null as string | null } = {}) {
-	let settings: string | Error = JSON.stringify({ version: 1, general: { autoUpdate: true } });
+	let settings: string | Error = JSON.stringify({ version: 1 });
 	const settingsReads: string[] = [];
 	// userData/desktop-update-install.json: written before an install, read once at launch.
 	const record = { text: installRecord, removed: false };
@@ -162,58 +162,37 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 		window: () => run("createWindow(process.env.LH_DEV_URL).win") as FakeWindow,
 		untrustedWindow: () => new FakeWindow(),
 		state: () => JSON.parse(JSON.stringify(run("updateState"))),
-		check: async (manual = false) => { run(`checkForUpdates({ manual: ${manual} })`); await Promise.resolve(); await Promise.resolve(); },
+		check: async () => { run("checkForUpdates()"); await Promise.resolve(); await Promise.resolve(); },
 		menuCheck: () => menu[0]!.submenu!.find(item => item.label === "Check for Updates…")!.click!(),
 	};
 }
 
-describe("automatic-update preference gate", () => {
-	it("explicit OFF skips automatic checks, but manual checks still run without reading the preference", async () => {
+describe("no automatic-update toggle", () => {
+	it("a stored autoUpdate: false is ignored: automatic checks run, and main never reads the preference", async () => {
 		const f = fixture();
 		f.setSettings({ general: { autoUpdate: false } });
 		f.run("setupAutoUpdater()");
 		await f.check();
-		assert.equal(f.updater.checks, 0);
-		assert.deepEqual(f.settingsReads, ["/fixture/custom-user-data-dev/data/settings.json"]);
-		await f.check(true);
 		assert.equal(f.updater.checks, 1);
-		assert.equal(f.settingsReads.length, 1);
+		assert.deepEqual(f.settingsReads, [], "settings.json isn't read for it");
 		assert.equal(f.updater.autoDownload, false, "downloads only on click");
 		assert.equal(f.updater.autoInstallOnAppQuit, false, "never installs on quit");
 		assert.equal(f.updater.fullChangelog, true, "notes for every skipped version");
 	});
 
-	for (const [label, setting] of [
-		["ON", { general: { autoUpdate: true } }], ["absent field", { general: {} }],
-		["absent section", { version: 1 }], ["null", null], ["non-boolean", { general: { autoUpdate: "false" } }],
-	] as const) {
-		it(`${label} keeps automatic checks enabled`, async () => {
-			const f = fixture(); f.setSettings(setting); f.run("setupAutoUpdater()"); await f.check();
-			assert.equal(f.updater.checks, 1);
-		});
-	}
-	for (const [label, failure] of [["missing", new Error("ENOENT")], ["unreadable", new Error("EACCES")], ["corrupt", "{nope"]] as const) {
-		it(`${label} settings keep automatic checks enabled`, async () => {
-			const f = fixture(); f.setSettingsFailure(failure); f.run("setupAutoUpdater()"); await f.check();
-			assert.equal(f.updater.checks, 1);
-		});
-	}
-
-	it("re-reads the setting on each check, without triggering a check merely when saved", async () => {
-		const f = fixture(); f.run("setupAutoUpdater()");
-		f.setSettings({ general: { autoUpdate: false } }); await f.check();
-		f.setSettings({ general: { autoUpdate: true } });
-		assert.equal(f.updater.checks, 0);
-		await f.check();
-		f.setSettings({ general: { autoUpdate: false } }); await f.check();
+	it("a stored autoUpdate: false still gets the 15 s startup check and the 4 h one", async () => {
+		const f = fixture(); f.setSettings({ general: { autoUpdate: false } }); await f.run("main()");
+		const settle = () => new Promise((resolve) => setImmediate(resolve));
+		f.timeouts.find((t) => t.delay === 15_000)!.callback(); await settle();
 		assert.equal(f.updater.checks, 1);
-		assert.equal(f.settingsReads.length, 3);
+		f.intervals[0]!.callback(); await settle();
+		assert.equal(f.updater.checks, 2);
 	});
 
 	for (const label of ["unpackaged", "missing updater"] as const) {
-		it(`${label} stays unavailable, not a saved OFF preference`, async () => {
+		it(`${label} stays unavailable`, async () => {
 			const f = fixture({ packaged: label !== "unpackaged", updaterMissing: label === "missing updater" });
-			f.run("setupAutoUpdater()"); await f.check(true); await f.check();
+			f.run("setupAutoUpdater()"); await f.check(); await f.check();
 			assert.equal(f.updater.checks, 0);
 			assert.equal(f.settingsReads.length, 0);
 			assert.equal(f.state().status, "disabled");
@@ -312,7 +291,7 @@ describe("status observation never controls the updater", () => {
 	});
 
 	it("a declined check makes no up-to-date claim", async () => {
-		const f = fixture(); f.updater.result = null; f.run("setupAutoUpdater()"); await f.check(true);
+		const f = fixture(); f.updater.result = null; f.run("setupAutoUpdater()"); await f.check();
 		assert.equal(f.state().status, "idle");
 	});
 
@@ -326,11 +305,10 @@ describe("status observation never controls the updater", () => {
 		assert.equal(f.updater.checks, 2);
 	});
 
-	it("OFF does not cancel in-flight events; Install re-checks, then kills the server before installing", async () => {
+	it("Install re-checks, then kills the server before installing", async () => {
 		const f = fixture(); f.run("setupAutoUpdater()");
 		f.updater.emit("update-available", { version: "0.3.8" });
-		f.setSettings({ general: { autoUpdate: false } });
-		f.updater.emit("update-downloaded", { version: "0.3.8" }); await f.check();
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
 		assert.equal(f.state().status, "downloaded"); assert.equal(f.updater.checks, 0);
 		f.updater.offer = { version: "0.3.8" };
 		await f.run("serverProcess = fixtureChild; installUpdateNow()");
@@ -403,7 +381,7 @@ describe("status observation never controls the updater", () => {
 
 	it("a failed check carries T3's fields with a fixed message; a failed download keeps the offer to retry", async () => {
 		const f = fixture(); f.run("setupAutoUpdater()");
-		f.updater.failure = new Error("https://private.example/feed 500"); await f.check(true);
+		f.updater.failure = new Error("https://private.example/feed 500"); await f.check();
 		await new Promise((resolve) => setImmediate(resolve));
 		const failed = f.state();
 		assert.deepEqual([failed.status, failed.errorContext, failed.canRetry, failed.message], ["error", "check", true, "Couldn’t check for updates. Try again later."]);
@@ -511,7 +489,7 @@ describe("status observation never controls the updater", () => {
 		f.updater.emit("update-available", { version: "0.3.8", releaseNotes: "- A change" });
 		const offered = f.state();
 		f.updater.failure = new Error("offline");
-		await f.check(true);
+		await f.check();
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.deepEqual([f.state().status, f.state().availableVersion], ["available", "0.3.8"]);
 		assert.deepEqual(f.state().releaseNotes, offered.releaseNotes);
@@ -536,7 +514,7 @@ describe("status observation never controls the updater", () => {
 		await f.run("installUpdateNow()");
 		const checks = f.updater.checks;
 		f.updater.failure = new Error("feed down");
-		await f.check(true);
+		await f.check();
 		f.intervals.forEach((t) => t.callback());
 		await f.run("updateActions.checkNatively()");
 		assert.equal(f.updater.checks, checks, "the timer, Settings and the menu all wait");
@@ -574,7 +552,7 @@ describe("status observation never controls the updater", () => {
 		let finish!: () => void;
 		const original = f.updater.checkForUpdates.bind(f.updater);
 		f.updater.checkForUpdates = function () { this.checks++; this.emit("checking-for-update"); return new Promise((resolve) => { finish = () => resolve({ updateInfo: { version: "0.3.8" } }); }); };
-		f.run("checkForUpdates({ manual: true })");
+		f.run("checkForUpdates()");
 		const clicked = f.run("downloadUpdateNow()") as Promise<void>;
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.equal(f.updater.downloads, 0, "waits while the check runs");
@@ -610,7 +588,7 @@ describe("status observation never controls the updater", () => {
 		const f = fixture(); f.run("setupAutoUpdater()");
 		f.updater.emit("update-available", { version: "0.3.8" });
 		f.run("setUpdateState(updateMachine.reduceOnDownloadStart(updateState))");
-		f.updater.failure = new Error("offline"); await f.check(true);
+		f.updater.failure = new Error("offline"); await f.check();
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.equal(f.state().status, "downloading");
 	});
@@ -752,7 +730,7 @@ describe("status observation never controls the updater", () => {
 	});
 
 	it("Install is a trusted IPC call that answers whether main took it", async () => {
-		const f = fixture(); f.setSettings({ general: { autoUpdate: false } }); await f.run("main()");
+		const f = fixture(); await f.run("main()");
 		const sender = f.windows[0]!.webContents;
 		const install = f.handles.get("lh:update-install")!;
 		assert.equal(install({ sender, senderFrame: sender.mainFrame }), false, "nothing staged");
@@ -766,7 +744,7 @@ describe("status observation never controls the updater", () => {
 	});
 
 	it("Download is a trusted IPC call and only acts on an offered version", async () => {
-		const f = fixture(); f.setSettings({ general: { autoUpdate: false } }); await f.run("main()");
+		const f = fixture(); await f.run("main()");
 		const sender = f.windows[0]!.webContents;
 		const download = f.handles.get("lh:update:download")!;
 		await download({ sender, senderFrame: sender.mainFrame });
@@ -780,14 +758,14 @@ describe("status observation never controls the updater", () => {
 });
 
 describe("startup, timer, trusted IPC and menu wiring", () => {
-	it("starts and retains the 4h timer without any Settings subscription, checking current preference each time", async () => {
-		const f = fixture(); f.setSettings({ general: { autoUpdate: false } });
+	it("starts and retains the 4h timer without any Settings subscription", async () => {
+		const f = fixture();
 		await f.run("main()");
 		assert.equal(f.updater.checks, 0);
 		assert.equal(f.intervals.length, 1); assert.equal(f.intervals[0]!.delay, 4 * 60 * 60 * 1000);
 		// Each check settles before the next one (a check of ours still running skips another, as T3's does).
 		const settle = () => new Promise((resolve) => setImmediate(resolve));
-		f.setSettings({ general: { autoUpdate: true } }); f.intervals[0]!.callback(); await settle();
+		f.intervals[0]!.callback(); await settle();
 		assert.equal(f.updater.checks, 1);
 		f.windows[0]!.close(); f.intervals[0]!.callback(); await settle();
 		assert.equal(f.updater.checks, 2, "checks also work with every window closed");
@@ -806,7 +784,7 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 	});
 
 	it("snapshot/manual IPC accepts only an owned main frame and snapshot reads never check", async () => {
-		const f = fixture(); f.setSettings({ general: { autoUpdate: false } }); await f.run("main()");
+		const f = fixture(); await f.run("main()");
 		const sender = f.windows[0]!.webContents;
 		const event = { sender, senderFrame: sender.mainFrame };
 		const get = f.handles.get("lh:update:get")!; const check = f.handles.get("lh:update:check")!;
@@ -823,8 +801,8 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 		assert.equal(f.updater.checks, 1);
 	});
 
-	it("menu restores/focuses a minimized window, opens General, and manually checks while OFF", async () => {
-		const f = fixture(); f.setSettings({ general: { autoUpdate: false } }); await f.run("main()");
+	it("menu restores/focuses a minimized window, opens General, and checks", async () => {
+		const f = fixture(); await f.run("main()");
 		const win = f.windows[0]!; win.webContents.loading = false; win.minimized = true;
 		f.menuCheck();
 		assert.equal(win.minimized, false); assert.equal(win.focused, true);
@@ -833,7 +811,7 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 	});
 
 	it("menu reopens a window and delivers General after load; loading existing windows are covered too", async () => {
-		const f = fixture(); f.setSettings({ general: { autoUpdate: false } }); await f.run("main()");
+		const f = fixture(); await f.run("main()");
 		f.windows[0]!.close(); await f.menuCheck();
 		assert.equal(f.windows.length, 1); assert.equal(f.updater.checks, 1);
 		const win = f.windows[0]!;
@@ -845,7 +823,7 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 	});
 
 	it("menu navigation failure does not prevent its manual check", async () => {
-		const f = fixture(); f.setSettings({ general: { autoUpdate: false } }); await f.run("main()");
+		const f = fixture(); await f.run("main()");
 		f.windows[0]!.webContents.fails = true; f.windows[0]!.webContents.loading = false;
 		f.menuCheck(); assert.equal(f.updater.checks, 1);
 	});

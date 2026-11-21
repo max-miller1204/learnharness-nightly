@@ -1,4 +1,4 @@
-/** POST /api/updates/check: check now (and download a newer version). Returns the resulting state. */
+/** POST /api/updates/check: check now. A newer version is offered ("available"), not downloaded. Returns the resulting state. */
 import { selfUpdater } from "@/src/server";
 
 export const dynamic = "force-dynamic";

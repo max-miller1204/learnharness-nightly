@@ -711,28 +711,12 @@ function adoptOfferedNotes(info) {
 	}
 }
 
-/** Read the SAME data directory passed to the packaged server. Only an
- * explicit false opts out; absent/corrupt/unreadable settings keep checks ON.
- * Re-read for each automatic check so saving the toggle needs no restart. */
-function automaticUpdatesEnabled() {
-	try {
-		const settings = JSON.parse(fs.readFileSync(path.join(DATA_DIR(), "settings.json"), "utf8"));
-		return settings?.general?.autoUpdate !== false;
-	} catch {
-		return true;
-	}
-}
-
 /** Resolves T3's check result (DesktopUpdates.ts:576-626): `checked` false when no check ran
  *  (updates unavailable, or another action of ours is under way), true once one ran, whatever it
  *  found (a failed check shows in the state). The sidebar's "Could not check for updates" toast
  *  reads it. */
-function checkForUpdates({ manual = false } = {}) {
+function checkForUpdates() {
 	if (!autoUpdater) return Promise.resolve({ checked: false });
-	if (!manual && !automaticUpdatesEnabled()) {
-		log("auto-update: automatic check skipped (turned off in Settings)");
-		return Promise.resolve({ checked: false });
-	}
 	// Do not gate on display state: a stale spinner or error must never disable future background
 	// checks. Only a check or download of ours still running skips this one, as T3's active action
 	// does (DesktopUpdates.ts:583-591); electron-updater owns the rest of its in-flight work.
@@ -953,12 +937,13 @@ function updateEverythingDeps(list) {
 		appVersion: app.getVersion(),
 		updater: {
 			state: () => (autoUpdater ? updateState : { ...updateState, status: "disabled" }),
-			check: () => checkForUpdates({ manual: true }),
+			check: () => checkForUpdates(),
 			download: downloadUpdateNow,
 			pin: updateActions.pin,
 			downloadPinned: updateActions.downloadPinned,
 			downloadExact: updateActions.downloadExact,
 			installPinned: updateActions.installPinned,
+			install: () => installUpdateNow(),
 		},
 		selection: () => list.current(),
 		// No protocol header: the server may come back speaking a newer one.
@@ -1072,7 +1057,7 @@ async function checkForUpdatesFromMenu() {
 	} catch {
 		/* Navigation failure must not prevent the manual check. */
 	}
-	checkForUpdates({ manual: true });
+	checkForUpdates();
 }
 
 function zoomStep(win, dir) {
@@ -1300,7 +1285,7 @@ async function main() {
 	ipcMain.handle("lh:update:check", (event) => {
 		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
 		// T3's { checked } with the state, once the check ends: the sidebar's toast reads it.
-		return checkForUpdates({ manual: true }).then((result) => ({ ...result, state: updateState }));
+		return checkForUpdates().then((result) => ({ ...result, state: updateState }));
 	});
 
 	// Sidebar-at-narrow-window (owner, 2026-09-17): the renderer auto-closes
@@ -1360,9 +1345,8 @@ async function main() {
 	app.on("activate", () => {
 		if (BrowserWindow.getAllWindows().length === 0) reopenWindow();
 	});
-	// Startup (15 s) + 4h checks stay main-owned and read the current
-	// preference. No renderer subscription is required; late loads retrieve
-	// the snapshot.
+	// Startup (15 s) + 4h checks stay main-owned, with no toggle. No renderer
+	// subscription is required; late loads retrieve the snapshot.
 	if (autoUpdater) {
 		setTimeout(() => checkForUpdates(), UPDATE_STARTUP_DELAY_MS);
 		setInterval(() => checkForUpdates(), UPDATE_CHECK_INTERVAL_MS);
