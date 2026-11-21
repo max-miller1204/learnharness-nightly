@@ -65,6 +65,20 @@ describe("signed out", () => {
 	});
 });
 
+describe("the update routes", () => {
+	it("Download (POST /api/updates/download) has the same rules as Check and Install: signed in, and no cross-site cookie", () => {
+		const cookie = `${cookieName()}=${mintToken()}`;
+		for (const route of ["check", "download", "install"]) {
+			const url = `${origin}/api/updates/${route}`;
+			assert.equal(proxy(new NextRequest(url, { method: "POST" })).status, 401, `${route}: signed out`);
+			assert(passes(proxy(new NextRequest(url, { method: "POST", headers: { cookie, host: "localhost:3000", origin } }))), `${route}: same-origin cookie`);
+			assert(passes(proxy(new NextRequest(url, { method: "POST", headers: { authorization: `Bearer ${mintToken()}` } }))), `${route}: bearer (lh update)`);
+			const csrf = proxy(new NextRequest(url, { method: "POST", headers: { cookie, host: "localhost:3000", origin: "https://evil.example", "sec-fetch-site": "cross-site" } }));
+			assert.equal(csrf.status, 403, `${route}: a cross-site page can't start it`);
+		}
+	});
+});
+
 describe("signed in", () => {
 	it("a bearer token passes on any host, pages and API", () => {
 		const token = mintToken();

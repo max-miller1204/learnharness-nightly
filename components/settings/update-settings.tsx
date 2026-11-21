@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { BrailleSpinner } from "@/components/braille-spinner";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useNotifyHub } from "@/components/server-events";
 import { InstallUpdateDialog } from "@/components/install-update-dialog";
+import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateErrorToast, UNEXPECTED_ERROR } from "@/components/update-toasts";
+import { updateButtonTooltip } from "@/components/update-tooltips";
 import { capReleaseNoteGroups, type ReleaseNoteGroup } from "@/src/core";
-import { SettingsRow, Toggle } from "./controls.tsx";
+import { SettingsRow } from "./controls.tsx";
 import { isNewerVersion } from "@/selfhost/src/version-order.ts";
 
 /** A rolled-back self-hosted switch (GET /api/updates `notice`), shown until dismissed. */
@@ -18,9 +20,9 @@ export type UpdateNotice = {
 };
 
 /** Observational snapshot from electron/main.cjs (desktop) or GET /api/updates
- * (self-hosted); never updater permission. `message` and `notice` exist only
- * on the self-hosted transport; "available" (found, not downloaded) only on
- * the desktop, which downloads on click (docs/specs/t3-style-updates.md). */
+ * (self-hosted); never updater permission. `notice` exists only on the
+ * self-hosted transport. Both offer a version ("available") and download it
+ * on a click (docs/specs/t3-style-updates.md, revision PR 5). */
 export type UpdateState = {
 	status: "idle" | "checking" | "available" | "downloading" | "up-to-date" | "downloaded" | "error" | "disabled";
 	version: string | null;
@@ -37,12 +39,13 @@ export type UpdateState = {
 	/** Self-hosted only: every byte is in and the server checks and unpacks it ("Preparing update"). */
 	preparing?: boolean;
 	notice?: UpdateNotice | null;
-	/** Desktop only, T3's state (electron/update-machine.cjs): the offered and the downloaded version. */
+	/** T3's state (electron/update-machine.cjs): the offered version (both transports) and the
+	 *  downloaded one (desktop only). */
 	availableVersion?: string | null;
 	downloadedVersion?: string | null;
 	/** Desktop only: when the last check ran (ISO time). */
 	checkedAt?: string | null;
-	/** Desktop only: what the last error interrupted, and whether the button retries it. */
+	/** What the last error interrupted (the server's only "download"), and whether the button retries it. */
 	errorContext?: "check" | "download" | "install" | null;
 	canRetry?: boolean;
 	/** Desktop only: the version the last install meant to reach, while this launch is still the old one. */
@@ -85,6 +88,9 @@ export type DesktopUpdateBridge = {
 	download: () => Promise<void>;
 	/** Opens the app's own Update everything confirmation; never acts without it. */
 	install: () => Promise<void>;
+	/** Settings' This app Install: only this app, after T3's confirm in the app's own native
+	 *  dialog. Apps from before it lack it. */
+	installApp?: () => Promise<void>;
 };
 
 /** The local desktop window's full bridge (electron/preload.cjs), not the remote one. */
@@ -92,12 +98,6 @@ const localDesktopBridge = () => (typeof window.lh?.getUpdateState === "function
 
 export const APP_VERSION = process.env.LH_VERSION ?? "";
 export const HOMEPAGE = process.env.LH_HOMEPAGE ?? "";
-export const MANUAL_UPDATE_HINT = "Check for updates looks for a newer version. Download and Install happen when you click them.";
-export const AUTO_UPDATE_HINT = "Check 15 seconds after launch and every 4 hours. Nothing downloads or installs until you click.";
-export const WEB_MANUAL_UPDATE_HINT = "Check for updates downloads a newer version. It installs when you click Install.";
-export const WEB_AUTO_UPDATE_HINT = "Check at startup and every 4 hours, and download new versions in the background. Nothing installs until you click Install.";
-export const AUTO_UPDATE_LABEL = "Check for updates automatically";
-const UPDATE_ERROR = "Couldn’t check for updates. Try again later.";
 const UNAVAILABLE_UPDATES_DETAIL = "Automatic updates are not available in this build.";
 
 const isUpdateState = (value: unknown): value is UpdateState =>
@@ -187,10 +187,21 @@ export function useUpdateState() {
 		}
 	}, [accept]);
 
-	/** Desktop only: download the "available" version. Resolves T3's action result, or "threw"
-	 *  when the bridge rejected (never rejects itself). */
-	const download = useCallback(async (): Promise<UpdateActionResult | "threw" | undefined> => {
-		const pending = localDesktopBridge()?.downloadUpdate?.();
+	/** Download the "available" version. Desktop: resolves T3's action result, or "threw" when
+	 *  the bridge rejected. The server (POST /api/updates/download) answers with its state, which
+	 *  says how it went: no result, so no toasts (its updater raises none), or "failed" when the
+	 *  request itself failed (offline, signed out). Never rejects. */
+	const download = useCallback(async (): Promise<UpdateActionResult | "threw" | "failed" | undefined> => {
+		const lh = localDesktopBridge();
+		if (!lh) {
+			try {
+				accept(await fetchWebState("/api/updates/download", "POST"));
+				return undefined;
+			} catch {
+				return "failed";
+			}
+		}
+		const pending = lh.downloadUpdate?.();
 		if (!pending) return undefined;
 		try {
 			return (await pending) ?? undefined;
@@ -198,7 +209,7 @@ export function useUpdateState() {
 			setFailed(true);
 			return "threw";
 		}
-	}, []);
+	}, [accept]);
 
 	/** Self-hosted only: hide the rollback notice on every browser of this server. */
 	const dismissNotice = useCallback((): void => {
@@ -273,11 +284,16 @@ export function useDesktopAppUpdate() {
 		document.addEventListener("visibilitychange", onVisible);
 		return () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
 	}, [bridge, refresh]);
-	const call = useCallback((method: "check" | "download" | "install") => async (): Promise<void> => {
-		if (!bridge) return;
-		try { await bridge[method](); } finally { void refresh(); }
+	const call = useCallback((method: "check" | "download" | "install" | "installApp") => async (): Promise<void> => {
+		const action = bridge?.[method];
+		if (!action) return;
+		try { await action(); } finally { void refresh(); }
 	}, [bridge, refresh]);
-	return useMemo(() => bridge ? { status, check: call("check"), download: call("download"), install: call("install") } : null, [bridge, status, call]);
+	return useMemo(() => bridge ? {
+		status, check: call("check"), download: call("download"), install: call("install"),
+		// An app from before installApp has only Update everything's install.
+		installApp: typeof bridge.installApp === "function" ? call("installApp") : call("install"),
+	} : null, [bridge, status, call]);
 }
 
 /** A newer app version the desktop offers, or null. */
@@ -286,82 +302,157 @@ export function desktopOffer(status: DesktopAppStatus | null): string | null {
 }
 
 export const DESKTOP_APP_DESCRIPTION = "Current version of the application.";
+export const UPDATE_AVAILABLE_DESCRIPTION = "Update available.";
+export const CHECK_FOR_UPDATES_LABEL = "Check for Updates";
+/** A self-hosted server's request that failed (main's fixed texts, electron/main.cjs). */
+export const REQUEST_CHECK_FAILED = "Couldn’t check for updates. Try again later.";
+export const REQUEST_DOWNLOAD_FAILED = "Couldn’t download the update. Try again.";
+export const REQUEST_INSTALL_FAILED = "Couldn’t install the update.";
+const ACTION_LABELS = { download: "Download", install: "Install" } as const;
+const STATUS_LABELS: Partial<Record<string, string>> = { checking: "Checking…", downloading: "Downloading…", "up-to-date": "Up to Date" };
 
-/** T3's AboutVersionSection button for this app (SettingsPanels.tsx:308-328 at 8cf97b5). */
-export function desktopAppButton(status: DesktopAppStatus | null): { action: "download" | "install" | "check"; label: string; disabled: boolean; description: string } {
-	const offered = desktopOffer(status);
-	const action = offered && status?.phase === "downloaded" ? "install" : offered && status?.phase === "available" ? "download" : "check";
-	const labels: Record<string, string> = { checking: "Checking…", downloading: "Downloading…", "up-to-date": "Up to Date" };
-	const label = action === "install" ? "Install" : action === "download" ? "Download" : labels[status?.phase ?? ""] ?? "Check for Updates";
-	const disabled = !status || status.phase === "updating" || (action === "check" && (status.phase === "checking" || status.phase === "downloading" || status.phase === "disabled"));
-	const description = action !== "check" ? "Update available."
-		: status?.phase === "disabled" ? (status.error?.trim() || UNAVAILABLE_UPDATES_DETAIL)
-		: status?.phase === "error" && status.error ? status.error
-		: DESKTOP_APP_DESCRIPTION;
-	return { action, label, disabled, description };
+/** T3's resolveDesktopUpdateButtonAction (desktopUpdate.logic.ts:49-69 at df09ced7), as the
+ *  sidebar control reads it: the server's "downloaded" carries no downloadedVersion. */
+export function updateButtonAction(state: UpdateState | null): "download" | "install" | "none" {
+	if (!state) return "none";
+	if (state.status === "downloaded") return "install";
+	if (state.status === "error" && state.downloadedVersion && (state.errorContext == null || state.errorContext === "install")) return "install";
+	if (state.status === "available") return "download";
+	if (state.status === "error" && state.errorContext === "download" && state.availableVersion) return "download";
+	return "none";
 }
 
-/** The extra row in the desktop app's window onto a self-hosted server: this app's own version. */
+/** T3's getDesktopUpdateDisabledReason (desktopUpdate.logic.ts:217-228): why updates are off, or null. */
+function disabledReason(status: string | undefined, message: string | null | undefined): string | null {
+	if (status !== "disabled") return null;
+	return message?.trim() || UNAVAILABLE_UPDATES_DETAIL;
+}
+
+export type AboutButton = { action: "download" | "install" | "none"; label: string; disabled: boolean; description: string; tooltip: string | null };
+
+/** T3's AboutVersionSection button (SettingsPanels.tsx:300-328 at df09ced7): the label, whether
+ *  it can be pressed, the row's description and the tooltip. */
+export function aboutButton(state: UpdateState | null): AboutButton {
+	const action = updateButtonAction(state);
+	const label = action !== "none" ? ACTION_LABELS[action] : STATUS_LABELS[state?.status ?? ""] ?? CHECK_FOR_UPDATES_LABEL;
+	// T3's canCheckForUpdate and isDesktopUpdateButtonDisabled.
+	const disabled = action === "none"
+		? !state || state.status === "checking" || state.status === "downloading" || state.status === "disabled"
+		: state?.status === "downloading";
+	const description = action !== "none" ? UPDATE_AVAILABLE_DESCRIPTION : disabledReason(state?.status, state?.message) ?? DESKTOP_APP_DESCRIPTION;
+	return { action, label, disabled, description, tooltip: state ? updateButtonTooltip(state) : null };
+}
+
+/** The same button for this app, from the remote bridge's status. The bridge's status has no
+ *  retry fields, so its tooltip is the plain line; none during Update everything. */
+export function desktopAppButton(status: DesktopAppStatus | null): AboutButton {
+	const offered = desktopOffer(status);
+	if (!status || status.phase === "updating") {
+		return { action: "none", label: CHECK_FOR_UPDATES_LABEL, disabled: true, description: DESKTOP_APP_DESCRIPTION, tooltip: null };
+	}
+	const phase = status.phase;
+	// Only an offer newer than this app counts (a stale target is not one).
+	const shown: UpdateState = {
+		status: !offered && (phase === "available" || phase === "downloaded") ? "idle" : phase,
+		version: offered, revision: 0, availableVersion: offered, downloadedVersion: phase === "downloaded" ? offered : null,
+		message: status.error, downloadPercent: status.downloadPercent ?? null,
+	};
+	return aboutButton(shown);
+}
+
+/** T3's About button: one outline button whose label changes, with the update tooltip. The
+ *  same element through every state, so keyboard focus stays on it. While it can't be
+ *  pressed it is aria-disabled, not disabled, as the sidebar control is: it stays focusable,
+ *  so the keyboard still reaches its tooltip (the download's percent), and a press does nothing. */
+function AboutUpdateButton({ button, pending, testid, onClick }: { button: AboutButton; pending: boolean; testid: string; onClick: () => void }) {
+	const inert = button.disabled || pending;
+	return (
+		<TooltipProvider>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<Button type="button" size="xs" variant="outline" className="cursor-pointer aria-disabled:cursor-not-allowed aria-disabled:opacity-50" data-testid={testid} data-action={button.action} aria-disabled={inert || undefined} onClick={() => { if (!inert) onClick(); }}>
+						{button.label}
+					</Button>
+				</TooltipTrigger>
+				{button.tooltip && <TooltipContent side="top" data-testid={`${testid}-tooltip`}>{button.tooltip}</TooltipContent>}
+			</Tooltip>
+		</TooltipProvider>
+	);
+}
+
+/** The extra row in the desktop app's window onto a self-hosted server: this app's own version.
+ *  Install updates only this app; the app asks first with T3's confirm (installApp). */
 function DesktopAppRow({ desktop }: { desktop: NonNullable<ReturnType<typeof useDesktopAppUpdate>> }) {
 	const { status } = desktop;
 	const button = desktopAppButton(status);
+	const [pending, setPending] = useState(false);
 	const onClick = () => {
-		const run = button.action === "install" ? desktop.install : button.action === "download" ? desktop.download : desktop.check;
+		if (button.action === "install") {
+			setPending(true);
+			void desktop.installApp().catch(() => { /* the status reports the failure */ }).finally(() => setPending(false));
+			return;
+		}
+		const run = button.action === "download" ? desktop.download : desktop.check;
 		void run().catch(() => { /* the status reports the failure */ });
 	};
 	return (
-		<SettingsRow label={`This app ${status?.version ?? ""}`.trim()} testid="row-desktop-app" hint={<span className="block" role="status" data-testid="desktop-app-status">{button.description}</span>}>
-			<Button type="button" size="xs" variant="outline" className="cursor-pointer disabled:cursor-not-allowed" data-testid="desktop-app-update" data-action={button.action} disabled={button.disabled} onClick={onClick}>
-				{button.label}
-			</Button>
+		<SettingsRow label={`This app ${status?.version ?? ""}`.trim()} testid="row-desktop-app" hint={<span className="block" data-testid="desktop-app-status">{button.description}</span>}>
+			<AboutUpdateButton button={button} pending={pending} testid="desktop-app-update" onClick={onClick} />
 		</SettingsRow>
 	);
 }
 
-export function updateStatusText(state: UpdateState | null, transport: UpdateTransport | null = "desktop"): string | null {
-	if (state?.message) return state.message;
-	// A rollback stays explained here until dismissed, even after a later check clears the message.
-	if (state?.notice && state.status !== "downloaded" && state.status !== "available" && state.status !== "downloading") return state.notice.text;
-	switch (state?.status) {
-		case "checking": return "Checking for updates…";
-		case "available": return state.version ? `Version ${state.version} is available.` : "An update is available.";
-		case "downloading":
-			if (state.preparing) return state.version ? `Preparing version ${state.version}…` : "Preparing the update…";
-			return state.version ? `Downloading version ${state.version}…` : "Downloading an update…";
-		case "up-to-date": return "No newer version was found at the last check.";
-		case "downloaded": return state.version ? `Version ${state.version} is ready to install.` : "An update is ready to install.";
-		case "error": return UPDATE_ERROR;
-		default: return null;
-	}
-}
-
-/** Version information is useful everywhere; update controls only belong
- * to a shell with an available updater. Opening this row never checks. */
+/** Settings > General: the version row (and, in the desktop app's window onto a server, this
+ *  app's row), each T3's About row (docs/specs/t3-style-updates.md, revision PR 5). Opening it
+ *  never checks. In the desktop app's local window its actions raise T3's Settings toasts
+ *  (SettingsPanels.tsx:216-298): a failed download, install or check, never a success. */
 export function UpdateSettings({
-	autoUpdate,
-	onAutoUpdateChange,
 	version = APP_VERSION,
 	homepage = HOMEPAGE,
 }: {
-	autoUpdate: boolean;
-	onAutoUpdateChange: (on: boolean) => void;
 	version?: string;
 	homepage?: string;
-}) {
-	const { state, failed, transport, check: checkNow, install, download } = useUpdateState();
+} = {}) {
+	const { state, transport, check, install, download } = useUpdateState();
 	const desktop = useDesktopAppUpdate();
-	const [checkFailed, setCheckFailed] = useState(false);
 	const [confirming, setConfirming] = useState(false);
-	useEffect(() => setCheckFailed(false), [state]);
-	const active = state !== null && state.status !== "disabled";
-	const busy = state?.status === "checking" || state?.status === "downloading";
-	const status = state?.status === "downloaded" || state?.status === "available" || state?.message || state?.notice ? updateStatusText(state, transport)
-		: failed || checkFailed ? UPDATE_ERROR : updateStatusText(state, transport);
+	const [installing, setInstalling] = useState(false);
+	// A self-hosted server's Check, Download or Install whose request failed (unreachable, signed
+	// out): said in the row until the state changes or the next press (its updater raises no toasts).
+	const [requestFailed, setRequestFailed] = useState<"check" | "download" | "install" | null>(null);
+	const button = aboutButton(state);
 	const releaseNotes = version && homepage ? `${homepage}/releases/tag/v${version}` : null;
-	const web = transport === "web";
-	const check = () => {
-		setCheckFailed(false);
-		void checkNow().catch(() => setCheckFailed(true));
+	const local = transport === "desktop";
+	// The confirm belongs to an Install: a state that offers something else closes it for good.
+	useEffect(() => { if (button.action !== "install") setConfirming(false); }, [button.action]);
+	useEffect(() => setRequestFailed(null), [state]);
+	const description = requestFailed === "check" ? REQUEST_CHECK_FAILED : requestFailed === "download" ? REQUEST_DOWNLOAD_FAILED : requestFailed === "install" ? REQUEST_INSTALL_FAILED : button.description;
+
+	const onClick = () => {
+		setRequestFailed(null);
+		if (button.action === "download") {
+			// T3's downloadLocalUpdate(bridge, { notifyDownloaded: false }): its error toasts only.
+			void download().then((result) => {
+				if (result === "failed") setRequestFailed("download");
+				if (!local || result === "failed") return;
+				if (result === "threw") showUpdateErrorToast(DOWNLOAD_START_FAILED_TITLE, UNEXPECTED_ERROR);
+				else if (result?.accepted && !result.completed && result.state?.message?.trim()) showUpdateErrorToast(DOWNLOAD_FAILED_TITLE, result.state.message.trim());
+			});
+			return;
+		}
+		if (button.action === "install") {
+			if (confirming || installing) return;
+			setConfirming(true);
+			return;
+		}
+		void check()
+			.then((result) => {
+				if (local && result && !result.checked) showUpdateErrorToast(CHECK_FAILED_TITLE, result.state?.message ?? CHECK_UNAVAILABLE);
+			})
+			.catch(() => {
+				if (local) showUpdateErrorToast(CHECK_FAILED_TITLE, CHECK_ERROR);
+				else setRequestFailed("check");
+			});
 	};
 
 	return (
@@ -372,34 +463,27 @@ export function UpdateSettings({
 				testid="row-version"
 				hint={
 					<>
-						{status && <span className="block" role="status" data-testid="update-status">{status}</span>}
-						{active && <span className="block">{web ? WEB_MANUAL_UPDATE_HINT : MANUAL_UPDATE_HINT}</span>}
+						<span className="block" data-testid="update-description">{description}</span>
 						{releaseNotes && <a href={releaseNotes} target="_blank" rel="noopener noreferrer" className="underline-offset-2 hover:text-foreground hover:underline" data-testid="release-notes">Release notes</a>}
 					</>
 				}
 			>
-				{active && (state.status === "downloaded" ? (
-					<Button type="button" size="xs" className="cursor-pointer" data-testid="update-install" onClick={() => setConfirming(true)}>Install</Button>
-				) : state.status === "available" ? (
-					<Button type="button" size="xs" className="cursor-pointer" data-testid="update-download" onClick={download}>Download</Button>
-				) : (
-					<Button type="button" size="xs" variant="outline" className="cursor-pointer disabled:cursor-not-allowed" data-testid="update-check" disabled={busy} aria-busy={busy} onClick={check}>
-						{busy && <BrailleSpinner label={state.status === "downloading" ? "Downloading update" : "Checking for updates"} />}
-						Check for updates
-					</Button>
-				))}
+				<AboutUpdateButton button={button} pending={confirming || installing} testid="update-button" onClick={onClick} />
 			</SettingsRow>
 			{desktop && <DesktopAppRow desktop={desktop} />}
-			{active && (
-				<SettingsRow label={AUTO_UPDATE_LABEL} hint={web ? WEB_AUTO_UPDATE_HINT : AUTO_UPDATE_HINT} testid="row-auto-update">
-					<Toggle checked={autoUpdate} label="auto update" onChange={onAutoUpdateChange} />
-				</SettingsRow>
-			)}
 			<InstallUpdateDialog
-				open={confirming && state?.status === "downloaded"}
-				version={state?.version ?? null}
+				open={confirming && button.action === "install"}
+				version={state?.downloadedVersion ?? state?.version ?? null}
 				onClose={() => setConfirming(false)}
-				onConfirm={() => { setConfirming(false); void install(); }}
+				onConfirm={() => {
+					setConfirming(false);
+					setInstalling(true);
+					// T3: a bridge that threw says "Could not install update"; Settings' install raises no notice.
+					void install({ onError: () => {
+						if (local) showUpdateErrorToast(INSTALL_FAILED_TITLE, UNEXPECTED_ERROR);
+						else setRequestFailed("install");
+					} }).finally(() => setInstalling(false));
+				}}
 			/>
 		</>
 	);

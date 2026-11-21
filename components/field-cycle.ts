@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { useOptionalInteractionLayers } from "./interaction-layers";
+import { useOptionalInteractionLayers, type InteractionLayersController } from "./interaction-layers";
 import { isInteractionScopeEligible } from "./plugin-input-focus";
 
 /**
@@ -19,14 +19,23 @@ import { isInteractionScopeEligible } from "./plugin-input-focus";
  * expanded) stops propagation at the document level, so this hook only
  * ever hears Tab on surfaces WITHOUT an active claim — no double act.
  */
-export function useFieldCycle(fields: () => readonly HTMLElement[]) {
+export function useFieldCycle(
+	fields: () => readonly HTMLElement[],
+	/** Which of them Tab may land on; by default the strict command scope (covered, hidden,
+	 *  disabled or aria-disabled fields never take it). */
+	eligible: (el: HTMLElement, controller: InteractionLayersController | null) => boolean = isInteractionScopeEligible,
+) {
 	const controller = useOptionalInteractionLayers();
 	useEffect(() => {
 		const onCycle = () => {
-			const list = fields().filter((el) => isInteractionScopeEligible(el, controller));
+			const list = fields().filter((el) => eligible(el, controller));
 			if (list.length === 0) return;
 			const active = document.activeElement;
-			const idx = active ? list.findIndex((el) => el === active || el.contains(active)) : -1;
+			// Where focus is: the control itself, else the deepest one holding it (the last in page
+			// order). A control nested in another (a link inside a row's button) is then its own
+			// stop, never matched as its container, which would hand Tab straight back to it.
+			let idx = active ? list.indexOf(active as HTMLElement) : -1;
+			if (idx < 0 && active) idx = list.findLastIndex((el) => el.contains(active));
 			if (idx < 0) {
 				list[0]!.focus();
 				return;
@@ -35,5 +44,5 @@ export function useFieldCycle(fields: () => readonly HTMLElement[]) {
 		};
 		window.addEventListener("lh:kbd-cycle-fields", onCycle);
 		return () => window.removeEventListener("lh:kbd-cycle-fields", onCycle);
-	}, [fields, controller]);
+	}, [fields, eligible, controller]);
 }

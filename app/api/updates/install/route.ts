@@ -1,7 +1,7 @@
 /**
  * POST /api/updates/install: apply the downloaded version now, even while
- * agents are working ("Restart" in the UI, `lh update --now`). Checks
- * first when nothing is staged. Returns the resulting state.
+ * agents are working (Install in the UI, `lh update --now`). Checks first,
+ * and downloads a newer offer before applying it. Returns the resulting state.
  */
 import { selfUpdater } from "@/src/server";
 

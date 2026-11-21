@@ -513,6 +513,13 @@ async function statusCommand(): Promise<void> {
 	for (const url of urls(config)) out(`URL:       ${url}`);
 }
 
+/** What `lh update` (a check only) says after the status line: how to go on from it. */
+function updateCheckHint(status: string | undefined): string | null {
+	if (status === "available") return "Download it with Download in the app (the update button or Settings → General), or run `lh update --now` to download and install it now.";
+	if (status === "downloaded") return "It installs when you click Install in the app, or run `lh update --now`.";
+	return null;
+}
+
 async function updateCommand(flags: Flags): Promise<void> {
 	const home = lhHome();
 	const state = requireState(home);
@@ -521,9 +528,23 @@ async function updateCommand(flags: Flags): Promise<void> {
 	if (h?.ok && h.selfhost) {
 		const route = flags.now === true ? "install" : "check";
 		const response = await withCliSession(home, (authorization) => fetch(`http://127.0.0.1:${config.port}/api/updates/${route}`, { method: "POST", headers: { Authorization: authorization } }));
-		const body = (await response.json().catch(() => ({}))) as { status?: string; version?: string | null; message?: string | null };
+		const parsed: unknown = await response.json().catch(() => null);
+		// Any body shape (none, null, an array): read only the fields that are there.
+		const body = (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}) as { status?: string; version?: string | null; message?: string | null; error?: unknown };
+		if (!response.ok) fail(`the server refused the update ${route} (HTTP ${response.status})${typeof body.error === "string" && body.error ? `: ${body.error}` : ""}`);
 		out(`${body.status ?? "unknown"}${body.version ? ` ${body.version}` : ""}${body.message ? `: ${body.message}` : ""}`);
-		if (flags.now !== true && body.status === "downloaded") out("It installs when you click Install in the app, or run `lh update --now`.");
+		if (flags.now !== true) { const hint = updateCheckHint(body.status); if (hint) out(hint); }
+		return;
+	}
+	if (flags.now !== true) {
+		// A check only, as with a running server: nothing downloads or restarts without --now.
+		out("The server isn't answering; checking the feed from the launcher.");
+		const feed = await fetchLatest(config.feedUrl ?? DEFAULT_FEED_URL);
+		if (compareVersions(feed.version, state.activeVersion) <= 0) { out(`Already on the newest version (${state.activeVersion}).`); return; }
+		// The server's own line for a version marked bad (src/server/self-update.ts): never offered.
+		if (state.badVersions.includes(feed.version)) { out(`up-to-date: Version ${feed.version} failed to start earlier and is skipped.`); return; }
+		out(`available ${feed.version}`);
+		out("Run `lh update --now` to download and install it through the launcher.");
 		return;
 	}
 	out("The server isn't answering; updating through the launcher.");
@@ -793,7 +814,7 @@ const HELP = `lh: run LearnHarness as a self-hosted server
   lh up [--port N] [--tailscale|--no-tailscale] [--tailscale-port N] [--chrome-path P] [--no-linger] [--no-open] [--yes]
   lh pair [--label NAME]         a one-time pairing link and QR code for a new device
   lh status                      versions, service, health, URLs
-  lh update [--now]              check now; --now installs right away
+  lh update [--now]              check now; --now downloads and installs right away
   lh rollback                    switch back to the previous version
   lh use <version>               switch to an installed version
   lh restart                     restart the service (never required)

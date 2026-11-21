@@ -32,8 +32,8 @@ Then open `http://127.0.0.1:3774` on that machine, or the Tailscale address on o
 | Command | What it does |
 |---|---|
 | `lh status` | Versions, service state, health, idle or busy, update state, URLs |
-| `lh update` | Check for an update now and download it (it installs when you click Install in the app) |
-| `lh update --now` | Install the newest version right away, even mid-turn |
+| `lh update` | Check for an update now. It doesn't download: click Download in the app, or use `lh update --now` |
+| `lh update --now` | Download and install the newest version right away, even mid-turn |
 | `lh rollback` | Switch back to the previous version |
 | `lh use <version>` | Switch to any installed version (`lh versions` lists them) |
 | `lh restore [<backup>]` | List data snapshots, or restore one |
@@ -60,14 +60,15 @@ The same installer and commands work on a Mac. The differences:
 
 ## Updates
 
-Updates download on their own and install when you say so (the T3 Code model; see [the spec](specs/t3-style-updates.md)).
+Updates are offered on their own, and download and install only when you say so (the T3 Code model; see [the spec](specs/t3-style-updates.md)).
 
-1. **The app checks** for a new nightly at startup (and 15 seconds after an update) and every 4 hours, and downloads it in the background. Settings → General shows the progress. The round button at the right of the sidebar's Settings row checks when you click it, and changes to an install button when an update is ready. Hover it to read what changed. Turn checking off with **Check for updates automatically** in Settings; **Check for updates** still works. A newer nightly that appears while one is ready replaces it.
-2. **It installs only when you click Install** (the sidebar button, Settings, or `lh update --now`). Install checks once more for a newer build, then asks you to confirm and lists what is running (chat turns, compactions, background jobs, plugin workers, extractions), since the restart interrupts them. Nothing installs on its own.
-3. **The launcher switches versions safely.** Before stopping anything it refuses an update that isn't newer, isn't fully downloaded, failed before, or doesn't leave room for a data snapshot (the old server keeps running and Settings shows why). Then it copies your data to a snapshot, starts the new version as a trial, and keeps it only once the new server reports it's ready.
-4. **A failed trial rolls back by itself.** If the new version exits, misbehaves or isn't ready within 30 minutes, the launcher restores the snapshot, marks that version so it isn't retried, and goes back to the old one. A warning button in the sidebar explains what happened; clicking it dismisses it on every device.
-5. **Open tabs.** After an update the same sidebar button reads "Updated to X. Click to reload." A tab never reloads on its own; if a message box has unsent text, it asks first.
-6. **What's new.** The first time the app opens after an update, a "What's new in X" popup lists the changes since the version you last saw. Closing it on any device clears it on all of them.
+1. **The server checks** for a new nightly 15 seconds after it starts (or after an update) and every 4 hours. There is no setting to turn this off. A newer version is offered, not downloaded: the round button at the right of the sidebar's Settings row becomes a download button, and Settings → General's button reads **Download**. Hover either to read what changed. The sidebar button checks when you click it; so does Settings' button, whose label follows the state (**Check for Updates**, **Checking…**, **Up to Date**, **Download**, **Downloading…**, **Install**). A newer nightly that appears while one is offered or ready replaces it.
+2. **It downloads only when you click Download** (the sidebar button or Settings). If the download fails, the offer stays and the button says so; click it to try again.
+3. **It installs only when you click Install** (the sidebar button, Settings, or `lh update --now`). It asks you first, since the restart interrupts running chat turns and jobs. Install checks once more for a newer build and downloads it first if there is one. `lh update --now` downloads and installs in one step. Nothing installs on its own.
+4. **The launcher switches versions safely.** Before stopping anything it refuses an update that isn't newer, isn't fully downloaded, failed before, or doesn't leave room for a data snapshot (the old server keeps running and Settings shows why). Then it copies your data to a snapshot, starts the new version as a trial, and keeps it only once the new server reports it's ready.
+5. **A failed trial rolls back by itself.** If the new version exits, misbehaves or isn't ready within 30 minutes, the launcher restores the snapshot, marks that version so it isn't retried, and goes back to the old one. A warning button in the sidebar explains what happened; clicking it dismisses it on every device.
+6. **Open tabs.** After an update the same sidebar button reads "Updated to X. Click to reload." A tab never reloads on its own; if a message box has unsent text, it asks first.
+7. **What's new.** The first time the app opens after an update, a "What's new in X" popup lists the changes since the version you last saw. Closing it on any device clears it on all of them.
 
 ### Update everything from the desktop app
 

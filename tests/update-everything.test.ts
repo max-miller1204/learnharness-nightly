@@ -509,6 +509,60 @@ test("the relaunch reopens that server once and offers the retry when the app di
 	assert.deepEqual(applied.takeLaunch(), { server: ORIGIN, retry: null });
 });
 
+test("Settings' This app Install: T3's confirm in main, then only this app installs; Cancel, nothing downloaded or a run changes nothing", async () => {
+	const make = ({ status = "downloaded" as string, answers = [0] as Array<number | "wait">, runFirst = false } = {}) => {
+		const prompts: Prompt[] = [];
+		const log: string[] = [];
+		let release: () => void = () => {};
+		const ue = createUpdateEverything({
+			appVersion: V71,
+			updater: {
+				state: () => ({ status, version: V72, availableVersion: V72, downloadedVersion: status === "downloaded" ? V72 : null, errorContext: null }),
+				install: () => log.push("install"),
+				installPinned: (v: string) => log.push(`pinned ${v}`),
+				pin: async () => V72, downloadPinned: async () => {}, check: () => {}, download: () => {},
+			},
+			selection: () => (runFirst ? { origin: ORIGIN, token: "bearer" } : null),
+			request: async () => Response.json({ runningVersion: V71, committed: true, instance: "i", status: "up-to-date" }),
+			confirm: async (prompt: Prompt) => {
+				prompts.push(prompt);
+				const answer = answers.shift() ?? 1;
+				if (answer === "wait") return new Promise<number>((resolve) => { release = () => resolve(1); });
+				return answer;
+			},
+			tell: async () => {}, now: () => 0,
+		});
+		return { ue, prompts, log, release: () => release() };
+	};
+	const yes = make();
+	await yes.ue.installApp();
+	assert.deepEqual(yes.prompts.map(({ message, detail, buttons }) => ({ message, detail, buttons })), [{
+		message: `Install update ${V72} and restart LearnHarness?`,
+		detail: "Any running tasks will be interrupted. Make sure you're ready before continuing.",
+		buttons: ["Install and restart", "Cancel"],
+	}], "T3's confirm, asked by the app itself");
+	assert.deepEqual(yes.log, ["install"], "the plain install: only this app, no server request");
+	assert.equal(yes.ue.running(), false);
+
+	const no = make({ answers: [1] });
+	await no.ue.installApp();
+	assert.deepEqual(no.log, [], "Cancel installs nothing");
+
+	const nothing = make({ status: "available" });
+	await nothing.ue.installApp();
+	assert.deepEqual([nothing.prompts.length, nothing.log], [0, []], "nothing downloaded: no confirm");
+
+	const asking = make({ answers: ["wait"] });
+	const pending = asking.ue.installApp();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(asking.ue.running(), true, "while it asks, Update everything and the plain install wait");
+	await asking.ue.installApp();
+	assert.equal(asking.prompts.length, 1, "a second click doesn't ask twice");
+	asking.release();
+	await pending;
+	assert.equal(asking.ue.running(), false);
+});
+
 test("the bridge answers only the remote window's main frame at its origin, with no arguments", async () => {
 	const handlers = new Map<string, (event: unknown, ...args: unknown[]) => Promise<unknown>>();
 	const mainFrame = { url: `${ORIGIN}/learn/x` };
@@ -517,26 +571,29 @@ test("the bridge answers only the remote window's main frame at its origin, with
 	const calls: string[] = [];
 	registerDesktopUpdateIPC({ handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => Promise<unknown>) => handlers.set(channel, fn) }, {
 		current: () => ({ win, origin: ORIGIN }),
-		updateEverything: { status: () => { calls.push("status"); return { phase: "idle" }; }, check: () => calls.push("check"), download: () => calls.push("download"), install: async () => { calls.push("install"); } },
+		updateEverything: { status: () => { calls.push("status"); return { phase: "idle" }; }, check: () => calls.push("check"), download: () => calls.push("download"), install: async () => { calls.push("install"); }, installApp: async () => { calls.push("installApp"); return "never returned to the page"; } },
 	});
 	const handle = handlers.get("lh:desktop-update")!;
 	assert.deepEqual(await handle({ sender: contents, senderFrame: mainFrame }, "status"), { phase: "idle" });
 	await handle({ sender: contents, senderFrame: mainFrame }, "install");
-	assert.deepEqual(calls, ["status", "install"]);
+	assert.equal(await handle({ sender: contents, senderFrame: mainFrame }, "install-app"), undefined);
+	assert.deepEqual(calls, ["status", "install", "installApp"]);
 	const refused = [
 		[{ sender: {}, senderFrame: mainFrame }, "status"],
 		[{ sender: contents, senderFrame: { url: `${ORIGIN}/x` } }, "status"],
 		[{ sender: contents, senderFrame: { ...mainFrame } }, "install"],
 		[{ sender: contents, senderFrame: mainFrame, }, "install", V72],
+		[{ sender: contents, senderFrame: mainFrame, }, "install-app", V72],
+		[{ sender: contents, senderFrame: { ...mainFrame } }, "install-app"],
 		[{ sender: contents, senderFrame: mainFrame }, "quitAndInstall"],
 	] as const;
 	for (const [event, ...args] of refused) await assert.rejects(handle(event, ...args), /Untrusted desktop request/);
 	mainFrame.url = "https://evil.example/";
 	await assert.rejects(handle({ sender: contents, senderFrame: mainFrame }, "status"), /Untrusted/);
-	assert.deepEqual(calls, ["status", "install"]);
+	assert.deepEqual(calls, ["status", "install", "installApp"]);
 });
 
-test("the remote preload exposes only window.lh.desktopUpdate with four methods and window.lh.chatgptSignIn", () => {
+test("the remote preload exposes only window.lh.desktopUpdate with five methods and window.lh.chatgptSignIn", () => {
 	const source = fs.readFileSync(path.join(import.meta.dirname, "..", "electron", "remote-preload.cjs"), "utf8");
 	const exposed = new Map<string, unknown>();
 	const invoked: unknown[][] = [];
@@ -553,15 +610,16 @@ test("the remote preload exposes only window.lh.desktopUpdate with four methods 
 	assert.deepEqual([...exposed.keys()], ["lh"]);
 	const lh = exposed.get("lh") as { desktopUpdate: Record<string, (...args: unknown[]) => unknown> };
 	assert.deepEqual(Object.keys(lh), ["desktopUpdate", "chatgptSignIn"]);
-	assert.deepEqual(Object.keys(lh.desktopUpdate), ["getStatus", "check", "download", "install"]);
+	assert.deepEqual(Object.keys(lh.desktopUpdate), ["getStatus", "check", "download", "install", "installApp"]);
 	lh.desktopUpdate.install!("0.0.1-evil", "https://evil.example");
-	assert.deepEqual(invoked, [["lh:desktop-update", "install"]], "arguments from the page are never forwarded");
+	lh.desktopUpdate.installApp!("0.0.1-evil", "https://evil.example");
+	assert.deepEqual(invoked.splice(0), [["lh:desktop-update", "install"], ["lh:desktop-update", "install-app"]], "arguments from the page are never forwarded");
 	const signIn = (lh as unknown as { chatgptSignIn: Record<string, (...args: unknown[]) => unknown> }).chatgptSignIn;
 	assert.deepEqual(Object.keys(signIn), ["start", "cancel"]);
 	signIn.start!();
 	signIn.start!("account-id", "https://evil.example", "extra");
 	signIn.cancel!("https://evil.example");
-	assert.deepEqual(invoked.slice(1), [["lh:chatgpt-sign-in", "start"], ["lh:chatgpt-sign-in", "start", "account-id"], ["lh:chatgpt-sign-in", "cancel"]], "at most the one account id, which main checks");
+	assert.deepEqual(invoked, [["lh:chatgpt-sign-in", "start"], ["lh:chatgpt-sign-in", "start", "account-id"], ["lh:chatgpt-sign-in", "cancel"]], "at most the one account id, which main checks");
 });
 
 test("a run names the server it updates from its confirmation to its end, so the list can hold that server", async () => {
