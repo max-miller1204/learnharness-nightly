@@ -170,10 +170,37 @@ const THEMES = Object.fromEntries((["dark", "light"] as const).map((mode) => {
   return [mode, { text: colors.text, surfaces }];
 })) as Record<ThemeMode, { text: string; surfaces: string[] }>;
 
-/** The color of each visible glyph and the box drawn behind it, if any. */
+/** A \rule is a space MathJax fills with the \color in effect, or with black when there is
+ * none (BaseMethods' Rule). That black stands for the text's color, which a glyph with no
+ * \color takes, so it becomes currentColor. */
+function rulesInTextColor(node: MmlNode, colored = false) {
+  colored ||= ["mathcolor", "color"].some((name) => node.attributes?.getExplicit(name) !== undefined);
+  if (node.isKind("mspace") && !colored && node.attributes?.getExplicit("mathbackground") !== undefined) node.attributes.set("mathbackground", "currentColor");
+  if (!node.isToken) for (const child of children(node)) if (child) rulesInTextColor(child, colored);
+}
+
+/** MathJax draws a rule as a rectangle marked as a background, like a \colorbox's, but it is
+ * the rule's ink: unmarked, a picture drawn without its colors recolors it instead of
+ * dropping it. */
+function rulesAsInk(adaptor: LiteAdaptor, node: LiteElement) {
+  for (const child of adaptor.childNodes(node)) {
+    if (adaptor.kind(child) === "#text") continue;
+    const element = child as LiteElement;
+    if (adaptor.kind(element) === "rect" && adaptor.getAttribute(node, "data-mml-node") === "mspace") adaptor.removeAttribute(element, "data-bgcolor");
+    rulesAsInk(adaptor, element);
+  }
+}
+
+/** The color of each visible glyph or rule and the box drawn behind it, if any. */
 function inks(node: MmlNode, color: string | undefined, behind: string | undefined, found: { color?: string; behind?: string }[]) {
   if (node.isKind("mphantom")) return found;
   const explicit = (names: string[]) => names.map((name) => node.attributes?.getExplicit(name)).find((value) => value !== undefined);
+  // A rule's background is its ink: currentColor is the text's color.
+  const rule = node.isKind("mspace") ? explicit(["mathbackground", "background"]) as string | undefined : undefined;
+  if (rule !== undefined) {
+    found.push({ color: rule === "currentColor" ? undefined : rule, behind });
+    return found;
+  }
   color = (explicit(["mathcolor", "color"]) as string | undefined) ?? color;
   behind = (explicit(["mathbackground", "background"]) as string | undefined) ?? behind;
   if (node.isToken) {
@@ -222,10 +249,12 @@ export function drawTex(tex: string, display: boolean): DrawnMath | undefined {
     item.convert(document, STATE.COMPILED);
     const root = item.root;
     if (!trusted(root)) return;
+    rulesInTextColor(root);
     item.convert(document);
     const svg = adaptor.firstChild(item.typesetRoot) as LiteElement;
     const [, minY = 0, width = 0, height = 0] = (adaptor.getAttribute(svg, "viewBox") ?? "").split(" ").map(Number);
     for (const name of ["width", "height", "style"]) adaptor.removeAttribute(svg, name);
+    rulesAsInk(adaptor, svg);
     const original = adaptor.outerHTML(svg);
     if (/data-mml-node="merror"|data-mjx-error/.test(original) || /\s(?:style|id)=/.test(original)) return;
     // The same picture without its groups draws far faster (svg-flatten.ts).

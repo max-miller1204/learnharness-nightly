@@ -51,6 +51,7 @@ function inlineBoxes(root: ReactTestInstance) {
 				lift: lifted(picture.children[0] as ReactTestInstance),
 				size: picture.props.size as { width: number; height: number; depth: number },
 				lineHeight: flat(line.props.style).lineHeight as number,
+				padding: (flat(line.props.style).paddingBottom ?? 0) as number,
 			})));
 }
 
@@ -93,7 +94,7 @@ test("ios: the lift matches how far math sat below the text in the iPhone check'
 });
 
 for (const os of ["ios", "android"] as const) {
-	test(`${os}: the answered card's math and a message's inline math are ${os === "ios" ? "lifted" : "not moved"}, and math alone is not moved`, async () => {
+	test(`${os}: the answered card's math and a message's inline math are ${os === "ios" ? "lifted" : "not moved"}, and math alone ${os === "ios" ? "comes down onto its line" : "is not moved"}`, async () => {
 		const cases = [
 			["answered card", card(["Train: $4$; test: $8$", "$(+0.20, -0.10)$"])],
 			["message", message("So the step is $0.1(-1)(-2) = 0.2$.")],
@@ -106,8 +107,9 @@ for (const os of ["ios", "android"] as const) {
 			const boxes = await boxesOn(os, element);
 			assert.ok(boxes.length > 0, `${name}: inline math found`);
 			for (const { lift } of boxes) {
-				if (os === "ios" && !name.includes("alone")) assert.ok(lift > 3, `${name}: lifted ${lift}`);
-				else assert.equal(lift, 0, `${name}: lifted ${lift}, expected none`);
+				if (os === "android" || name.endsWith("after text")) assert.equal(lift, 0, `${name}: lifted ${lift}, expected none`);
+				else if (name.includes("alone")) assert.equal(lift, -VIEW_FONT_DESCENT, `${name}: lowered onto the line's bottom`);
+				else assert.ok(lift > 3, `${name}: lifted ${lift}`);
 			}
 		}
 	});
@@ -140,12 +142,35 @@ test("ios: lines keep the line height they have on Android, and tall or deep mat
 	assert.equal(row?.lineHeight, 21, "a choice row stays at the 21 it had before the lift");
 });
 
-test("the lift is iOS only, and none for a line with no text", () => {
+test("ios: math in a Text of its own shows whole: none of it is outside the Text, which cuts off what is", async () => {
+	// #315. A Text with no text is one line as tall as its pictures' boxes, with its baseline at
+	// its bottom; React Native puts each box's bottom 2.76 pt up from there before the lift.
+	for (const [name, element] of [
+		["choice", choice("$(-0.10, +0.20)$")],
+		["answered card", card(["$(+0.20, -0.10)$"])],
+		["message", message("$(+0.20, -0.10)$")],
+		["message, after a line of text", message("Earlier text\n$(+0.20, -0.10)$")],
+	] as const) {
+		const boxes = await boxesOn("ios", element);
+		assert.equal(boxes.length, 1, name);
+		for (const { lift, size, padding } of boxes) {
+			const bottom = VIEW_FONT_DESCENT + lift;
+			if (!name.endsWith("text")) assert.ok(bottom + size.height - size.depth <= size.height - size.depth + 1e-6, `${name}: top ${bottom} pt above the Text's top`);
+			assert.ok(bottom - size.depth >= -padding - 1e-6, `${name}: ${(size.depth - bottom - padding).toFixed(2)} pt cut off below`);
+		}
+	}
+	const [android] = await boxesOn("android", choice("$(-0.10, +0.20)$"));
+	assert.equal(android?.padding, 0, "Android keeps its layout");
+});
+
+test("the lift is iOS only, and none for a line with no text beside text", () => {
 	const size = { width: 10, height: 13, depth: 0 };
-	assert.equal(inlineLift(24, size, { line: [{ fontSize: 16 }], text: [{ fontSize: 16 }] }, 1, "android"), 0);
-	assert.equal(inlineLift(24, size, { line: [], text: [{ fontSize: 16 }] }, 1, "ios"), 0);
+	assert.equal(inlineLift(24, size, { line: [{ fontSize: 16 }], text: [{ fontSize: 16 }], last: true }, 1, "android"), 0);
+	assert.equal(inlineLift(24, size, { line: [], text: [{ fontSize: 16 }], last: true }, 1, "ios"), 0);
+	assert.equal(inlineLift(24, size, { line: [], text: [], last: true }, 1, "ios"), -VIEW_FONT_DESCENT);
+	assert.equal(inlineLift(24, size, { line: [], text: [], last: true }, 1, "android"), 0);
 	// Helvetica's descender doesn't grow with Dynamic Type, so the lift isn't the 1x lift scaled.
-	const once = inlineLift(24, size, { line: [{ fontSize: 16 }], text: [{ fontSize: 16 }] }, 1, "ios");
-	const twice = inlineLift(24, size, { line: [{ fontSize: 16 }], text: [{ fontSize: 16 }] }, 2, "ios");
+	const once = inlineLift(24, size, { line: [{ fontSize: 16 }], text: [{ fontSize: 16 }], last: true }, 1, "ios");
+	const twice = inlineLift(24, size, { line: [{ fontSize: 16 }], text: [{ fontSize: 16 }], last: true }, 2, "ios");
 	assert.ok(Math.abs(twice - (2 * (once + VIEW_FONT_DESCENT) - VIEW_FONT_DESCENT)) < 1e-6);
 });
