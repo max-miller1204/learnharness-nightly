@@ -3,7 +3,7 @@ import { Text, View, useWindowDimensions, type HostInstance, type LayoutChangeEv
 import { drawingsOf, equationOf } from "./message-math";
 import { useLivePictures } from "./math-window";
 import type { LabelPiece } from "./choice-math";
-import { fit, lineHeightFor, MathPicture, MATH_SCALE, MAX_LINES, useScreenReader, useSpeech, type Size } from "./MathLabel";
+import { fit, inlineLift, lineHeightFor, MathPicture, MATH_SCALE, MAX_LINES, useScreenReader, useSpeech, type Size } from "./MathLabel";
 import { spokenLabel, spokenMath } from "./math-speech";
 import { httpsLink, type MarkdownToken } from "./render-markdown";
 import { fonts, radius, space, useTheme } from "./theme";
@@ -35,6 +35,8 @@ function Live({ pictures, children }: {
 interface InlineMath {
   sizes: Map<MarkdownToken, Size>;
   live: boolean;
+  /** inlineLift for the line, in unscaled points. */
+  lift: number;
 }
 
 function hasMath(token: MarkdownToken): boolean {
@@ -106,7 +108,7 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
         {(live, ref, onLayout) => (
           <Text ref={ref} onLayout={onLayout} accessibilityRole={role} selectable style={[s.prose, style, extra, { lineHeight }]}
             accessibilityLabel={sizes.size ? spokenLabel(pieces(nodes, sizes), speech && live) : undefined}>
-            {inline(nodes, { sizes, live })}
+            {inline(nodes, { sizes, live, lift: inlineLift(lineHeight, style.fontSize) })}
           </Text>
         )}
       </Live>
@@ -140,7 +142,7 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
           const drawn = size && pictures.get(token);
           // Math that can't be drawn shows its source.
           if (!size || !drawn) return token.markup === "$" ? `$${token.content}$` : `\\(${token.content}\\)`;
-          const picture = <MathPicture key={index} svg={drawn.svg[c.mode]} drawn={drawn} size={size} scale={fontScale} color={c.text} live={math.live} inline />;
+          const picture = <MathPicture key={index} svg={drawn.svg[c.mode]} drawn={drawn} size={size} scale={fontScale} color={c.text} live={math.live} inline lift={math.lift} />;
           // A period or comma right after the math never wraps away from it.
           const after = nodes[index + 1]?.token;
           return after?.type === "text" && CLINGS.test(after.content) ? [picture, JOIN] : picture;

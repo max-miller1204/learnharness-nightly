@@ -94,6 +94,18 @@ export function lineHeightFor(sizes: Size[], fontSize: number, line: number, fon
   return paragraphLine(scaled, fontSize * fontScale, line * fontScale);
 }
 
+/** How far an inline picture must rise on iOS to sit on the text's baseline, in unscaled
+ * points. With a lineHeight, React Native's iOS text raises every glyph by half the line's
+ * extra height (RCTApplyBaselineOffsetForRange: (lineHeight - font line height) / 2, none
+ * when the line is shorter than the font), but places an inline view from the line's bottom
+ * and the font's descender, without that raise (RCTTextLayoutManager's attachment frames).
+ * So inline math sat that far below the text, and a period after it looked raised. Android
+ * puts the view on the baseline itself. */
+export function inlineLift(lineHeight: number, fontSize: number, platform: string = Platform.OS): number {
+  if (platform !== "ios") return 0;
+  return Math.max(0, (lineHeight - (ASCENT + DESCENT) * fontSize) / 2);
+}
+
 /** A label with its math drawn as pictures, sized before it is drawn so the row never
  * grows later. It is never reachable by a screen reader on its own: whatever holds it
  * carries the spoken label. `style` must set fontSize and lineHeight. */
@@ -130,7 +142,8 @@ export function MathLabel({ pieces, style, color }: { pieces: LabelPiece[]; styl
         return (
           <Text key={index} style={[style, { lineHeight: line }]}>
             {block.map((piece, at) => piece.kind === "text" ? piece.text
-              : <MathPicture key={at} svg={piece.drawn.svg[c.mode]} drawn={piece.drawn} size={sizes[at] as Size} scale={fontScale} color={color} live={live} inline />)}
+              : <MathPicture key={at} svg={piece.drawn.svg[c.mode]} drawn={piece.drawn} size={sizes[at] as Size} scale={fontScale} color={color} live={live} inline
+                lift={inlineLift(line, fontSize)} />)}
           </Text>
         );
       })}
@@ -140,8 +153,10 @@ export function MathLabel({ pieces, style, color }: { pieces: LabelPiece[]; styl
 
 /** A drawn equation in a box of its exact size. Without `live` the box stays empty, so a
  * picture coming or going never moves anything. */
-export function MathPicture({ svg, drawn, size, scale, color, inline, live = true }: {
+export function MathPicture({ svg, drawn, size, scale, color, inline, live = true, lift = 0 }: {
   svg: string; drawn: DrawnMath; size: Size; scale: number; color: string; inline?: boolean; live?: boolean;
+  /** Inline only: inlineLift for the line it sits in, in unscaled points. */
+  lift?: number;
 }) {
   const width = size.width * scale;
   const height = size.height * scale;
@@ -154,9 +169,10 @@ export function MathPicture({ svg, drawn, size, scale, color, inline, live = tru
     );
   }
   // The inline box is the math above the baseline, which it sits on; the picture hangs
-  // below it by the depth, into the space paragraphLine leaves.
+  // below it by the depth, into the space paragraphLine leaves. Lifting moves only what
+  // is drawn, so the line's layout is unchanged.
   return (
-    <View style={{ width, height: (size.height - size.depth) * scale }}>
+    <View style={{ width, height: (size.height - size.depth) * scale, transform: lift ? [{ translateY: -lift * scale }] : undefined }}>
       <View style={{ position: "absolute", top: 0, left: 0, width, height }}>
         {live && <Picture svg={svg} color={color} />}
       </View>
