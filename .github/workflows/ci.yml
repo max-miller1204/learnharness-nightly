@@ -48,15 +48,17 @@ jobs:
         id: detect
         env:
           EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
           set -uo pipefail
           decide() {
             node .github/scripts/ci-changes.cjs "$@" | tee -a "$GITHUB_OUTPUT"
             exit "${PIPESTATUS[0]}"
           }
-          # A push to main is one squash merge: its first parent is main before it.
-          if [[ "$EVENT_NAME" == push ]] && git diff --name-only --no-renames HEAD^1 HEAD > "$RUNNER_TEMP/changed-paths"; then
-            decide --full --paths "$RUNNER_TEMP/changed-paths"
+          # A push is diffed from the commit main was at before it, so every
+          # commit in it counts; when that commit is unknown, everything runs.
+          if [[ "$EVENT_NAME" == push ]]; then
+            decide --full --push-before "$PUSH_BEFORE"
           fi
           if [[ "$EVENT_NAME" != pull_request ]]; then
             decide --full

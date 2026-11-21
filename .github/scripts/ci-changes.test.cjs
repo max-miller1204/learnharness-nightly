@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
-const { decide } = require("./ci-changes.cjs");
+const { decide, pushPaths } = require("./ci-changes.cjs");
 
 const none = { typecheck: false, test: false, selfhost: false, standalone: false, mobile: false, iphone: false };
 const all = { typecheck: true, test: true, selfhost: true, standalone: true, mobile: false, iphone: false };
@@ -84,6 +84,35 @@ test("the command line prints one gate per line for GITHUB_OUTPUT", () => {
 		assert.equal(run("--paths", list, "--full"), "typecheck=true\ntest=true\nselfhost=true\nstandalone=true\nmobile=true\niphone=false\n");
 		assert.equal(run("--full"), "typecheck=true\ntest=true\nselfhost=true\nstandalone=true\nmobile=true\niphone=true\n");
 		assert.equal(run(), "typecheck=true\ntest=true\nselfhost=true\nstandalone=true\nmobile=true\niphone=true\n");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a push is diffed from the commit before it, every commit included, and runs everything when that is unknown", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ci-push-"));
+	try {
+		const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+		const commit = (file) => {
+			fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+			fs.writeFileSync(path.join(dir, file), file);
+			git("add", "-A");
+			git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", file);
+			return git("rev-parse", "HEAD");
+		};
+		git("init", "-q");
+		const before = commit("README.md");
+		commit("apps/mobile/src/App.tsx");
+		commit("docs/notes.md");
+		// Two merges in one push: the phone change is not the tip, and still counts.
+		assert.deepEqual(pushPaths(before, dir), ["apps/mobile/src/App.tsx", "docs/notes.md"]);
+		assert.equal(decide(pushPaths(before, dir), true).iphone, true);
+		assert.equal(decide(pushPaths(git("rev-parse", "HEAD~1"), dir), true).iphone, false);
+		// A new branch's zero SHA, a malformed one, and a commit this clone can't reach run everything.
+		for (const unknown of ["0".repeat(40), "", "abc", "f".repeat(40)]) {
+			assert.equal(pushPaths(unknown, dir), null, unknown);
+			assert.deepEqual(decide(pushPaths(unknown, dir), true), { ...all, mobile: true, iphone: true }, unknown);
+		}
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}

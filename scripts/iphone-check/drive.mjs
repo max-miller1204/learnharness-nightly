@@ -76,6 +76,7 @@ const fail = (screen, message) => { throw new Failure(`${screen}: ${message}`); 
 // input sent right after the simulator settles is otherwise dropped. AXe caps it at 1 s.
 // AXe itself can crash (a signal, seen as SIGSEGV on a swipe). Reads and scrolls
 // are safe to repeat, so those run again, at most twice; a tap or keys never do.
+// A scroll that timed out may have moved the screen, so only a crash repeats it.
 const REPEATABLE = new Set(["describe-ui", "displays", "swipe", "drag"]);
 async function axe(args) {
 	for (let attempt = 1; ; attempt++) {
@@ -84,6 +85,7 @@ async function axe(args) {
 			return await run(AXE, [...args, "--udid", UDID], { maxBuffer: 64 << 20, timeout: 120_000, env: { ...process.env, AXE_HID_STABILIZATION_MS: "1000" } });
 		} catch (error) {
 			if (!error.signal || !REPEATABLE.has(args[0]) || attempt === 3) throw error;
+			if (error.killed && (args[0] === "swipe" || args[0] === "drag")) throw error;
 			log(`AXe ${error.killed ? "timed out" : `crashed (${error.signal})`} on ${args[0]}; running it again`);
 		}
 	}
@@ -161,7 +163,7 @@ async function tap(screen, find) {
 }
 
 /** Does a tap reach the app? Toggle the session's options menu twice and check
- * that each tap changed it, leaving it closed. */
+ * that each tap changed it; it passes only when a fresh read finds it closed. */
 async function tapsReachApp(screen) {
 	for (let i = 0; i < 2; i++) {
 		const open = has("Close menu")(await settled(screen));
@@ -169,8 +171,11 @@ async function tapsReachApp(screen) {
 		await sleep(800);
 		if (has("Close menu")(await settled(screen)) === open) return false;
 	}
-	if (has("Close menu")(await settled(screen))) await tap(screen, (el) => label(el) === "Close menu");
-	return true;
+	if (has("Close menu")(await settled(screen))) {
+		await tap(screen, (el) => label(el) === "Close menu");
+		await sleep(800);
+	}
+	return !has("Close menu")(await settled(screen));
 }
 
 /** After the Pair screen's secure field, iOS offers to save the password in a
@@ -244,18 +249,24 @@ async function phonePages(screen, mode, marker, { dock = false, from = "top" } =
 	if (from === "top") {
 		const probe = path.join(OUT, `.probe-${screen}-${mode}.png`);
 		await simctl("io", UDID, "screenshot", probe);
+		let settledTop = false;
 		for (let flick = 0, before = hashOf(probe); flick < 8; flick++) {
 			await axe(["swipe", "--start-x", x, "--start-y", top, "--end-x", x, "--end-y", bottom]);
 			await sleep(900);
 			await simctl("io", UDID, "screenshot", probe);
 			const now = hashOf(probe);
-			if (now === before) break;
+			if (now === before) {
+				settledTop = true;
+				break;
+			}
 			before = now;
 		}
+		if (!settledTop) console.log(`::warning title=iPhone pages::${screen} ${mode}: still moving after 8 flicks to the top; its first page may not be the top`);
 		unlinkSync(probe);
 	}
 	const files = [];
 	let previous = "";
+	let ended = false;
 	for (let page = 1; page <= 10; page++) {
 		await settled(screen);
 		const file = path.join(OUT, "iphone", `${screen}-${mode}-${from}-${page}.png`);
@@ -263,6 +274,7 @@ async function phonePages(screen, mode, marker, { dock = false, from = "top" } =
 		const hash = hashOf(file);
 		if (hash === previous) {
 			unlinkSync(file);
+			ended = true;
 			break;
 		}
 		files.push(file);
@@ -271,6 +283,7 @@ async function phonePages(screen, mode, marker, { dock = false, from = "top" } =
 		await axe(["drag", "--start-x", x, "--start-y", startY, "--end-x", x, "--end-y", endY]);
 		await sleep(900);
 	}
+	if (!ended) console.log(`::warning title=iPhone pages::${screen} ${mode}: 10 pages shot and the screen still moved; later content is not pictured`);
 	if (from === "bottom") files.reverse();
 	files.forEach((file, i) => {
 		const named = path.join(OUT, "iphone", `${screen}-${mode}-${i + 1}.png`);

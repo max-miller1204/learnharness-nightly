@@ -28,6 +28,7 @@
 //
 // The independently installed mobile app and the web app share source,
 // so path gates follow the source they consume.
+const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 
 // Docs the app or its plugin-authoring bundle ships, so they are not inert:
@@ -111,12 +112,31 @@ function decide(files, full = false) {
 	return outputs;
 }
 
+/** The paths a push changed, from the commit main was at before it to HEAD,
+ *  or null when that commit is unknown (a new branch, the all-zero SHA, or a
+ *  commit gone after a force push). A shallow checkout fetches it first. */
+function pushPaths(before, cwd = process.cwd()) {
+	if (!/^[0-9a-f]{40}$/.test(before ?? "") || /^0+$/.test(before)) return null;
+	const git = (...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+	try { git("cat-file", "-e", `${before}^{commit}`); } catch {
+		try { git("fetch", "-q", "--no-tags", "--depth=1", "origin", before); } catch { return null; }
+	}
+	try {
+		return git("diff", "--name-only", "--no-renames", before, "HEAD").split("\n").map((line) => line.trim()).filter(Boolean);
+	} catch {
+		return null;
+	}
+}
+
 function main() {
 	const args = process.argv.slice(2);
 	const pathsIndex = args.indexOf("--paths");
-	const files = pathsIndex === -1
-		? null
-		: fs.readFileSync(args[pathsIndex + 1], "utf8").split("\n").map((line) => line.trim()).filter(Boolean);
+	const beforeIndex = args.indexOf("--push-before");
+	const files = beforeIndex !== -1
+		? pushPaths(args[beforeIndex + 1])
+		: pathsIndex === -1
+			? null
+			: fs.readFileSync(args[pathsIndex + 1], "utf8").split("\n").map((line) => line.trim()).filter(Boolean);
 	const full = args.includes("--full");
 	for (const file of files ?? []) console.error(`${classify(file)}: ${file}`);
 	if (files === null) console.error("No diff: running every job.");
@@ -124,6 +144,6 @@ function main() {
 	for (const [key, value] of Object.entries(decide(files, full))) console.log(`${key}=${value}`);
 }
 
-module.exports = { classify, decide, GATES };
+module.exports = { classify, decide, pushPaths, GATES };
 
 if (require.main === module) main();
