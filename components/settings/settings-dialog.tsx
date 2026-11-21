@@ -121,7 +121,6 @@ export function SettingsDialogProvider({
 		setShow(true);
 	}, [interactions, layerId]);
 	const close = useCallback((): CloseOutcome => { setShow(false); return "closed"; }, []);
-	useEffect(() => window.lh?.onOpenSettings?.((section) => open(section)), [open]);
 	useEffect(() => {
 		const onPluginSettings = (event: Event) => {
 			const pluginId: unknown = (event as CustomEvent<unknown>).detail;

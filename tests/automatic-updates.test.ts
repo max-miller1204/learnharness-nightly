@@ -825,7 +825,7 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 		assert.equal(f.updater.checks, 1, "main's own check");
 		assert.deepEqual(f.dialogs.map((d) => [d.options.title, d.options.message, d.options.buttons]), [["You're up to date!", "LearnHarness 0.3.7 is currently the newest version available.", ["OK"]]]);
 		assert.equal(f.dialogs[0]!.parent, win, "over the app's window");
-		assert.ok(!win.webContents.messages.some((message) => message.channel === "lh:open-settings"), "no Settings page: the dialog is the answer");
+		assert.deepEqual(win.webContents.messages.filter((message) => !message.channel.startsWith("lh:update")), [], "no Settings page: the dialog is the answer");
 		assert.equal(f.state().status, "up-to-date", "the sidebar and Settings follow the same state");
 	});
 
