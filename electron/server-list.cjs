@@ -333,12 +333,14 @@ async function createServerList({
 			publish();
 			return;
 		}
+		// The pairing this confirm is about: one made again while it was open is a new one, kept.
+		const pairing = store.pairing(server);
 		const { response } = await dialog.showMessageBox(controls, {
 			type: "warning", noLink: true, buttons: ["Cancel", "Confirm"], defaultId: 0, cancelId: 0,
 			message: `Remove ${server} from this device?`,
 			detail: "This forgets its pairing and saved credential here. Pair again to add it back.",
 		});
-		if (response !== 1 || busy || removing || closing || store.damaged || !store.origins.includes(server)) return;
+		if (response !== 1 || busy || removing || closing || store.damaged || !pairing || store.pairing(server) !== pairing) return;
 		if (held(server)) {
 			notice = HELD_BY_UPDATE;
 			publish();
@@ -348,7 +350,7 @@ async function createServerList({
 		removing = server;
 		// Its bearer is never sent again: a check still running for it stops now, and so does
 		// its ChatGPT sign-in, without the cancel that would carry the bearer.
-		chatgpt.forget(server);
+		const signIns = chatgpt.forget(server);
 		if (window && rechecks.get(window)?.server === server) rechecks.get(window).stop.abort();
 		// Its window closes before the write: its page's own requests carry the bearer too.
 		// The list comes first, so the app always has a window, and stays in front for the keyboard.
@@ -358,8 +360,12 @@ async function createServerList({
 			await store.remove(server);
 			if (problem?.server === server) problem = null;
 			notice = "";
-		} catch { notice = "Couldn’t remove the saved server."; }
-		finally { removing = null; publish(); }
+		} catch {
+			notice = "Couldn’t remove the saved server.";
+			// Its bearer stays saved: the sign-in's skipped cancel goes out after all, so the
+			// server doesn't hold that attempt pending until its own timeout.
+			await signIns.kept();
+		} finally { removing = null; publish(); }
 	}
 	// The open remote window's ChatGPT sign-in (window.lh.chatgptSignIn), never for a held server.
 	const chatgpt = createRemoteChatGPTSignIn({

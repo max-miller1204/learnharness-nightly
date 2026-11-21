@@ -1296,7 +1296,21 @@ async function removalFixture(t: test.TestContext, { defaultServer = beta as str
 		/** While set, each confirm dialog waits for the next of these before it answers. */
 		dialogGates: [] as Promise<void>[],
 		/** The ChatGPT sign-in relay's server side: its ops as "origin op", and what it opened. */
-		signIn: { ops: [] as string[], opened: [] as string[], port: 0, holdLogin: null as Promise<void> | null },
+		signIn: {
+			ops: [] as string[], opened: [] as string[], port: 0, holdLogin: null as Promise<void> | null,
+			/** While set, `login` is refused with this reason, as the server's own public error. */
+			refuse: null as string | null,
+		},
+	};
+	// A held request ends as a real fetch does when its signal aborts.
+	const hold = (gate: Promise<void> | null | undefined, signal: AbortSignal | null | undefined) => {
+		if (!gate) return undefined;
+		if (!signal) return gate;
+		signal.throwIfAborted();
+		return new Promise<void>((resolve, reject) => {
+			signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+			void gate.then(resolve);
+		});
 	};
 	globalThis.fetch = async (input, options) => {
 		const url = new URL(String(input));
@@ -1306,8 +1320,9 @@ async function removalFixture(t: test.TestContext, { defaultServer = beta as str
 			const body = JSON.parse(String(options?.body));
 			fixture.signIn.ops.push(`${url.origin} ${body.op}`);
 			if (body.op !== "login") return Response.json({ value: {} });
+			if (fixture.signIn.refuse) return Response.json({ value: { error: fixture.signIn.refuse } });
 			fixture.signIn.port = body.desktopRedirectPort;
-			await fixture.signIn.holdLogin;
+			await hold(fixture.signIn.holdLogin, options?.signal);
 			return Response.json({ value: {}, attemptId: "attempt-1", browserAction: "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001" });
 		}
 		if (url.pathname === "/api/subscriptions/browser") {
@@ -1316,7 +1331,7 @@ async function removalFixture(t: test.TestContext, { defaultServer = beta as str
 			target.searchParams.set("state", "fixture-state");
 			return new Response(null, { status: 303, headers: { Location: target.href } });
 		}
-		if (url.pathname === PROTOCOL_ROUTES.serverInfo) await fixture.holdDescriptor.get(url.origin);
+		if (url.pathname === PROTOCOL_ROUTES.serverInfo) await hold(fixture.holdDescriptor.get(url.origin), options?.signal);
 		const key = fixture.unavailable.has(`${url.origin}${url.pathname}`) ? `${url.origin}${url.pathname}` : url.origin;
 		const busyFor = fixture.unavailable.get(key) ?? 0;
 		if (busyFor > 0) {
@@ -1721,8 +1736,9 @@ test("removing the open server ends its running ChatGPT sign-in without sending 
 		let atWrite: string[] | null = null;
 		list.onPublish = (state) => { if (state.removing && !atWrite) atWrite = removedBearer(list, sent); };
 		await list.send("remove", beta);
+		// The login request itself is abandoned at once, not waited out until it answers.
+		assert.deepEqual(await Promise.race([signing, settle().then(() => "still running")]), ENDED, `${when}: the sign-in ends before its login answers`);
 		release();
-		assert.deepEqual(await signing, ENDED, `${when}: the sign-in ends`);
 		await settle();
 		assert.deepEqual(atWrite, [], `${when}: nothing carried the bearer before the write`);
 		assert.deepEqual(removedBearer(list, sent), [], `${when}: no request carries the removed bearer`);
@@ -1744,12 +1760,111 @@ test("a sign-in still ending after a switch away sends no cancel once its server
 	assert.equal(list.controller.current()?.origin, alpha);
 	const sent = list.calls.length;
 	await list.send("remove", beta);
+	assert.deepEqual(await Promise.race([signing, settle().then(() => "still running")]), ENDED, "its login is abandoned at once");
 	release();
-	assert.deepEqual(await signing, ENDED);
 	await settle();
 	assert.deepEqual(removedBearer(list, sent), [], "the old attempt never cancels with the removed bearer");
 	assert.equal(list.signIn.ops.includes(`${beta} cancel`), false);
 	assert.equal(list.controller.current()?.origin, alpha, "the open server stays");
+});
+
+test("a sign-in whose credential is revoked ends at once and sends nothing more, not even its cancel", { timeout: 10000 }, async () => {
+	const { remoteChatGPTSignIn } = require("../electron/remote-chatgpt.cjs");
+	const ops: string[] = [];
+	let port = 0;
+	const request = async (url: URL, options: RequestInit) => {
+		if (url.pathname === "/api/subscriptions/browser") {
+			const target = new URL(AUTHORIZE);
+			target.searchParams.set("redirect_uri", `http://127.0.0.1:${port}/auth/callback`);
+			target.searchParams.set("state", "fixture-state");
+			return new Response(null, { status: 303, headers: { Location: target.href } });
+		}
+		const body = JSON.parse(String(options.body));
+		ops.push(body.op);
+		port = body.desktopRedirectPort ?? port;
+		return Response.json({ value: {}, attemptId: "attempt-1", browserAction: "/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001" });
+	};
+	const revoked = new AbortController();
+	const deferred: (() => Promise<void>)[] = [];
+	let opened!: () => void;
+	const browser = new Promise<void>((resolve) => { opened = resolve; });
+	// Only the credential's own signal: no attempt signal ends it.
+	const signing = remoteChatGPTSignIn(beta, "beta-secret", {
+		request, revoked: revoked.signal, deferCancel: (send: () => Promise<void>) => deferred.push(send),
+		openExternal: async () => { opened(); },
+	});
+	await browser;
+	revoked.abort();
+	await assert.rejects(signing, { message: "ChatGPT sign-in ended. Try again." });
+	assert.deepEqual(ops, ["login"], "no cancel goes out");
+	assert.equal(deferred.length, 1, "its cancel is handed back, unsent");
+	await deferred[0]!();
+	assert.deepEqual(ops, ["login", "cancel"]);
+});
+
+test("a second Remove confirm left open never forgets the pairing made again after the first", { timeout: 10000 }, async (t) => {
+	const list = await removalFixture(t);
+	t.after(() => { list.controller.close(); for (const window of TestWindow.all) if (!window.destroyed) window.destroy(); });
+	await list.controller.launch();
+	let first!: () => void;
+	let second!: () => void;
+	list.dialogGates.push(new Promise<void>((resolve) => { first = resolve; }), new Promise<void>((resolve) => { second = resolve; }));
+	const removals = [list.send("remove", beta), list.send("remove", beta)];
+	await settle();
+	assert.equal(list.asked.length, 2, "both confirms are open");
+	first();
+	await removals[0];
+	assert.deepEqual((await list.state()).servers, [alpha]);
+	// Paired again while the second confirm is still open.
+	await list.send("pair", { origin: beta, code });
+	assert.deepEqual((await list.state()).servers, [alpha, beta]);
+	assert.equal(list.controller.current()?.origin, beta);
+	second();
+	await removals[1];
+	assert.deepEqual((await list.state()).servers, [alpha, beta], "the new pairing stays");
+	assert.deepEqual((await openServerList(list.file, fakeSafeStorage)).origins, [alpha, beta]);
+	assert.equal(list.controller.current()?.origin, beta, "its window stays open");
+});
+
+test("a removal whose save fails keeps the bearer and sends the sign-in's skipped cancel with it", { timeout: 10000 }, async (t) => {
+	const list = await removalFixture(t);
+	t.after(() => { list.controller.close(); for (const window of TestWindow.all) if (!window.destroyed) window.destroy(); });
+	await list.controller.launch();
+	const signing = list.controller.chatgptSignIn();
+	await until(() => list.signIn.opened.length === 1);
+	// The list's folder refuses the write.
+	const directory = path.dirname(list.file);
+	await fs.chmod(directory, 0o500);
+	t.after(() => fs.chmod(directory, 0o700).catch(() => {}));
+	await list.send("remove", beta);
+	await fs.chmod(directory, 0o700);
+	assert.deepEqual(await signing, ENDED);
+	const state = await list.state() as unknown as { servers: string[]; notice: string; removing: boolean };
+	assert.deepEqual(state.servers, [alpha, beta], "nothing was forgotten");
+	assert.equal(state.notice, "Couldn’t remove the saved server.");
+	assert.equal(state.removing, false);
+	assert.deepEqual(list.signIn.ops.filter((op) => op === `${beta} cancel`), [`${beta} cancel`], "the skipped cancel went out once the bearer was kept");
+	assert.equal(list.calls.filter((call) => call === `${beta} /api/subscriptions Bearer beta-secret`).length, 2, "login, then the cancel, both with the kept bearer");
+});
+
+test("a sign-in right after removing and pairing again says the old attempt is still finishing", { timeout: 10000 }, async (t) => {
+	const list = await removalFixture(t);
+	t.after(() => { list.controller.close(); for (const window of TestWindow.all) if (!window.destroyed) window.destroy(); });
+	await list.controller.launch();
+	const signing = list.controller.chatgptSignIn();
+	await until(() => list.signIn.opened.length === 1);
+	await list.send("remove", beta);
+	assert.deepEqual(await signing, ENDED);
+	await list.send("pair", { origin: beta, code });
+	assert.equal(list.controller.current()?.origin, beta);
+	// The server still holds the attempt the removal ended without a cancel.
+	list.signIn.refuse = "A ChatGPT sign-in is already pending.";
+	assert.deepEqual(await list.controller.chatgptSignIn(), {
+		error: "A sign-in started before this server was removed is still finishing on the server. Try again in a few minutes.",
+	});
+	// Another server's pending sign-in keeps the server's own reason.
+	await list.send("connect", alpha);
+	assert.deepEqual(await list.controller.chatgptSignIn(), { error: "A ChatGPT sign-in is already pending." });
 });
 
 test("the open server's page sends no request with its bearer while its removal writes", async (t) => {

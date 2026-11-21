@@ -44,6 +44,8 @@ async function openServerList(file, safeStorage, platform = process.platform) {
 			await fs.rm(temporary, { force: true });
 		}
 	}
+	// Opaque handles for saved pairings: the same one until that server is paired again or removed.
+	const pairings = new WeakMap();
 	const linux = platform === "linux";
 	async function requireEncryption() {
 		// On Linux the synchronous API reports which backend will actually
@@ -82,6 +84,13 @@ async function openServerList(file, safeStorage, platform = process.platform) {
 			const credential = encrypted.toString("base64");
 			const servers = state.servers.filter((saved) => saved.origin !== origin).concat({ origin, credential });
 			await save({ ...state, servers });
+		},
+		/** The saved pairing of `origin` as an opaque handle, or null: compare it with ===. */
+		pairing(origin) {
+			const saved = state.servers.find((entry) => entry.origin === origin);
+			if (!saved) return null;
+			if (!pairings.has(saved)) pairings.set(saved, Object.freeze({}));
+			return pairings.get(saved);
 		},
 		/** Forgets a saved server and its credential. The launch default falls back to none. */
 		async remove(origin) {
