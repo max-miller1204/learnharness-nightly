@@ -432,20 +432,17 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	}, [notesOpen]);
 	// T3 closes the notes on Escape wherever focus is. In the capture phase, so neither a field's
 	// own Escape (the composer's dictation) nor the app's turn abort (keyboard-shortcuts.tsx,
-	// chat.tsx) sees it: one Esc, one action. Inside the notes they take Escape with any modifier
-	// (Shift+Escape must not abort a turn from there). Outside them only a plain Escape, and only
-	// when no foreground layer (Settings, a dialog, a popover) owns it: that layer closes first.
+	// chat.tsx) sees it: one Esc, one action. They take Escape with any modifier (Shift+Escape
+	// aborts a turn too), from inside them always, and from outside only when no foreground layer
+	// (Settings, a dialog, a popover) owns it: that layer closes first.
 	const layers = useOptionalInteractionLayers();
 	useEffect(() => {
 		if (!notesOpen) return;
 		const onEscape = (event: globalThis.KeyboardEvent) => {
 			if (event.key !== "Escape" || event.isComposing) return;
 			const inside = !!popoverRef.current?.contains(document.activeElement);
-			if (!inside) {
-				if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-				// The provider's own capture listener ran first and snapshotted the owner.
-				if (layers ? layers.isEscapeOwned(event) : hasLegacyInteractionForeground(document)) return;
-			}
+			// The provider's own capture listener ran first and snapshotted the owner.
+			if (!inside && (layers ? layers.isEscapeOwned(event) : hasLegacyInteractionForeground(document))) return;
 			event.preventDefault();
 			event.stopPropagation();
 			if (closeTimer.current) clearTimeout(closeTimer.current);

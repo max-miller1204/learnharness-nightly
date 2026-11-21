@@ -108,8 +108,8 @@ dom.window.removeEventListener = ((type: string, listener: EventListenerOrEventL
 
 /** A keydown from `element`: the window's capture listeners, then (unless one stopped it) the
  *  target and the bubble through React's root to the document and the window. */
-async function key(element: Element, name: string, { shiftKey = false } = {}) {
-	const event = Object.assign(new window.Event("keydown", { bubbles: true, cancelable: true }), { key: name, shiftKey });
+async function key(element: Element, name: string, { shiftKey = false, altKey = false, ctrlKey = false, metaKey = false } = {}) {
+	const event = Object.assign(new window.Event("keydown", { bubbles: true, cancelable: true }), { key: name, shiftKey, altKey, ctrlKey, metaKey });
 	let stopped = false;
 	const stop = event.stopPropagation.bind(event);
 	event.stopPropagation = () => { stopped = true; stop(); };
@@ -798,6 +798,33 @@ describe("General update rows", () => {
 			assert.ok(document.activeElement === composer, "focus stays in the composer");
 			await key(composer, "Escape");
 			assert.deepEqual([fieldKeys, reached], [["Escape"], ["Escape"]], "with the notes closed Escape is the app's again");
+		} finally {
+			window.removeEventListener("keydown", onWindow);
+			if (hadSelection) Object.defineProperty(dom.window, "getSelection", hadSelection); else Reflect.deleteProperty(dom.window, "getSelection");
+		}
+	});
+
+	it("Escape with a modifier from the composer closes hover-opened notes too, and never reaches the turn abort", async () => {
+		bridge(state({ status: "downloaded", version: "0.3.9", revision: 1, releaseNotes: [{ version: "0.3.9", items: ["Newest"] }] }));
+		const fieldKeys: string[] = [];
+		const host = await mount(<><SidebarUpdatePill /><textarea data-testid="composer" onKeyDown={(event) => fieldKeys.push(event.key)} /></>);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const reached: string[] = [];
+		const onWindow = (event: Event) => { reached.push((event as KeyboardEvent).key); };
+		window.addEventListener("keydown", onWindow);
+		// React's select plugin reads the selection on a field's keys (linkedom has none).
+		const hadSelection = Object.getOwnPropertyDescriptor(dom.window, "getSelection");
+		Object.assign(dom.window, { getSelection: () => ({ anchorNode: null, anchorOffset: 0, focusNode: null, focusOffset: 0, rangeCount: 0 }) });
+		try {
+			const composer = q(host, "composer")!;
+			await act(async () => { composer.focus(); });
+			for (const modifier of ["shiftKey", "altKey", "ctrlKey", "metaKey"] as const) {
+				await hover(q(host, "update-pill")!);
+				assert.ok(q(document, "update-pill-notes"), `${modifier}: the pointer opened the notes`);
+				await key(composer, "Escape", { [modifier]: true });
+				assert.ok(!q(document, "update-pill-notes"), `${modifier}+Escape closed the notes`);
+				assert.deepEqual([fieldKeys, reached], [[], []], `${modifier}+Escape reached neither the field nor the turn abort`);
+			}
 		} finally {
 			window.removeEventListener("keydown", onWindow);
 			if (hadSelection) Object.defineProperty(dom.window, "getSelection", hadSelection); else Reflect.deleteProperty(dom.window, "getSelection");
