@@ -26,6 +26,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import { inflateSync } from "node:zlib";
 import puppeteer from "puppeteer-core";
 
 const run = promisify(execFile);
@@ -224,11 +225,72 @@ async function typeInto(screen, name, text) {
 	fail(screen, `could not type into ${name}: it shows ${JSON.stringify(shown)}`);
 }
 
-async function phoneShot(screen, mode, page) {
-	const file = path.join(OUT, "iphone", `${screen}-${mode}${page ? `-${page}` : ""}.png`);
-	await simctl("io", UDID, "screenshot", file);
+/** One pixel of an 8-bit RGB or RGBA PNG (what simctl screenshots are). */
+function pngPixel(file, x, y) {
+	const buf = readFileSync(file);
+	let width = 0, depth = 0, color = 0, pos = 8;
+	const idat = [];
+	while (pos < buf.length) {
+		const len = buf.readUInt32BE(pos);
+		const type = buf.toString("ascii", pos + 4, pos + 8);
+		const data = buf.subarray(pos + 8, pos + 8 + len);
+		if (type === "IHDR") [width, depth, color] = [data.readUInt32BE(0), data[8], data[9]];
+		else if (type === "IDAT") idat.push(data);
+		else if (type === "IEND") break;
+		pos += 12 + len;
+	}
+	if (depth !== 8 || (color !== 2 && color !== 6)) throw new Error(`${file}: unsupported PNG (depth ${depth}, color ${color})`);
+	const bpp = color === 6 ? 4 : 3, stride = width * bpp, raw = inflateSync(Buffer.concat(idat));
+	let prev = Buffer.alloc(stride), cur = Buffer.alloc(stride);
+	for (let row = 0; row <= y; row++) {
+		const filter = raw[row * (stride + 1)], line = raw.subarray(row * (stride + 1) + 1, (row + 1) * (stride + 1));
+		for (let i = 0; i < stride; i++) {
+			const a = i >= bpp ? cur[i - bpp] : 0, b = prev[i], c = i >= bpp ? prev[i - bpp] : 0;
+			const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+			const add = [0, a, b, (a + b) >> 1, pa <= pb && pa <= pc ? a : pb <= pc ? b : c][filter];
+			cur[i] = (line[i] + add) & 255;
+		}
+		[prev, cur] = [cur, prev];
+	}
+	return [prev[x * bpp], prev[x * bpp + 1], prev[x * bpp + 2]];
+}
+
+/** Overlays that must never be in a picture: the session menu, the keyboard,
+ * React Native's LogBox. (iOS's own sheets are not in the tree; the appearance
+ * check below catches their dimming.) */
+function overlayIn(elements) {
+	return elements.find((el) => label(el) === "Close menu" || label(el) === "Typing Predictions" || /^Open debugger to view/.test(label(el)));
+}
+
+/** A screenshot taken only once the screen has settled: two shots in a row
+ * match, and the page background at the left gutter has the mode's colour
+ * (light near white, dark near black), so no cross-fade or dimmed overlay is
+ * pictured. Fails after 20 s. */
+async function settledShot(screen, mode, file) {
+	const deadline = Date.now() + 20_000;
+	const hashOf = (f) => createHash("sha256").update(readFileSync(f)).digest("hex");
+	for (;;) {
+		const overlay = overlayIn(await settled(screen));
+		if (overlay) fail(screen, `an overlay is on screen for the ${mode} picture: "${label(overlay)}"`);
+		await simctl("io", UDID, "screenshot", file);
+		const first = hashOf(file);
+		await sleep(700);
+		await simctl("io", UDID, "screenshot", file);
+		const [r, g, b] = pngPixel(file, 6, Math.round(screenSize.height * 1.5));
+		const light = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+		const right = mode === "light" ? light > 200 : light < 70;
+		if (first === hashOf(file) && right) return hashOf(file);
+		if (Date.now() > deadline) {
+			fail(screen, `the ${mode} picture never settled: background ${r},${g},${b}${first === hashOf(file) ? "" : ", still changing"}`);
+		}
+		await sleep(800);
+	}
+}
+
+async function phoneShot(screen, mode) {
+	const file = path.join(OUT, "iphone", `${screen}-${mode}.png`);
+	await settledShot(screen, mode, file);
 	shots.push({ screen, mode, side: "iphone", file });
-	return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
 
 async function setPhoneMode(mode) {
@@ -236,60 +298,68 @@ async function setPhoneMode(mode) {
 	await sleep(1500);
 }
 
-/** Screenshot a session a page at a time, numbered top to bottom. From the
- * top, it first flicks up until the screen stops changing, then pages down.
- * From the bottom (where the previous paging left it) it pages up, no flicks. */
-async function phonePages(screen, mode, marker, { dock = false, from = "top" } = {}) {
+/** The scrolling areas of a session, top to bottom, by their vertical scroll
+ * bars: "Vertical scroll bar, 3 pages", valued "0%" at the top, "100%" at the end. */
+async function scrollBars(screen) {
+	return (await settled(screen))
+		.map((el) => ({ el, m: /^Vertical scroll bar, (\d+) pages?$/.exec(label(el)) }))
+		.filter(({ m }) => m && Number(m[1]) > 1)
+		.map(({ el, m }) => ({ pages: Number(m[1]), at: Number.parseInt(String(el.AXValue ?? ""), 10), y: frame(el).y }))
+		.sort((a, b) => a.y - b.y);
+}
+
+/** Screenshot a session in full, numbered top to bottom. Each area (the
+ * transcript, then a dock that scrolls) is flicked to its top, then paged
+ * down until its scroll bar reads 100%. An area gives the screen fractions a
+ * finger drags between (top, bottom) and the band its scroll bar sits in
+ * (within). Fails if an area never reaches its top or end, so a picture set
+ * is never cut short. */
+async function phonePages(screen, mode, marker, areas) {
 	await waitFor(screen, marker);
 	const x = String(Math.round(screenSize.width / 2));
-	// The transcript sits between the top bar and the dock or composer.
-	const top = String(Math.round(screenSize.height * 0.16));
-	const bottom = String(Math.round(screenSize.height * (dock ? 0.4 : 0.75)));
-	const hashOf = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
-	if (from === "top") {
-		const probe = path.join(OUT, `.probe-${screen}-${mode}.png`);
-		await simctl("io", UDID, "screenshot", probe);
-		let settledTop = false;
-		for (let flick = 0, before = hashOf(probe); flick < 8; flick++) {
+	let page = 0, previous = "";
+	for (const [index, area] of areas.entries()) {
+		const top = String(Math.round(screenSize.height * area.top));
+		const bottom = String(Math.round(screenSize.height * area.bottom));
+		const bar = async () => (await scrollBars(screen))
+			.find((b) => b.y >= screenSize.height * area.within[0] && b.y < screenSize.height * area.within[1]);
+		if (!(await bar())) {
+			// Nothing to scroll: the first area is one page; a later one is in it already.
+			if (index === 0) {
+				const file = path.join(OUT, "iphone", `${screen}-${mode}-${++page}.png`);
+				previous = await settledShot(screen, mode, file);
+				shots.push({ screen, mode, side: "iphone", file });
+			}
+			continue;
+		}
+		for (let flick = 0; (await bar()).at > 0; flick++) {
+			if (flick === 10) fail(screen, `${mode}: area ${index + 1} did not reach its top after 10 flicks`);
 			await axe(["swipe", "--start-x", x, "--start-y", top, "--end-x", x, "--end-y", bottom]);
 			await sleep(900);
-			await simctl("io", UDID, "screenshot", probe);
-			const now = hashOf(probe);
-			if (now === before) {
-				settledTop = true;
-				break;
+		}
+		for (let step = 0; ; step++) {
+			if (step === 25) fail(screen, `${mode}: area ${index + 1} did not reach its end in 25 pages`);
+			const file = path.join(OUT, "iphone", `${screen}-${mode}-${page + 1}.png`);
+			const hash = await settledShot(screen, mode, file);
+			if (hash === previous) unlinkSync(file);
+			else {
+				page++;
+				previous = hash;
+				shots.push({ screen, mode, side: "iphone", file });
 			}
-			before = now;
+			if ((await bar()).at >= 100) break;
+			await axe(["drag", "--start-x", x, "--start-y", bottom, "--end-x", x, "--end-y", top]);
+			await sleep(900);
 		}
-		if (!settledTop) console.log(`::warning title=iPhone pages::${screen} ${mode}: still moving after 8 flicks to the top; its first page may not be the top`);
-		unlinkSync(probe);
-	}
-	const files = [];
-	let previous = "";
-	let ended = false;
-	for (let page = 1; page <= 10; page++) {
-		await settled(screen);
-		const file = path.join(OUT, "iphone", `${screen}-${mode}-${from}-${page}.png`);
-		await simctl("io", UDID, "screenshot", file);
-		const hash = hashOf(file);
-		if (hash === previous) {
-			unlinkSync(file);
-			ended = true;
-			break;
+		// A dock goes back to its top, where its choices and their checks are.
+		if (index > 0) {
+			for (let flick = 0; (await bar()).at > 0; flick++) {
+				if (flick === 10) fail(screen, `${mode}: area ${index + 1} did not return to its top`);
+				await axe(["swipe", "--start-x", x, "--start-y", top, "--end-x", x, "--end-y", bottom]);
+				await sleep(900);
+			}
 		}
-		files.push(file);
-		previous = hash;
-		const [startY, endY] = from === "top" ? [bottom, top] : [top, bottom];
-		await axe(["drag", "--start-x", x, "--start-y", startY, "--end-x", x, "--end-y", endY]);
-		await sleep(900);
 	}
-	if (!ended) console.log(`::warning title=iPhone pages::${screen} ${mode}: 10 pages shot and the screen still moved; later content is not pictured`);
-	if (from === "bottom") files.reverse();
-	files.forEach((file, i) => {
-		const named = path.join(OUT, "iphone", `${screen}-${mode}-${i + 1}.png`);
-		renameSync(file, named);
-		shots.push({ screen, mode, side: "iphone", file: named });
-	});
 }
 
 /** Goal 4: each choice is one accessibility item that speaks its math. The
@@ -567,9 +637,11 @@ async function phone() {
 	await waitFor("lesson", inSession(LESSON.title), 60_000);
 	await dismissSavePassword("lesson");
 	await setPhoneMode("light");
-	await phonePages("lesson", "light", lesson);
+	// The pending check's dock covers the bottom quarter; drag above it.
+	const lessonAreas = [{ top: 0.16, bottom: 0.66, within: [0, 0.74] }];
+	await phonePages("lesson", "light", lesson, lessonAreas);
 	await setPhoneMode("dark");
-	await phonePages("lesson", "dark", lesson, { from: "bottom" });
+	await phonePages("lesson", "dark", lesson, lessonAreas);
 	await tap("lesson", (el) => label(el) === "Sessions");
 	for (const { mode } of MODES) {
 		await setPhoneMode(mode);
@@ -581,13 +653,15 @@ async function phone() {
 	await waitFor("saved servers", has("Open"));
 	await tap("saved servers", (el) => label(el) === "Open");
 	const waiting = (elements) => inSession(QUIZ.title)(elements) && elements.filter(isChoice).length > 0
-		&& has("Two words before we start:")(elements);
+		&& has("Quiz me on train and test splits and on one gradient step")(elements);
 	await setPhoneMode("light");
 	await checkChoiceRows("quiz-waiting", waiting);
-	await phonePages("quiz-waiting", "light", waiting, { dock: true });
+	// The transcript above the question dock (at most 55% of the screen), then the dock.
+	const waitingAreas = [{ top: 0.16, bottom: 0.40, within: [0, 0.46] }, { top: 0.60, bottom: 0.88, within: [0.46, 1] }];
+	await phonePages("quiz-waiting", "light", waiting, waitingAreas);
 	await setPhoneMode("dark");
 	await checkChoiceRows("quiz-waiting", waiting);
-	await phonePages("quiz-waiting", "dark", waiting, { dock: true, from: "bottom" });
+	await phonePages("quiz-waiting", "dark", waiting, waitingAreas);
 
 	// Answer through the dock: pick the two math choices (each tap reads the
 	// screen afresh), check that exactly those two are ticked, then submit.
@@ -625,9 +699,10 @@ async function phone() {
 		fail("quiz-answered", `the saved answer is ${JSON.stringify(saved)}, expected ${JSON.stringify(want.map((c) => c.label))}`);
 	}
 	await setPhoneMode("light");
-	await phonePages("quiz-answered", "light", answered);
+	const answeredAreas = [{ top: 0.16, bottom: 0.75, within: [0, 0.86] }];
+	await phonePages("quiz-answered", "light", answered, answeredAreas);
 	await setPhoneMode("dark");
-	await phonePages("quiz-answered", "dark", answered, { from: "bottom" });
+	await phonePages("quiz-answered", "dark", answered, answeredAreas);
 }
 
 main().then(() => log(`${PHASE} done: ${shots.length} screenshots in ${OUT}`), (error) => {

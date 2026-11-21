@@ -15,7 +15,7 @@
 			"content": [
 				{
 					"type": "text",
-					"text": "Two words before we start:\n\n| Term | Meaning |\n| --- | --- |\n| **Train** | The rows the model learns its weights from. It may look at them as often as it likes while it fits. |\n| **Test** | The rows kept back until the end and used once, to estimate how the model does on rows it has never seen. |"
+					"text": "Two words before we start, for a split of $n = 12$ rows:\n\n| Term | Meaning |\n| --- | --- |\n| **Train** | The rows the model learns its weights from, here $4$ of the $12$. It may look at them as often as it likes while it fits. |\n| **Test** | The rows kept back until the end, here the other $8$, and used once to estimate how the model does on rows it has never seen. |"
 				},
 				{
 					"type": "toolCall",
@@ -113,7 +113,7 @@
 			"content": [
 				{
 					"type": "text",
-					"text": "Right. Now one gradient step. For a product like $0.1(-1)(-2)$, multiply the signs first: two negatives make a positive, so it equals $0.2$. The same rule gives each weight its change, and the step ends at $w + \\Delta w$."
+					"text": "Right. Now one gradient step. For a product like $0.1(-1)(-2)$, multiply the signs first: two negatives make a positive, so it equals $0.2$. The same rule gives each weight its change, and the step ends at $w + \\Delta w$.\n\nEach step below ends its sentence on math, a little wider each time:\n\n$\\hspace{13em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{13.25em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{13.5em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{13.75em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{14em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{14.25em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{14.5em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{14.75em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{15em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{15.25em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{15.5em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{15.75em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{16em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{16.25em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{16.5em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{16.75em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{17em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{17.25em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{17.5em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{17.75em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{18em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{18.25em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{18.5em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{18.75em}0.1(-1)(-2) = 0.2$.\n\n$\\hspace{19em}0.1(-1)(-2) = 0.2$."
 				},
 				{
 					"type": "toolCall",
