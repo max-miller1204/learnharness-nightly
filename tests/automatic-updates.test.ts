@@ -24,7 +24,7 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 	const order: string[] = [];
 	const intervals: { callback: () => void; delay: number }[] = [];
 	const timeouts: { callback: () => void; delay: number }[] = [];
-	const handles = new Map<string, (event: unknown) => unknown>();
+	const handles = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
 	const windows: FakeWindow[] = [];
 	let userData = "/fixture/custom-user-data";
 	let menu: { submenu?: { label?: string; click?: () => void | Promise<void> }[] }[] = [];
@@ -110,7 +110,7 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 	const electron = {
 		app, BrowserWindow: FakeWindow,
 		Menu: { buildFromTemplate: (value: typeof menu) => value, setApplicationMenu: (value: typeof menu) => { menu = value; } },
-		ipcMain: { on() {}, handle: (channel: string, fn: (event: unknown) => unknown) => handles.set(channel, fn) },
+		ipcMain: { on() {}, handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => unknown) => handles.set(channel, fn) },
 		nativeTheme: { shouldUseDarkColors: true, themeSource: "system", on() {} },
 		session: { defaultSession: {
 			setPermissionRequestHandler(fn: unknown) { permissions.request = fn as typeof permissions.request; },
@@ -661,6 +661,43 @@ describe("status observation never controls the updater", () => {
 		const none = fixture({ updaterMissing: true }); await none.run("main()");
 		const noneSender = none.windows[0]!.webContents;
 		assert.equal((await none.handles.get("lh:update:check")!({ sender: noneSender, senderFrame: noneSender.mainFrame }) as { checked: boolean }).checked, false, "no updater: no check ran");
+	});
+
+	it("main owns once per launch: a notice key is claimed once, only while the state carries it, and only by a trusted window", async () => {
+		const f = fixture({ installRecord: JSON.stringify({ fromVersion: "0.3.7", targetVersion: "0.3.8" }) }); await f.run("main()");
+		const sender = f.windows[0]!.webContents;
+		const event = { sender, senderFrame: sender.mainFrame };
+		const claim = f.handles.get("lh:update:claim-notice")!;
+		assert.equal(f.state().notAppliedVersion, "0.3.8", "in the first snapshot, before any check");
+		assert.equal((f.handles.get("lh:update:get")!(event) as { notAppliedVersion?: string }).notAppliedVersion, "0.3.8");
+		assert.equal(await claim(event, "not-applied:0.3.9"), false, "not the version the state carries");
+		assert.equal(await claim(event, "not-applied:0.3.8"), true);
+		assert.equal(await claim(event, "not-applied:0.3.8"), false, "once per launch, whatever page asks");
+		for (const bad of ["install-failed:1", "anything", 7, "not-applied:../x"]) assert.equal(await claim(event, bad), false);
+		assert.throws(() => claim({ sender: {}, senderFrame: sender.mainFrame }, "not-applied:0.3.8"), /Untrusted/);
+	});
+
+	it("after an install main recovered from, the notice comes once the restarted server's windows reloaded (or at once with no server to restart)", async () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.run("var fixtureReload; restartLocalAfterFailedInstall = () => new Promise((resolve) => { fixtureReload = resolve; })");
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		f.updater.failure = new Error("offline");
+		await f.run("serverProcess = fixtureChild; installUpdateNow()");
+		f.updater.emit("error", new Error("installer refused"));
+		f.run("fixtureChild.emit('close', 0, null)");
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(f.state().installFailedNotice, undefined, "not before the reload: that page goes");
+		f.run("fixtureReload()");
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(f.state().installFailedNotice, 1, "the reloaded page reads it");
+		assert.equal(f.run(`claimUpdateNotice("install-failed:1")`), true);
+		assert.equal(f.run(`claimUpdateNotice("install-failed:1")`), false);
+		const g = fixture(); g.run("setupAutoUpdater()");
+		g.updater.emit("update-downloaded", { version: "0.3.8" });
+		g.updater.failure = new Error("offline");
+		await g.run("installUpdateNow()");
+		g.updater.emit("error", new Error("installer refused"));
+		assert.equal(g.state().installFailedNotice, 1, "no server to restart: at once");
 	});
 
 	it("Install is a trusted IPC call that answers whether main took it", async () => {

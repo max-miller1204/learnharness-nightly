@@ -528,6 +528,21 @@ let installWatch = null;
 let serverStoppedForInstall = null;
 // The install this launch didn't apply (T3's notAppliedVersion), from the install record.
 let notAppliedVersion = null;
+// The notices the page shows once per launch (revision PR 4): main owns "once", so a reload, a
+// new port or a new local window never repeats one. installFailedNotice counts installs main
+// recovered from; the page claims "install-failed:<n>" and "not-applied:<version>" once each.
+let installFailedNotice = 0;
+const claimedNotices = new Set();
+const NOTICE_KEY = /^(?:install-failed:[1-9]\d{0,5}|not-applied:\d+\.\d+\.\d+(?:-[a-z]+\.\d{8}\.\d+)?)$/;
+
+/** True the first time this launch a page claims `key` for a notice the state carries now. */
+function claimUpdateNotice(key) {
+	if (typeof key !== "string" || !NOTICE_KEY.test(key) || claimedNotices.has(key)) return false;
+	const current = key.startsWith("install-failed:") ? `install-failed:${installFailedNotice}` : `not-applied:${notAppliedVersion}`;
+	if (key !== current) return false;
+	claimedNotices.add(key);
+	return true;
+}
 
 const nowIso = () => new Date().toISOString();
 // The state's `message` is fixed text per context: raw updater errors (paths, URLs) go to the log only.
@@ -560,13 +575,20 @@ function recoverFailedInstall() {
 	updateEverything?.installFailed?.();
 	const stopped = serverStoppedForInstall;
 	serverStoppedForInstall = null;
+	// The page's "Could not install update" toast follows this notice. With the server to bring
+	// back, only once its windows reloaded onto it: a toast raised before would go with the old page.
+	const notify = () => {
+		installFailedNotice += 1;
+		setUpdateState({ ...updateState });
+	};
 	// T3 restarts its backends once they stopped: the old child's close would otherwise dispose the
 	// new backend, and two servers would share the data folder.
 	if (stopped) {
 		void stopped
 			.then(() => restartLocalAfterFailedInstall())
-			.catch((err) => log(`could not restart the server after a failed install: ${err?.message ?? err}`));
-	}
+			.catch((err) => log(`could not restart the server after a failed install: ${err?.message ?? err}`))
+			.finally(notify);
+	} else notify();
 }
 
 /**
@@ -596,7 +618,7 @@ const INSTALL_RECORD = () => path.join(app.getPath("userData"), updateMachine.IN
 /** Broadcast the next state (a reducer's result); the revision moves on. */
 function setUpdateState(next) {
 	try {
-		updateState = { ...next, revision: updateState.revision + 1, ...(notAppliedVersion ? { notAppliedVersion } : {}) };
+		updateState = { ...next, revision: updateState.revision + 1, ...(notAppliedVersion ? { notAppliedVersion } : {}), ...(installFailedNotice ? { installFailedNotice } : {}) };
 		for (const win of trustedAppWindows) {
 			try {
 				win.webContents.send("lh:update-status", updateState);
@@ -926,6 +948,8 @@ function setupAutoUpdater() {
 		return;
 	}
 	readInstallRecord();
+	// In the first snapshot, so the launch's "did not apply" toast doesn't wait for a check.
+	if (notAppliedVersion) setUpdateState({ ...updateState });
 	try {
 		autoUpdater = require("electron-updater").autoUpdater;
 		const feed = process.env.LH_UPDATE_FEED;
@@ -1218,6 +1242,11 @@ async function main() {
 	ipcMain.handle("lh:update:get", (event) => {
 		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
 		return updateState;
+	});
+	// The page claims a notice once per launch (main owns "once"; see claimUpdateNotice).
+	ipcMain.handle("lh:update:claim-notice", (event, key) => {
+		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
+		return claimUpdateNotice(key);
 	});
 	ipcMain.handle("lh:update:check", (event) => {
 		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");

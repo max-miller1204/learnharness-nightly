@@ -15,8 +15,12 @@
  * shortcuts. From the keyboard: F6 focuses the newest toast; Tab and
  * Shift+Tab move through the toasts and their buttons; Escape dismisses the
  * focused toast; leaving the region (Tab past the end, or the last toast
- * gone) returns focus to where it was before F6. Each toast is announced as
- * it appears: errors as an alert, the others as a status.
+ * gone) returns focus to where it was before F6, or to the composer or the
+ * page when that place is gone or hidden. A toast dismissed with the mouse
+ * leaves focus alone. Each toast is announced as it appears: its text goes
+ * into an always-present live region, assertive for errors and polite for
+ * the others. On Windows and Linux the region keeps clear of the window's
+ * own buttons (`.lh-toast-region`, app/globals.css).
  *
  * T3 Code is MIT licensed, Copyright (c) 2026 T3 Tools Inc. (the full notice
  * is in components/release-notes-view.tsx).
@@ -34,6 +38,8 @@ export type ToastOptions = {
 	description?: ReactNode;
 	/** How long it stays, in ms (T3's default 5 s). */
 	timeout?: number;
+	/** What a screen reader says; the title and a text description by default. */
+	announce?: string;
 };
 
 export type ToastRecord = ToastOptions & { id: number; type: ToastType };
@@ -105,9 +111,7 @@ function ToastItem({ toast, paused }: { toast: ToastRecord; paused: boolean }) {
 			data-testid="toast"
 			data-type={toast.type}
 			tabIndex={-1}
-			// Announced as it appears: an error interrupts, the others wait their turn.
-			role={toast.type === "error" ? "alert" : "status"}
-			aria-atomic="true"
+			aria-label={announcement(toast)}
 			className="pointer-events-auto flex items-start gap-2 rounded-lg border border-border bg-popover p-3 text-sm text-popover-foreground shadow-lg outline-hidden ring-ring focus-visible:ring-2"
 		>
 			<Icon aria-hidden className={cn("mt-0.5 size-4 shrink-0", toast.type === "error" ? "text-destructive" : toast.type === "success" ? "text-success" : "text-muted-foreground")} />
@@ -128,20 +132,42 @@ function ToastItem({ toast, paused }: { toast: ToastRecord; paused: boolean }) {
 	);
 }
 
+const announcement = (toast: ToastRecord) =>
+	toast.announce ?? (typeof toast.description === "string" ? `${toast.title}. ${toast.description}` : toast.title);
+
+const visible = (element: HTMLElement) =>
+	element.isConnected && !element.closest("[hidden], [inert]") && (typeof element.checkVisibility !== "function" || element.checkVisibility());
+
+/** Where focus goes when the toasts are left and the place before F6 is gone or hidden. */
+function fallbackFocus(): HTMLElement | null {
+	const composer = document.querySelector<HTMLElement>('[role="textbox"][contenteditable="true"], [role="textbox"][contenteditable=""]');
+	return composer && visible(composer) ? composer : null;
+}
+
 /** The region, mounted once in the app shell. */
 export function Toaster() {
 	const items = useSyncExternalStore(toastManager.subscribe, toastManager.getSnapshot, () => EMPTY);
 	const region = useRef<HTMLOListElement>(null);
 	const [hovered, setHovered] = useState(false);
 	const [focused, setFocused] = useState(false);
-	// Where focus was before F6, to go back to when the toasts are left or gone.
+	// Where focus was before F6, to go back to when the toasts are left or gone; and whether the
+	// region was entered with F6 (only then does focus move on to the next toast when one goes).
 	const returnTo = useRef<HTMLElement | null>(null);
+	const enteredWithKeyboard = useRef(false);
 
 	const leave = useCallback(() => {
 		const target = returnTo.current;
 		returnTo.current = null;
-		if (target?.isConnected) target.focus({ preventScroll: true });
-		else (document.activeElement as HTMLElement | null)?.blur?.();
+		enteredWithKeyboard.current = false;
+		for (const candidate of [target, fallbackFocus()]) {
+			if (!candidate || !visible(candidate)) continue;
+			candidate.focus({ preventScroll: true });
+			if (document.activeElement === candidate) { setFocused(false); return; }
+		}
+		// Nowhere to go: the page itself, so focus never stays in a toast with its timer paused.
+		const active = document.activeElement as HTMLElement | null;
+		if (active && region.current?.contains(active)) active.blur();
+		setFocused(false);
 	}, []);
 
 	// F6 reaches the newest toast (Base UI's Toast.Viewport hotkey).
@@ -155,20 +181,23 @@ export function Toaster() {
 			event.stopPropagation();
 			const active = document.activeElement as HTMLElement | null;
 			if (!region.current?.contains(active)) returnTo.current = active;
+			enteredWithKeyboard.current = true;
 			newest.focus({ preventScroll: true });
 		};
 		window.addEventListener("keydown", onKey, true);
 		return () => window.removeEventListener("keydown", onKey, true);
 	}, [items.length]);
 
-	// The focused toast went away (dismissed or timed out): back to where focus was, unless another remains.
+	// The focused toast went away (dismissed or timed out). Entered with F6: on to the next toast, or
+	// back to where focus was. Clicked with the mouse: focus is left alone and the others time out.
 	useEffect(() => {
 		if (!focused) return;
 		const active = document.activeElement;
 		if (active && region.current?.contains(active)) return;
+		if (!enteredWithKeyboard.current) { setFocused(false); return; }
 		const first = stops(region.current)[0];
 		if (first) first.focus({ preventScroll: true });
-		else { setFocused(false); leave(); }
+		else leave();
 	}, [items, focused, leave]);
 
 	const onKeyDown = (event: KeyboardEvent<HTMLOListElement>) => {
@@ -192,7 +221,14 @@ export function Toaster() {
 	};
 
 	return (
-		<section aria-label="Notifications" data-testid="toast-viewport" className="pointer-events-none fixed top-4 right-4 z-[100] w-[calc(100%-2rem)] max-w-90">
+		<section aria-label="Notifications" data-testid="toast-viewport" data-toast-region className="lh-toast-region pointer-events-none fixed z-[100] w-[calc(100%-2rem)] max-w-90">
+			{/* Always present, so each toast's text is announced as it is inserted. */}
+			<div className="sr-only" aria-live="assertive" aria-atomic="false" data-testid="toast-announce-assertive">
+				{items.filter((toast) => toast.type === "error").map((toast) => <p key={toast.id}>{announcement(toast)}</p>)}
+			</div>
+			<div className="sr-only" aria-live="polite" aria-atomic="false" data-testid="toast-announce-polite">
+				{items.filter((toast) => toast.type !== "error").map((toast) => <p key={toast.id}>{announcement(toast)}</p>)}
+			</div>
 			<ol
 				ref={region}
 				className="flex flex-col gap-2"
@@ -200,7 +236,11 @@ export function Toaster() {
 				onPointerEnter={() => setHovered(true)}
 				onPointerLeave={() => setHovered(false)}
 				onFocus={() => setFocused(true)}
-				onBlur={(event) => { if (!region.current?.contains(event.relatedTarget as Node | null)) setFocused(false); }}
+				onBlur={(event) => {
+					if (region.current?.contains(event.relatedTarget as Node | null)) return;
+					setFocused(false);
+					enteredWithKeyboard.current = false;
+				}}
 			>
 				{items.map((toast) => (
 					<ToastItem key={toast.id} toast={toast} paused={hovered || focused} />

@@ -105,6 +105,8 @@ if (globalThis.location?.protocol !== "file:") {
 		downloadUpdate: () => ipcRenderer.invoke("lh:update:download"),
 		getUpdateState: () => ipcRenderer.invoke("lh:update:get"),
 		checkForUpdates: () => ipcRenderer.invoke("lh:update:check"),
+		// A once-per-launch update notice ("install-failed:<n>", "not-applied:<version>"): true the first time.
+		claimUpdateNotice: (key) => ipcRenderer.invoke("lh:update:claim-notice", typeof key === "string" ? key : ""),
 		onOpenSettings: (cb) => {
 			openSettingsListener = cb;
 			if (pendingOpenSettings !== null) {

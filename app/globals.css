@@ -575,6 +575,14 @@ body {
 .lh-electron .lh-wco-gutter {
 	padding-right: calc(0.75rem + var(--lh-wco-right, 0px));
 }
+/* The toasts (components/ui/toast.tsx): top right, clear of the window's own buttons. */
+.lh-toast-region {
+	top: 1rem;
+	right: 1rem;
+}
+.lh-electron .lh-toast-region {
+	right: calc(1rem + var(--lh-wco-right, 0px));
+}
 .lh-electron .lh-wco-floating {
 	right: calc(0.5rem + var(--lh-wco-right, 0px));
 	max-width: max(0px, calc(100% - 5.5rem - var(--lh-wco-right, 0px)));

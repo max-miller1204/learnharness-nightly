@@ -12,14 +12,15 @@
  *   - "Update did not apply", once per launch:
  *     apps/web/src/components/sidebar/updateEverythingRun.tsx:368-402.
  * Raised by the sidebar control's own clicks (components/sidebar-update-pill.tsx)
- * and, for "did not apply", by UpdateLaunchNotice in the app shell; never by
- * Settings. Descriptions are LearnHarness's fixed messages (the updater state's
+ * and, for main's notices ("did not apply", and "Could not install update"
+ * after an install main recovered from), by UpdateLaunchNotice in the app
+ * shell, which claims each from main once per launch; never by Settings. Descriptions are LearnHarness's fixed messages (the updater state's
  * `message`, or the fallbacks below), never raw updater errors.
  * T3 Code is MIT licensed, Copyright (c) 2026 T3 Tools Inc. (the full notice is
  * in components/release-notes-view.tsx).
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { ArrowRightIcon } from "lucide-react";
 import { releaseUrl } from "@/components/release-notes-view";
 import { APP_VERSION, HOMEPAGE, useUpdateState } from "@/components/settings/update-settings";
@@ -31,7 +32,6 @@ export const CHECK_FAILED_TITLE = "Could not check for updates";
 export const DOWNLOAD_FAILED_TITLE = "Could not download update";
 export const DOWNLOAD_START_FAILED_TITLE = "Could not start update download";
 export const INSTALL_FAILED_TITLE = "Could not install update";
-export const CONFIRM_FAILED_TITLE = "Could not confirm update";
 export const NOT_APPLIED_TITLE = "Update did not apply";
 /** T3's fallbacks where its description would be a thrown error's text (kept fixed here). */
 export const UNEXPECTED_ERROR = "An unexpected error occurred.";
@@ -63,6 +63,7 @@ export function showUpdateDownloadedToast(version: string | null | undefined, ho
 		type: "success",
 		title: UPDATE_DOWNLOADED_TITLE,
 		description: <>{UPDATE_DOWNLOADED_LINE}{link ? <ReadMore href={link} /> : null}</>,
+		announce: `${UPDATE_DOWNLOADED_TITLE}. ${UPDATE_DOWNLOADED_LINE}`,
 	});
 }
 
@@ -70,36 +71,38 @@ export function showUpdateErrorToast(title: string, description: string): void {
 	toastManager.add({ type: "error", title, description });
 }
 
-export const NOT_APPLIED_KEY = "lh-update-not-applied-notified";
-// Without usable sessionStorage this window still says it once.
-let notifiedWithoutStorage: string | null = null;
-
-/** Once per launch for each version: a window's sessionStorage lasts until the app quits, across reloads. */
-export function claimNotAppliedNotice(version: string): boolean {
-	try {
-		const storage = window.sessionStorage;
-		if (storage.getItem(NOT_APPLIED_KEY) === version) return false;
-		storage.setItem(NOT_APPLIED_KEY, version);
-		return true;
-	} catch {
-		if (notifiedWithoutStorage === version) return false;
-		notifiedWithoutStorage = version;
-		return true;
-	}
-}
-
-/** Tests: forget the in-memory claim. */
-export function resetNotAppliedNotice(): void {
-	notifiedWithoutStorage = null;
-}
-
-/** The app shell's once-per-launch "Update did not apply" (T3's startDesktopUpdateLaunchNotice). */
+/** Main's notices, each once per launch (main's claim, so a reload or a new local window never
+ *  repeats one): "did not apply" (T3's startDesktopUpdateLaunchNotice), and "Could not install
+ *  update" for an install main recovered from, after it reloaded this page onto the restarted
+ *  server (so the toast isn't lost with the old page). Desktop app's local window only. */
 export function UpdateLaunchNotice({ current = APP_VERSION }: { current?: string } = {}) {
 	const { state, transport } = useUpdateState();
-	const version = transport === "desktop" ? state?.notAppliedVersion : undefined;
+	const desktop = transport === "desktop";
+	const notApplied = desktop ? state?.notAppliedVersion : undefined;
+	const installFailed = desktop ? state?.installFailedNotice : undefined;
+	// The state's fixed message as it is when the notice comes.
+	const message = useRef(state?.message);
+	message.current = state?.message;
 	useEffect(() => {
-		if (!version || !claimNotAppliedNotice(version)) return;
-		showUpdateErrorToast(NOT_APPLIED_TITLE, notAppliedLine(current, version));
-	}, [version, current]);
+		if (!notApplied) return;
+		void claim(`not-applied:${notApplied}`).then((first) => {
+			if (first) showUpdateErrorToast(NOT_APPLIED_TITLE, notAppliedLine(current, notApplied));
+		});
+	}, [notApplied, current]);
+	useEffect(() => {
+		if (!installFailed) return;
+		void claim(`install-failed:${installFailed}`).then((first) => {
+			if (first) showUpdateErrorToast(INSTALL_FAILED_TITLE, message.current ?? UNEXPECTED_ERROR);
+		});
+	}, [installFailed]);
 	return null;
+}
+
+/** Main's once-per-launch claim; no bridge (or a throw) means no toast rather than a repeat. */
+async function claim(key: string): Promise<boolean> {
+	try {
+		return (await window.lh?.claimUpdateNotice?.(key)) === true;
+	} catch {
+		return false;
+	}
 }

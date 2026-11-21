@@ -452,18 +452,9 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	const kind = resolveUpdateControl(state, { showCheckIcon, pageVersion, desktop: desktopStatus, installing });
 	// Anything but the restart (an error, a newer version to download, a rollback notice) is the normal
 	// button again. A check spin started elsewhere (this app's own timer) outranks it only for a moment.
-	// A confirmed install that main recovered from (T3's recoverFailedInstall) says so, as T3's
-	// installLocalUpdate does with its failed result (SidebarUpdatePill.tsx:172-195 at df09ced7).
-	const installingRef = useRef(installing);
-	installingRef.current = installing;
-	const stateRef = useRef(state);
-	stateRef.current = state;
-	useEffect(() => {
-		if (kind === "restarting" || kind === "checking") return;
-		const failedInstall = stateRef.current?.errorContext === "install";
-		if (installingRef.current && transport === "desktop" && failedInstall) showUpdateErrorToast(INSTALL_FAILED_TITLE, stateRef.current?.message ?? UNEXPECTED_ERROR);
-		setInstalling(false);
-	}, [kind, transport]);
+	// An install main recovered from says so through its notice (components/update-toasts.tsx), not here:
+	// main reloads this page after it, and an Install may have gone through a download on the way.
+	useEffect(() => { if (kind !== "restarting" && kind !== "checking") setInstalling(false); }, [kind]);
 	const autoReloadTo = autoReloadVersion(state, pageVersion);
 	useEffect(() => {
 		if (autoReloadTo && claimAutoReload(autoReloadTo)) reload();
@@ -493,6 +484,8 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 		if (!notesOpen) return;
 		const onEscape = (event: globalThis.KeyboardEvent) => {
 			if (event.key !== "Escape" || event.isComposing) return;
+			// A focused toast takes its own Escape first (components/ui/toast.tsx).
+			if ((document.activeElement as HTMLElement | null)?.closest?.("[data-toast-region]")) return;
 			const inside = !!popoverRef.current?.contains(document.activeElement);
 			// The provider's own capture listener ran first and snapshotted the owner.
 			if (!inside && (layers ? layers.isEscapeOwned(event) : hasLegacyInteractionForeground(document))) return;

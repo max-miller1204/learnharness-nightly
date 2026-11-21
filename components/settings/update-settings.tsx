@@ -47,6 +47,8 @@ export type UpdateState = {
 	canRetry?: boolean;
 	/** Desktop only: the version the last install meant to reach, while this launch is still the old one. */
 	notAppliedVersion?: string;
+	/** Desktop only: how many installs main recovered from this launch (the "Could not install update" notice). */
+	installFailedNotice?: number;
 	/** Newest first: versions newer than the running one up to the offered one. */
 	releaseNotes?: ReleaseNoteGroup[];
 	omittedReleaseCount?: number;

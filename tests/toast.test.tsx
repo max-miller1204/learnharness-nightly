@@ -58,13 +58,13 @@ async function mount(element: React.ReactElement) {
 const q = (id: string) => document.querySelector<HTMLElement>(`[data-testid='${id}']`);
 const all = (id: string) => [...document.querySelectorAll<HTMLElement>(`[data-testid='${id}']`)];
 const titles = () => all("toast-title").map((node) => node.textContent);
+/** Focus is in a toast on the page (a dismissed one's detached button doesn't count). */
+const focusInToast = () => { const active = document.activeElement as HTMLElement | null; return !!active?.isConnected && !!active.closest("[data-toast-item]"); };
 const wait = (ms: number) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
 
 afterEach(async () => {
 	for (const { root, host } of roots.splice(0)) { await act(async () => { root.unmount(); }); host.remove(); }
 	await act(async () => { toastManager.clear(); });
-	try { dom.window.sessionStorage?.clear?.(); } catch { /* none */ }
-	updateToasts.resetNotAppliedNotice();
 });
 
 describe("the toast primitive (T3's ui/toast.tsx)", () => {
@@ -77,12 +77,60 @@ describe("the toast primitive (T3's ui/toast.tsx)", () => {
 		assert.equal(q("toast-viewport")?.getAttribute("aria-label"), "Notifications");
 	});
 
-	it("announces each toast as it appears: an error as an alert, the others as a status", async () => {
+	it("announces each toast by inserting its text into live regions that were already there: errors assertive, the rest polite", async () => {
 		await mount(<Toaster />);
-		await act(async () => { toastManager.add({ type: "error", title: "Broken" }); toastManager.add({ type: "success", title: "Done" }); });
-		const [error, success] = all("toast");
-		assert.deepEqual([error?.getAttribute("role"), success?.getAttribute("role")], ["alert", "status"]);
-		assert.equal(error?.getAttribute("aria-atomic"), "true");
+		const assertive = q("toast-announce-assertive")!;
+		const polite = q("toast-announce-polite")!;
+		assert.deepEqual([assertive.getAttribute("aria-live"), polite.getAttribute("aria-live")], ["assertive", "polite"], "present before any toast");
+		assert.deepEqual([assertive.textContent, polite.textContent], ["", ""]);
+		await act(async () => { toastManager.add({ type: "error", title: "Broken", description: "Try again." }); toastManager.add({ type: "success", title: "Done", announce: "Done. All set." }); });
+		assert.ok(q("toast-announce-assertive") === assertive && q("toast-announce-polite") === polite, "the same regions, their content inserted");
+		assert.deepEqual([assertive.textContent, polite.textContent], ["Broken. Try again.", "Done. All set."]);
+		assert.equal(all("toast")[0]?.getAttribute("role"), null, "the toasts themselves aren't live regions too (no double announcement)");
+	});
+
+	it("a toast dismissed with the mouse leaves focus alone, and the others keep timing out", async () => {
+		await mount(<Toaster />);
+		await act(async () => { toastManager.add({ title: "Stays a moment", timeout: 40 }); toastManager.add({ title: "Clicked away" }); });
+		const close = all("toast-close")[1]!;
+		// A click focuses the button, then removes it (removal fires no blur).
+		await act(async () => { close.focus(); close.click(); });
+		assert.deepEqual(titles(), ["Stays a moment"]);
+		assert.ok(!focusInToast(), "focus didn't move into the other toast");
+		await wait(90);
+		assert.deepEqual(titles(), [], "and it wasn't left paused");
+	});
+
+	it("Tab past the end with the old place hidden goes to the composer, or the page, and the timer runs again", async () => {
+		const host = await mount(<><button type="button" data-testid="before">before</button><div role="textbox" contentEditable="true" data-testid="composer" /><Toaster /></>);
+		const before = host.querySelector<HTMLElement>("[data-testid='before']")!;
+		await act(async () => { before.focus(); });
+		await act(async () => { toastManager.add({ title: "Brief", timeout: 40 }); });
+		await key(before, "F6");
+		before.setAttribute("hidden", "");
+		await key(all("toast")[0]!, "Tab");
+		await key(document.activeElement!, "Tab");
+		assert.ok(document.activeElement === host.querySelector("[data-testid='composer']"), "the composer, since the old place is hidden");
+		await wait(90);
+		assert.deepEqual(titles(), [], "not stranded with its timer paused");
+		before.removeAttribute("hidden");
+		await act(async () => { toastManager.add({ title: "Again", timeout: 40 }); });
+		await key(before, "F6");
+		before.setAttribute("hidden", "");
+		host.querySelector("[data-testid='composer']")!.setAttribute("hidden", "");
+		await key(all("toast")[0]!, "Tab");
+		await key(document.activeElement!, "Tab");
+		await wait(90);
+		assert.deepEqual(titles(), [], "no composer either: the timer runs again, so nothing stays stranded");
+		assert.ok(!focusInToast());
+	});
+
+	it("keeps clear of the window's own buttons on Windows and Linux", async () => {
+		await mount(<Toaster />);
+		assert.ok(q("toast-viewport")!.classList.contains("lh-toast-region"));
+		const { readFileSync } = await import("node:fs");
+		const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+		assert.match(css, /\.lh-electron \.lh-toast-region \{\s*right: calc\(1rem \+ var\(--lh-wco-right, 0px\)\);/);
 	});
 
 	it("goes after its timeout, but not while the pointer is on the toasts; the close button dismisses it", async () => {
@@ -161,8 +209,8 @@ describe("the update toasts' content (T3's desktopUpdate.toast.tsx and its calle
 	});
 
 	it("T3's titles and fixed fallbacks", () => {
-		assert.deepEqual([updateToasts.CHECK_FAILED_TITLE, updateToasts.DOWNLOAD_FAILED_TITLE, updateToasts.DOWNLOAD_START_FAILED_TITLE, updateToasts.INSTALL_FAILED_TITLE, updateToasts.CONFIRM_FAILED_TITLE, updateToasts.NOT_APPLIED_TITLE],
-			["Could not check for updates", "Could not download update", "Could not start update download", "Could not install update", "Could not confirm update", "Update did not apply"]);
+		assert.deepEqual([updateToasts.CHECK_FAILED_TITLE, updateToasts.DOWNLOAD_FAILED_TITLE, updateToasts.DOWNLOAD_START_FAILED_TITLE, updateToasts.INSTALL_FAILED_TITLE, updateToasts.NOT_APPLIED_TITLE],
+			["Could not check for updates", "Could not download update", "Could not start update download", "Could not install update", "Update did not apply"]);
 		assert.equal(updateToasts.notAppliedLine("0.3.7", "0.3.8"), "LearnHarness is still on 0.3.7. Install 0.3.8 again from the update button.");
 		assert.deepEqual([updateToasts.UNEXPECTED_ERROR, updateToasts.CHECK_ERROR, updateToasts.CHECK_UNAVAILABLE], ["An unexpected error occurred.", "Update check failed.", "Automatic updates are not available in this build."]);
 	});
