@@ -92,61 +92,46 @@ function paragraphLine(sizes: Size[], fontSize: number, line: number): number {
   })));
 }
 
-/** The lineHeight to pass for a paragraph holding inline math, whose text is in `runs`. iOS
- * scales a line height by the font scale, as the pictures are, so it is worked out in
- * unscaled points, and also holds each picture once lifted onto the baseline (iosLine). Android
+/** The lineHeight to pass for a paragraph holding inline math. iOS scales a line height by
+ * the font scale, as the pictures are, so it gets paragraphLine in unscaled points. Android
  * scales large sp values less than small ones (Android 14's non-linear font scaling), so a
  * tall line height barely grows while the math grows by the full font scale. There it is
  * worked out at the scaled size and passed as is: Android never scales a size down. */
-export function lineHeightFor(sizes: Size[], fontSize: number, line: number, fontScale: number, runs: TextRun[] = [{ fontSize }]): number {
-  if (Platform.OS !== "android") return Math.max(paragraphLine(sizes, fontSize, line), iosLine(sizes, runs, line));
+export function lineHeightFor(sizes: Size[], fontSize: number, line: number, fontScale: number): number {
+  if (Platform.OS !== "android") return paragraphLine(sizes, fontSize, line);
   const scaled = sizes.map(({ width, height, depth }) => ({ width: width * fontScale, height: height * fontScale, depth: depth * fontScale }));
   return paragraphLine(scaled, fontSize * fontScale, line * fontScale);
 }
 
-/** On iOS, a paragraph's fonts as they lay out a line, in points: the largest descent, which
- * TextKit keeps at the bottom of a line, and the tallest font's line height. */
+/** The fonts around an inline picture on iOS: those in the hard line it sits in (up to and
+ * including that line's newline), and every one in its Text. */
+export type InlineFonts = { line: TextRun[]; text: TextRun[] };
+
+/** The largest descent and the tallest line height among some fonts, in points. */
 function iosFonts(runs: TextRun[]) {
   const fonts = runs.map(({ fontSize, mono }) => mono ? { ascent: MONO.ascent * fontSize, descent: MONO.descent * fontSize }
     : { ascent: ASCENT * fontSize, descent: DESCENT * fontSize });
   return { descent: Math.max(...fonts.map((font) => font.descent)), tallest: Math.max(...fonts.map((font) => font.ascent + font.descent)) };
 }
 
-/** On iOS, where a line's text baseline sits, up from the line's bottom: React Native raises
- * the glyphs by half the line's height over the tallest font's (RCTApplyBaselineOffsetForRange),
- * or not at all when the line is shorter than that font. */
-function iosBaseline(runs: TextRun[], lineHeight: number): number {
-  const { descent, tallest } = iosFonts(runs);
-  return descent + Math.max(0, (lineHeight - tallest) / 2);
-}
-
-/** iOS keeps every line at the lineHeight, so a picture on the baseline that is taller than
- * the line leaves above it would stand out of the line, and one deeper than it leaves below
- * would too. This is the least line height that holds each picture inside its line. A
- * paragraph with no text has no line height of its own on iOS, so it is left as it is. */
-function iosLine(sizes: Size[], runs: TextRun[], line: number): number {
-  if (!runs.length) return line;
-  const fits = (height: number) => {
-    const baseline = iosBaseline(runs, height);
-    return sizes.every((size) => baseline + size.height - size.depth <= height && size.depth <= baseline);
-  };
-  if (fits(line)) return line;
-  // At a line height L of at least the tallest font's, the baseline is descent + (L - tallest) / 2.
-  const { descent, tallest } = iosFonts(runs);
-  return Math.ceil(Math.max(tallest, ...sizes.map(({ height, depth }) =>
-    Math.max(2 * (height - depth + descent) - tallest, 2 * (depth - descent) + tallest))) + 1);
-}
-
 /** How far an inline picture must rise on iOS to sit on its line's baseline, in points at
  * the font scale. React Native's iOS text puts an inline view's bottom at its line's bottom
  * plus its character's font descender (RCTTextLayoutManager's attachment frames), and that
- * character's font is TextKit's default, not the text's. A Text with no text in it has no
- * other font, so its pictures already sit on its baseline. Android puts an inline view on
- * the baseline itself. */
-export function inlineLift(lineHeight: number, runs: TextRun[], fontScale: number, platform: string = Platform.OS): number {
-  if (platform !== "ios" || !runs.length) return 0;
-  const scaled = runs.map((run) => ({ ...run, fontSize: run.fontSize * fontScale }));
-  return iosBaseline(scaled, lineHeight * fontScale) - VIEW_FONT_DESCENT;
+ * character's font is TextKit's default, not the text's. The text's baseline is its line's
+ * largest descent up from the bottom (TextKit), raised by half the lineHeight over the Text's
+ * tallest font (RCTApplyBaselineOffsetForRange, over the whole Text). A line with no text has
+ * only TextKit's font, so its pictures already sit on its baseline. The lift never takes a
+ * picture above its line's top: a picture taller than the line leaves above the baseline sits
+ * lower instead, as the line doesn't grow for it. A line known here is a hard line; when text
+ * wraps, a wrapped line holding only math is lifted as if it held the hard line's text, still
+ * inside its line. Android puts an inline view on the baseline itself. */
+export function inlineLift(lineHeight: number, size: Size, fonts: InlineFonts, fontScale: number, platform: string = Platform.OS): number {
+  if (platform !== "ios" || !fonts.line.length) return 0;
+  const { descent } = iosFonts(fonts.line);
+  const { tallest } = iosFonts(fonts.text);
+  const baseline = (descent + Math.max(0, (lineHeight - tallest) / 2)) * fontScale;
+  const room = (lineHeight - (size.height - size.depth)) * fontScale - VIEW_FONT_DESCENT;
+  return Math.max(0, Math.min(baseline - VIEW_FONT_DESCENT, room));
 }
 
 /** A label with its math drawn as pictures, sized before it is drawn so the row never
@@ -181,15 +166,27 @@ export function MathLabel({ pieces, style, color }: { pieces: LabelPiece[]; styl
           );
         }
         const sizes = block.map((piece) => piece.kind === "math" ? fit(piece.drawn, em, maxWidth, maxHeight) : undefined);
-        // The block's text, if any, is all in the label's font.
-        const runs = block.some((piece) => piece.kind === "text" && piece.text) ? [{ fontSize }] : [];
-        const line = lineHeightFor(sizes.filter((size) => size !== undefined), fontSize, lineHeight, fontScale, runs);
-        const lift = inlineLift(line, runs, fontScale);
+        const line = lineHeightFor(sizes.filter((size) => size !== undefined), fontSize, lineHeight, fontScale);
+        // The block's text is all in the label's font: each hard line's, and the line each picture is on.
+        const lines: TextRun[][] = [[]];
+        const lineOf = block.map((piece) => {
+          if (piece.kind === "math") return lines.length - 1;
+          piece.text.split("\n").forEach((part, at) => {
+            if (at) {
+              // A newline belongs to the line it ends.
+              lines.at(-1)?.push({ fontSize });
+              lines.push([]);
+            }
+            if (part) lines.at(-1)?.push({ fontSize });
+          });
+          return -1;
+        });
+        const text = lines.flat();
         return (
           <Text key={index} style={[style, { lineHeight: line }]}>
             {block.map((piece, at) => piece.kind === "text" ? piece.text
               : <MathPicture key={at} svg={piece.drawn.svg[c.mode]} drawn={piece.drawn} size={sizes[at] as Size} scale={fontScale} color={color} live={live} inline
-                lift={lift} />)}
+                lift={inlineLift(line, sizes[at] as Size, { line: lines[lineOf[at] as number] ?? [], text }, fontScale)} />)}
           </Text>
         );
       })}

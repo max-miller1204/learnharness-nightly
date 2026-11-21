@@ -9,12 +9,15 @@ import { createElement, type ReactElement } from "react";
 import { Platform } from "react-native";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { AnswerLine } from "../src/AnswerLine.tsx";
+import { ChoiceRow } from "../src/ChoiceRow.tsx";
 import { Markdown } from "../src/Markdown.tsx";
 import { inlineLift } from "../src/MathLabel.tsx";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const IOS_TEXT = new URL("../node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/", import.meta.url);
+/** TextKit's Helvetica 12 descender, where React Native puts an inline view's bottom above its line's bottom. */
+const VIEW_FONT_DESCENT = 2.76;
 
 test("React Native still places iOS inline views the way inlineLift undoes", () => {
 	// When React Native places them from the line's real baseline (upstream #59921), the lift
@@ -24,25 +27,9 @@ test("React Native still places iOS inline views the way inlineLift undoes", () 
 	const attributed = readFileSync(new URL("RCTAttributedTextUtils.mm", IOS_TEXT), "utf8");
 	// An inline view's character gets no font, so TextKit gives it Helvetica 12.
 	assert.match(attributed, /attachment\.bounds = bounds;\s+return \[\[NSMutableAttributedString attributedStringWithAttachment:attachment\] mutableCopy\];/);
+	// The baseline offset is worked out once over the whole Text, not per line.
 	assert.match(attributed, /CGFloat baseLineOffset = \(maximumLineHeight - maximumFontLineHeight\) \/ 2\.0;/);
-});
-
-test("the lift matches how far math sat below the text in the iPhone check's shots", () => {
-	// Measured on the iPhone check before any lift (run 44871251269, 3x pictures): the bottom
-	// of a digit's ink against the bottom of the text's letters on the same line.
-	const measured = [
-		// Answered card and message prose, 16 pt on 24 pt lines: 12, 13, 12, 13, 12 and 13 px low.
-		{ fontSize: 16, lineHeight: 24, px: [12, 13, 12, 13, 12, 13] },
-		// A choice row, 14 pt on 20 pt lines: "4" and "8" 9 px low.
-		{ fontSize: 14, lineHeight: 20, px: [9, 9] },
-	];
-	for (const { fontSize, lineHeight, px } of measured) {
-		const low = px.reduce((sum, value) => sum + value, 0) / px.length / 3;
-		const lift = inlineLift(lineHeight, [{ fontSize }], 1, "ios");
-		assert.ok(Math.abs(lift - low) <= 1 / 3, `${fontSize}/${lineHeight}: lift ${lift.toFixed(2)} pt, measured ${low.toFixed(2)} pt`);
-	}
-	assert.equal(inlineLift(24, [{ fontSize: 16 }], 1, "android"), 0);
-	assert.equal(inlineLift(24, [], 1, "ios"), 0, "a Text holding only math has only TextKit's font, so its math is on the baseline");
+	assert.match(attributed, /RCTApplyBaselineOffsetForRange\(attributedText, NSMakeRange\(0, attributedText\.length\)\);/);
 });
 
 async function render(element: ReactElement) {
@@ -53,15 +40,19 @@ async function render(element: ReactElement) {
 
 const flat = (style: unknown) => [style].flat(Infinity).reduce<Record<string, unknown>>((all, part) => ({ ...all, ...(part as object) }), {});
 
-/** Each inline picture's box, the Text line it sits in, and its size in points. */
+const lifted = (box: ReactTestInstance) =>
+	0 - ((flat(box.props.style).transform as { translateY?: number }[] | undefined)?.find((step) => "translateY" in step)?.translateY ?? 0);
+
+/** Each inline picture: how far it is lifted, its size in points, and its Text line's height. */
 function inlineBoxes(root: ReactTestInstance) {
 	return root.findAll((node) => String(node.type) === "Text").flatMap((line) =>
 		line.findAll((node) => typeof node.type === "function" && node.type.name === "MathPicture" && node.parent === line)
-			.map((picture) => ({ box: picture.children[0] as ReactTestInstance, line, size: picture.props.size as { height: number; depth: number } })));
+			.map((picture) => ({
+				lift: lifted(picture.children[0] as ReactTestInstance),
+				size: picture.props.size as { width: number; height: number; depth: number },
+				lineHeight: flat(line.props.style).lineHeight as number,
+			})));
 }
-
-const lifted = (box: ReactTestInstance) =>
-	0 - ((flat(box.props.style).transform as { translateY?: number }[] | undefined)?.find((step) => "translateY" in step)?.translateY ?? 0);
 
 async function onPlatform<T>(os: string, run: () => Promise<T>) {
 	const was = Platform.OS;
@@ -69,49 +60,92 @@ async function onPlatform<T>(os: string, run: () => Promise<T>) {
 	try { return await run(); } finally { Object.assign(Platform, { OS: was }); }
 }
 
-const card = (labels: string[]) => createElement(AnswerLine, { answer: { kind: "quiz", answers: labels.map((label, index) => ({ index, label, value: String(index) })) } });
-
-for (const os of ["ios", "android"] as const) {
-	test(`${os}: the answered card's math and a message's inline math are ${os === "ios" ? "lifted" : "not moved"}, and math alone is not moved`, async () => {
-		await onPlatform(os, async () => {
-			const trees = [
-				["answered card", await render(card(["Train: $4$; test: $8$", "$(+0.20, -0.10)$"]))],
-				["message", await render(createElement(Markdown, { text: "So the step is $0.1(-1)(-2) = 0.2$." }))],
-				["math alone", await render(card(["$(+0.20, -0.10)$"]))],
-				["message math alone", await render(createElement(Markdown, { text: "$\\rule{1em}{4em}$" }))],
-			] as const;
-			try {
-				for (const [name, tree] of trees) {
-					const boxes = inlineBoxes(tree.root);
-					assert.ok(boxes.length > 0, `${name}: inline math found`);
-					for (const { box } of boxes) {
-						if (os === "ios" && !name.endsWith("alone")) assert.ok(lifted(box) > 3, `${name}: lifted ${lifted(box)}`);
-						else assert.equal(lifted(box), 0, `${name}: not moved`);
-					}
-				}
-			} finally {
-				act(() => { for (const [, tree] of trees) tree.unmount(); });
-			}
-		});
+/** Renders on a platform and hands back each inline picture, then unmounts. */
+async function boxesOn(os: string, element: ReactElement) {
+	return onPlatform(os, async () => {
+		const tree = await render(element);
+		try { return inlineBoxes(tree.root); } finally { act(() => tree.unmount()); }
 	});
 }
 
-test("ios: tall and deep inline math stays inside its line once lifted", async () => {
-	await onPlatform("ios", async () => {
-		const tree = await render(createElement(Markdown, { text: "Earlier text\nRule: $\\rule{1em}{4em}$ and $\\rule[-2em]{1em}{1em}$." }));
-		try {
-			const boxes = inlineBoxes(tree.root);
-			assert.equal(boxes.length, 2);
-			for (const { box, line, size } of boxes) {
-				const { lineHeight } = flat(line.props.style) as { lineHeight: number };
-				// React Native puts the box's bottom 2.76 pt (TextKit's Helvetica 12 descender) up
-				// from its line's bottom, before the lift.
-				const bottom = 2.76 + lifted(box);
-				assert.ok(bottom + size.height - size.depth <= lineHeight, `top ${bottom + size.height - size.depth} inside ${lineHeight}`);
-				assert.ok(bottom - size.depth >= 0, `bottom ${bottom - size.depth} inside the line`);
+const card = (labels: string[]) => createElement(AnswerLine, { answer: { kind: "quiz", answers: labels.map((label, index) => ({ index, label, value: String(index) })) } });
+const message = (text: string) => createElement(Markdown, { text });
+const choice = (label: string) => createElement(ChoiceRow, { label, multi: false, selected: false, disabled: false, onPress: () => {} });
+
+test("ios: the lift matches how far math sat below the text in the iPhone check's shots", async () => {
+	// Measured on the iPhone check before any lift (run 44871251269, 3x pictures): the bottom of
+	// a digit's ink against the bottom of the letters on the same line. A reading is good to a
+	// pixel (1/3 pt) at the ink threshold, and React Native rounds the view's origin to the pixel
+	// grid, so the lift must match within half a point. After the lift the same spots measured
+	// 0 or -1 px (run 44884978315).
+	const measured = [
+		// The answered card and message prose: 12, 13, 12, 13, 12 and 13 px low.
+		{ name: "answered card", element: card(["Train: $4$; test: $8$"]), px: [12, 13, 12, 13, 12, 13] },
+		// A choice row: "4" and "8" 9 px low.
+		{ name: "choice row", element: choice("Train: $4$; test: $8$"), px: [9, 9] },
+	];
+	for (const { name, element, px } of measured) {
+		const low = px.reduce((sum, value) => sum + value, 0) / px.length / 3;
+		for (const { lift } of await boxesOn("ios", element)) {
+			assert.ok(Math.abs(lift - low) <= 0.5, `${name}: lift ${lift.toFixed(2)} pt, measured ${low.toFixed(2)} pt`);
+		}
+	}
+});
+
+for (const os of ["ios", "android"] as const) {
+	test(`${os}: the answered card's math and a message's inline math are ${os === "ios" ? "lifted" : "not moved"}, and math alone is not moved`, async () => {
+		const cases = [
+			["answered card", card(["Train: $4$; test: $8$", "$(+0.20, -0.10)$"])],
+			["message", message("So the step is $0.1(-1)(-2) = 0.2$.")],
+			["math alone", card(["$(+0.20, -0.10)$"])],
+			["message math alone", message("$\\rule{1em}{4em}$")],
+			// A line of its own after a newline holds no text either.
+			["math alone on a line after text", message("Earlier text\n$\\rule{1em}{4em}$")],
+		] as const;
+		for (const [name, element] of cases) {
+			const boxes = await boxesOn(os, element);
+			assert.ok(boxes.length > 0, `${name}: inline math found`);
+			for (const { lift } of boxes) {
+				if (os === "ios" && !name.includes("alone")) assert.ok(lift > 3, `${name}: lifted ${lift}`);
+				else assert.equal(lift, 0, `${name}: lifted ${lift}, expected none`);
 			}
-		} finally {
-			act(() => tree.unmount());
 		}
 	});
+}
+
+test("ios: the lift uses the fonts of the line the math is on", async () => {
+	// The second line holds only 14 pt code right beside the math: its descent is the code's 4.2 pt,
+	// not the prose's 6.4. The offset is the whole Text's: (24 - 1.424 * 16) / 2 = 0.608.
+	const [math] = await boxesOn("ios", message("Some words first\n`k`$x$"));
+	assert.ok(math);
+	assert.equal(math.lineHeight, 24);
+	assert.ok(Math.abs(math.lift - (4.2 + 0.608 - VIEW_FONT_DESCENT)) < 1e-6, `lifted ${math.lift}`);
+});
+
+test("ios: lines keep the line height they have on Android, and tall or deep math stays inside its line", async () => {
+	for (const text of ["Earlier text\nRule: $\\rule{1em}{4em}$.", "Deep: $\\rule[-2em]{1em}{1em}$ here.", "So the step is $0.1(-1)(-2) = 0.2$."]) {
+		const ios = await boxesOn("ios", message(text));
+		const android = await boxesOn("android", message(text));
+		assert.deepEqual(ios.map(({ lineHeight }) => lineHeight), android.map(({ lineHeight }) => lineHeight), `${text}: line heights`);
+		for (const { lift, size, lineHeight } of ios) {
+			// The box's bottom, up from its line's bottom, once lifted.
+			const bottom = VIEW_FONT_DESCENT + lift;
+			assert.ok(bottom + size.height - size.depth <= lineHeight + 1e-6, `${text}: top ${bottom + size.height - size.depth} inside ${lineHeight}`);
+			assert.ok(bottom - size.depth >= 0, `${text}: bottom ${bottom - size.depth} inside the line`);
+		}
+	}
+	const [prose] = await boxesOn("ios", message("So the step is $0.1(-1)(-2) = 0.2$."));
+	assert.equal(prose?.lineHeight, 24, "a message line with ordinary math stays at 24");
+	const [row] = await boxesOn("ios", choice("Train: $4$; test: $8$"));
+	assert.equal(row?.lineHeight, 21, "a choice row stays at the 21 it had before the lift");
+});
+
+test("the lift is iOS only, and none for a line with no text", () => {
+	const size = { width: 10, height: 13, depth: 0 };
+	assert.equal(inlineLift(24, size, { line: [{ fontSize: 16 }], text: [{ fontSize: 16 }] }, 1, "android"), 0);
+	assert.equal(inlineLift(24, size, { line: [], text: [{ fontSize: 16 }] }, 1, "ios"), 0);
+	// Helvetica's descender doesn't grow with Dynamic Type, so the lift isn't the 1x lift scaled.
+	const once = inlineLift(24, size, { line: [{ fontSize: 16 }], text: [{ fontSize: 16 }] }, 1, "ios");
+	const twice = inlineLift(24, size, { line: [{ fontSize: 16 }], text: [{ fontSize: 16 }] }, 2, "ios");
+	assert.ok(Math.abs(twice - (2 * (once + VIEW_FONT_DESCENT) - VIEW_FONT_DESCENT)) < 1e-6);
 });

@@ -3,7 +3,7 @@ import { Text, View, useWindowDimensions, type HostInstance, type LayoutChangeEv
 import { drawingsOf, equationOf } from "./message-math";
 import { useLivePictures } from "./math-window";
 import type { LabelPiece } from "./choice-math";
-import { fit, inlineLift, lineHeightFor, MathPicture, MATH_SCALE, MAX_LINES, useScreenReader, useSpeech, type Size, type TextRun } from "./MathLabel";
+import { fit, inlineLift, lineHeightFor, MathPicture, MATH_SCALE, MAX_LINES, useScreenReader, useSpeech, type InlineFonts, type Size, type TextRun } from "./MathLabel";
 import { spokenLabel, spokenMath } from "./math-speech";
 import { httpsLink, type MarkdownToken } from "./render-markdown";
 import { fonts, radius, space, useTheme } from "./theme";
@@ -17,6 +17,8 @@ const CLINGS = /^[.,;:!?)\]}%'"\u2019\u201d\u2026]/;
 const MIN_CELL_MATH = 24;
 /** U+2060 WORD JOINER: no line break on either side. */
 const JOIN = "\u2060";
+/** Inline code's size, in JetBrains Mono. */
+const CODE_SIZE = 14;
 
 interface Node {
   token: MarkdownToken;
@@ -35,8 +37,9 @@ function Live({ pictures, children }: {
 interface InlineMath {
   sizes: Map<MarkdownToken, Size>;
   live: boolean;
-  /** inlineLift for the line, in points at the font scale. */
-  lift: number;
+  /** The fonts around each drawn equation, for inlineLift. */
+  fonts: Map<MarkdownToken, InlineFonts>;
+  lineHeight: number;
 }
 
 function hasMath(token: MarkdownToken): boolean {
@@ -98,29 +101,38 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
     return found;
   }
 
-  /** The fonts of a line's text: the line's own, and the code face for inline code. None
-   * when the line is only drawn math. */
-  function textRuns(nodes: Node[], sizes: Map<MarkdownToken, Size>, fontSize: number, found: TextRun[] = []): TextRun[] {
-    for (const { token, children } of nodes) {
-      if (token.type === "code_inline") found.push({ fontSize: 14, mono: true });
-      else if (children.length) textRuns(children, sizes, fontSize, found);
-      else if (token.type === "softbreak" || token.type === "hardbreak" || (token.type === "math_inline" ? !sizes.has(token) : token.content)) found.push({ fontSize });
-    }
-    return found;
+  /** The fonts around each drawn equation in a line of text: those of the hard line it is
+   * on (a break belongs to the line it ends), and every one in the text. */
+  function inlineFonts(nodes: Node[], sizes: Map<MarkdownToken, Size>, fontSize: number) {
+    const lines: TextRun[][] = [[]];
+    const lineOf = new Map<MarkdownToken, number>();
+    const walk = (list: Node[]) => {
+      for (const { token, children } of list) {
+        if (token.type === "code_inline") lines.at(-1)?.push({ fontSize: CODE_SIZE, mono: true });
+        else if (token.type === "softbreak" || token.type === "hardbreak") {
+          lines.at(-1)?.push({ fontSize });
+          lines.push([]);
+        } else if (sizes.has(token)) lineOf.set(token, lines.length - 1);
+        else if (children.length) walk(children);
+        else if (token.type === "math_inline" || token.content) lines.at(-1)?.push({ fontSize });
+      }
+    };
+    walk(nodes);
+    const text = lines.flat();
+    return new Map([...lineOf].map(([token, at]) => [token, { line: lines[at] ?? [], text }]));
   }
 
   /** A line of text whose line height leaves room for the inline math in it. Inline math
    * wider than `width` scales down. */
   function line(key: number, nodes: Node[], style: { fontSize: number; lineHeight: number }, extra?: object, role?: "header", width = maxWidth) {
     const sizes = mathSizes(nodes, style.fontSize, style.lineHeight, width);
-    const runs = textRuns(nodes, sizes, style.fontSize);
-    const lineHeight = sizes.size ? lineHeightFor([...sizes.values()], style.fontSize, style.lineHeight, fontScale, runs) : style.lineHeight;
+    const lineHeight = sizes.size ? lineHeightFor([...sizes.values()], style.fontSize, style.lineHeight, fontScale) : style.lineHeight;
     return (
       <Live key={key} pictures={sizes.size}>
         {(live, ref, onLayout) => (
           <Text ref={ref} onLayout={onLayout} accessibilityRole={role} selectable style={[s.prose, style, extra, { lineHeight }]}
             accessibilityLabel={sizes.size ? spokenLabel(pieces(nodes, sizes), speech && live) : undefined}>
-            {inline(nodes, { sizes, live, lift: inlineLift(lineHeight, runs, fontScale) })}
+            {inline(nodes, { sizes, live, fonts: inlineFonts(nodes, sizes, style.fontSize), lineHeight })}
           </Text>
         )}
       </Live>
@@ -139,7 +151,7 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
         case "s_open":
           return <Text key={index} style={{ textDecorationLine: "line-through" }}>{inline(children, math, bold, italic)}</Text>;
         case "code_inline":
-          return <Text key={index} style={[s.well, { fontSize: 14 }]}>{token.content}</Text>;
+          return <Text key={index} style={[s.well, { fontSize: CODE_SIZE }]}>{token.content}</Text>;
         case "softbreak":
         case "hardbreak":
           return "\n";
@@ -154,7 +166,8 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
           const drawn = size && pictures.get(token);
           // Math that can't be drawn shows its source.
           if (!size || !drawn) return token.markup === "$" ? `$${token.content}$` : `\\(${token.content}\\)`;
-          const picture = <MathPicture key={index} svg={drawn.svg[c.mode]} drawn={drawn} size={size} scale={fontScale} color={c.text} live={math.live} inline lift={math.lift} />;
+          const picture = <MathPicture key={index} svg={drawn.svg[c.mode]} drawn={drawn} size={size} scale={fontScale} color={c.text} live={math.live} inline
+            lift={inlineLift(math.lineHeight, size, math.fonts.get(token) ?? { line: [], text: [] }, fontScale)} />;
           // A period or comma right after the math never wraps away from it.
           const after = nodes[index + 1]?.token;
           return after?.type === "text" && CLINGS.test(after.content) ? [picture, JOIN] : picture;
