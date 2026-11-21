@@ -48,13 +48,31 @@ describe("the chat view's server render", () => {
 		assert.equal(sealed, true, "this React build seals ref objects, so the test can catch a property added to one");
 	});
 
-	for (const kind of ["teach", "practice"] as const) {
-		it(`renders a ${kind} session without throwing`, () => {
+	// The session pages the issue names, as scripts/smoke-file-paths.mjs seeds
+	// them: a teaching session waiting on a quiz, a probe question, and a
+	// practice problem (each mounts its dock and that dock's view reader), plus
+	// an empty session of each kind.
+	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	const assistant = (id: string, content: unknown[]) => ({ id, role: "assistant", api: "anthropic-messages", provider: "anthropic", model: "synthetic", timestamp: 1, stopReason: "toolUse", usage, content });
+	const call = (id: string, name: string, args: unknown) => ({ type: "toolCall", id, name, arguments: args });
+	const result = (id: string, toolCallId: string, toolName: string, details?: unknown) => ({ id, role: "toolResult", toolCallId, toolName, content: [{ type: "text", text: "Synthetic tool completed." }], ...(details ? { details } : {}), isError: false, timestamp: 2 });
+	const quiz = { type: "check", nodeId: "addition", question: "What is 1 + 1?", options: [{ value: "two", label: "2" }, { value: "three", label: "3" }], explanation: "Adding one to one gives two.", correctAnswer: "two" };
+	const user = { id: "sent_user", role: "user", content: "Start", timestamp: 0 };
+	const sessions: { name: string; kind: "teach" | "practice"; messages: unknown[]; shows?: string }[] = [
+		{ name: "an empty teaching session", kind: "teach", messages: [] },
+		{ name: "an empty practice session", kind: "practice", messages: [] },
+		{ name: "a teaching session waiting on a quiz", kind: "teach", shows: "What is 1 + 1?", messages: [user, assistant("m_probe", [{ type: "text", text: "Lesson." }, call("call_probe", "probe_done", { assessment: { strands: [{ strand: "Addition", assessment: "Ready." }] } })]), result("m_probe_result", "call_probe", "probe_done", { ok: true }), assistant("m_quiz", [call("call_quiz", "quiz", quiz)])] },
+		{ name: "a probe question", kind: "teach", shows: "What is 1 + 1?", messages: [user, assistant("m_probe_question", [{ type: "text", text: "Probe." }, call("call_probe_question", "probe", quiz)])] },
+		{ name: "a practice problem", kind: "practice", shows: "Compute 1 + 1.", messages: [user, assistant("m_problem", [{ type: "text", text: "Practice." }, call("call_problem", "problem", { statement: "Compute 1 + 1.", mode: "recall", modelSolution: "1 + 1 = 2." })]), result("m_problem_result", "call_problem", "problem")] },
+	];
+	for (const session of sessions) {
+		it(`renders ${session.name} without throwing`, () => {
 			let html = "";
 			assert.doesNotThrow(() => {
-				html = renderToString(<Shell pathname="/chat/chat_ssr_fixture"><Chat chatId="chat_ssr_fixture" title="SSR fixture" kind={kind} initialMessages={[]} /></Shell>);
+				html = renderToString(<Shell pathname="/chat/chat_ssr_fixture"><Chat chatId="chat_ssr_fixture" title="SSR fixture" kind={session.kind} initialMessages={session.messages as never} /></Shell>);
 			});
-			assert.ok(html.length > 0);
+			assert.ok(html.includes("SSR fixture"), "the session's title is in the page");
+			if (session.shows) assert.ok(html.includes(session.shows), `the page shows ${JSON.stringify(session.shows)}`);
 		});
 	}
 });
