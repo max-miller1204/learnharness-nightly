@@ -149,8 +149,23 @@ try {
 	// A turn on the first one: ordering by last activity (first, third, second)
 	// now differs from ordering by creation (third, second, first).
 	const touch = await raw("POST", "/api/chat", { body: JSON.stringify({ chatId: made[0].id, input: { type: "text", text: "list order touch" } }) });
+	// The POST only acknowledges the turn: read the order, and delete, once it settled.
+	const busyOf = async (id) => JSON.parse((await raw("GET", "/api/chats")).body).chats.find((c) => c.id === id)?.busy;
+	const settleBy = Date.now() + turnMs;
+	while (Date.now() < settleBy && (await busyOf(made[0].id)) !== false) await new Promise((res) => setTimeout(res, 250));
 	const touchedOrder = await labelsOf();
-	for (const m of made) if (m.id) await raw("DELETE", `/api/chats/${m.id}?mode=preserve-graph`);
+	const leftover = [];
+	for (const m of made) {
+		if (!m.id) continue;
+		let status = 0;
+		for (let attempt = 0; attempt < 20; attempt++) {
+			status = (await raw("DELETE", `/api/chats/${m.id}?mode=preserve-graph`)).status;
+			if (status !== 409) break; // a turn still running: try again shortly
+			await new Promise((res) => setTimeout(res, 500));
+		}
+		if (status !== 200) leftover.push(`${m.label} (${status})`);
+	}
+	step("the list-order fixture sessions are deleted", leftover.length === 0, leftover.length ? `left behind: ${leftover.join(", ")}` : "all three gone");
 	result.observations.listOrder = [`created: ${listedOrder.join(",")}`, `after a turn on first: ${touchedOrder.join(",")}`];
 	step("the session list is newest first, by last activity", JSON.stringify(listedOrder) === JSON.stringify(["third", "second", "first"]) && touch.status === 200 && JSON.stringify(touchedOrder) === JSON.stringify(["first", "third", "second"]), `created ${JSON.stringify(listedOrder)}, turn ${touch.status}, then ${JSON.stringify(touchedOrder)}`);
 

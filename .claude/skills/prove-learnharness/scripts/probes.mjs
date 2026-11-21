@@ -5,7 +5,8 @@
 //     the composer stays usable and a follow-up turn works.
 //  B. doing it twice: Enter twice on Submit answer -> one answer stored.
 //  C. Retry after a failed turn (http500), by mouse and from the keyboard:
-//     one POST whose stream closes, the question card, Retry gone.
+//     one POST, the turn's GET stream settles ([DONE], not busy), the
+//     question card, Retry gone.
 //  However a probe ends, the fake model's fail mode is set back to none.
 // Writes <side dir>/probes/result.json (compare.mjs format: steps,
 // observations) and screenshots. Run on base and head, then compare.
@@ -112,8 +113,9 @@ try {
 
 	// C. Retry after a failed turn: the button must resend, not just be there.
 	// Once by mouse, once from the keyboard (focus it, Enter). A retried turn
-	// counts only once it has really finished: its POST's stream closed, the
-	// scenario's question card is up, Retry is gone and the record ends on the
+	// counts only once the turn has settled: its POST acknowledged, the
+	// session's GET stream finished ([DONE]) and the server no longer busy, the
+	// scenario's question card up, Retry gone, and the record ending on the
 	// question, not an error.
 	const retryCase = async (how) => {
 		await fake("/__prove/reset");
@@ -128,22 +130,39 @@ try {
 			await fake("/__prove/fail?mode=none");
 		}
 		await fake("/__prove/reset");
+		// The POST only acknowledges the turn; its events come on the session's
+		// GET stream (/api/chats/<id>/stream), which ends with [DONE] when the
+		// turn settles. Count both, and ask the server whether the turn still runs.
+		// The client cancels its reader once it reads [DONE], so a stream that
+		// settled shows as finished or as aborted by the client; one whose
+		// [DONE] never comes stays pending.
 		const posts = { started: 0, finished: 0 };
-		const isChatPost = (r) => { const u = new URL(r.url()); return u.origin === APP && u.pathname === "/api/chat" && r.method() === "POST"; };
-		const onStart = (r) => { if (isChatPost(r)) posts.started++; };
-		const onDone = (r) => { if (isChatPost(r)) posts.finished++; };
+		const streams = { started: 0, finished: 0, aborted: 0 };
+		const kind = (r) => { const u = new URL(r.url()); if (u.origin !== APP) return null; if (u.pathname === "/api/chat" && r.method() === "POST") return posts; if (u.pathname === `/api/chats/${id}/stream` && r.method() === "GET") return streams; return null; };
+		const onStart = (r) => { const k = kind(r); if (k) k.started++; };
+		const onDone = (r) => { const k = kind(r); if (k) k.finished++; };
+		const onFail = (r) => { const k = kind(r); if (k === streams) k.aborted++; };
+		const busy = async () => (await (await fetch(`${APP}/api/chats`)).json()).chats.find((c) => c.id === id)?.busy;
 		page.on("request", onStart);
 		page.on("requestfinished", onDone);
+		page.on("requestfailed", onFail);
+		const pressedAt = Date.now();
 		if (button && how === "click") await button.click();
 		if (button && how === "keyboard") { await button.focus(); await page.keyboard.press("Enter"); }
 		const dockShown = await page.waitForFunction(() => document.querySelector('[data-testid="question-dock"]')?.textContent?.includes("zz-prove-it: which colour"), { timeout: 60_000 }).then(() => true, () => false);
-		const streamClosed = Boolean(await until(() => posts.finished >= 1, 30_000));
+		const dockMs = dockShown ? Date.now() - pressedAt : null;
+		const postAcked = Boolean(await until(() => posts.finished >= 1, 30_000));
+		// Settled: the server no longer marks the session busy (the turn ended),
+		// and the turn's GET stream has ended on the client (it read [DONE]).
+		const settled = await until(async () => streams.finished + streams.aborted >= 1 && (await busy()) === false, 60_000);
+		const settleMs = settled ? Date.now() - pressedAt : null;
 		const finished = await until(() => { const last = record(id)?.messages?.at(-1); return last?.role === "assistant" && last.stopReason !== "error" && (last.content ?? []).some((c) => c.type === "toolCall" && c.name === "probe") ? last : null; }, 30_000);
 		const bannerGone = !(await page.$('[data-testid="retry-failed-turn"]'));
 		page.off("request", onStart);
 		page.off("requestfinished", onDone);
+		page.off("requestfailed", onFail);
 		await page.screenshot({ path: path.join(OUT, `C-retry-${how}.png`) });
-		return { id, how, buttonShown: Boolean(button), posts, dockShown, streamClosed, turnFinished: Boolean(finished), bannerGone, shapeBeforeRetry: shapeBefore, shapeAfterRetry: shape(record(id)?.messages ?? []) };
+		return { id, how, buttonShown: Boolean(button), posts, streams, postAcked, dockShown, dockMs, settled: Boolean(settled), settleMs, turnFinished: Boolean(finished), bannerGone, shapeBeforeRetry: shapeBefore, shapeAfterRetry: shape(record(id)?.messages ?? []) };
 	};
 	res.probes.retry = [await retryCase("click"), await retryCase("keyboard")];
 	save();
@@ -156,9 +175,9 @@ try {
 		{ name: "broken stream: the UI says so and the composer stays usable", ok: a.uiShowsError && a.composerAfterFailure.present && a.composerAfterFailure.editable, note: a.uiErrorSnippet },
 		{ name: "broken stream: a follow-up turn works", ok: a.followUpAccepted, note: a.shapeAfterFollowUp.join(" ") },
 		{ name: "Enter twice on Submit answer: one answer stored and shown", ok: b.quizAnswerMessages === 1 && b.acknowledgementsShown === 1 && b.questionCardClosed, note: JSON.stringify(b) },
-		...c.map((r) => ({ name: `Retry (${r.how}) after a failed turn resends it: one POST whose stream closes, the question card, Retry gone`, ok: r.buttonShown && r.posts.started === 1 && r.streamClosed && r.dockShown && r.turnFinished && r.bannerGone, note: JSON.stringify({ ...r, id: undefined }) })),
+		...c.map((r) => ({ name: `Retry (${r.how}) after a failed turn resends it: one POST, the turn's stream settles, the question card, Retry gone`, ok: r.buttonShown && r.posts.started === 1 && r.postAcked && r.settled && r.dockShown && r.turnFinished && r.bannerGone, note: JSON.stringify({ ...r, id: undefined }) })),
 	);
-	res.observations = { brokenStream: [a.shapeAfterFailure.join(" "), a.shapeAfterFollowUp.join(" "), `uiShowsError ${a.uiShowsError}`], doubleSubmit: [b.storedShape.join(" "), `answers ${b.quizAnswerMessages}`, `acks ${b.acknowledgementsShown}`], retry: c.flatMap((r) => [`${r.how}: ${r.shapeBeforeRetry.join(" ")} -> ${r.shapeAfterRetry.join(" ")}`, `${r.how}: posts ${r.posts.started}, stream closed ${r.streamClosed}, question card ${r.dockShown}, finished ${r.turnFinished}, banner gone ${r.bannerGone}`]) };
+	res.observations = { brokenStream: [a.shapeAfterFailure.join(" "), a.shapeAfterFollowUp.join(" "), `uiShowsError ${a.uiShowsError}`], doubleSubmit: [b.storedShape.join(" "), `answers ${b.quizAnswerMessages}`, `acks ${b.acknowledgementsShown}`], retry: c.flatMap((r) => [`${r.how}: ${r.shapeBeforeRetry.join(" ")} -> ${r.shapeAfterRetry.join(" ")}`, `${r.how}: posts ${r.posts.started}, settled ${r.settled}, question card ${r.dockShown}, finished ${r.turnFinished}, banner gone ${r.bannerGone}`]) };
 } catch (e) {
 	code = 1;
 	res.error = String(e?.stack ?? e).slice(0, 800);

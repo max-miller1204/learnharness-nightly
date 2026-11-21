@@ -321,12 +321,30 @@ try {
 			await new Promise((res) => setTimeout(res, 50));
 		}
 		const touch = await api("POST", "/api/chat", JSON.stringify({ chatId: made[0].id, input: { type: "text", text: "sidebar order touch" } }));
+		// The POST only acknowledges the turn: wait until the server no longer
+		// marks the session busy, so the order is read, and the session deleted, once it settled.
+		const busyOf = async (id) => JSON.parse((await api("GET", "/api/chats")).text).chats.find((c) => c.id === id)?.busy;
+		const settleBy = Date.now() + turnMs;
+		while (Date.now() < settleBy && (await busyOf(made[0].id)) !== false) await new Promise((res) => setTimeout(res, 250));
 		await page.goto(`${APP}/chat/new`, { waitUntil: "domcontentloaded" });
 		await page.waitForSelector('[data-testid="session-row"]', { timeout: 30_000 });
 		await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="session-row"]')].filter((e) => e.textContent.includes("zz-prove-it sidebar")).length >= 3, { timeout: 10_000 }).catch(() => null);
 		const sidebarOrder = await page.$$eval('[data-testid="session-row"]', (els) => els.map((e) => e.textContent.match(/zz-prove-it sidebar (first|second|third)/)?.[1]).filter(Boolean));
 		await shot("07-sidebar-order");
-		for (const m of made) if (m.id) await api("DELETE", `/api/chats/${m.id}?mode=preserve-graph`);
+		// Delete the fixtures, retrying while a turn still runs (409), so a later
+		// drive on this instance starts clean; say so if one can't be removed.
+		const leftover = [];
+		for (const m of made) {
+			if (!m.id) continue;
+			let status = 0;
+			for (let attempt = 0; attempt < 20; attempt++) {
+				status = (await api("DELETE", `/api/chats/${m.id}?mode=preserve-graph`)).status;
+				if (status !== 409) break;
+				await new Promise((res) => setTimeout(res, 500));
+			}
+			if (status !== 200) leftover.push(`${m.label} (${status})`);
+		}
+		step("the sidebar-order fixture sessions are deleted", leftover.length === 0, { note: leftover.length ? `left behind: ${leftover.join(", ")}` : "all three gone" });
 		result.observations.sidebarOrder = sidebarOrder;
 		step("the sidebar lists sessions by last activity: a session with a new turn moves to the top", touch.status === 200 && JSON.stringify(sidebarOrder) === JSON.stringify(["first", "third", "second"]), { note: `turn ${touch.status}, order ${JSON.stringify(sidebarOrder)}` });
 	}

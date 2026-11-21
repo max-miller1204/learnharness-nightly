@@ -20,13 +20,18 @@ if [ -z "$NODE_BIN" ] && command -v mise >/dev/null 2>&1; then
 	NODE_BIN=$(mise where node@22 2>/dev/null)/bin || NODE_BIN=
 fi
 [ -n "$NODE_BIN" ] && [ -x "$NODE_BIN/node" ] || die "BLOCKED: no Node 22 found (MOBILE_NODE_BIN unset and \`mise where node@22\` has none): install it with \`mise install node@22\`, or set MOBILE_NODE_BIN to a Node 22 bin folder"
+# Absolute before any cd: a relative folder would stop matching once we're in
+# apps/mobile, and PATH would fall through to whatever node comes next.
+NODE_BIN=$(cd "$NODE_BIN" && pwd -P)
 export PATH="$NODE_BIN:$PATH"
+cd "$APP"
+# The node npm and tsx will run, from inside the app folder, is the one checked.
+[ "$(command -v node)" = "$NODE_BIN/node" ] || die "BLOCKED: \`node\` in apps/mobile resolves to $(command -v node), not $NODE_BIN/node"
 NODE_VERSION=$(node -v)
 case "$NODE_VERSION" in v22.*) ;; *) die "BLOCKED: $NODE_BIN/node is $NODE_VERSION, not Node 22 (the Mobile CI job's major)" ;; esac
 say "[mobile] node $NODE_VERSION ($NODE_BIN)"
 # "# pass N" / "# fail N" from node --test; a log without both is a run that never reported.
 summary() { local p f; p=$(grep -E '^# pass [0-9]+$' "$1" | tail -1); f=$(grep -E '^# fail [0-9]+$' "$1" | tail -1); [ -n "$p" ] && [ -n "$f" ] && echo "$p $f"; }
-cd "$APP"
 if [ ! -d node_modules ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then
 	say "[mobile] npm ci"
 	npm ci --no-audit --no-fund >"$OUT/npm-ci.log" 2>&1 || { tail -20 "$OUT/npm-ci.log" >&2; die "BLOCKED: npm ci in apps/mobile failed"; }

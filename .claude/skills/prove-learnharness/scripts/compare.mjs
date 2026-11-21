@@ -27,6 +27,10 @@ const allow = [];
 // (a base desktop window against the change's, where only desktop output is the key).
 const skip = [];
 const only = [];
+// --base-is-key: the base side is an answer key this run set up (the base
+// desktop window), not the code under test: if its own drive failed, the
+// comparison can't be made, which is BLOCKED (exit 2), never the change's failure.
+let baseIsKey = false;
 let outPath;
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
@@ -34,6 +38,7 @@ for (let i = 0; i < argv.length; i++) {
 	else if (argv[i] === "--allow") { const [k, ...v] = argv[++i].split("="); allow.push([k, v.join("=")]); }
 	else if (argv[i] === "--skip") skip.push(argv[++i]);
 	else if (argv[i] === "--only") only.push(argv[++i]);
+	else if (argv[i] === "--base-is-key") baseIsKey = true;
 	else positional.push(argv[i]);
 }
 const [basePath, headPath] = positional;
@@ -58,6 +63,15 @@ const row = (ok, what, detail) => { if (!ok) failed++; lines.push(`- [${ok ? "PA
 lines.push(`## ${path.basename(path.dirname(headPath))}: base ${base.build} vs head ${head.build}`);
 
 // 1. both drives completed
+if (baseIsKey) {
+	const bad = base.steps.filter((s) => !s.ok);
+	if (bad.length || !base.steps.length) {
+		const text = `## ${path.basename(path.dirname(headPath))}\nprove: BLOCKED: the answer-key side (${basePath}) failed its own drive: ${bad.map((s) => s.name).join("; ") || "no steps"}\n`;
+		if (outPath) fs.writeFileSync(outPath, text);
+		process.stdout.write(text);
+		process.exit(2);
+	}
+}
 for (const [side, r] of [["base", base], ["head", head]]) {
 	const bad = r.steps.filter((s) => !s.ok);
 	row(bad.length === 0 && r.steps.length > 0, `${side} drive: ${r.steps.length} steps`, bad.map((s) => `${s.name} (${s.note ?? ""})`).join("; "));

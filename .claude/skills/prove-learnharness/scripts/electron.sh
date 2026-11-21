@@ -36,13 +36,26 @@ CDP=$(free_port)
 # Electron downloads its binary on first use, into the tree's node_modules.
 # Head and base trees are shared by every run and worktree, so two cold runs
 # would download into the same folder at once: one at a time, under a lock.
+# Complete means what install.js's own isInstalled() checks: dist/version is
+# the package's version, path.txt names this platform's executable
+# ("electron" on Linux, written last), and that file exists. A half-extracted
+# dist/ can already hold the binary. Anything less takes the lock (at most
+# ELECTRON_INSTALL_WAIT_S) and checks again inside it.
+electron_ready() { # <tree>
+	local pkg=$1/node_modules/electron want
+	want=$(node -p 'require(process.argv[1]).version' "$pkg/package.json" 2>/dev/null) || return 1
+	[ "$(sed 's/^v//' "$pkg/dist/version" 2>/dev/null)" = "$want" ] && [ "$(cat "$pkg/path.txt" 2>/dev/null)" = electron ] && [ -x "$pkg/dist/electron" ]
+}
 ensure_electron() { # <tree>
-	local tree=$1
-	[ -x "$tree/node_modules/electron/dist/electron" ] && return 0
+	local tree=$1 wait=${ELECTRON_INSTALL_WAIT_S:-600}
+	electron_ready "$tree" && return 0
+	local code=0
 	(
-		flock 9
-		[ -x "$tree/node_modules/electron/dist/electron" ] || (cd "$tree" && node node_modules/electron/install.js)
-	) 9>"$tree/node_modules/electron/.prove-install.lock" >>"$ED/electron.log" 2>&1
+		flock -w "$wait" 9 || exit 3
+		electron_ready "$tree" || (cd "$tree" && node node_modules/electron/install.js)
+	) 9>"$tree/node_modules/electron/.prove-install.lock" >>"$ED/electron.log" 2>&1 || code=$?
+	[ $code -eq 3 ] && die "BLOCKED: another run held the Electron install lock in $tree for over ${wait}s"
+	electron_ready "$tree" || die "BLOCKED: Electron's binary did not install in $tree (see $ED/electron.log)"
 }
 
 case "$MODE" in
