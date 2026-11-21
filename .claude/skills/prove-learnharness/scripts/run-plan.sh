@@ -91,7 +91,12 @@ for step in "${STEPS[@]}"; do
 					head_failed="the change failed to build: $part"; break 2
 				fi
 				blocked="setup step failed: $part"; break 2 ;;
+			*'electron.sh "$RUN" dev-base'*|*'web-teach.mjs "$EB"'*)
+				# The base desktop window is an answer key: its failure is BLOCKED, not the change's.
+				blocked="setup step failed (the base desktop window): $part"; break 2 ;;
 			*'start.sh "$RUN" head'*|*'health.sh "$H"'*|*'electron.sh'*)
+				# A script that says BLOCKED (a missing tool, an install that failed) is the environment.
+				if grep -q 'prove: BLOCKED' <<<"$out"; then blocked="$(grep -m1 -o 'prove: BLOCKED.*' <<<"$out") ($part)"; break 2; fi
 				head_failed="the change failed to start: $part"; break 2 ;;
 			*'start.sh'*|*'health.sh'*|*'ensure-axe.sh'*)
 				blocked="setup step failed: $part"; break 2 ;;

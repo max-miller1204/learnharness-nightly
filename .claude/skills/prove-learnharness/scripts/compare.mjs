@@ -22,11 +22,23 @@ import * as path from "node:path";
 
 const argv = process.argv.slice(2);
 const allow = [];
+// --skip <key>: an observation only one kind of side has (the desktop window's
+// `desktop` against a browser). --only <key>: diff just these observations
+// (a base desktop window against the change's, where only desktop output is the key).
+const skip = [];
+const only = [];
+// --base-is-key: the base side is an answer key this run set up (the base
+// desktop window), not the code under test: if its own drive failed, the
+// comparison can't be made, which is BLOCKED (exit 2), never the change's failure.
+let baseIsKey = false;
 let outPath;
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
 	if (argv[i] === "--out") outPath = argv[++i];
 	else if (argv[i] === "--allow") { const [k, ...v] = argv[++i].split("="); allow.push([k, v.join("=")]); }
+	else if (argv[i] === "--skip") skip.push(argv[++i]);
+	else if (argv[i] === "--only") only.push(argv[++i]);
+	else if (argv[i] === "--base-is-key") baseIsKey = true;
 	else positional.push(argv[i]);
 }
 const [basePath, headPath] = positional;
@@ -51,6 +63,15 @@ const row = (ok, what, detail) => { if (!ok) failed++; lines.push(`- [${ok ? "PA
 lines.push(`## ${path.basename(path.dirname(headPath))}: base ${base.build} vs head ${head.build}`);
 
 // 1. both drives completed
+if (baseIsKey) {
+	const bad = base.steps.filter((s) => !s.ok);
+	if (bad.length || !base.steps.length) {
+		const text = `## ${path.basename(path.dirname(headPath))}\nprove: BLOCKED: the answer-key side (${basePath}) failed its own drive: ${bad.map((s) => s.name).join("; ") || "no steps"}\n`;
+		if (outPath) fs.writeFileSync(outPath, text);
+		process.stdout.write(text);
+		process.exit(2);
+	}
+}
 for (const [side, r] of [["base", base], ["head", head]]) {
 	const bad = r.steps.filter((s) => !s.ok);
 	row(bad.length === 0 && r.steps.length > 0, `${side} drive: ${r.steps.length} steps`, bad.map((s) => `${s.name} (${s.note ?? ""})`).join("; "));
@@ -63,7 +84,10 @@ for (const [key, item] of allow) {
 }
 
 // 2. observations identical
-const keys = [...new Set([...Object.keys(base.observations ?? {}), ...Object.keys(head.observations ?? {})])].sort();
+for (const key of skip) lines.push(`- [SKIPPED] observation ${key}: not comparable between these two sides`);
+const keys = [...new Set([...Object.keys(base.observations ?? {}), ...Object.keys(head.observations ?? {})])].sort()
+	.filter((key) => !skip.includes(key) && (only.length === 0 || only.includes(key)));
+for (const key of only) if (!(key in (base.observations ?? {})) || !(key in (head.observations ?? {}))) row(false, `observation ${key} missing`, `base ${key in (base.observations ?? {})}, head ${key in (head.observations ?? {})}`);
 for (const key of keys) {
 	const b = JSON.stringify(base.observations?.[key]);
 	const h = JSON.stringify(head.observations?.[key]);
@@ -75,7 +99,11 @@ for (const key of keys) {
 	row(false, `observation ${key} differs from base`, `added ${JSON.stringify(added)}, removed ${JSON.stringify(removed)}${!added.length && !removed.length ? `, order or values changed: base ${b} head ${h}` : ""}`);
 }
 
-// 3. budgets
+// 3. budgets. Not with --only: that compares two different kinds of window
+// (a base dev shell with a packaged head), and the head's budgets are judged
+// in its own comparison with the browser.
+if (only.length) lines.push(`- [SKIPPED] budgets: --only ${only.join(", ")} compares those observations alone`);
+else {
 const known = budgets.consoleErrors.known;
 const isKnown = (e) => known.some((k) => (e.url ?? "").endsWith(k.urlEndsWith) && e.text.includes(`status of ${k.status}`));
 const unknown = (head.budgets?.consoleErrors ?? []).filter((e) => !isKnown(e));
@@ -101,6 +129,7 @@ for (const [pageName, list] of Object.entries(head.budgets?.axe ?? {})) {
 	const baseIds = new Set((Array.isArray(base.budgets?.axe?.[pageName]) ? base.budgets.axe[pageName] : []).map((v) => v.id));
 	const fresh = list.filter((v) => budgets.axe.impacts.includes(v.impact) && !baseIds.has(v.id));
 	row(fresh.length === 0, `axe ${pageName}: ${list.length} serious/critical on head, ${fresh.length} not on base`, fresh.map((v) => `${v.id} (${v.impact}, ${v.nodes} nodes)`).join("; ") || list.map((v) => v.id).join(", "));
+}
 }
 
 lines.push("", failed ? `checks failed: ${failed}` : "checks passed (not a verdict: look at the evidence)");

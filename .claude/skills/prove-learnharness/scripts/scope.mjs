@@ -48,6 +48,7 @@ const RULES = [
 	[/^app\/api\/(updates|health)\/|^src\/server\/self-update\.ts$/, ["api", "selfhost-a", "selfhost-b", "web"], "server half of self-update"],
 	[/^app\/api\/(chat|chats|practice)\//, ["api", "web", "agent", "mobile"], "turn and session routes"],
 	[/^app\/api\//, ["api", "web"], "API route"],
+	[/^(app\/globals\.css|components\/sidebar\.tsx|components\/side-thread\.tsx)$/, ["web", "electron-dev"], "web UI that also lays out the desktop window's chrome (data-lh-platform, the window-control gutters): the desktop windows too"],
 	[/^(app|components|public)\//, ["web"], "web UI"],
 	[/^lib\//, ["web", "api"], "shared client/server helper"],
 	[/^src\/agent\/(tools|subagents|prompts)\/|^src\/agent\/[^/]+\.(ts|md)$/, ["agent", "web", "api"], "agent loop, tools or prompts"],
@@ -79,7 +80,9 @@ const reached = Object.keys(surfaces);
 const appSurface = (s) => s !== "ci-script" && s !== "ci-tests";
 if (allNew && reached.some(appSurface) && !reached.includes("web")) surfaces.web = ["(smoke: change is only new files)"];
 
-const needsBase = Object.keys(surfaces).some((s) => ["web", "api", "agent", "selfhost-a", "selfhost-b"].includes(s));
+// A desktop window needs the base build too: the base commit's own desktop
+// window is the answer key for desktop-only output (electron.sh dev-base).
+const needsBase = Object.keys(surfaces).some((s) => ["web", "api", "agent", "selfhost-a", "selfhost-b", "electron-dev", "electron-packaged"].includes(s));
 const plan = [];
 if (Object.keys(surfaces).length) {
 	const web = surfaces.web || surfaces.agent;
@@ -92,10 +95,8 @@ if (Object.keys(surfaces).length) {
 	if (surfaces["ci-script"] || surfaces["ci-tests"]) plan.push(`(cd "$(git rev-parse --show-toplevel)" && node --test .github/scripts/*.test.cjs)   # the CI scripts' own tests`);
 	// A changed script (not only its tests) is a CLI to drive by hand.
 	if (surfaces["ci-script"]) plan.push("# MANUAL: drive each changed .github/scripts CLI with fixtures you write from its spec (not from the script), and each workflow step that calls it against stubs.");
-	if ((web || api) && needsBase) {
+	if ((web || api || electron) && needsBase) {
 		plan.push(`H=$(scripts/start.sh "$RUN" head); B=$(scripts/start.sh "$RUN" base); scripts/health.sh "$H"; scripts/health.sh "$B"`);
-	} else if (electron) {
-		plan.push(`H=$(scripts/start.sh "$RUN" head); scripts/health.sh "$H"`);
 	}
 	if (web) {
 		plan.push("scripts/ensure-axe.sh");
@@ -107,9 +108,14 @@ if (Object.keys(surfaces).length) {
 	if (surfaces["selfhost-a"]) plan.push(`scripts/selfhost-a.sh "$RUN" base; scripts/selfhost-a.sh "$RUN" head; node scripts/compare.mjs "$RUN/base/selfhost-a/result.json" "$RUN/head/selfhost-a/result.json" --out "$RUN/compare-selfhost-a.md"`);
 	if (surfaces["selfhost-b"]) plan.push(`scripts/selfhost-b.sh "$RUN"`);
 	if (electron) {
-		if (!web) plan.push(`node scripts/web-teach.mjs "$H"`);
-		plan.push(`E=$(scripts/electron.sh "$RUN" ${electron}); node scripts/web-teach.mjs "$E"; node scripts/compare.mjs "$RUN/head/web-teach/result.json" "$RUN/electron-${electron}/web-teach/result.json" ${allow} --out "$RUN/compare-electron.md"`);
+		// No web surface: the desktop drives still measure axe, so install it here too.
+		if (!web) plan.push("scripts/ensure-axe.sh", `node scripts/web-teach.mjs "$H"`);
+		plan.push(`E=$(scripts/electron.sh "$RUN" ${electron}); node scripts/web-teach.mjs "$E"; node scripts/compare.mjs "$RUN/head/web-teach/result.json" "$RUN/electron-${electron}/web-teach/result.json" ${allow} --skip desktop --out "$RUN/compare-electron.md"`);
+		// Desktop-only output (the bridge, native window chrome): the base commit's
+		// own desktop window is the answer key, since the browser has none.
+		if (needsBase) plan.push(`EB=$(scripts/electron.sh "$RUN" dev-base); node scripts/web-teach.mjs "$EB"; node scripts/compare.mjs "$RUN/electron-dev-base/web-teach/result.json" "$RUN/electron-${electron}/web-teach/result.json" --only desktop --base-is-key --out "$RUN/compare-desktop.md"`);
 	}
+	if (surfaces.mobile) plan.push(`scripts/mobile-checks.sh "$RUN"   # the app's unit tests and the skill's phone checks, Node 22`);
 	if (surfaces.mobile) plan.push("# MANUAL: device proof next: in a new run folder (scripts/new-run.sh <slug>-device), drive references/features/mobile-beta.md, emulator health gate first, and name both run folders in one receipt. The iOS variant: references/planned.md (iOS).");
 	if (surfaces.protocol) plan.push("# PLANNED versioned protocol surface: see references/planned.md.");
 	plan.push(`scripts/stop.sh "$RUN"`);

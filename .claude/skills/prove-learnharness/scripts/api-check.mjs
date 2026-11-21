@@ -135,6 +135,40 @@ try {
 	step("deleted session leaves the list and the disk", del.status === 200 && !stillListed && !fs.existsSync(file), `DELETE ${del.status}, listed ${stillListed}, file ${fs.existsSync(file) ? "still there" : "gone"}`);
 	result.observations.lifecycle.push(`create ${created.status}`, `listed ${listed}`, `stored ${Boolean(stored)}`, `delete ${del.status}`, `listed after ${stillListed}`, `file after ${fs.existsSync(file)}`);
 
+	// list order: one session hides it, so make three, a moment apart, and read
+	// the list's order back by label (ids differ between base and head)
+	const labels = ["first", "second", "third"];
+	const made = [];
+	for (const label of labels) {
+		const r = await raw("POST", "/api/chats", { body: JSON.stringify({ title: `zz-prove-it order ${label}` }) });
+		made.push({ label, id: r.status === 200 ? JSON.parse(r.body).id : null });
+		await new Promise((res) => setTimeout(res, 50));
+	}
+	const labelsOf = async () => JSON.parse((await raw("GET", "/api/chats")).body).chats.map((c) => made.find((m) => m.id === c.id)?.label).filter(Boolean);
+	const listedOrder = await labelsOf();
+	// A turn on the first one: ordering by last activity (first, third, second)
+	// now differs from ordering by creation (third, second, first).
+	const touch = await raw("POST", "/api/chat", { body: JSON.stringify({ chatId: made[0].id, input: { type: "text", text: "list order touch" } }) });
+	// The POST only acknowledges the turn: read the order, and delete, once it settled.
+	const busyOf = async (id) => JSON.parse((await raw("GET", "/api/chats")).body).chats.find((c) => c.id === id)?.busy;
+	const settleBy = Date.now() + turnMs;
+	while (Date.now() < settleBy && (await busyOf(made[0].id)) !== false) await new Promise((res) => setTimeout(res, 250));
+	const touchedOrder = await labelsOf();
+	const leftover = [];
+	for (const m of made) {
+		if (!m.id) continue;
+		let status = 0;
+		for (let attempt = 0; attempt < 20; attempt++) {
+			status = (await raw("DELETE", `/api/chats/${m.id}?mode=preserve-graph`)).status;
+			if (status !== 409) break; // a turn still running: try again shortly
+			await new Promise((res) => setTimeout(res, 500));
+		}
+		if (status !== 200) leftover.push(`${m.label} (${status})`);
+	}
+	step("the list-order fixture sessions are deleted", leftover.length === 0, leftover.length ? `left behind: ${leftover.join(", ")}` : "all three gone");
+	result.observations.listOrder = [`created: ${listedOrder.join(",")}`, `after a turn on first: ${touchedOrder.join(",")}`];
+	step("the session list is newest first, by last activity", JSON.stringify(listedOrder) === JSON.stringify(["third", "second", "first"]) && touch.status === 200 && JSON.stringify(touchedOrder) === JSON.stringify(["first", "third", "second"]), `created ${JSON.stringify(listedOrder)}, turn ${touch.status}, then ${JSON.stringify(touchedOrder)}`);
+
 	// model failure is reported, not swallowed
 	await fetch(`${inst.FAKE_CONTROL}/__prove/fail?mode=http500`, { method: "POST" });
 	try {

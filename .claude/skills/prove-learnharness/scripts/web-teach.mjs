@@ -5,20 +5,24 @@
  * Drives the main flow in Chrome like a user, against one instance started by
  * start.sh with scenarios/teach-read.json:
  *   1. /chat/new, type a goal, Enter            -> a session is created
- *   2. the fake prober calls `read` on the fixture, then `probe`
+ *   2. the fake prober calls `read` on both fixtures, then `probe`
+ *                                               -> each tool result equals its file
  *                                               -> the question card shows,
  *                                                  with no layout shift from the dock
  *   3. pick "Blue", submit                      -> the answer reaches the model,
  *                                                  its reply shows
  *   4. reload the session                       -> transcript persists
  *   5. delete the session (reverse action)      -> gone from list and disk
- *       (skipped with --keep)
+ *   6. three sessions, a turn on the first      -> the sidebar orders them by
+ *                                                  last activity, then they go
+ *       (5 and 6 skipped with --keep)
  * Budgets measured on every page it drives: console errors, CLS, axe.
  *
  * With CDP_URL in the instance file (electron.sh writes one), it attaches to
  * that running Electron window instead of launching Chrome, and seeds the
  * fake model from inside the page when SEED_IN_PAGE=1 (the packaged app's
- * API only answers its own window).
+ * API only answers its own window). In a desktop window it also records the
+ * bridge's platform and the window-control gutter (`observations.desktop`).
  *
  * Writes <side dir>/web-teach/result.json and screenshots. `observations` in
  * the result is what compare.mjs diffs between base and head; `budgets` is
@@ -151,6 +155,18 @@ try {
 	await page.goto(`${APP}/chat/new`, { waitUntil: "domcontentloaded" });
 	await page.waitForSelector('[data-testid="composer"]', { timeout: 30_000 });
 	await new Promise((r) => setTimeout(r, 1000));
+	if (attached) {
+		// Desktop-only: the bridge's OS identity drives the native window-control
+		// gutters, and browser parity can't see it. The window runs on this host.
+		const desktop = await page.evaluate(() => {
+			const gutter = document.querySelector(".lh-lights-gutter");
+			return { platform: window.lh?.platform ?? null, htmlPlatform: document.documentElement.dataset.lhPlatform ?? null, gutterPaddingLeft: gutter ? getComputedStyle(gutter).paddingLeft : null };
+		});
+		result.window = { ...result.window, ...desktop, hostPlatform: process.platform };
+		// Desktop-only output: compared with a base desktop window (compare.mjs --only desktop), skipped against the browser.
+		result.observations.desktop = [`platform ${desktop.platform}`, `html data-lh-platform ${desktop.htmlPlatform}`, `lights gutter padding-left ${desktop.gutterPaddingLeft}`];
+		step("desktop window reports this machine's platform to the page", desktop.platform === process.platform && desktop.htmlPlatform === process.platform, { note: JSON.stringify({ ...desktop, hostPlatform: process.platform }) });
+	}
 	await page.goto(`${APP}/chat/new`, { waitUntil: "domcontentloaded" });
 	const composer = '[data-testid="composer"] [contenteditable="true"]';
 	await page.waitForSelector(composer, { timeout: 30_000 });
@@ -188,10 +204,19 @@ try {
 	await shot("02-question-card");
 	const log = () => fs.existsSync(inst.MODEL_LOG) ? fs.readFileSync(inst.MODEL_LOG, "utf8").trim().split("\n").filter(Boolean).slice(logStart).map((l) => JSON.parse(l)) : [];
 	const readResult = log().find((r) => r.rule === "probe-asks-question");
+	// The scenario reads two files in one turn: the no-final-newline fixture,
+	// then the main one, so the last two messages are their tool results.
+	const textOf = (m) => typeof m?.content === "string" ? m.content : JSON.stringify(m?.content ?? "");
 	const toolMsg = readResult?.request?.messages?.at(-1);
-	const toolText = typeof toolMsg?.content === "string" ? toolMsg.content : JSON.stringify(toolMsg?.content ?? "");
+	const nonlMsg = readResult?.request?.messages?.at(-2);
+	const toolText = textOf(toolMsg);
+	const nonlText = textOf(nonlMsg);
 	const fixture = fs.readFileSync(inst.FIXTURE, "utf8");
-	step("read tool result sent back to the model is the fixture file", toolMsg?.role === "tool" && toolText.includes(fixture.split("\n")[0]) && toolText.includes("zz-prove-it second line."), { note: `tool message role ${toolMsg?.role}, ${toolText.length} chars` });
+	const nonlPath = `${inst.FIXTURE}-nonl.txt`;
+	const nonl = fs.existsSync(nonlPath) ? fs.readFileSync(nonlPath, "utf8") : null;
+	// Exact, not "contains": a lost final newline or last line is a different file.
+	step("read tool results sent back to the model are the fixture files, byte for byte", toolMsg?.role === "tool" && toolText === fixture && nonlMsg?.role === "tool" && nonl !== null && nonlText === nonl, { note: `fixture ${toolText.length}/${fixture.length} chars, no-final-newline fixture ${nonlText.length}/${nonl?.length ?? "missing"} chars` });
+	result.observations.readResults = [`fixture equal ${toolText === fixture} (${toolText.length} chars)`, `no-final-newline fixture equal ${nonl !== null && nonlText === nonl} (${nonlText.length} chars)`];
 	const options = await page.$$eval('[data-testid="question-dock"] [role="radio"]', (els) => els.map((e) => e.textContent.trim()));
 	// The card shuffles options on purpose, so compare them as a set.
 	options.sort();
@@ -243,6 +268,7 @@ try {
 	save();
 
 	result.observations = {
+		...result.observations,
 		modelRules: log().map((r) => r.rule),
 		proberTools: (log()[0]?.request?.tools ?? []).map((t) => t.function?.name).sort(),
 		storedShape: shape,
@@ -281,6 +307,46 @@ try {
 		await shot("06-deleted");
 		result.observations.deleted = { rowGone, listed: afterDelete.some((c) => c.id === chatId), fileExists: fs.existsSync(file) };
 		result.observations.apiCalls = [...new Set(http)].sort();
+
+		// 6. the sidebar's order (after apiCalls, so these calls don't count there):
+		// three sessions, then a turn on the first, so ordering by last activity
+		// (first, third, second) differs from ordering by creation (third, second, first).
+		const api = async (method, p, body) => attached
+			? page.evaluate(async (m, u, b) => { const r = await fetch(u, { method: m, headers: { "content-type": "application/json" }, body: b }); return { status: r.status, text: await r.text() }; }, method, p, body)
+			: fetch(`${APP}${p}`, { method, headers: { origin: APP, "content-type": "application/json" }, body }).then(async (r) => ({ status: r.status, text: await r.text() }));
+		const made = [];
+		for (const label of ["first", "second", "third"]) {
+			const r = await api("POST", "/api/chats", JSON.stringify({ title: `zz-prove-it sidebar ${label}` }));
+			made.push({ label, id: r.status === 200 ? JSON.parse(r.text).id : null });
+			await new Promise((res) => setTimeout(res, 50));
+		}
+		const touch = await api("POST", "/api/chat", JSON.stringify({ chatId: made[0].id, input: { type: "text", text: "sidebar order touch" } }));
+		// The POST only acknowledges the turn: wait until the server no longer
+		// marks the session busy, so the order is read, and the session deleted, once it settled.
+		const busyOf = async (id) => JSON.parse((await api("GET", "/api/chats")).text).chats.find((c) => c.id === id)?.busy;
+		const settleBy = Date.now() + turnMs;
+		while (Date.now() < settleBy && (await busyOf(made[0].id)) !== false) await new Promise((res) => setTimeout(res, 250));
+		await page.goto(`${APP}/chat/new`, { waitUntil: "domcontentloaded" });
+		await page.waitForSelector('[data-testid="session-row"]', { timeout: 30_000 });
+		await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="session-row"]')].filter((e) => e.textContent.includes("zz-prove-it sidebar")).length >= 3, { timeout: 10_000 }).catch(() => null);
+		const sidebarOrder = await page.$$eval('[data-testid="session-row"]', (els) => els.map((e) => e.textContent.match(/zz-prove-it sidebar (first|second|third)/)?.[1]).filter(Boolean));
+		await shot("07-sidebar-order");
+		// Delete the fixtures, retrying while a turn still runs (409), so a later
+		// drive on this instance starts clean; say so if one can't be removed.
+		const leftover = [];
+		for (const m of made) {
+			if (!m.id) continue;
+			let status = 0;
+			for (let attempt = 0; attempt < 20; attempt++) {
+				status = (await api("DELETE", `/api/chats/${m.id}?mode=preserve-graph`)).status;
+				if (status !== 409) break;
+				await new Promise((res) => setTimeout(res, 500));
+			}
+			if (status !== 200) leftover.push(`${m.label} (${status})`);
+		}
+		step("the sidebar-order fixture sessions are deleted", leftover.length === 0, { note: leftover.length ? `left behind: ${leftover.join(", ")}` : "all three gone" });
+		result.observations.sidebarOrder = sidebarOrder;
+		step("the sidebar lists sessions by last activity: a session with a new turn moves to the top", touch.status === 200 && JSON.stringify(sidebarOrder) === JSON.stringify(["first", "third", "second"]), { note: `turn ${touch.status}, order ${JSON.stringify(sidebarOrder)}` });
 	}
 } catch (error) {
 	exitCode = 1;

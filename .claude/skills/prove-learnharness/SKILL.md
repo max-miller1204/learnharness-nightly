@@ -26,7 +26,7 @@ node scripts/scope.mjs        # the diff, the surfaces and tiers it reaches, and
 
 `scope.mjs` runs `git merge-base HEAD origin/main`, `git diff --name-only <base>` and `git ls-files --others --exclude-standard`, then applies the map below and prints the plan: only the surfaces and tiers the diff reaches.
 
-Run the whole plan in one go with `scripts/run-plan.sh <slug> [same args as scope.mjs]`: it makes the run folder, runs every planned step in order, carries on past failing checks (they are evidence), always cleans up, and prints a summary (each compare's result, the failed commands) with the run folder on its last line. If the change itself fails to build, start or launch, it stops and reports BROKEN (back to the builder); if the base build, the environment or a planned surface fails, it stops as BLOCKED. Files `scope.mjs` can't map stop it as BLOCKED before anything runs: decide by hand and add a rule. `--base <ref>` applies to the whole run. Exit 0 all checks passed, 1 a check failed or the change is BROKEN, 2 BLOCKED, 3 no app surface, 4 the scripted checks passed and a step by hand is next (the summary's `MANUAL` line: a mobile device proof, or driving a changed CI script's CLI; not BLOCKED and not a verdict). The plan has stopped its instances by then, so drive a device recipe in a run folder of its own (`scripts/new-run.sh <slug>-device`, then `start.sh` there with the recipe's scenario) and name both run folders in one receipt. Then read the evidence: a script pass is not the verdict. Break-it probes beyond `probes.mjs` and recipe steps the plan doesn't script still need their own instances.
+Run the whole plan in one go with `scripts/run-plan.sh <slug> [same args as scope.mjs]`: it makes the run folder, runs every planned step in order, carries on past failing checks (they are evidence), always cleans up, and prints a summary (each compare's result, the failed commands) with the run folder on its last line. If the change itself fails to build, start or launch, it stops and reports BROKEN (back to the builder); if the base build, the environment or a planned surface fails, it stops as BLOCKED. Files `scope.mjs` can't map stop it as BLOCKED before anything runs: decide by hand and add a rule. `--base <ref>` applies to the whole run. Exit 0 all checks passed, 1 a check failed or the change is BROKEN, 2 BLOCKED, 3 no app surface, 4 the scripted checks passed and a step by hand is next (the summary's `MANUAL` line: a mobile device proof, or driving a changed CI script's CLI; not BLOCKED and not a verdict). For a mobile change the scripted part is `scripts/mobile-checks.sh`: the app's unit tests and this skill's phone checks, under Node 22 (mise's `node@22`, or `MOBILE_NODE_BIN`; any other major is BLOCKED). The plan has stopped its instances by then, so drive a device recipe in a run folder of its own (`scripts/new-run.sh <slug>-device`, then `start.sh` there with the recipe's scenario) and name both run folders in one receipt. Then read the evidence: a script pass is not the verdict. Break-it probes beyond `probes.mjs` and recipe steps the plan doesn't script still need their own instances.
 
 If the user names a flow instead ("prove the update banner"), prove that flow and skip the diff.
 
@@ -34,6 +34,7 @@ Follow each changed file to the surfaces and flows it reaches. Internal code cou
 
 | Changed path | Shared? | Reaches | Flows |
 |---|---|---|---|
+| `app/globals.css`, `components/sidebar.tsx`, `components/side-thread.tsx` | yes: they also lay out the desktop window's chrome (`data-lh-platform`, the window-control gutters) | web, electron dev | [teaching session](references/features/teaching-session.md) and [desktop window](references/features/desktop-window.md) |
 | `app/**` (not api), `components/**`, `public/**` | no | web | [teaching session](references/features/teaching-session.md) and the page the file renders |
 | `src/client-protocol/**`, `app/.well-known/**` | yes: the client protocol contract and server info | api, web, agent | [client protocol](references/features/client-protocol.md) |
 | `app/api/attachments/**`, `src/store/attachment*.ts`, `src/server/attachment-*.ts`, `src/core/attachment*.ts`, `components/attach*`, `components/file-path-drop-zone.tsx`, `src/agent/tools/{learner-file,fs-shared,ls,find,grep}.ts` | yes: uploads, claimed copies and the learner-file tools | api, web, agent | [remote attachments](references/features/remote-attachments.md) |
@@ -135,12 +136,14 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 
 **Copies**: nothing. The base commit is its answer key for existing flows.
 
-**Done looks like**: the session appears, the read reaches the model with the fixture's exact text, the question card shows the scenario's options, the answer reaches the model and its reply shows, the record on disk holds all of it, a reload shows it, deleting removes it from sidebar, API and disk; and the budgets hold. Assert all of it, not just the field the change is about. It adds to the answer key, never overrides it.
+**Done looks like**: the session appears, both reads reach the model with their files' exact text (the fixture, and a second one with no final newline), the question card shows the scenario's options, the answer reaches the model and its reply shows, the record on disk holds all of it, a reload shows it, deleting removes it from sidebar, API and disk; and the budgets hold. Assert all of it, not just the field the change is about. It adds to the answer key, never overrides it.
 
 **Could fool you**:
 - the transcript can show text before it is stored: `web-teach.mjs` also reads `data/chats/<id>.json`.
 - the question card shuffles its options on purpose: compare them as a set.
 - one session hides "lists only the newest": the drive uses a unique goal per run and checks the count before and after.
+- one session also hides the list's order: a list sorted oldest first passed every drive (audit 2026-11-21). `api-check.mjs` makes three sessions, then a turn on the first, and records the order before and after (`listOrder`); `web-teach.mjs` does the same in the rendered sidebar (`sidebarOrder`). The turn tells ordering by last activity from ordering by creation.
+- a Retry button that is there but does nothing passed a probe that only looked for it (audit 2026-11-21): `probes.mjs` C presses Retry by mouse and from the keyboard (focus, Enter), and each counts only once its one `POST /api/chat` stream has closed, the question card is up and Retry is gone.
 
 ### API (`app/api`)
 
@@ -152,7 +155,8 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 
 **Could fool you**:
 - `fetch` can't forge `Host`: `api-check.mjs` uses raw `http.request` for that probe.
-- shapes, not values, are diffed: a value change in a read route needs a recipe step that asserts the value.
+- with login, a cross-site cookie write with only `Sec-Fetch-Site: cross-site` answers 200 where the answer key says 403 (app bug #303, on main too), and the scripted refusals don't send it: see [references/api.md](references/api.md). Report it, don't drop it.
+- shapes, not values, are diffed: a value change in a read route needs a recipe step that asserts the value. The list's order is one such value: `listOrder` (three sessions, labelled) is diffed against base, and a reversed sort fails it.
 
 ### Agent tools (`src/agent`)
 
@@ -165,6 +169,7 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 **Could fool you**:
 - the fake model never judges content: a prompt change needs the real-model check and the spec.
 - a scenario rule that never fires falls through to the fallback reply: `observations.modelRules` must list every rule you expected.
+- a tool result that "contains" the right text can still be wrong: a `read` that dropped the last line of a file without a final newline passed a contains check on a fixture that ends in one (audit 2026-11-21). The drive reads two fixtures, one with no final newline, and requires each tool result to equal its file byte for byte (`observations.readResults`).
 
 ### Self-hosted server and `lh` launcher (`selfhost/`)
 
@@ -180,15 +185,16 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 
 ### Electron desktop (Linux)
 
-**Drive**: `E=$(scripts/electron.sh "$RUN" dev)` (dev shell on the head server) or `packaged` (`electron-builder --linux dir`, about 10 s with a warm cache), then `node scripts/web-teach.mjs "$E"` and parity with the browser: `node scripts/compare.mjs "$RUN/head/web-teach/result.json" "$(dirname "$E")/web-teach/result.json" --allow 'apiCalls=GET /api/updates 200' --allow 'apiCalls=GET /api/subscriptions 200'`. Details: [references/electron.md](references/electron.md).
+**Drive**: `E=$(scripts/electron.sh "$RUN" dev)` (dev shell on the head server) or `packaged` (`electron-builder --linux dir`, about 10 s with a warm cache), then `node scripts/web-teach.mjs "$E"` and parity with the browser: `node scripts/compare.mjs "$RUN/head/web-teach/result.json" "$(dirname "$E")/web-teach/result.json" --allow 'apiCalls=GET /api/updates 200' --allow 'apiCalls=GET /api/subscriptions 200' --skip desktop`. Desktop-only output (`observations.desktop`: the bridge's platform, the page's `data-lh-platform`, the window-control gutter) has no browser counterpart: `EB=$(scripts/electron.sh "$RUN" dev-base)` opens the base commit's own dev shell on the base instance, then `node scripts/web-teach.mjs "$EB"` and `node scripts/compare.mjs "$RUN/electron-dev-base/web-teach/result.json" "$(dirname "$E")/web-teach/result.json" --only desktop`. Details: [references/electron.md](references/electron.md).
 
-**Copies**: the web UI on the same server (parity, rung 1).
+**Copies**: the web UI on the same server (parity, rung 1); for desktop-only output, the base commit's desktop window (rung 1).
 
-**Done looks like**: the window shows the app with `window.lh` present, and the full teaching drive passes with the same observations as the browser.
+**Done looks like**: the window shows the app with `window.lh` present and reporting this machine's platform, the full teaching drive passes with the same observations as the browser, and the desktop-only observations match the base desktop window.
 
 **Could fool you**:
 - the dev shell skips the packaged server spawn, the desktop secret and the updater: changes there need `packaged`.
 - runs use `--no-sandbox` (ELECTRON_NO_SANDBOX=1): sandbox-only bugs are not covered.
+- browser parity can't see the bridge or the native window chrome: a bridge reporting `darwin` on Linux (macOS gutters, native buttons over the header) passed parity (audit 2026-11-21). The drive asserts the platform matches the host, and `compare-desktop.md` diffs the desktop-only observations against the base desktop window. The plan opens the base desktop window for every desktop change, including the web files that lay out the window's chrome (Scope map).
 
 ### Planned surfaces
 
@@ -212,8 +218,8 @@ A recipe says how to reach and drive a feature, never what right looks like: tha
 ## Try to break it
 
 After the happy path passes, run at least one probe that matches what you changed. `node scripts/probes.mjs "$B"` and `"$H"`, then `compare.mjs` on `probes/result.json`, script the first and third:
-- model failure mid-turn: `curl -X POST "$FAKE_CONTROL/__prove/fail?mode=broken-stream"` (or `http500`, `hang`), send a turn, expect a recorded error, "Something went wrong" with Retry, a usable composer and a working follow-up; reset with `mode=none`.
-- delete the session you are viewing (open it, right-click its row, Delete), including right after a turn starts: expect no 404 for the deleted session (`/api/chats/<id>`, `/api/chats/<id>/side-chats`), home after, and Back not reopening it. Any such 404 is BROKEN.
+- model failure mid-turn: `curl -X POST "$FAKE_CONTROL/__prove/fail?mode=broken-stream"` (or `http500`, `hang`), send a turn, expect a recorded error, "Something went wrong" with Retry, a usable composer and a working follow-up; reset with `mode=none`. Then press Retry on a failed turn (`http500`): expect a `POST /api/chat`, the turn completed and the banner gone.
+- delete the session you are viewing (open it, right-click its row, Delete): expect no 404 for the deleted session (`/api/chats/<id>`, `/api/chats/<id>/side-chats`), home after, and Back not reopening it. Any such 404 is BROKEN. Right after a turn starts, the delete is refused while the turn runs: `DELETE` answers 409 and the dialog says "A turn is running in this session", the session stays, and Try again after the turn ends deletes it with the same expectations.
 - doing it twice: on the question card press Enter twice on Submit answer; expect one answer in `data/chats/<id>.json`.
 - cold start, in its own run folder (one instance per side per run): `C=$(scripts/new-run.sh cold); PROVE_SEED=0 scripts/start.sh "$C" head` starts with no model configured; `/chat/new` must show the setup call to action (`data-testid="setup-cta"`), not an error page, and a turn must answer 422 `models_not_configured`; then `scripts/stop.sh "$C"`.
 - selfhost: a broken version is already probed by tier B; for launcher changes also try `lh use <bad version>` and `lh rollback` with no previous version.
