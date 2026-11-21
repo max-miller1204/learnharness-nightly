@@ -2,13 +2,15 @@
 
 /*
  * main.cjs's updater actions for Update everything (roadmap item 23 PR 2) and
- * the app menu's check while connected to a server, with the updater and the
+ * the app menu's Check for Updates… (in the local window and onto a server,
+ * docs/specs/t3-style-updates.md revision PR 6), with the updater and the
  * dialogs injected so tests can drive them without Electron.
  *
  * deps:
  *   updater()            electron-updater's autoUpdater, or null when updates are off
  *   state()              main's update snapshot (electron/update-machine.cjs: { status, version, ... })
- *   report(status)       "error": a failed check (T3's check-failure state)
+ *   check()              main's check (checkForUpdates), the sidebar's: resolves { checked }
+ *   activate()           show and focus the app's window (reopening one), before the check
  *   downloadStarted(version)  "downloading" `version` at 0%, as the Download button does
  *   downloadFailed(version)   the download failed: offer `version` again with T3's retry
  *   installing()         an install is already under way
@@ -91,39 +93,51 @@ function createUpdateActions(deps) {
 	}
 
 	/** T3's native dialogs for the app menu's check (DesktopApplicationMenu.ts:71-165 at 3ce2145). */
+	/**
+	 * App menu → Check for Updates…: T3 Code's native dialogs, ported from
+	 * apps/desktop/src/window/DesktopApplicationMenu.ts at df09ced7 (MIT, Copyright (c) 2026 T3
+	 * Tools Inc.): handleCheckForUpdatesMenuClick (:150-171) and checkForUpdatesFromMenu (:71-148).
+	 * The check, Download and Restart are main's own (the sidebar's paths), so the state, the
+	 * sidebar and Settings follow, and the menu raises no toast. The dialogs' text is fixed: the
+	 * state's message is one of main's fixed lines, never an updater error. LearnHarness's own: no
+	 * dialog while an install is under way, and "Update in progress" while Update everything runs,
+	 * which owns the updater (checked again before Download or Restart acts).
+	 */
 	async function checkNatively() {
 		const show = deps.show;
-		// An install is under way: its own updater errors must not meet a check's.
 		if (deps.installing()) return;
 		if (deps.running()) {
-			// The run already pinned, downloaded and owns the restart.
 			await show({ type: "info", title: "Update in progress", message: "Update everything is running.", detail: "LearnHarness restarts by itself when the server is back.", buttons: ["OK"] });
 			return;
 		}
-		const updater = deps.updater();
-		if (!updater) {
+		// T3's "Updates unavailable" (:155-166), before any window opens.
+		if (!deps.updater()) {
 			await show({ type: "info", title: "Updates unavailable", message: "Automatic updates are not available right now.", detail: "Automatic updates are not available in this build.", buttons: ["OK"] });
 			return;
 		}
-		try {
-			await updater.checkForUpdates();
-		} catch (err) {
-			deps.log(`update check failed: ${err?.message ?? err}`);
-			deps.report("error");
-		}
-		const { status, version } = deps.state();
-		if (status === "up-to-date") {
+		// T3 activates the window first (:168-170); a failure there never stops the check.
+		try { await deps.activate(); } catch { /* the dialog shows without a parent */ }
+		await deps.check();
+		if (deps.installing()) return;
+		const state = deps.state();
+		const offered = state.availableVersion ?? state.version ?? null;
+		if (state.status === "up-to-date") {
+			// :76-84
 			await show({ type: "info", title: "You're up to date!", message: `LearnHarness ${deps.appVersion} is currently the newest version available.`, buttons: ["OK"] });
-		} else if (status === "available") {
+		} else if (state.status === "available") {
+			// :85-102
 			const { response } = await show({
 				type: "info", title: "Update available",
-				message: version ? `LearnHarness ${version} is available.` : "A new version of LearnHarness is available.",
+				message: offered ? `LearnHarness ${offered} is available.` : "A new version of LearnHarness is available.",
 				detail: `You're running LearnHarness ${deps.appVersion}.`, buttons: ["Download", "Later"], defaultId: 0, cancelId: 1,
 			});
-			if (response === 0 && !deps.running()) deps.download();
-		} else if (status === "downloading") {
-			await show({ type: "info", title: "Update downloading", message: version ? `LearnHarness ${version} is already downloading.` : "A new version of LearnHarness is already downloading.", buttons: ["OK"] });
-		} else if (status === "downloaded") {
+			if (response === 0 && !deps.running()) void deps.download();
+		} else if (state.status === "downloading") {
+			// :103-113
+			await show({ type: "info", title: "Update downloading", message: offered ? `LearnHarness ${offered} is already downloading.` : "A new version of LearnHarness is already downloading.", buttons: ["OK"] });
+		} else if (state.status === "downloaded") {
+			// :114-127
+			const version = state.downloadedVersion ?? offered;
 			const { response } = await show({
 				type: "info", title: "Update ready",
 				message: version ? `LearnHarness ${version} is ready to install.` : "A new version of LearnHarness is ready to install.",
@@ -131,9 +145,11 @@ function createUpdateActions(deps) {
 			});
 			// A run may have started while the dialog was open.
 			if (response === 0 && !deps.running()) void deps.install();
-		} else if (status === "error") {
-			await show({ type: "warning", title: "Update check failed", message: "Could not check for updates.", detail: "An unknown error occurred. Please try again later.", buttons: ["OK"] });
+		} else if (state.status === "error") {
+			// :128-136
+			await show({ type: "warning", title: "Update check failed", message: "Could not check for updates.", detail: state.message ?? "An unknown error occurred. Please try again later.", buttons: ["OK"] });
 		}
+		// "checking" (another check of ours was running, so this one didn't) and "idle" show nothing, as in T3.
 	}
 
 	return { pin, downloadPinned, downloadExact, installPinned, checkNatively };

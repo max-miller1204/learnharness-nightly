@@ -894,8 +894,9 @@ let updateEverything = null;
 const updateActions = createUpdateActions({
 	updater: () => autoUpdater,
 	state: () => updateState,
-	// The menu's failed check, never over a download or an install under way.
-	report: (status) => { if (status === "error" && updateState.status !== "downloading" && updateState.status !== "available" && !installing) setUpdateState(updateMachine.reduceOnCheckFailure(updateState, CHECK_FAILED, nowIso())); },
+	// The menu's check is main's own (the sidebar's): its failure handling, and its { checked }.
+	check: () => checkForUpdates(),
+	activate: () => activateWindow(),
 	// A pinned download names its version from the start: electron-updater drops an older staged
 	// download once it starts another, so the state no longer claims it.
 	downloadStarted: (version) => {
@@ -1040,24 +1041,13 @@ function setupAutoUpdater() {
 	});
 }
 
-/** One result surface for manual checks. Preload buffers the navigation
- * request until React subscribes, including when all macOS windows closed. */
-async function checkForUpdatesFromMenu() {
-	try {
-		const win = [...trustedAppWindows][0] ?? await reopenWindow?.();
-		if (trustedAppWindows.has(win)) {
-			if (win.isMinimized()) win.restore();
-			win.focus();
-			const openSettings = () => {
-				try { win.webContents.send("lh:open-settings", "general"); } catch { /* window closed */ }
-			};
-			if (win.webContents.isLoadingMainFrame()) win.webContents.once("did-finish-load", openSettings);
-			else openSettings();
-		}
-	} catch {
-		/* Navigation failure must not prevent the manual check. */
-	}
-	checkForUpdates();
+/** The menu's check shows its dialog over the app's window: restore and focus it, reopening one
+ *  when none is open (T3's desktopWindow.activate, DesktopApplicationMenu.ts:168-170). */
+async function activateWindow() {
+	const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? await reopenWindow?.();
+	if (!win || win.isDestroyed?.()) return;
+	if (win.isMinimized()) win.restore();
+	win.focus();
 }
 
 function zoomStep(win, dir) {
@@ -1077,16 +1067,15 @@ function applyZoom(win, factor) {
 
 /** macOS needs an application menu with the Edit roles — without one,
  *  Cmd+C/V/A do nothing in the renderer. Everything else stays minimal. */
-function installMenu({ local = true } = {}) {
+function installMenu() {
 	const template = [
 		{
 			label: app.name,
 			submenu: [
 				{ role: "about" },
-				// Manual checks report their result in Settings → General.
-				// Connected to a server there is no local Settings page: native dialogs instead,
-				// also the way out when this app is too old to open the server (owner, 2026-11-18).
-				{ label: "Check for Updates…", click: () => (local ? checkForUpdatesFromMenu() : updateActions.checkNatively()) },
+				// T3's native dialogs, in the local window and onto a server (revision PR 6); onto a
+				// server also the way out when this app is too old to open it (owner, 2026-11-18).
+				{ label: "Check for Updates…", click: () => { void updateActions.checkNatively(); } },
 				...(serverList ? [{ label: "Switch server…", click: () => serverList.show({ check: true }) }] : []),
 				{ type: "separator" },
 				{ role: "hide" },
@@ -1327,10 +1316,10 @@ async function main() {
 		serverList = await createServerList({
 			app, BrowserWindow, WebContentsView, ipcMain, session, shell, safeStorage, dialog,
 			startLocal: startLocalServer, stopLocal: killServer, createLocalWindow: () => createWindow(),
-			setLocalMenu: (enabled) => installMenu({ local: enabled }), themeMode: () => appearance.mode,
+			setLocalMenu: () => installMenu(), themeMode: () => appearance.mode,
 			updatingServer: () => updateEverything?.server() ?? null,
 		});
-		installMenu({ local: false });
+		installMenu();
 		reopenWindow = () => serverList.reopen();
 		updateEverything = createUpdateEverything(updateEverythingDeps(serverList));
 		registerDesktopUpdateIPC(ipcMain, { current: () => serverList.current(), updateEverything });

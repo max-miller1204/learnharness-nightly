@@ -18,14 +18,14 @@ const V71 = "0.6.1-nightly.20261118.71";
 const V72 = "0.6.1-nightly.20261118.72";
 const V73 = "0.6.1-nightly.20261118.73";
 
-type State = { status: string; version: string | null };
+type State = { status: string; version: string | null; availableVersion?: string | null; downloadedVersion?: string | null; message?: string | null };
 
 function fixture({ state = { status: "available", version: V72 } as State, offered = V72 as string | null, running = false, answers = [] as number[] } = {}) {
 	const log: string[] = [];
 	const started: string[] = [];
 	const dialogs: Array<{ title?: string; message: string; detail?: string; buttons: string[] }> = [];
 	const current = { ...state };
-	const flags = { running, checkFails: false, downloadFails: false, inFlight: null as string | null, offered, pinnedFeed: null as string | null };
+	const flags = { running, installing: false, checkFails: false, downloadFails: false, inFlight: null as string | null, offered, pinnedFeed: null as string | null, activateFails: false };
 	const updater = Object.assign(new EventEmitter(), {
 		checkForUpdates: async () => {
 			log.push("check");
@@ -47,9 +47,15 @@ function fixture({ state = { status: "available", version: V72 } as State, offer
 		updater: () => present,
 		state: () => current,
 		downloadFailed: (version: string) => { log.push(`offer ${version}`); Object.assign(current, { status: "available", version }); },
-		report: (status: string) => { log.push(`report ${status}`); current.status = status; },
+		// Main's own check: a failure shows main's fixed line in the state.
+		check: async () => {
+			log.push("main check");
+			if (flags.checkFails) Object.assign(current, { status: "error", message: "Couldn’t check for updates. Try again later." });
+			return { checked: true };
+		},
+		activate: async () => { log.push("activate"); if (flags.activateFails) throw new Error("no window"); },
 		downloadStarted: (version: string) => { started.push(version); },
-		installing: () => false,
+		installing: () => flags.installing,
 		startInstall: () => log.push(`quit and install ${current.version}`),
 		adoptNotes: (info: { version: string }) => log.push(`notes ${info.version}`),
 		appVersion: V71,
@@ -157,40 +163,93 @@ test("installPinned installs only the ready pinned version", () => {
 	assert.deepEqual(f.log, [`quit and install ${V72}`]);
 });
 
-test("the menu's check uses T3's dialogs, and stays out of an Update everything run", async () => {
+const titles = (f: ReturnType<typeof fixture>) => f.dialogs.map((dialog) => dialog.title);
+
+test("the menu: Updates unavailable (T3 :155-166), before any window opens or check runs", async () => {
+	const f = fixture();
+	f.remove();
+	await f.actions.checkNatively();
+	assert.deepEqual([f.dialogs[0]!.title, f.dialogs[0]!.message, f.dialogs[0]!.detail, f.dialogs[0]!.buttons], ["Updates unavailable", "Automatic updates are not available right now.", "Automatic updates are not available in this build.", ["OK"]]);
+	assert.deepEqual(f.log, []);
+});
+
+test("the menu activates the window, then runs main's check (the sidebar's), then shows the dialog", async () => {
+	const f = fixture({ state: { status: "up-to-date", version: null } });
+	await f.actions.checkNatively();
+	assert.deepEqual(f.log, ["activate", "main check"]);
+	assert.deepEqual([f.dialogs[0]!.title, f.dialogs[0]!.message, f.dialogs[0]!.buttons], ["You're up to date!", `LearnHarness ${V71} is currently the newest version available.`, ["OK"]]);
+	const failing = fixture({ state: { status: "up-to-date", version: null } });
+	failing.flags.activateFails = true;
+	await failing.actions.checkNatively();
+	assert.deepEqual(failing.log, ["activate", "main check"], "a window that can't open never stops the check");
+	assert.deepEqual(titles(failing), ["You're up to date!"]);
+});
+
+test("the menu: Update available, Download downloads through main's Download, Later does nothing", async () => {
+	const f = fixture({ state: { status: "available", version: V72, availableVersion: V72 }, answers: [0] });
+	await f.actions.checkNatively();
+	assert.deepEqual([f.dialogs[0]!.title, f.dialogs[0]!.message, f.dialogs[0]!.detail, f.dialogs[0]!.buttons], ["Update available", `LearnHarness ${V72} is available.`, `You're running LearnHarness ${V71}.`, ["Download", "Later"]]);
+	assert.equal(f.log.at(-1), "menu download");
+	const later = fixture({ state: { status: "available", version: V72, availableVersion: V72 }, answers: [1] });
+	await later.actions.checkNatively();
+	assert.equal(later.log.includes("menu download"), false);
+	const unnamed = fixture({ state: { status: "available", version: null, availableVersion: null } });
+	await unnamed.actions.checkNatively();
+	assert.equal(unnamed.dialogs[0]!.message, "A new version of LearnHarness is available.");
+});
+
+test("the menu mid-download: Update downloading, OK only, nothing started", async () => {
+	const f = fixture({ state: { status: "downloading", version: V72, availableVersion: V72 } });
+	await f.actions.checkNatively();
+	assert.deepEqual([f.dialogs[0]!.title, f.dialogs[0]!.message, f.dialogs[0]!.buttons], ["Update downloading", `LearnHarness ${V72} is already downloading.`, ["OK"]]);
+	assert.deepEqual(f.log, ["activate", "main check"]);
+});
+
+test("the menu: Update ready, Restart installs through main's Install, Later does nothing", async () => {
+	const f = fixture({ state: { status: "downloaded", version: V72, availableVersion: V72, downloadedVersion: V72 }, answers: [0] });
+	await f.actions.checkNatively();
+	assert.deepEqual([f.dialogs[0]!.title, f.dialogs[0]!.message, f.dialogs[0]!.detail, f.dialogs[0]!.buttons], ["Update ready", `LearnHarness ${V72} is ready to install.`, "LearnHarness will restart to install it. Any running tasks will be interrupted.", ["Restart", "Later"]]);
+	assert.equal(f.log.at(-1), "menu install");
+	const later = fixture({ state: { status: "downloaded", version: V72, downloadedVersion: V72 }, answers: [1] });
+	await later.actions.checkNatively();
+	assert.equal(later.log.includes("menu install"), false);
+});
+
+test("the menu: Update check failed shows the state's fixed line, else T3's generic one", async () => {
+	const f = fixture({ state: { status: "idle", version: null } });
+	f.flags.checkFails = true;
+	await f.actions.checkNatively();
+	assert.deepEqual([f.dialogs[0]!.title, f.dialogs[0]!.message, f.dialogs[0]!.detail], ["Update check failed", "Could not check for updates.", "Couldn’t check for updates. Try again later."]);
+	const bare = fixture({ state: { status: "error", version: null, message: null } });
+	await bare.actions.checkNatively();
+	assert.equal(bare.dialogs[0]!.detail, "An unknown error occurred. Please try again later.");
+});
+
+test("the menu while another check runs (checking) or with nothing known (idle) shows nothing, as T3's", async () => {
+	for (const status of ["checking", "idle"]) {
+		const f = fixture({ state: { status, version: null } });
+		await f.actions.checkNatively();
+		assert.deepEqual(f.dialogs, [], status);
+	}
+});
+
+test("the menu during an Update everything run: Update in progress, no check; a run started while a dialog is open stops its button", async () => {
 	const busy = fixture({ running: true });
 	await busy.actions.checkNatively();
-	assert.deepEqual(busy.dialogs.map((dialog) => dialog.message), ["Update everything is running."]);
-	assert.deepEqual(busy.log, [], "no check, download or install during a run");
+	assert.deepEqual([busy.dialogs[0]!.title, busy.dialogs[0]!.message], ["Update in progress", "Update everything is running."]);
+	assert.deepEqual(busy.log, [], "no window, check, download or install during a run");
+	for (const [status, action] of [["downloaded", "menu install"], ["available", "menu download"]] as const) {
+		const raced = fixture({ state: { status, version: V72, availableVersion: V72, downloadedVersion: status === "downloaded" ? V72 : null }, answers: [0] });
+		const show = raced.actions.checkNatively();
+		raced.flags.running = true;
+		await show;
+		assert.equal(raced.log.includes(action), false, status);
+	}
+});
 
-	const off = fixture();
-	off.remove();
-	await off.actions.checkNatively();
-	assert.deepEqual([off.dialogs[0]!.title, off.dialogs[0]!.message], ["Updates unavailable", "Automatic updates are not available right now."]);
-
-	const current = fixture({ state: { status: "up-to-date", version: null } });
-	await current.actions.checkNatively();
-	assert.deepEqual([current.dialogs[0]!.title, current.dialogs[0]!.message], ["You're up to date!", `LearnHarness ${V71} is currently the newest version available.`]);
-
-	const offer = fixture({ answers: [0] });
-	await offer.actions.checkNatively();
-	assert.deepEqual([offer.dialogs[0]!.message, offer.dialogs[0]!.detail, offer.dialogs[0]!.buttons], [`LearnHarness ${V72} is available.`, `You're running LearnHarness ${V71}.`, ["Download", "Later"]]);
-	assert.equal(offer.log.at(-1), "menu download");
-
-	const ready = fixture({ state: { status: "downloaded", version: V72 }, answers: [0] });
-	await ready.actions.checkNatively();
-	assert.deepEqual([ready.dialogs[0]!.message, ready.dialogs[0]!.buttons], [`LearnHarness ${V72} is ready to install.`, ["Restart", "Later"]]);
-	assert.equal(ready.log.at(-1), "menu install");
-
-	const raced = fixture({ state: { status: "downloaded", version: V72 }, answers: [0] });
-	raced.flags.running = false;
-	const showing = raced.actions.checkNatively();
-	raced.flags.running = true; // a run started while the dialog was open
-	await showing;
-	assert.equal(raced.log.includes("menu install"), false);
-
-	const failed = fixture({ state: { status: "idle", version: null } });
-	failed.flags.checkFails = true;
-	await failed.actions.checkNatively();
-	assert.deepEqual([failed.dialogs[0]!.title, failed.dialogs[0]!.message], ["Update check failed", "Could not check for updates."]);
+test("the menu while an install is under way shows nothing and checks nothing", async () => {
+	const f = fixture({ state: { status: "downloaded", version: V72 } });
+	f.flags.installing = true;
+	await f.actions.checkNatively();
+	assert.deepEqual([f.dialogs, f.log], [[], []]);
 });

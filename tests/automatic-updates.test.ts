@@ -28,6 +28,9 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 	const windows: FakeWindow[] = [];
 	let userData = "/fixture/custom-user-data";
 	let menu: { submenu?: { label?: string; click?: () => void | Promise<void> }[] }[] = [];
+	// Native dialogs: what each showed (with its parent window, if any) and the buttons to press.
+	const dialogs: { parent: unknown; options: { type?: string; title?: string; message: string; detail?: string; buttons: string[]; defaultId?: number; cancelId?: number } }[] = [];
+	const answers: number[] = [];
 	class FakeUpdater extends EventEmitter {
 		checks = 0;
 		downloads = 0;
@@ -93,6 +96,8 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 			this.emit("closed");
 		}
 		static fromWebContents(contents: FakeWebContents) { return windows.find(win => win.webContents === contents); }
+		static getAllWindows() { return [...windows]; }
+		static getFocusedWindow() { return windows.find(win => win.focused) ?? null; }
 	}
 	const app = Object.assign(new EventEmitter(), {
 		isPackaged: packaged,
@@ -109,6 +114,13 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 	});
 	const electron = {
 		app, BrowserWindow: FakeWindow,
+		dialog: {
+			showMessageBox: async (...args: unknown[]) => {
+				const options = args.at(-1) as (typeof dialogs)[number]["options"];
+				dialogs.push({ parent: args.length > 1 ? args[0] : null, options });
+				return { response: answers.shift() ?? options.cancelId ?? 0 };
+			},
+		},
 		Menu: { buildFromTemplate: (value: typeof menu) => value, setApplicationMenu: (value: typeof menu) => { menu = value; } },
 		ipcMain: { on() {}, handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => unknown) => handles.set(channel, fn) },
 		nativeTheme: { shouldUseDarkColors: true, themeSource: "system", on() {} },
@@ -156,7 +168,7 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 	runInContext(mainSource, context, { filename: mainFile });
 	const run = (code: string) => runInContext(code, context);
 	return {
-		run, updater, windows, intervals, timeouts, handles, settingsReads, order, app, record, installArgs, permissions,
+		run, updater, windows, intervals, timeouts, handles, settingsReads, order, app, record, installArgs, permissions, dialogs, answers,
 		setSettings: (value: unknown) => { settings = JSON.stringify(value); },
 		setSettingsFailure: (value: string | Error) => { settings = value; },
 		window: () => run("createWindow(process.env.LH_DEV_URL).win") as FakeWindow,
@@ -757,6 +769,9 @@ describe("status observation never controls the updater", () => {
 	});
 });
 
+/** The menu's click starts async work (its check, its dialog): let it run out. */
+const settleMenu = async () => { for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve)); };
+
 describe("startup, timer, trusted IPC and menu wiring", () => {
 	it("starts and retains the 4h timer without any Settings subscription", async () => {
 		const f = fixture();
@@ -801,30 +816,128 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 		assert.equal(f.updater.checks, 1);
 	});
 
-	it("menu restores/focuses a minimized window, opens General, and checks", async () => {
+	it("the menu restores and focuses the window first, then shows T3's dialog over it, and never opens Settings", async () => {
 		const f = fixture(); await f.run("main()");
-		const win = f.windows[0]!; win.webContents.loading = false; win.minimized = true;
-		f.menuCheck();
-		assert.equal(win.minimized, false); assert.equal(win.focused, true);
-		assert.ok(win.webContents.messages.some(message => message.channel === "lh:open-settings" && message.value === "general"));
-		assert.equal(f.updater.checks, 1);
+		const win = f.windows[0]!; win.minimized = true;
+		await f.menuCheck();
+		await settleMenu();
+		assert.deepEqual([win.minimized, win.focused], [false, true]);
+		assert.equal(f.updater.checks, 1, "main's own check");
+		assert.deepEqual(f.dialogs.map((d) => [d.options.title, d.options.message, d.options.buttons]), [["You're up to date!", "LearnHarness 0.3.7 is currently the newest version available.", ["OK"]]]);
+		assert.equal(f.dialogs[0]!.parent, win, "over the app's window");
+		assert.ok(!win.webContents.messages.some((message) => message.channel === "lh:open-settings"), "no Settings page: the dialog is the answer");
+		assert.equal(f.state().status, "up-to-date", "the sidebar and Settings follow the same state");
 	});
 
-	it("menu reopens a window and delivers General after load; loading existing windows are covered too", async () => {
+	it("the menu reopens a window when none is open, then shows its dialog", async () => {
 		const f = fixture(); await f.run("main()");
-		f.windows[0]!.close(); await f.menuCheck();
-		assert.equal(f.windows.length, 1); assert.equal(f.updater.checks, 1);
-		const win = f.windows[0]!;
-		assert.ok(!win.webContents.messages.some(message => message.channel === "lh:open-settings"));
-		win.webContents.emit("did-finish-load");
-		assert.ok(win.webContents.messages.some(message => message.channel === "lh:open-settings"));
-		f.menuCheck(); win.webContents.emit("did-finish-load");
-		assert.equal(win.webContents.messages.filter(message => message.channel === "lh:open-settings").length, 2);
+		f.windows[0]!.close();
+		await f.menuCheck();
+		await settleMenu();
+		assert.equal(f.windows.length, 1);
+		assert.equal(f.dialogs[0]!.options.title, "You're up to date!");
 	});
 
-	it("menu navigation failure does not prevent its manual check", async () => {
+	it("Update available → Download downloads through main's Download (the sidebar's), with no toast notice", async () => {
 		const f = fixture(); await f.run("main()");
-		f.windows[0]!.webContents.fails = true; f.windows[0]!.webContents.loading = false;
-		f.menuCheck(); assert.equal(f.updater.checks, 1);
+		f.updater.offer = { version: "0.3.8" };
+		f.answers.push(0);
+		await f.menuCheck();
+		await settleMenu();
+		assert.deepEqual([f.dialogs[0]!.options.title, f.dialogs[0]!.options.message, f.dialogs[0]!.options.detail, f.dialogs[0]!.options.buttons], ["Update available", "LearnHarness 0.3.8 is available.", "You're running LearnHarness 0.3.7.", ["Download", "Later"]]);
+		assert.deepEqual([f.dialogs[0]!.options.defaultId, f.dialogs[0]!.options.cancelId], [0, 1]);
+		assert.equal(f.updater.downloads, 1);
+		assert.equal(f.state().status, "downloaded");
+		assert.equal(f.state().installFailedNotice, undefined);
+		// Later downloads nothing.
+		const later = fixture(); await later.run("main()");
+		later.updater.offer = { version: "0.3.8" };
+		later.answers.push(1);
+		await later.menuCheck();
+		await settleMenu();
+		assert.equal(later.updater.downloads, 0);
+		assert.equal(later.state().status, "available");
+	});
+
+	it("Update ready → Restart installs through main's Install: the install record, then quitAndInstall(true, true)", async () => {
+		const f = fixture(); await f.run("main()");
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		f.answers.push(0);
+		await f.menuCheck();
+		await settleMenu();
+		assert.deepEqual([f.dialogs[0]!.options.title, f.dialogs[0]!.options.message, f.dialogs[0]!.options.detail, f.dialogs[0]!.options.buttons], ["Update ready", "LearnHarness 0.3.8 is ready to install.", "LearnHarness will restart to install it. Any running tasks will be interrupted.", ["Restart", "Later"]]);
+		assert.deepEqual(f.installArgs, [[true, true]]);
+		assert.deepEqual(JSON.parse(f.record.text!), { fromVersion: "0.3.7", targetVersion: "0.3.8" });
+		assert.equal(f.run("installNotifies"), false, "a failure later is no sidebar notice (no toast)");
+		const later = fixture(); await later.run("main()");
+		later.updater.emit("update-downloaded", { version: "0.3.8" });
+		later.answers.push(1);
+		await later.menuCheck();
+		await settleMenu();
+		assert.deepEqual(later.installArgs, [], "Later installs nothing");
+	});
+
+	it("mid-download: Update downloading, with no second download or check", async () => {
+		const f = fixture(); await f.run("main()");
+		f.updater.offer = { version: "0.3.8" };
+		await f.run("checkForUpdates()");
+		let finish!: () => void;
+		f.updater.downloadUpdate = function () { this.downloads++; return new Promise<never[]>((resolve) => { finish = () => { this.emit("update-downloaded", { version: "0.3.8" }); resolve([]); }; }); };
+		const downloading = f.run("downloadUpdateNow()") as Promise<unknown>;
+		await settleMenu();
+		const checks = f.updater.checks;
+		await f.menuCheck();
+		await settleMenu();
+		assert.deepEqual([f.dialogs[0]!.options.title, f.dialogs[0]!.options.message, f.dialogs[0]!.options.buttons], ["Update downloading", "LearnHarness 0.3.8 is already downloading.", ["OK"]]);
+		assert.deepEqual([f.updater.checks, f.updater.downloads], [checks, 1], "the menu's check didn't run beside the download");
+		finish(); await downloading;
+	});
+
+	it("a failed check: Update check failed with main's fixed line, never the updater's error", async () => {
+		const f = fixture(); await f.run("main()");
+		f.updater.failure = new Error("https://private.example/feed 500");
+		await f.menuCheck();
+		await settleMenu();
+		assert.deepEqual([f.dialogs[0]!.options.type, f.dialogs[0]!.options.title, f.dialogs[0]!.options.message, f.dialogs[0]!.options.detail], ["warning", "Update check failed", "Could not check for updates.", "Couldn’t check for updates. Try again later."]);
+		assert.ok(!JSON.stringify(f.dialogs).includes("private.example"));
+	});
+
+	it("during an Update everything run: Update in progress, no check; a run that starts while a dialog is open stops its button", async () => {
+		const f = fixture(); await f.run("main()");
+		f.run("updateEverything = { running: () => true, server: () => null }");
+		await f.menuCheck();
+		await settleMenu();
+		assert.deepEqual([f.dialogs[0]!.options.title, f.dialogs[0]!.options.message], ["Update in progress", "Update everything is running."]);
+		assert.equal(f.updater.checks, 0);
+		const g = fixture(); await g.run("main()");
+		g.updater.emit("update-downloaded", { version: "0.3.8" });
+		g.run("var fixtureRun = false; updateEverything = { running: () => fixtureRun, server: () => null }");
+		let answer!: (value: { response: number }) => void;
+		g.run("dialog").showMessageBox = () => new Promise((resolve) => { answer = resolve; });
+		const clicked = g.menuCheck();
+		await settleMenu();
+		g.run("fixtureRun = true");
+		answer({ response: 0 });
+		await clicked; await settleMenu();
+		assert.deepEqual(g.installArgs, [], "Restart does nothing once a run owns the updater");
+	});
+
+	it("unpackaged: Updates unavailable, before any window opens or check runs", async () => {
+		const f = fixture({ packaged: false }); await f.run("main()");
+		f.windows[0]!.close();
+		await f.menuCheck();
+		await settleMenu();
+		assert.deepEqual([f.dialogs[0]!.options.title, f.dialogs[0]!.options.message, f.dialogs[0]!.options.detail], ["Updates unavailable", "Automatic updates are not available right now.", "Automatic updates are not available in this build."]);
+		assert.equal(f.windows.length, 0, "no window reopened for it");
+	});
+
+	it("while an install is under way the menu shows nothing and checks nothing", async () => {
+		const f = fixture(); await f.run("main()");
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		await f.run("installUpdateNow()");
+		const checks = f.updater.checks;
+		await f.menuCheck();
+		await settleMenu();
+		assert.deepEqual([f.dialogs.length, f.updater.checks], [0, checks]);
 	});
 });
