@@ -333,34 +333,45 @@ async function phonePages(screen, mode, marker, areas) {
 			}
 			continue;
 		}
-		for (let flick = 0; (await bar()).at > 0; flick++) {
-			if (flick === 10) fail(screen, `${mode}: area ${index + 1} did not reach its top after 10 flicks`);
-			await axe(["swipe", "--start-x", x, "--start-y", top, "--end-x", x, "--end-y", bottom]);
-			await sleep(900);
-		}
+		await toTop(screen, mode, index, x, top, bottom);
 		for (let step = 0; ; step++) {
 			if (step === 25) fail(screen, `${mode}: area ${index + 1} did not reach its end in 25 pages`);
 			const file = path.join(OUT, "iphone", `${screen}-${mode}-${page + 1}.png`);
 			const hash = await settledShot(screen, mode, file);
-			if (hash === previous) unlinkSync(file);
+			// A page the drag didn't change is the end of the area (or the
+			// previous area's last page, for a dock that doesn't scroll yet).
+			const repeated = hash === previous;
+			if (repeated) unlinkSync(file);
 			else {
 				page++;
 				previous = hash;
 				shots.push({ screen, mode, side: "iphone", file });
 			}
-			if ((await bar()).at >= 100) break;
+			if ((await bar()).at >= 100 || (repeated && step > 0)) break;
 			await axe(["drag", "--start-x", x, "--start-y", bottom, "--end-x", x, "--end-y", top]);
 			await sleep(900);
 		}
 		// A dock goes back to its top, where its choices and their checks are.
-		if (index > 0) {
-			for (let flick = 0; (await bar()).at > 0; flick++) {
-				if (flick === 10) fail(screen, `${mode}: area ${index + 1} did not return to its top`);
-				await axe(["swipe", "--start-x", x, "--start-y", top, "--end-x", x, "--end-y", bottom]);
-				await sleep(900);
-			}
-		}
+		if (index > 0) await toTop(screen, mode, index, x, top, bottom);
 	}
+}
+
+/** Flick an area toward its top until the screen stops changing: the top.
+ * (The scroll bar's value can read 0% before the top.) */
+async function toTop(screen, mode, index, x, top, bottom) {
+	const probe = path.join(OUT, `.probe-${screen}-${mode}.png`);
+	const hashOf = () => createHash("sha256").update(readFileSync(probe)).digest("hex");
+	await simctl("io", UDID, "screenshot", probe);
+	for (let flick = 0, before = hashOf(); ; flick++) {
+		if (flick === 25) fail(screen, `${mode}: area ${index + 1} did not reach its top after 25 flicks`);
+		await axe(["swipe", "--start-x", x, "--start-y", top, "--end-x", x, "--end-y", bottom]);
+		await sleep(900);
+		await simctl("io", UDID, "screenshot", probe);
+		const now = hashOf();
+		if (now === before) break;
+		before = now;
+	}
+	unlinkSync(probe);
 }
 
 /** Goal 4: each choice is one accessibility item that speaks its math. The
