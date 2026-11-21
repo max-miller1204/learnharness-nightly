@@ -37,6 +37,16 @@ export type UpdateState = {
 	/** Self-hosted only: every byte is in and the server checks and unpacks it ("Preparing update"). */
 	preparing?: boolean;
 	notice?: UpdateNotice | null;
+	/** Desktop only, T3's state (electron/update-machine.cjs): the offered and the downloaded version. */
+	availableVersion?: string | null;
+	downloadedVersion?: string | null;
+	/** Desktop only: when the last check ran (ISO time). */
+	checkedAt?: string | null;
+	/** Desktop only: what the last error interrupted, and whether the button retries it. */
+	errorContext?: "check" | "download" | "install" | null;
+	canRetry?: boolean;
+	/** Desktop only: the version the last install meant to reach, while this launch is still the old one. */
+	notAppliedVersion?: string;
 	/** Newest first: versions newer than the running one up to the offered one. */
 	releaseNotes?: ReleaseNoteGroup[];
 	omittedReleaseCount?: number;

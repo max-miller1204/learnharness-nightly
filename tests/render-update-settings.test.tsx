@@ -12,7 +12,7 @@ import { installModalDom } from "./modal-dom.ts";
 import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
 import { UpdateSettings, readDesktopAppStatus, updateStatusText, MANUAL_UPDATE_HINT, AUTO_UPDATE_HINT, type UpdateState } from "../components/settings/update-settings.tsx";
-import { AUTO_RELOAD_KEY, AUTO_RELOAD_MEMORY, claimAutoReload, downloadingTooltip, downloadRingOffset, hasUnsentMessage, shownReleaseNotes, SidebarUpdatePill, updateControlTooltip } from "../components/sidebar-update-pill.tsx";
+import { AUTO_RELOAD_KEY, AUTO_RELOAD_MEMORY, claimAutoReload, downloadingTooltip, downloadRingOffset, hasUnsentMessage, resolveUpdateControl, retryTooltip, shownReleaseNotes, SidebarUpdatePill, updateControlTooltip } from "../components/sidebar-update-pill.tsx";
 import { createRequire } from "node:module";
 import { ServerEventsProvider } from "../components/server-events.tsx";
 import { formatReleaseAge, ReleaseNoteSections, UpdateReleaseNotes } from "../components/release-notes-view.tsx";
@@ -676,6 +676,40 @@ describe("General update rows", () => {
 		assert.equal(popover!.querySelector("strong")!.textContent, "Cards.");
 	});
 
+	it("T3's retry tooltips and actions: a failed download downloads again, a failed install installs again, an install that didn't apply says so", () => {
+		const failedDownload = state({ status: "available", version: "0.3.8", availableVersion: "0.3.8", downloadedVersion: null, errorContext: "download", canRetry: true });
+		assert.equal(resolveUpdateControl(failedDownload, { pageVersion: "" }), "download");
+		assert.equal(updateControlTooltip(failedDownload, "download"), "Download failed for 0.3.8. Click to retry.");
+		const updaterErrorDownload = { ...failedDownload, status: "error" as const };
+		assert.equal(resolveUpdateControl(updaterErrorDownload, { pageVersion: "" }), "download", "an updater error with the download context too");
+		assert.equal(updateControlTooltip(updaterErrorDownload, "download"), "Download failed for 0.3.8. Click to retry.");
+		const failedInstall = state({ status: "error", version: "0.3.8", availableVersion: "0.3.8", downloadedVersion: "0.3.8", errorContext: "install", canRetry: true });
+		assert.equal(resolveUpdateControl(failedInstall, { pageVersion: "" }), "install");
+		assert.equal(updateControlTooltip(failedInstall, "install"), "Install failed for 0.3.8. Click to retry.");
+		const errorKeptDownload = { ...failedInstall, errorContext: null };
+		assert.equal(resolveUpdateControl(errorKeptDownload, { pageVersion: "" }), "install");
+		assert.equal(updateControlTooltip(errorKeptDownload, "install"), "Update 0.3.8 downloaded. Click to restart and install.");
+		const notApplied = state({ status: "available", version: "0.3.8", availableVersion: "0.3.8", downloadedVersion: null, notAppliedVersion: "0.3.8" });
+		assert.equal(updateControlTooltip(notApplied, "download"), "Update 0.3.8 did not apply. Click to retry.");
+		assert.equal(updateControlTooltip({ ...notApplied, status: "downloaded", downloadedVersion: "0.3.8" }, "install"), "Update 0.3.8 did not apply. Click to retry.");
+		assert.equal(retryTooltip({ ...notApplied, availableVersion: "0.3.9", version: "0.3.9" }), null, "a newer offer is just an offer");
+		// A check failure, or no T3 fields at all (the self-hosted server's state), keeps the plain lines.
+		assert.equal(resolveUpdateControl(state({ status: "error", errorContext: "check", canRetry: true }), { pageVersion: "" }), "check");
+		assert.equal(updateControlTooltip(state({ status: "available", version: "0.3.8" }), "download"), "Update 0.3.8 ready to download");
+		assert.equal(updateControlTooltip(state({ status: "downloaded", version: "0.3.8" }), "install"), "Update 0.3.8 downloaded. Click to restart and install.");
+	});
+
+	it("a failed install's button opens the install confirm again", async () => {
+		const b = bridge(state({ status: "error", version: "0.3.8", revision: 1, availableVersion: "0.3.8", downloadedVersion: "0.3.8", errorContext: "install", canRetry: true }));
+		const host = await mount(<SidebarUpdatePill />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		assert.equal(q(host, "update-pill")!.getAttribute("aria-label"), "Install failed for 0.3.8. Click to retry.");
+		await click(q(host, "update-pill"));
+		assert.ok(q(document, "install-update-dialog"), "the confirm opens");
+		await click(q(document, "install-update-confirm"));
+		assert.equal(b.calls.install, 1);
+	});
+
 	it("T3's hover rule: every state about an offered update shows its notes when there are any; the others keep the tooltip", async () => {
 		const notes = [{ version: "0.3.8", items: ["A change"] }];
 		const cases: Array<[string, Partial<UpdateState>, boolean]> = [
@@ -1300,16 +1334,16 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 });
 
 describe("install confirm and What's new", () => {
-	it("the confirm dialog lists the running work it will interrupt", async () => {
-		globalThis.fetch = async (input) => {
-			assert.equal(String(input), "/api/updates/running");
-			return Response.json({ items: [{ kind: "turn", title: "Calculus" }, { kind: "job", title: "Research" }, { kind: "plugin-worker", title: "Cards" }, { kind: "extraction", title: "notes.pdf" }, { kind: "compaction", title: "Algebra" }] });
-		};
+	it("the confirm dialog is T3's text and nothing more: no list of the running work (owner, 2026-11-20)", async () => {
+		const fetched: string[] = [];
+		globalThis.fetch = async (input) => { fetched.push(String(input)); return Response.json({ items: [{ kind: "turn", title: "Calculus" }] }); };
 		await mount(<InstallUpdateDialog open version="0.3.8" onClose={() => {}} onConfirm={() => {}} />);
 		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		assert.equal(q(document, "install-update-title")!.textContent, "Install update 0.3.8 and restart LearnHarness?");
 		assert.equal(q(document, "install-update-line")!.textContent, "Any running tasks will be interrupted. Make sure you're ready before continuing.");
-		const lines = [...q(document, "install-update-running")!.querySelectorAll("li")].map((li) => li.textContent);
-		assert.deepEqual(lines, ["Chat turn: Calculus", "Background job: Research", "Plugin worker: Cards", "Extraction: notes.pdf", "Compaction: Algebra"]);
+		assert.ok(!q(document, "install-update-running"), "no Running now list");
+		assert.ok(!document.body.textContent!.includes("Calculus"));
+		assert.deepEqual(fetched, [], "and nothing fetched for it");
 	});
 
 	it("What's new shows the groups, or Updated to X with View release on GitHub when there are none", () => {

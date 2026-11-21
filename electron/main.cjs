@@ -503,22 +503,44 @@ const UPDATE_STARTUP_DELAY_MS = 15 * 1000;
 const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 const releaseNotes = require("./release-notes.cjs");
 let autoUpdater = null; // electron-updater's, packaged builds only
-// Observational only: this snapshot NEVER gates a check, download or install.
+const updateMachine = require("./update-machine.cjs");
+// Observational only: this snapshot NEVER gates electron-updater's own work.
 // The revision lets late subscribers reject an older in-flight IPC snapshot.
-// `downloadPercent` (0 to 100, or null when unknown) only while "downloading": the sidebar's progress ring.
-let updateState = { status: "idle", version: null, revision: 0, downloadPercent: null, releaseNotes: [], omittedReleaseCount: 0 };
+// T3's state (electron/update-machine.cjs): status, availableVersion,
+// downloadedVersion, checkedAt, message, errorContext, canRetry, the offered
+// version's notes, `downloadPercent` (0 to 100, or null when unknown, the
+// sidebar's progress ring), and LearnHarness's `version` for its readers.
+let updateState = updateMachine.createInitialUpdateState();
 // Every group of the offered version (uncapped): the notes cache keeps them all.
 let offeredGroups = [];
 let installing = false;
+// quitAndInstall was called: an updater error from here on is the install's (not its re-check's or download's).
+let quitRequested = false;
+// A check or a download of ours is running: its own promise reports the outcome, not the "error" event.
+let activeAction = null;
+// The install this launch didn't apply (T3's notAppliedVersion), from the install record.
+let notAppliedVersion = null;
 
-function reportUpdateStatus(status, version = null, downloadPercent = null) {
+const nowIso = () => new Date().toISOString();
+// The state's `message` is fixed text per context: raw updater errors (paths, URLs) go to the log only.
+const CHECK_FAILED = "Couldn’t check for updates. Try again later.";
+const DOWNLOAD_FAILED = "Couldn’t download the update. Try again.";
+const UPDATE_FAILED = "Something went wrong with the update. Try again later.";
+const INSTALL_FAILED = "Couldn’t install the update.";
+
+/** An install that failed before the app quit: T3's install failure, then its updater error
+ *  (DesktopUpdates.ts:855, :1150-1158), so the button reads "Install failed for X. Click to retry."
+ *  until the grace timer relaunches the app, whose install record then says it did not apply. */
+function reportInstallFailure() {
+	setUpdateState(updateMachine.reduceOnUpdaterError(updateMachine.reduceOnInstallFailure(updateState, INSTALL_FAILED), INSTALL_FAILED, nowIso()));
+}
+const offeredNotes = () => releaseNotes.capGroups(offeredGroups);
+const INSTALL_RECORD = () => path.join(app.getPath("userData"), updateMachine.INSTALL_RECORD_FILE);
+
+/** Broadcast the next state (a reducer's result); the revision moves on. */
+function setUpdateState(next) {
 	try {
-		// A later check/error must not hide an update already staged.
-		if (updateState.status === "downloaded" && status !== "downloaded") return;
-		const keepsNotes = status === "available" || status === "downloading" || status === "downloaded";
-		const notes = keepsNotes ? releaseNotes.capGroups(offeredGroups) : { releaseNotes: [], omittedReleaseCount: 0 };
-		const percent = status === "downloading" && Number.isFinite(downloadPercent) ? Math.min(100, Math.max(0, downloadPercent)) : null;
-		updateState = { status, version: typeof version === "string" ? version : null, revision: updateState.revision + 1, downloadPercent: percent, ...notes };
+		updateState = { ...next, revision: updateState.revision + 1, ...(notAppliedVersion ? { notAppliedVersion } : {}) };
 		for (const win of trustedAppWindows) {
 			try {
 				win.webContents.send("lh:update-status", updateState);
@@ -528,6 +550,28 @@ function reportUpdateStatus(status, version = null, downloadPercent = null) {
 		}
 	} catch {
 		/* Status reporting must never interrupt the updater. */
+	}
+}
+
+/** Read the install record once at launch: still on its old version means the install didn't apply. */
+function readInstallRecord() {
+	try {
+		const record = JSON.parse(fs.readFileSync(INSTALL_RECORD(), "utf8"));
+		notAppliedVersion = updateMachine.resolveNotAppliedInstallVersion(record, app.getVersion());
+	} catch {
+		notAppliedVersion = null;
+	}
+	if (notAppliedVersion) log(`auto-update: the last update install did not apply (still ${app.getVersion()}, meant ${notAppliedVersion})`);
+	else {
+		try { fs.rmSync(INSTALL_RECORD(), { force: true }); } catch { /* none */ }
+	}
+}
+
+function writeInstallRecord(targetVersion) {
+	try {
+		fs.writeFileSync(INSTALL_RECORD(), JSON.stringify({ fromVersion: app.getVersion(), targetVersion }));
+	} catch (err) {
+		log(`could not record the update install: ${err?.message ?? err}`);
 	}
 }
 
@@ -568,30 +612,48 @@ function checkForUpdates({ manual = false } = {}) {
 		log("auto-update: automatic check skipped (turned off in Settings)");
 		return;
 	}
-	// Do not gate on display state: a stale spinner/error must never disable
-	// future background checks. electron-updater owns its in-flight work.
+	// Do not gate on display state: a stale spinner or error must never disable future background
+	// checks. Only a check or download of ours still running skips this one, as T3's active action
+	// does (DesktopUpdates.ts:583-591); electron-updater owns the rest of its in-flight work.
+	if (activeAction) return;
+	activeAction = "check";
 	autoUpdater
 		.checkForUpdates()
 		.then((result) => {
 			// A declined check (e.g. an unsupported package) establishes no
 			// latest-version claim. Real results arrive through updater events.
-			if (!result) reportUpdateStatus("idle");
+			if (!result && !updateMachine.isOffered(updateState)) setUpdateState({ ...updateState, status: "idle" });
 		})
 		.catch((err) => {
 			log(`update check failed: ${err?.message ?? err}`);
-			reportUpdateStatus("error");
-		});
+			setUpdateState(updateMachine.reduceOnCheckFailure(updateState, CHECK_FAILED, nowIso()));
+		})
+		.finally(() => { activeAction = null; });
 }
 
-/** Download the offered version (the user clicked Download). */
-function downloadUpdateNow() {
-	if (!autoUpdater || updateState.status !== "available" || updateEverything?.running()) return;
-	// 0 at the start, like T3's reduceDesktopUpdateStateOnDownloadStart (updateMachine.ts:145-156 at 3ce21458).
-	reportUpdateStatus("downloading", updateState.version, 0);
-	autoUpdater.downloadUpdate().catch((err) => {
-		log(`update download failed: ${err?.message ?? err}`);
-		reportUpdateStatus("error");
-	});
+/** Download the offered version (the user clicked Download). Re-checks first, as T3 does
+ *  (DesktopUpdates.ts:658-674): electron-updater downloads what its last check found, which can
+ *  be hours old. A failed re-check keeps the known offer, which still downloads. */
+async function downloadUpdateNow() {
+	if (!autoUpdater || updateState.status !== "available" || activeAction || installing || updateEverything?.running()) return;
+	activeAction = "download";
+	try {
+		try {
+			await autoUpdater.checkForUpdates();
+		} catch (err) {
+			log(`download re-check failed: ${err?.message ?? err}; downloading the known offer`);
+		}
+		if (updateState.status !== "available") return;
+		setUpdateState(updateMachine.reduceOnDownloadStart(updateState));
+		try {
+			await autoUpdater.downloadUpdate();
+		} catch (err) {
+			log(`update download failed: ${err?.message ?? err}`);
+			setUpdateState(updateMachine.reduceOnDownloadFailure(updateState, DOWNLOAD_FAILED));
+		}
+	} finally {
+		activeAction = null;
+	}
 }
 
 // A quitAndInstall that does not quit (a cancelled admin prompt, a missing
@@ -601,14 +663,14 @@ const INSTALL_QUIT_GRACE_MS = 10 * 1000;
 /** Whether a confirmed Install goes ahead now (or one is already under way). Not while an Update
  *  everything run owns its pinned install (electron/update-everything.cjs), nor with nothing staged. */
 function installAccepted() {
-	return installing || (!!autoUpdater && updateState.status === "downloaded" && !updateEverything?.running());
+	return installing || (!!autoUpdater && updateMachine.hasInstallableDownload(updateState) && !updateEverything?.running());
 }
 
 /** The user confirmed Install: re-check, take a newer build if one appeared, then quit and install. */
 async function installUpdateNow() {
 	if (installing || !installAccepted()) return;
 	installing = true;
-	const downloaded = updateState.version;
+	const downloaded = updateState.downloadedVersion;
 	let offered = null;
 	try {
 		const result = await autoUpdater.checkForUpdates();
@@ -621,15 +683,16 @@ async function installUpdateNow() {
 	if (offered) {
 		log(`install: ${offered.version} is newer than the downloaded ${downloaded}; downloading it first`);
 		adoptOfferedNotes(offered);
+		// electron-updater empties its cache when it starts a different version: the old download goes.
+		const notes = offeredNotes();
+		setUpdateState(updateMachine.reduceOnDownloadStart(updateMachine.reduceOnUpdateAvailable({ ...updateState, downloadedVersion: null }, offered.version, nowIso(), notes.releaseNotes, notes.omittedReleaseCount)));
 		try {
 			await autoUpdater.downloadUpdate();
 		} catch (err) {
-			// electron-updater empties its cache when it starts a different version,
-			// so the old download is gone: install nothing, offer the newer one again.
+			// Install nothing; offer the newer one again, with T3's "Download failed for X" retry.
 			log(`install: downloading ${offered.version} failed (${err?.message ?? err}); nothing installed`);
 			installing = false;
-			updateState = { ...updateState, status: "available" };
-			reportUpdateStatus("available", offered.version);
+			setUpdateState(updateMachine.reduceOnDownloadFailure(updateState, DOWNLOAD_FAILED));
 			return;
 		}
 	}
@@ -649,13 +712,19 @@ function quitAndInstallNow() {
 	} catch {
 		/* already dead */
 	}
+	// The next launch compares this with its own version: still the old one means it didn't apply (T3).
+	if (updateState.downloadedVersion) writeInstallRecord(updateState.downloadedVersion);
 	let quitting = false;
 	const markQuitting = () => { quitting = true; };
 	app.once("before-quit", markQuitting);
+	quitRequested = true;
 	try {
-		autoUpdater.quitAndInstall();
+		// Silent, and run the new version after (T3's quitAndInstall, DesktopUpdates.ts:930-933):
+		// NSIS shows no installer window and always relaunches.
+		autoUpdater.quitAndInstall(true, true);
 	} catch (err) {
 		log(`quitAndInstall failed: ${err?.message ?? err}`);
+		reportInstallFailure();
 	}
 	setTimeout(() => {
 		if (quitting) return;
@@ -676,11 +745,11 @@ const updateActions = createUpdateActions({
 	updater: () => autoUpdater,
 	state: () => updateState,
 	offerAgain: (version) => {
-		updateState = { ...updateState, status: "available" };
-		reportUpdateStatus("available", version);
+		const notes = offeredNotes();
+		setUpdateState(updateMachine.reduceOnUpdateAvailable({ ...updateState, downloadedVersion: null }, version, nowIso(), notes.releaseNotes, notes.omittedReleaseCount));
 	},
-	report: (status) => reportUpdateStatus(status),
-	downloadStarted: (version) => reportUpdateStatus("downloading", version, 0),
+	report: (status) => { if (status === "error") setUpdateState(updateMachine.reduceOnCheckFailure(updateState, "Could not check for updates.", nowIso())); },
+	downloadStarted: () => setUpdateState(updateMachine.reduceOnDownloadStart(updateState)),
 	installing: () => installing,
 	startInstall: () => { installing = true; quitAndInstallNow(); },
 	adoptNotes: (info) => adoptOfferedNotes(info),
@@ -744,9 +813,10 @@ function updateEverythingDeps(list) {
 function setupAutoUpdater() {
 	if (!app.isPackaged) {
 		log("auto-update: dev build - updater disabled");
-		reportUpdateStatus("disabled");
+		setUpdateState({ ...updateState, status: "disabled" });
 		return;
 	}
+	readInstallRecord();
 	try {
 		autoUpdater = require("electron-updater").autoUpdater;
 		const feed = process.env.LH_UPDATE_FEED;
@@ -761,7 +831,7 @@ function setupAutoUpdater() {
 	} catch (err) {
 		autoUpdater = null;
 		log(`auto-update: electron-updater unavailable (${err?.message ?? err}) - updates disabled`);
-		reportUpdateStatus("disabled");
+		setUpdateState({ ...updateState, status: "disabled" });
 		return;
 	}
 	autoUpdater.autoDownload = false;
@@ -775,26 +845,36 @@ function setupAutoUpdater() {
 		debug: (m) => {}, // too chatty for the persistent log
 		error: (m) => log(`updater error: ${m}`),
 	};
-	// An offered or downloading update stays on screen while a later check runs.
-	const offering = () => updateState.status === "available" || updateState.status === "downloading";
-	autoUpdater.on("checking-for-update", () => { if (!offering()) reportUpdateStatus("checking"); });
+	// An offered, downloading or downloaded update stays on screen while a later check runs
+	// (T3: "An offer stays on screen while re-checking", DesktopUpdates.ts:594-597).
+	const offering = () => updateMachine.isOffered(updateState) || updateState.status === "downloading";
+	autoUpdater.on("checking-for-update", () => { if (!offering()) setUpdateState(updateMachine.reduceOnCheckStart(updateState, nowIso())); });
 	autoUpdater.on("update-available", (info) => {
-		if (updateState.status === "downloaded" || updateState.status === "downloading") return;
+		// A later check must not hide a staged or downloading update (Install re-checks for newer itself).
+		if (updateState.status === "downloaded" || updateState.status === "downloading" || typeof info?.version !== "string") return;
+		// Found again: nothing changes (T3's handleUpdateAvailable, DesktopUpdates.ts:1080).
+		if (updateMachine.isOffered(updateState) && updateState.availableVersion === info.version) return;
 		adoptOfferedNotes(info);
-		reportUpdateStatus("available", info?.version);
+		const notes = offeredNotes();
+		setUpdateState(updateMachine.reduceOnUpdateAvailable(updateState, info.version, nowIso(), notes.releaseNotes, notes.omittedReleaseCount));
 	});
 	autoUpdater.on("download-progress", (progress) => {
-		const percent = Number.isFinite(progress?.percent) ? progress.percent : null;
-		if (shouldReportDownloadProgress(updateState, percent)) reportUpdateStatus("downloading", updateState.version, percent);
+		const percent = Number.isFinite(progress?.percent) ? Math.min(100, Math.max(0, progress.percent)) : null;
+		if (shouldReportDownloadProgress(updateState, percent)) setUpdateState(updateMachine.reduceOnDownloadProgress(updateState, percent));
 	});
-	autoUpdater.on("update-not-available", () => { if (!offering()) reportUpdateStatus("up-to-date"); });
+	autoUpdater.on("update-not-available", () => { if (!offering()) setUpdateState(updateMachine.reduceOnNoUpdate(updateState, nowIso())); });
 	autoUpdater.on("update-downloaded", (info) => {
 		log(`update downloaded: ${info?.version} - pill shown`);
-		reportUpdateStatus("downloaded", info?.version);
+		if (typeof info?.version === "string") setUpdateState(updateMachine.reduceOnDownloadComplete(updateState, info.version));
 	});
 	autoUpdater.on("error", (err) => {
 		log(`updater error: ${err?.message ?? err}`);
-		if (!installing) reportUpdateStatus("error");
+		// An install's error (electron-updater reports a failed installer here): T3's retry state, and
+		// the grace timer relaunches. A check or download of ours reports through its own promise, and
+		// a later error must not hide an update already staged (as T3's check failure keeps it).
+		if (installing) { if (quitRequested && updateState.errorContext !== "install") reportInstallFailure(); return; }
+		if (activeAction || updateState.downloadedVersion) return;
+		setUpdateState(updateMachine.reduceOnUpdaterError(updateState, UPDATE_FAILED, nowIso()));
 	});
 }
 
@@ -1021,7 +1101,8 @@ async function main() {
 	});
 	ipcMain.handle("lh:update:download", (event) => {
 		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
-		downloadUpdateNow();
+		// Re-checks, then downloads; the page follows the pushed state, not this promise.
+		return downloadUpdateNow();
 	});
 	ipcMain.handle("lh:update:get", (event) => {
 		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
