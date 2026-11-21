@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { repairMathForDisplay } from "../../../src/core/math-delims.ts";
 import { buildAnswer, type QuestionData } from "../../../src/core/question-core.ts";
-import { drawTex, EXCLUDED_PACKAGES, hasMath, joinPieces, plainText, splitLabel, tagClassCount, type LabelPiece } from "../src/choice-math.ts";
+import { drawTex, EXCLUDED_PACKAGES, flattening, hasMath, joinPieces, plainText, splitLabel, tagClassCount, type LabelPiece } from "../src/choice-math.ts";
 import { spokenLabel } from "../src/math-speech.ts";
 
 const LABEL = "No, $P\\to Q$ is blocked.";
@@ -111,6 +111,48 @@ test("invisible colors stay as source text", () => {
     "\\mmlToken{mi}[mathbackground=\"none\"]{x}", "\\mmlToken{mi}[color=\"transparent\"]{x}"]) {
     assert.equal(drawTex(tex, false), undefined, tex);
   }
+});
+
+test("a rule is drawn in the text's color or its own \\color, and kept when a theme drops colors", () => {
+  // MathJax fills a \rule with black when no \color is in effect (#317).
+  const shapes = (svg: string) => svg.match(/<(?:path|rect)\b[^>]*>/g) ?? [];
+  const fills = (svg: string) => shapes(svg).map((shape) => /fill="([^"]*)"/.exec(shape)?.[1]);
+  for (const on of [true, false]) {
+    flattening.on = on;
+    try {
+      const plain = drawTex("\\rule{1em}{2em}", false)?.svg;
+      assert.ok(plain);
+      assert.deepEqual(fills(plain.dark), ["currentColor"], `flattened ${on}`);
+      assert.deepEqual(fills(plain.light), ["currentColor"], `flattened ${on}`);
+      const black = drawTex("\\color{black}{\\rule{1em}{1em}}", false)?.svg;
+      assert.ok(black);
+      assert.ok(fills(black.light).includes("black"), "black stands out on the light theme");
+      assert.ok(fills(black.dark).length > 0 && !fills(black.dark).includes("black"), "dropped to the text color on the dark theme, not dropped");
+      const red = drawTex("\\color{red}{\\rule{1em}{1em}}", false)?.svg;
+      assert.ok(red && fills(red.dark).includes("red") && fills(red.light).includes("red"));
+      // A glyph that doesn't stand out takes the whole picture to the text color, the rule too:
+      // the rule's right edge (x 1572), or its rectangle, is still drawn.
+      const beside = drawTex("\\color{navy}{x}\\rule{1em}{1em}", false)?.svg;
+      assert.ok(beside && fills(beside.dark).every((fill) => fill === undefined || fill === "currentColor") && /H1572V|<rect[^>]*width="1000"/.test(beside.dark), `flattened ${on}`);
+    } finally {
+      flattening.on = true;
+    }
+  }
+  // A rule takes the nearest \color above it, even from math inside \text, which MathJax
+  // parses apart and fills with black; a color written for the rule itself stays.
+  for (const tex of ["\\textcolor{red}{x\\text{$\\rule{1em}{1em}$}}", "\\text{\\color{red}\\rule[2pt]{1em}{1em}}",
+    "\\mmlToken{mspace}[width=\"1em\",height=\"1em\",mathbackground=\"red\"]{}"]) {
+    const svg = drawTex(tex, false)?.svg;
+    assert.ok(svg, tex);
+    assert.deepEqual([...new Set([...fills(svg.light), ...fills(svg.dark)])], ["red"], tex);
+  }
+  // A strut draws nothing, so it never decides whether colors stand out: black on yellow does.
+  const strut = drawTex("\\colorbox{yellow}{\\rule{0pt}{1.2em}\\color{black}{x}}", false)?.svg;
+  assert.ok(strut);
+  for (const svg of [strut.light, strut.dark]) assert.ok(fills(svg).includes("yellow") && fills(svg).includes("black"), svg.slice(0, 120));
+  // A box behind text is still a box, and still dropped where its color doesn't stand out.
+  const box = drawTex("\\colorbox{yellow}{x}", false)?.svg;
+  assert.ok(box && box.light.includes('<rect fill="yellow"') && !box.dark.includes("<rect"));
 });
 
 test("a color that doesn't stand out in a theme is dropped there, not shown as source", () => {

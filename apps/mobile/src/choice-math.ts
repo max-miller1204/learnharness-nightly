@@ -170,10 +170,49 @@ const THEMES = Object.fromEntries((["dark", "light"] as const).map((mode) => {
   return [mode, { text: colors.text, surfaces }];
 })) as Record<ThemeMode, { text: string; surfaces: string[] }>;
 
-/** The color of each visible glyph and the box drawn behind it, if any. */
+/** Whether a space draws a rule: it has a background and a size. \rule{0pt}{1.2em}, a strut,
+ * only holds the line open. */
+function drawnRule(node: MmlNode): boolean {
+  if (!node.isKind("mspace") || node.attributes?.getExplicit("mathbackground") === undefined) return false;
+  const size = (name: string) => parseFloat(String(node.attributes.getExplicit(name) ?? 0));
+  return size("width") > 0 && (size("height") > 0 || size("depth") > 0);
+}
+
+/** A \rule is a space MathJax fills with the \color in effect where the rule is parsed, or
+ * with black when there is none (BaseMethods' Rule). That black stands for the color around
+ * it: the nearest \color above it, which math inside \text doesn't see while it is parsed,
+ * or else the text's color. Any other fill was chosen, and is left alone. */
+function rulesInTextColor(node: MmlNode, color?: string) {
+  const own = ["mathcolor", "color"].map((name) => node.attributes?.getExplicit(name)).find((value) => value !== undefined);
+  color = own === undefined ? color : String(own);
+  if (drawnRule(node) && String(node.attributes.getExplicit("mathbackground")).trim().toLowerCase() === "black") {
+    node.attributes.set("mathbackground", color ?? "currentColor");
+  }
+  if (!node.isToken) for (const child of children(node)) if (child) rulesInTextColor(child, color);
+}
+
+/** MathJax draws a rule as a rectangle marked as a background, like a \colorbox's, but it is
+ * the rule's ink: unmarked, a picture drawn without its colors recolors it instead of
+ * dropping it. */
+function rulesAsInk(adaptor: LiteAdaptor, node: LiteElement) {
+  for (const child of adaptor.childNodes(node)) {
+    if (adaptor.kind(child) === "#text") continue;
+    const element = child as LiteElement;
+    if (adaptor.kind(element) === "rect" && adaptor.getAttribute(node, "data-mml-node") === "mspace") adaptor.removeAttribute(element, "data-bgcolor");
+    rulesAsInk(adaptor, element);
+  }
+}
+
+/** The color of each visible glyph or rule and the box drawn behind it, if any. */
 function inks(node: MmlNode, color: string | undefined, behind: string | undefined, found: { color?: string; behind?: string }[]) {
   if (node.isKind("mphantom")) return found;
   const explicit = (names: string[]) => names.map((name) => node.attributes?.getExplicit(name)).find((value) => value !== undefined);
+  // A rule's background is its ink: currentColor is the text's color. A strut draws nothing.
+  if (drawnRule(node)) {
+    const rule = String(explicit(["mathbackground", "background"]));
+    found.push({ color: rule === "currentColor" ? undefined : rule, behind });
+    return found;
+  }
   color = (explicit(["mathcolor", "color"]) as string | undefined) ?? color;
   behind = (explicit(["mathbackground", "background"]) as string | undefined) ?? behind;
   if (node.isToken) {
@@ -222,10 +261,12 @@ export function drawTex(tex: string, display: boolean): DrawnMath | undefined {
     item.convert(document, STATE.COMPILED);
     const root = item.root;
     if (!trusted(root)) return;
+    rulesInTextColor(root);
     item.convert(document);
     const svg = adaptor.firstChild(item.typesetRoot) as LiteElement;
     const [, minY = 0, width = 0, height = 0] = (adaptor.getAttribute(svg, "viewBox") ?? "").split(" ").map(Number);
     for (const name of ["width", "height", "style"]) adaptor.removeAttribute(svg, name);
+    rulesAsInk(adaptor, svg);
     const original = adaptor.outerHTML(svg);
     if (/data-mml-node="merror"|data-mjx-error/.test(original) || /\s(?:style|id)=/.test(original)) return;
     // The same picture without its groups draws far faster (svg-flatten.ts).
