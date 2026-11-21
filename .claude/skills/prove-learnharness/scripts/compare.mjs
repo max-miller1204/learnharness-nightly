@@ -22,11 +22,18 @@ import * as path from "node:path";
 
 const argv = process.argv.slice(2);
 const allow = [];
+// --skip <key>: an observation only one kind of side has (the desktop window's
+// `desktop` against a browser). --only <key>: diff just these observations
+// (a base desktop window against the change's, where only desktop output is the key).
+const skip = [];
+const only = [];
 let outPath;
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
 	if (argv[i] === "--out") outPath = argv[++i];
 	else if (argv[i] === "--allow") { const [k, ...v] = argv[++i].split("="); allow.push([k, v.join("=")]); }
+	else if (argv[i] === "--skip") skip.push(argv[++i]);
+	else if (argv[i] === "--only") only.push(argv[++i]);
 	else positional.push(argv[i]);
 }
 const [basePath, headPath] = positional;
@@ -63,7 +70,10 @@ for (const [key, item] of allow) {
 }
 
 // 2. observations identical
-const keys = [...new Set([...Object.keys(base.observations ?? {}), ...Object.keys(head.observations ?? {})])].sort();
+for (const key of skip) lines.push(`- [SKIPPED] observation ${key}: not comparable between these two sides`);
+const keys = [...new Set([...Object.keys(base.observations ?? {}), ...Object.keys(head.observations ?? {})])].sort()
+	.filter((key) => !skip.includes(key) && (only.length === 0 || only.includes(key)));
+for (const key of only) if (!(key in (base.observations ?? {})) || !(key in (head.observations ?? {}))) row(false, `observation ${key} missing`, `base ${key in (base.observations ?? {})}, head ${key in (head.observations ?? {})}`);
 for (const key of keys) {
 	const b = JSON.stringify(base.observations?.[key]);
 	const h = JSON.stringify(head.observations?.[key]);

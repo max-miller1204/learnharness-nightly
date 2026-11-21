@@ -40,7 +40,9 @@ for cmd in "help" "status" "versions" "update" "rollback" "use 9.9.9" "restore" 
 	obs+=("lh $cmd -> $(printf '%s' "$out" | sed "s#$H#<home>#g" | tr '\n' ' ' | cut -c1-300)")
 done
 
-BUILD_ID=$( [ "$SIDE" = head ] && git -C "$TREE" rev-parse --short=12 HEAD || basename "$TREE" | cut -c1-12)
+# Head runs the working tree, uncommitted work included: label it with the
+# tree hash (as build.sh's stamp does), not the HEAD commit it may differ from.
+BUILD_ID=$( [ "$SIDE" = head ] && echo "tree $(worktree_hash | cut -c1-12)" || basename "$TREE" | cut -c1-12)
 LEAKS=$(IFS=';'; printf '%s' "${leaks[*]-}")
 node - "$OUT/result.json" "$SIDE" "$tests_ok" "$summary" "$BUILD_ID" "$LEAKS" "${obs[@]}" <<'EOF'
 const fs = require("node:fs");

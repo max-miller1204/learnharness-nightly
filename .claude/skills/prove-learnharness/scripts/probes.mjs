@@ -100,17 +100,39 @@ try {
 	const ackShown = await page.evaluate(() => (document.body.innerText.match(/zz-prove-it acknowledged your answer/g) ?? []).length);
 	res.probes.doubleSubmit = { storedShape: shape(msgsB), quizAnswerMessages: quizAnswers, acknowledgementsShown: ackShown, questionCardClosed: !(await page.$('[data-testid="question-dock"]')) };
 	save();
+
+	// C. Retry after a failed turn: the button must resend, not just be there
+	await fake("/__prove/reset");
+	await fake("/__prove/fail?mode=http500");
+	const idC = await newSession(`zz-prove-it ${Date.now().toString(36)} retry probe`);
+	await until(() => { const last = record(idC)?.messages?.at(-1); return last?.role === "assistant" && last.stopReason === "error" ? last : null; }, 60_000);
+	const retryButton = await page.waitForSelector('[data-testid="retry-failed-turn"]', { timeout: 30_000 }).catch(() => null);
+	const shapeBeforeRetry = shape(record(idC)?.messages ?? []);
+	await fake("/__prove/fail?mode=none");
+	await fake("/__prove/reset");
+	const chatPosts = [];
+	const onRequest = (r) => { const u = new URL(r.url()); if (u.origin === APP && u.pathname === "/api/chat" && r.method() === "POST") chatPosts.push(u.pathname); };
+	page.on("request", onRequest);
+	if (retryButton) await retryButton.click();
+	const retried = await until(() => { const m = record(idC)?.messages ?? []; return m.length > shapeBeforeRetry.length && m.at(-1)?.role !== "user" ? m : null; }, 60_000);
+	await page.waitForSelector('[data-testid="question-dock"]', { timeout: 30_000 }).catch(() => null);
+	const bannerGone = !(await page.$('[data-testid="retry-failed-turn"]'));
+	page.off("request", onRequest);
+	await page.screenshot({ path: path.join(OUT, "C1-retry.png") });
+	res.probes.retry = { buttonShown: Boolean(retryButton), chatPosts: chatPosts.length, shapeBeforeRetry, shapeAfterRetry: shape(record(idC)?.messages ?? []), turnCompleted: Boolean(retried), bannerGone };
+	save();
 	// leave no sessions behind on the instance
-	for (const id of [idA, idB]) await fetch(`${APP}/api/chats/${id}?mode=preserve-graph`, { method: "DELETE", headers: { origin: APP } });
+	for (const id of [idA, idB, idC]) await fetch(`${APP}/api/chats/${id}?mode=preserve-graph`, { method: "DELETE", headers: { origin: APP } });
 	res.cleanup = { remaining: (await (await fetch(`${APP}/api/chats`)).json()).chats.length };
-	const a = res.probes.brokenStream, b = res.probes.doubleSubmit;
+	const a = res.probes.brokenStream, b = res.probes.doubleSubmit, c = res.probes.retry;
 	res.steps.push(
 		{ name: "broken stream: the turn ends with a recorded error", ok: a.recordedError, note: a.errorMessage },
 		{ name: "broken stream: the UI says so and the composer stays usable", ok: a.uiShowsError && a.composerAfterFailure.present && a.composerAfterFailure.editable, note: a.uiErrorSnippet },
 		{ name: "broken stream: a follow-up turn works", ok: a.followUpAccepted, note: a.shapeAfterFollowUp.join(" ") },
 		{ name: "Enter twice on Submit answer: one answer stored and shown", ok: b.quizAnswerMessages === 1 && b.acknowledgementsShown === 1 && b.questionCardClosed, note: JSON.stringify(b) },
+		{ name: "Retry after a failed turn resends it: a POST, the turn completes, the banner goes", ok: c.buttonShown && c.chatPosts >= 1 && c.turnCompleted && c.bannerGone, note: JSON.stringify(c) },
 	);
-	res.observations = { brokenStream: [a.shapeAfterFailure.join(" "), a.shapeAfterFollowUp.join(" "), `uiShowsError ${a.uiShowsError}`], doubleSubmit: [b.storedShape.join(" "), `answers ${b.quizAnswerMessages}`, `acks ${b.acknowledgementsShown}`] };
+	res.observations = { brokenStream: [a.shapeAfterFailure.join(" "), a.shapeAfterFollowUp.join(" "), `uiShowsError ${a.uiShowsError}`], doubleSubmit: [b.storedShape.join(" "), `answers ${b.quizAnswerMessages}`, `acks ${b.acknowledgementsShown}`], retry: [c.shapeBeforeRetry.join(" "), c.shapeAfterRetry.join(" "), `posts ${c.chatPosts >= 1 ? "1+" : 0}`, `completed ${c.turnCompleted}`, `bannerGone ${c.bannerGone}`] };
 } catch (e) {
 	code = 1;
 	res.error = String(e?.stack ?? e).slice(0, 800);

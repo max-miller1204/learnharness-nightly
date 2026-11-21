@@ -108,8 +108,12 @@ if (Object.keys(surfaces).length) {
 	if (surfaces["selfhost-b"]) plan.push(`scripts/selfhost-b.sh "$RUN"`);
 	if (electron) {
 		if (!web) plan.push(`node scripts/web-teach.mjs "$H"`);
-		plan.push(`E=$(scripts/electron.sh "$RUN" ${electron}); node scripts/web-teach.mjs "$E"; node scripts/compare.mjs "$RUN/head/web-teach/result.json" "$RUN/electron-${electron}/web-teach/result.json" ${allow} --out "$RUN/compare-electron.md"`);
+		plan.push(`E=$(scripts/electron.sh "$RUN" ${electron}); node scripts/web-teach.mjs "$E"; node scripts/compare.mjs "$RUN/head/web-teach/result.json" "$RUN/electron-${electron}/web-teach/result.json" ${allow} --skip desktop --out "$RUN/compare-electron.md"`);
+		// Desktop-only output (the bridge, native window chrome): the base commit's
+		// own desktop window is the answer key, since the browser has none.
+		if ((web || api) && needsBase) plan.push(`EB=$(scripts/electron.sh "$RUN" dev-base); node scripts/web-teach.mjs "$EB"; node scripts/compare.mjs "$RUN/electron-dev-base/web-teach/result.json" "$RUN/electron-${electron}/web-teach/result.json" --only desktop --out "$RUN/compare-desktop.md"`);
 	}
+	if (surfaces.mobile) plan.push(`scripts/mobile-checks.sh "$RUN"   # the app's unit tests and the skill's phone checks, Node 22`);
 	if (surfaces.mobile) plan.push("# MANUAL: device proof next: in a new run folder (scripts/new-run.sh <slug>-device), drive references/features/mobile-beta.md, emulator health gate first, and name both run folders in one receipt. The iOS variant: references/planned.md (iOS).");
 	if (surfaces.protocol) plan.push("# PLANNED versioned protocol surface: see references/planned.md.");
 	plan.push(`scripts/stop.sh "$RUN"`);

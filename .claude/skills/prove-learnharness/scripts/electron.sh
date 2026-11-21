@@ -14,12 +14,16 @@
 # window shows the app. stop.sh <RUN> stops it (xvfb-run leads its group).
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
-RUN=$(canon_run "${1:?usage: electron.sh <RUN> dev|packaged}")
-MODE=${2:?usage: electron.sh <RUN> dev|packaged}
-HEAD_INST=$RUN/head/instance.env
-[ -f "$HEAD_INST" ] || die "start the head instance first: start.sh $RUN head"
+RUN=$(canon_run "${1:?usage: electron.sh <RUN> dev|packaged|dev-base}")
+MODE=${2:?usage: electron.sh <RUN> dev|packaged|dev-base}
+# dev-base: the base commit's own dev shell on the base instance, the answer
+# key for desktop-only output (the bridge, native window chrome) that browser
+# parity can't see.
+SIDE_INST=$RUN/head/instance.env
+[ "$MODE" = dev-base ] && SIDE_INST=$RUN/base/instance.env
+[ -f "$SIDE_INST" ] || die "start that instance first: start.sh $RUN $([ "$MODE" = dev-base ] && echo base || echo head)"
 # shellcheck disable=SC1090
-. "$HEAD_INST"
+. "$SIDE_INST"
 ED=$RUN/electron-$MODE
 [ ! -f "$ED/instance.env" ] || die "$ED already running; stop.sh $RUN first"
 mkdir -p "$ED/config"
@@ -44,6 +48,19 @@ case "$MODE" in
 		LOGIN="APP_PORT=$APP_PORT
 APP_TOKEN=$APP_TOKEN"
 		;;
+	dev-base)
+		# BUILD_DIR comes from the base instance.env: the base commit's tree.
+		BIN=$BUILD_DIR/node_modules/.bin/electron
+		[ -x "$BIN" ] || die "no electron in the base build's node_modules ($BUILD_DIR)"
+		[ -x "$BUILD_DIR/node_modules/electron/dist/electron" ] || (cd "$BUILD_DIR" && node node_modules/electron/install.js) >>"$ED/electron.log" 2>&1
+		ARGS=("$BUILD_DIR" "${SANDBOX[@]}" "--remote-debugging-port=$CDP")
+		ENVS=(LH_DEV_URL="$APP_URL")
+		WANT_URL=$APP_URL
+		SEED=0
+		E_DATA=$DATA_DIR
+		LOGIN="APP_PORT=$APP_PORT
+APP_TOKEN=$APP_TOKEN"
+		;;
 	packaged)
 		t0=$SECONDS
 		[ -x "$REPO/node_modules/electron/dist/electron" ] || (cd "$REPO" && node node_modules/electron/install.js) >>"$ED/electron.log" 2>&1
@@ -58,7 +75,7 @@ APP_TOKEN=$APP_TOKEN"
 		E_DATA="$ED/config/LearnHarness Nightly/data"
 		LOGIN=""
 		;;
-	*) die "mode must be dev or packaged" ;;
+	*) die "mode must be dev, packaged or dev-base" ;;
 esac
 
 # env -i: no ambient keys or settings reach Electron or the server it spawns

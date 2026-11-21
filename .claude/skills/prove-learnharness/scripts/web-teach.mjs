@@ -151,6 +151,18 @@ try {
 	await page.goto(`${APP}/chat/new`, { waitUntil: "domcontentloaded" });
 	await page.waitForSelector('[data-testid="composer"]', { timeout: 30_000 });
 	await new Promise((r) => setTimeout(r, 1000));
+	if (attached) {
+		// Desktop-only: the bridge's OS identity drives the native window-control
+		// gutters, and browser parity can't see it. The window runs on this host.
+		const desktop = await page.evaluate(() => {
+			const gutter = document.querySelector(".lh-lights-gutter");
+			return { platform: window.lh?.platform ?? null, htmlPlatform: document.documentElement.dataset.lhPlatform ?? null, gutterPaddingLeft: gutter ? getComputedStyle(gutter).paddingLeft : null };
+		});
+		result.window = { ...result.window, ...desktop, hostPlatform: process.platform };
+		// Desktop-only output: compared with a base desktop window (compare.mjs --only desktop), skipped against the browser.
+		result.observations.desktop = [`platform ${desktop.platform}`, `html data-lh-platform ${desktop.htmlPlatform}`, `lights gutter padding-left ${desktop.gutterPaddingLeft}`];
+		step("desktop window reports this machine's platform to the page", desktop.platform === process.platform && desktop.htmlPlatform === process.platform, { note: JSON.stringify({ ...desktop, hostPlatform: process.platform }) });
+	}
 	await page.goto(`${APP}/chat/new`, { waitUntil: "domcontentloaded" });
 	const composer = '[data-testid="composer"] [contenteditable="true"]';
 	await page.waitForSelector(composer, { timeout: 30_000 });
@@ -188,10 +200,19 @@ try {
 	await shot("02-question-card");
 	const log = () => fs.existsSync(inst.MODEL_LOG) ? fs.readFileSync(inst.MODEL_LOG, "utf8").trim().split("\n").filter(Boolean).slice(logStart).map((l) => JSON.parse(l)) : [];
 	const readResult = log().find((r) => r.rule === "probe-asks-question");
+	// The scenario reads two files in one turn: the no-final-newline fixture,
+	// then the main one, so the last two messages are their tool results.
+	const textOf = (m) => typeof m?.content === "string" ? m.content : JSON.stringify(m?.content ?? "");
 	const toolMsg = readResult?.request?.messages?.at(-1);
-	const toolText = typeof toolMsg?.content === "string" ? toolMsg.content : JSON.stringify(toolMsg?.content ?? "");
+	const nonlMsg = readResult?.request?.messages?.at(-2);
+	const toolText = textOf(toolMsg);
+	const nonlText = textOf(nonlMsg);
 	const fixture = fs.readFileSync(inst.FIXTURE, "utf8");
-	step("read tool result sent back to the model is the fixture file", toolMsg?.role === "tool" && toolText.includes(fixture.split("\n")[0]) && toolText.includes("zz-prove-it second line."), { note: `tool message role ${toolMsg?.role}, ${toolText.length} chars` });
+	const nonlPath = `${inst.FIXTURE}-nonl.txt`;
+	const nonl = fs.existsSync(nonlPath) ? fs.readFileSync(nonlPath, "utf8") : null;
+	// Exact, not "contains": a lost final newline or last line is a different file.
+	step("read tool results sent back to the model are the fixture files, byte for byte", toolMsg?.role === "tool" && toolText === fixture && nonlMsg?.role === "tool" && nonl !== null && nonlText === nonl, { note: `fixture ${toolText.length}/${fixture.length} chars, no-final-newline fixture ${nonlText.length}/${nonl?.length ?? "missing"} chars` });
+	result.observations.readResults = [`fixture equal ${toolText === fixture} (${toolText.length} chars)`, `no-final-newline fixture equal ${nonl !== null && nonlText === nonl} (${nonlText.length} chars)`];
 	const options = await page.$$eval('[data-testid="question-dock"] [role="radio"]', (els) => els.map((e) => e.textContent.trim()));
 	// The card shuffles options on purpose, so compare them as a set.
 	options.sort();
@@ -243,6 +264,7 @@ try {
 	save();
 
 	result.observations = {
+		...result.observations,
 		modelRules: log().map((r) => r.rule),
 		proberTools: (log()[0]?.request?.tools ?? []).map((t) => t.function?.name).sort(),
 		storedShape: shape,

@@ -68,6 +68,9 @@ printf '{}\n' >"$SD/auth.json"
 chmod 600 "$SD/auth.json"
 FIXTURE=$SD/home/zz-prove-it-fixture.txt
 printf 'PROVE-FIXTURE-SKY: Rayleigh scattering makes short (blue) wavelengths scatter most.\nzz-prove-it second line.\n' >"$FIXTURE"
+# A second fixture with no final newline: line handling that only works when
+# a file ends in "\n" shows up here (teach-read.json reads both).
+printf 'PROVE-FIXTURE-NONL: this file has no final newline.\nzz-prove-it last line, nothing after it.' >"$FIXTURE-nonl.txt"
 
 FAKE_PORT=$(free_port)
 # setsid: each process leads its own process group, so stop.sh can end it

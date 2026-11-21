@@ -135,6 +135,20 @@ try {
 	step("deleted session leaves the list and the disk", del.status === 200 && !stillListed && !fs.existsSync(file), `DELETE ${del.status}, listed ${stillListed}, file ${fs.existsSync(file) ? "still there" : "gone"}`);
 	result.observations.lifecycle.push(`create ${created.status}`, `listed ${listed}`, `stored ${Boolean(stored)}`, `delete ${del.status}`, `listed after ${stillListed}`, `file after ${fs.existsSync(file)}`);
 
+	// list order: one session hides it, so make three, a moment apart, and read
+	// the list's order back by label (ids differ between base and head)
+	const labels = ["first", "second", "third"];
+	const made = [];
+	for (const label of labels) {
+		const r = await raw("POST", "/api/chats", { body: JSON.stringify({ title: `zz-prove-it order ${label}` }) });
+		made.push({ label, id: r.status === 200 ? JSON.parse(r.body).id : null });
+		await new Promise((res) => setTimeout(res, 50));
+	}
+	const listedOrder = JSON.parse((await raw("GET", "/api/chats")).body).chats.map((c) => made.find((m) => m.id === c.id)?.label).filter(Boolean);
+	for (const m of made) if (m.id) await raw("DELETE", `/api/chats/${m.id}?mode=preserve-graph`);
+	result.observations.listOrder = listedOrder;
+	step("the session list is newest first", JSON.stringify(listedOrder) === JSON.stringify(["third", "second", "first"]), `order ${JSON.stringify(listedOrder)}`);
+
 	// model failure is reported, not swallowed
 	await fetch(`${inst.FAKE_CONTROL}/__prove/fail?mode=http500`, { method: "POST" });
 	try {

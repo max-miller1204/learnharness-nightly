@@ -20,7 +20,7 @@ The teaching agents (prober, teacher, practice, side chats, background workers) 
 - Fail switch: `POST $FAKE_CONTROL/__prove/fail?mode=http500|broken-stream|hang|none`.
 - To use a different scenario: `scripts/start.sh "$RUN" head scenarios/<name>.json`.
 
-`scenarios/teach-read.json`: on the goal, the prober calls `read` on the fixture; on the read result, it calls `probe` (Blue/Red); on the answer (`{"kind":"quiz",...}` tool result), it replies `zz-prove-it acknowledged your answer: ...`.
+`scenarios/teach-read.json`: on the goal, the prober calls `read` twice in one turn, on `<fixture>-nonl.txt` (no final newline) and then on the fixture; on the fixture's read result, it calls `probe` (Blue/Red); on the answer (`{"kind":"quiz",...}` tool result), it replies `zz-prove-it acknowledged your answer: ...`.
 
 ## Proving a tool change
 
