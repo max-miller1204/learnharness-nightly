@@ -202,12 +202,23 @@ describe("automatic-update preference gate", () => {
 });
 
 describe("status observation never controls the updater", () => {
+	it("the local window's notes hold the summary bounds: a long intro never reaches the page", () => {
+		const f = fixture(); f.window(); f.run("setupAutoUpdater()");
+		const body = `**v0.3.8** · ${"s".repeat(121)}\n\n${"x".repeat(601)}\n\n### Plus 2 more bug fixes.\n\n<details>\n<summary>Full changelog</summary>\n</details>`;
+		f.updater.emit("update-available", { version: "0.3.8", releaseNotes: body });
+		const [group] = f.state().releaseNotes as Array<Record<string, unknown>>;
+		assert.equal(group!.intro, undefined, "601 characters: dropped");
+		assert.equal(group!.stats, undefined, "121 characters: dropped");
+		assert.equal(group!.footer, "Plus 2 more bug fixes.");
+	});
+
 	it("reports events, but a staged update stays visible without suppressing future checks", async () => {
 		const f = fixture(); const win = f.window(); f.run("setupAutoUpdater()");
 		f.updater.emit("checking-for-update"); assert.equal(f.state().status, "checking");
 		f.updater.emit("update-available", { version: "0.3.8", releaseNotes: "- **New.** Thing." });
 		assert.equal(f.state().status, "available", "found, not downloaded"); assert.equal(f.state().version, "0.3.8");
-		assert.deepEqual(f.state().releaseNotes, [{ version: "0.3.8", items: ["**New.** Thing."] }]);
+		// A plain list (no generated summary) loses its bold, as T3's does; the count comes along.
+		assert.deepEqual(f.state().releaseNotes, [{ version: "0.3.8", items: ["New. Thing."], totalItems: 1 }]);
 		assert.equal(f.updater.downloads, 0);
 		f.updater.emit("checking-for-update"); f.updater.emit("update-not-available", {});
 		assert.equal(f.state().status, "available", "a later check keeps the offer on screen");
@@ -215,7 +226,7 @@ describe("status observation never controls the updater", () => {
 		f.run("downloadUpdateNow()");
 		assert.equal(f.updater.downloads, 1);
 		assert.equal(f.state().status, "downloaded");
-		assert.deepEqual(f.state().releaseNotes, [{ version: "0.3.8", items: ["**New.** Thing."] }], "notes survive the download");
+		assert.deepEqual(f.state().releaseNotes, [{ version: "0.3.8", items: ["New. Thing."], totalItems: 1 }], "notes survive the download");
 		f.updater.offer = null;
 		f.updater.emit("update-downloaded", { version: "0.3.8" });
 		const ready = f.state();

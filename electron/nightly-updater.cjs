@@ -50,9 +50,14 @@ class NightlyProvider extends GenericProvider {
 			.filter((entry) => typeof entry?.version === "string" && NIGHTLY_VERSION.test(entry.version) &&
 				compareVersions(entry.version, current) > 0 && compareVersions(entry.version, version) <= 0 &&
 				Array.isArray(entry.items))
+			// The feed's own fields, structured: electron/release-notes.cjs reads them as they are,
+			// never through Markdown (an item reading "<br>" or "- x" keeps its shape).
 			.map((entry) => ({
 				version: entry.version,
-				note: entry.items.filter((item) => typeof item === "string").map((item) => `- ${item}`).join("\n"),
+				items: entry.items.filter((item) => typeof item === "string"),
+				// Its own publish time, as the server shows it (not only the offered version's).
+				...(typeof entry.publishedAt === "string" && entry.publishedAt ? { releasedAt: entry.publishedAt } : {}),
+				...Object.fromEntries(["stats", "intro", "footer"].filter((key) => typeof entry[key] === "string").map((key) => [key, entry[key]])),
 			})) : [];
 		return { ...info, releaseDate: typeof publishedAt === "string" ? publishedAt : info.releaseDate, releaseNotes };
 	}

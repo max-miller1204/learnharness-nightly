@@ -10,14 +10,17 @@ import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { capReleaseNoteGroups, MAX_RELEASE_NOTE_ITEM_LENGTH } from "../src/core/release-notes.ts";
-import { groupsBetween, mergeNotesCache, readNotesCache, readUpdateRecord, whatsNew, writeUpdateRecord } from "../src/server/update-records.ts";
-import { buildSummaryInput, fallbackItems, formatItems, parseHighlights, trimPullRequestBody } from "../scripts/generate-release-notes.ts";
+import { capReleaseNoteGroups, MAX_RELEASE_NOTE_ITEM_LENGTH, totalReleaseItems, withoutSummaryEcho } from "../src/core/release-notes.ts";
+import { feedNotesToGroups, groupsBetween, mergeNotesCache, readNotesCache, readUpdateRecord, whatsNew, writeUpdateRecord } from "../src/server/update-records.ts";
+import { buildSummaryInput, countContributors, entryItems, fallbackItems, formatSummary, parseHighlights, pullRequestFor, readPullRequests, releaseStats, trimPullRequestBody, type PullRequest } from "../scripts/generate-release-notes.ts";
 
 const require = createRequire(import.meta.url);
 const electronNotes = require("../electron/release-notes.cjs") as {
-	releaseNoteGroups(info: unknown): Array<{ version: string; releasedAt?: string; items: string[] }>;
-	capGroups(groups: unknown[]): { releaseNotes: unknown[]; omittedReleaseCount: number };
+	releaseNoteGroups(info: unknown): Array<{ version: string; releasedAt?: string; items: string[]; totalItems: number; intro?: string; stats?: string; footer?: string }>;
+	summaryBody(note: unknown): string;
+	FULL_CHANGELOG_MARKER: string;
+	capGroups(groups: unknown[]): { releaseNotes: Array<{ version: string; items: string[]; totalItems: number; intro?: string; stats?: string; footer?: string }>; omittedReleaseCount: number };
+	bridgeNotes(groups: unknown[], omitted: number): { releaseNotes: Array<{ version: string; releasedAt?: string; items: string[]; totalItems: number; intro?: string; footer?: string }>; omittedReleaseCount: number };
 	mergeNotesCache(dir: string, groups: unknown[]): void;
 };
 
@@ -37,6 +40,106 @@ describe("notes limits", () => {
 		assert.equal(releaseNotes[0]!.items.length, 8);
 		assert.equal(releaseNotes[0]!.items[0]!.length, MAX_RELEASE_NOTE_ITEM_LENGTH);
 		assert.ok(releaseNotes[0]!.items[0]!.endsWith("..."));
+		assert.equal(releaseNotes[0]!.totalItems, 10, "the whole count survives the cut (N more changes on GitHub)");
+		assert.equal(capReleaseNoteGroups([{ version: V(1), items: [], intro: "3 bug fixes." }]).releaseNotes[0]!.totalItems, 1, "an intro counts as one");
+	});
+
+	it("older clients still see the intro or footer (written once more as the last item); every stored or sent copy keeps it", () => {
+		const withFooter = { items: ["**Cards.** Practice."], footer: "Plus 2 more bug fixes." };
+		const introOnly = { items: [], intro: "3 bug fixes." };
+		assert.deepEqual(entryItems(withFooter), ["**Cards.** Practice.", "Plus 2 more bug fixes."], "an older server or app shows the count as a bullet");
+		assert.deepEqual(entryItems(introOnly), ["3 bug fixes."], "and an intro-only release isn't empty there");
+		assert.deepEqual(entryItems({ items: ["a"] }), ["a"]);
+		// The server's state and cache keep it (its own older pages read only items); the count leaves it out.
+		const groups = feedNotesToGroups([
+			{ version: V(12), publishedAt: "", items: entryItems(withFooter), footer: withFooter.footer },
+			{ version: V(11), publishedAt: "", items: entryItems(introOnly), intro: introOnly.intro },
+		]);
+		assert.deepEqual(groups.map((g) => g.items), [["**Cards.** Practice.", "Plus 2 more bug fixes."], ["3 bug fixes."]]);
+		assert.deepEqual(groups.map(totalReleaseItems), [1, 1]);
+		// So does the desktop: main's state, the cache and the bridge.
+		const desktop = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: [
+			{ version: V(12), items: entryItems(withFooter), footer: withFooter.footer },
+			{ version: V(11), items: entryItems(introOnly), intro: introOnly.intro },
+		] });
+		assert.deepEqual(desktop.map((g) => [g.items, g.totalItems]), [[["**Cards.** Practice.", "Plus 2 more bug fixes."], 1], [["3 bug fixes."], 1]]);
+		// A page from before the summary fields (the old readDesktopAppStatus kept version, releasedAt and items)
+		// still shows "Plus 2 more" and "3 bug fixes." from what the bridge sends.
+		const sent = electronNotes.bridgeNotes(desktop, 0).releaseNotes;
+		const oldReader = sent.map((group) => ({ version: group.version, ...(group.releasedAt ? { releasedAt: group.releasedAt } : {}), items: group.items }));
+		assert.deepEqual(oldReader.map((g) => g.items), [["**Cards.** Practice.", "Plus 2 more bug fixes."], ["3 bug fixes."]]);
+		// The release page shows it once.
+		assert.equal(electronNotes.summaryBody({ version: V(12), items: entryItems(introOnly), intro: introOnly.intro }), "**3 bug fixes.**");
+		assert.ok(!electronNotes.summaryBody({ version: V(12), items: entryItems(withFooter), footer: withFooter.footer }).includes("- Plus 2"));
+	});
+
+	it("only the single trailing copy is the old-client echo: a bullet with the same text elsewhere stays", () => {
+		const footer = "Plus 2 more bug fixes.";
+		assert.deepEqual(withoutSummaryEcho([footer, "New feature.", footer], { footer }), [footer, "New feature."]);
+		assert.deepEqual(withoutSummaryEcho([footer, "New feature."], { footer }), [footer, "New feature."], "not the last item: no echo");
+		assert.deepEqual(withoutSummaryEcho(["a", `  Plus 2   more bug fixes. `], { footer }), ["a"], "compared normalized");
+		assert.deepEqual(withoutSummaryEcho(["a"], {}), ["a"]);
+		// Through main and then the bridge (two bounding passes, the second over cut items), a long bullet
+		// whose cut form reads like the footer is neither dropped nor uncounted.
+		const longFooter = `${"x".repeat(217)}...`;
+		const kept = electronNotes.capGroups([{ version: V(12), items: ["a", "x".repeat(300)], footer: longFooter }]).releaseNotes;
+		const [group] = electronNotes.bridgeNotes(kept, 0).releaseNotes;
+		assert.equal(group!.items.length, 2, "the long bullet is still sent");
+		assert.equal(group!.totalItems, 2, "and still counts");
+	});
+
+	it("a footer alone is a release to show (no stats, only the footer and its copy; or a body with stats and a ### line)", () => {
+		const [fromFeed] = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: [{ version: V(12), items: ["Thanks to everyone who tested."], footer: "Thanks to everyone who tested." }] });
+		assert.deepEqual([fromFeed?.footer, fromFeed?.totalItems], ["Thanks to everyone who tested.", 0]);
+		const body = `**v${V(12)}** · 1 change from 1 contributor\n\n### Thanks to everyone who tested.\n\n${electronNotes.FULL_CHANGELOG_MARKER}`;
+		const [fromPage] = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: body });
+		assert.deepEqual([fromPage?.stats, fromPage?.footer], ["1 change from 1 contributor", "Thanks to everyone who tested."]);
+	});
+
+	it("the same note reads the same date on the server and the desktop: the feed's time, else the build day", () => {
+		const notes = [
+			{ version: V(18), publishedAt: "2026-11-14T08:00:00Z", items: ["dated by the feed"] },
+			{ version: V(17), publishedAt: "", items: ["no feed time"] },
+			{ version: V(16), publishedAt: "last week", items: ["an unreadable one"] },
+		];
+		const server = feedNotesToGroups(notes).map((g) => [g.version, g.releasedAt]);
+		// The desktop's NightlyProvider hands each note over with its publish time as releasedAt.
+		const desktop = electronNotes.releaseNoteGroups({ version: V(18), releaseNotes: notes.map((n) => ({ version: n.version, items: n.items, ...(n.publishedAt ? { releasedAt: n.publishedAt } : {}) })) }).map((g) => [g.version, g.releasedAt]);
+		assert.deepEqual(server, [[V(18), "2026-11-14T08:00:00Z"], [V(17), "2026-11-17"], [V(16), "2026-11-16"]]);
+		assert.deepEqual(desktop, server);
+	});
+
+	it("one limit set everywhere: the server's groups and cache match the desktop's, 8 items of 220 characters, counted whole", () => {
+		const long = "y".repeat(600);
+		const note = { version: V(12), publishedAt: "", items: [...Array.from({ length: 8 }, (_, i) => `item ${i}`), long], intro: undefined };
+		const [server] = feedNotesToGroups([note]);
+		const [desktop] = electronNotes.capGroups([{ version: V(12), items: note.items }]).releaseNotes;
+		assert.equal(server!.items.length, 8);
+		assert.deepEqual([server!.items, server!.totalItems], [desktop!.items, desktop!.totalItems]);
+		assert.equal(server!.totalItems, 9, "the cut ninth still counts");
+		// An intro at its 600-character bound, with its copy cut to 220: still the copy, on both.
+		const introNote = { version: V(11), publishedAt: "", items: [long], intro: long };
+		const [serverIntro] = feedNotesToGroups([introNote]);
+		const [desktopIntro] = electronNotes.capGroups([{ version: V(11), items: [long], intro: long }]).releaseNotes;
+		assert.equal(serverIntro!.items[0]!.length, 220);
+		assert.deepEqual([serverIntro!.items, serverIntro!.totalItems], [desktopIntro!.items, desktopIntro!.totalItems]);
+		assert.deepEqual(withoutSummaryEcho(serverIntro!.items, serverIntro!), [], "its cut copy is recognised");
+		assert.equal(totalReleaseItems(serverIntro!), 1, "the intro counts once, as T3 counts it");
+		mergeNotesCache([serverIntro!], dir);
+		assert.deepEqual(readNotesCache(dir)[0]!.items, serverIntro!.items, "the server's cache holds the same");
+	});
+
+	it("summary fields are trimmed and collapsed before their bounds", () => {
+		const padded = `  ${"x".repeat(60)}   ${"y".repeat(58)}  `;
+		const [group] = feedNotesToGroups([{ version: V(12), publishedAt: "", items: [], stats: padded }]);
+		assert.equal(group!.stats, `${"x".repeat(60)} ${"y".repeat(58)}`, "119 characters once collapsed: kept");
+	});
+
+	it("the server keeps a feed note's summary fields", () => {
+		assert.deepEqual(feedNotesToGroups([{ version: V(12), publishedAt: "2026-11-12T08:00:00Z", items: ["a"], stats: "4 changes from 2 contributors", footer: "Plus 1 more bug fix." }, { version: V(11), publishedAt: "", items: [], intro: "2 bug fixes." }]), [
+			{ version: V(12), releasedAt: "2026-11-12T08:00:00Z", items: ["a"], totalItems: 1, stats: "4 changes from 2 contributors", footer: "Plus 1 more bug fix." },
+			{ version: V(11), releasedAt: "2026-11-11", items: [], totalItems: 1, intro: "2 bug fixes." },
+		]);
 	});
 
 	it("selects the versions after one and up to another, newest first", () => {
@@ -96,15 +199,58 @@ describe("data folder records", () => {
 describe("generate-release-notes", () => {
 	const subjects = ["feat: add flashcards (#3)", "fix: crash on empty deck (#4)", "docs: readme", "perf: faster graph", "fix: typo"];
 
-	it("formats highlights T3's way and counts the uncovered fixes", () => {
-		const items = formatItems(subjects, [{ label: "Flashcards.", detail: "Practice with cards.", commits: [1, 2] }]);
-		assert.deepEqual(items, ["**Flashcards.** Practice with cards.", "Plus 2 more bug fixes and performance improvements."]);
-		assert.deepEqual(formatItems(["fix: a"], []), ["1 bug fix."]);
-		assert.deepEqual(formatItems(["docs: a", "ci: b"], []), [], "zero highlights and no fixes: no items");
+	it("formats highlights T3's way; the uncovered fixes are the footer, or the intro with no highlights", () => {
+		assert.deepEqual(formatSummary(subjects, [{ label: "Flashcards.", detail: "Practice with cards.", commits: [1, 2] }]), {
+			items: ["**Flashcards.** Practice with cards."],
+			footer: "Plus 2 more bug fixes and performance improvements.",
+		});
+		assert.deepEqual(formatSummary(["fix: a"], []), { items: [], intro: "1 bug fix." });
+		assert.deepEqual(formatSummary(["perf: a", "perf: b"], []), { items: [], intro: "2 performance improvements." });
+		assert.deepEqual(formatSummary(["docs: a", "ci: b"], []), { items: [] }, "zero highlights and no fixes: nothing");
+	});
+
+	it("counts contributors T3's way and writes its stats line", () => {
+		const commits = [
+			{ subject: "feat: a (#1)", authorName: "Max Miller", sha: "aaa1" },
+			{ subject: "fix: b (#2)", authorName: "dependabot[bot]", sha: "bbb2" },
+			{ subject: "fix: c", authorName: "Max Miller", sha: "ccc3" },
+			{ subject: "docs: d", authorName: "Sam", sha: "ddd4" },
+		];
+		const pullRequests = new Map<number, PullRequest>([
+			[1, { body: "", author: { __typename: "User", login: "max-miller1204", name: "Max" }, mergeCommit: "aaa1" }],
+			[2, { body: "", author: { __typename: "Bot", login: "dependabot" }, mergeCommit: "bbb2" }],
+		]);
+		assert.equal(countContributors(commits, pullRequests), 2, "a PR author once (their git name too), bots never, plus direct pushers");
+		assert.equal(countContributors(commits, new Map()), 2, "without PR authors: the git names, bots aside");
+		assert.equal(releaseStats(4, 2), "4 changes from 2 contributors");
+		assert.equal(releaseStats(1, 1), "1 change from 1 contributor");
+	});
+
+	it("reads the PRs a partly failing GraphQL query still returned (gh exits non-zero on a missing PR)", () => {
+		const partial = JSON.stringify({ data: { repository: { pr1: { body: "Adds x.", author: { __typename: "User", login: "max", name: "Max" } }, pr9: null } }, errors: [{ message: "Could not resolve to a PullRequest with the number of 9." }] });
+		const gh = () => { throw Object.assign(new Error("gh: exit 1"), { stdout: partial }); };
+		const read = readPullRequests("o/r", [1, 9], gh);
+		assert.deepEqual([...read.keys()], [1]);
+		assert.equal(read.get(1)!.author!.login, "max");
+		assert.equal(readPullRequests("o/r", [1], () => { throw new Error("no gh"); }).size, 0, "no output at all: no PRs, no throw");
+	});
+
+	it("an imported upstream commit's (#N) is not this repo's PR #N: no author, no body from it", () => {
+		const ours: PullRequest = { body: "Our own PR 190.", author: { __typename: "User", login: "max-miller1204", name: "Max Miller" }, mergeCommit: "f0f0" };
+		const pullRequests = new Map<number, PullRequest>([[190, ours]]);
+		const imported = { subject: "feat: upstream thing (#190)", authorName: "Upstream Dev", sha: "u1u1" };
+		const own = { subject: "feat: our thing (#190)", authorName: "Max Miller", sha: "f0f0" };
+		assert.equal(pullRequestFor(imported, pullRequests), undefined, "another sha and another author");
+		assert.equal(pullRequestFor(own, pullRequests), ours, "the commit the PR merged");
+		assert.equal(pullRequestFor({ ...own, sha: "rebased" }, pullRequests), ours, "or the same author (a rebased copy)");
+		assert.equal(countContributors([imported], pullRequests), 1, "the upstream author counts by git name");
+		assert.equal(countContributors([imported, own], pullRequests), 2, "each commit gets its own answer");
+		const input = buildSummaryInput([imported.subject, own.subject], new Map([[190, ours.body]]), (index) => pullRequestFor([imported, own][index]!, pullRequests) !== undefined);
+		assert.equal(input, "[1] feat: upstream thing (#190)\n[2] feat: our thing (#190)\n  > Our own PR 190.", "the body only for the commit it belongs to");
 	});
 
 	it("rejects a highlight that names a commit outside the input", () => {
-		assert.equal(formatItems(subjects, [{ label: "X", detail: "Y", commits: [9] }]), null);
+		assert.equal(formatSummary(subjects, [{ label: "X", detail: "Y", commits: [9] }]), null);
 	});
 
 	it("parses only the promised JSON", () => {
@@ -120,7 +266,7 @@ describe("generate-release-notes", () => {
 		assert.equal(parseHighlights('{"highlights":[{"label":"A","detail":"B","commits":["eight"]}]}'), null);
 		assert.equal(parseHighlights('{"highlights":[{"label":"A","detail":"B","commits":[1.5]}]}'), null);
 		const parsed = parseHighlights('{"highlights":[{"label":"A","detail":"B","commits":["[9]"]}]}')!;
-		assert.equal(formatItems(subjects, parsed), null, "a string number outside the input is still rejected");
+		assert.equal(formatSummary(subjects, parsed), null, "a string number outside the input is still rejected");
 	});
 
 	it("feeds numbered subjects and trimmed PR prose to the model", () => {
@@ -141,7 +287,67 @@ describe("electron release notes (T3 port)", () => {
 
 	it("cuts a generated body at <details> and keeps the bold labels", () => {
 		const groups = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: generated, releaseDate: "2026-11-12T00:00:00Z" });
-		assert.deepEqual(groups, [{ version: V(12), releasedAt: "2026-11-12T00:00:00Z", items: ["**Flashcards.** Practice with cards.", "Plus 2 more bug fixes."] }]);
+		assert.deepEqual(groups, [{ version: V(12), releasedAt: "2026-11-12T00:00:00Z", items: ["**Flashcards.** Practice with cards.", "Plus 2 more bug fixes."], totalItems: 2 }]);
+	});
+
+	it("reads T3's generated body: the stats header, the items, the footer, or an intro paragraph", () => {
+		const body = `**v${V(12)}** · 12 changes from 2 contributors\n\n- **Cards.** Practice with cards. (#5)\n- Faster graph\n\n### Plus 3 more bug fixes.\n\n<details>\n<summary>Full changelog</summary>\n\n- fix: x\n</details>`;
+		assert.deepEqual(electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: body })[0], {
+			version: V(12), items: ["**Cards.** Practice with cards.", "Faster graph"], totalItems: 2,
+			stats: "12 changes from 2 contributors", footer: "Plus 3 more bug fixes.", releasedAt: "2026-11-12",
+		});
+		const fixesOnly = `**v${V(12)}** · 3 changes from 1 contributor\n\n**3 bug fixes.**\n\n<details>\n<summary>Full changelog</summary>\n</details>`;
+		assert.deepEqual(electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: fixesOnly })[0], {
+			version: V(12), items: [], totalItems: 1, intro: "3 bug fixes.", stats: "3 changes from 1 contributor", releasedAt: "2026-11-12",
+		});
+	});
+
+	it("summaryBody writes the body the parser reads back (one format for the release page and the desktop)", () => {
+		const note = { version: V(12), publishedAt: "", items: ["**Cards.** Practice with cards."], stats: "4 changes from 2 contributors", footer: "Plus 1 more bug fix." };
+		const body = electronNotes.summaryBody(note);
+		assert.equal(body, `**v${V(12)}** · 4 changes from 2 contributors\n\n- **Cards.** Practice with cards.\n\n### Plus 1 more bug fix.`);
+		const [read] = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: `${body}\n\n${electronNotes.FULL_CHANGELOG_MARKER}` });
+		assert.deepEqual([read!.items, read!.stats, read!.footer], [note.items, note.stats, note.footer]);
+		assert.equal(electronNotes.summaryBody({ version: V(12), items: [], intro: "2 bug fixes." }), "**2 bug fixes.**");
+		assert.equal(electronNotes.summaryBody({ version: V(12), items: [] }), "", "nothing to say: no summary");
+	});
+
+	it("any footer survives the release page's round trip, not only T3's Plus N more", () => {
+		const note = { version: V(12), items: ["a"], footer: "Thanks to everyone who tested." };
+		const [read] = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: `${electronNotes.summaryBody(note)}\n\n${electronNotes.FULL_CHANGELOG_MARKER}` });
+		assert.deepEqual([read!.items, read!.footer], [["a"], "Thanks to everyone who tested."]);
+		const headed = `### What's changed\n\n- a\n\n${electronNotes.FULL_CHANGELOG_MARKER}`;
+		assert.equal(electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: headed })[0]!.footer, undefined, "a heading before the items is still skipped");
+	});
+
+	it("main's own copy (the local window, via capGroups) and the notes cache hold the bridge's bounds", () => {
+		const long = "x".repeat(601);
+		const groups = [
+			{ version: V(12), items: Array.from({ length: 12 }, (_, i) => `item ${i}`), intro: long, stats: "s".repeat(121), footer: "f".repeat(221), extra: long },
+			{ version: "not a version", items: ["x"] },
+		];
+		const { releaseNotes, omittedReleaseCount } = electronNotes.capGroups(groups);
+		assert.equal(releaseNotes.length, 1, "an invalid version is dropped");
+		assert.deepEqual(Object.keys(releaseNotes[0]!), ["version", "items", "totalItems"], "no unbounded intro, stats or footer, no extra fields");
+		assert.equal(releaseNotes[0]!.items.length, 8);
+		assert.equal(releaseNotes[0]!.totalItems, 12, "the whole count survives the cut");
+		assert.equal(omittedReleaseCount, 0);
+		electronNotes.mergeNotesCache(dir, groups);
+		const cached = JSON.parse(fs.readFileSync(path.join(dir, "release-notes.json"), "utf8")).groups;
+		assert.equal(cached.length, 1);
+		assert.equal(cached[0].intro, undefined, "the cache holds the bounds too");
+	});
+
+	it("a plain list keeps its newest 8, newest first, with the whole count (GitHub lists oldest first)", () => {
+		const note = Array.from({ length: 10 }, (_, i) => `- change ${i + 1}`).join("\n");
+		const [read] = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: note });
+		assert.deepEqual(read!.items, ["change 10", "change 9", "change 8", "change 7", "change 6", "change 5", "change 4", "change 3"]);
+		assert.equal(read!.totalItems, 10);
+	});
+
+	it("untagged notes named for another release are not this one's (T3's releaseNotesOfOfferedVersion)", () => {
+		assert.deepEqual(electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: "- a", releaseName: `LearnHarness Nightly ${V(13)}` }), []);
+		assert.equal(electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: "- a", releaseName: `LearnHarness Nightly ${V(12)} (abc)` }).length, 1);
 	});
 
 	it("keeps the feed's release date only when it is a bounded ISO date; the nightly's build day stands in otherwise", () => {
@@ -152,7 +358,7 @@ describe("electron release notes (T3 port)", () => {
 		for (const junk of ["yesterday", `2026-11-12T00:00:00Z${"x".repeat(5000)}`, "2026-13-45", 12]) assert.equal(dated(junk), buildDay, String(junk).slice(0, 30));
 	});
 
-	it("reads the per-version array (fullChangelog), stripping HTML and PR numbers", () => {
+	it("reads the per-version array (fullChangelog), stripping HTML", () => {
 		const groups = electronNotes.releaseNoteGroups({
 			version: V(12),
 			releaseNotes: [
@@ -162,7 +368,7 @@ describe("electron release notes (T3 port)", () => {
 			],
 		});
 		assert.deepEqual(groups.map((g) => g.version), [V(12), V(10)]);
-		assert.deepEqual(groups[0]!.items, ["**New** thing"]);
+		assert.deepEqual(groups[0]!.items, ["New thing (#5)"], "a plain list keeps no bold and its PR numbers, as T3's does");
 		assert.equal(groups[1]!.releasedAt, "2026-11-10", "build day from the version");
 		assert.equal(electronNotes.capGroups(groups).omittedReleaseCount, 0);
 	});

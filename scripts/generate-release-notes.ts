@@ -10,17 +10,22 @@
  * anthropic/claude-haiku-5.5) for up to 7 user-facing highlights, and writes
  * { version, publishedAt, items } to --output. On any failure it writes
  * nothing and exits non-zero; nightly.yml then falls back to the plain
- * commit list (fallbackItems below, via --fallback).
+ * commit list (fallbackItems below, via --fallback). Both write T3's
+ * summary extras: `stats` ("12 changes from 2 contributors", its release
+ * header without the version), and `footer` ("Plus 3 more bug fixes.") or,
+ * with no highlights, `intro` ("3 bug fixes.").
  *
  *   node scripts/generate-release-notes.ts --fallback --ref <sha> \
  *     --previous-tag <tag> --version V --output notes.json
  *
  * Adapted from T3 Code's scripts/generate-release-notes.ts
- * (https://github.com/pingdotgg/t3code at 54ad956): the prompt, the PR body
- * trimming, the commit-number check and the "Plus N more bug fixes." count.
- * Changes: plain Node (no Effect), OpenRouter chat completions instead of
- * OpenAI responses, JSON items instead of a markdown body, no contributor
- * header. T3 Code carries this notice:
+ * (https://github.com/pingdotgg/t3code at 54ad956, refreshed at df09ced7):
+ * the prompt, the PR body trimming, the commit-number check, the "Plus N
+ * more bug fixes." count (formatReleaseSummary) and the contributor count
+ * (countContributors, buildReleaseHeader). Changes: plain Node (no Effect),
+ * OpenRouter chat completions instead of OpenAI responses, JSON fields
+ * instead of a markdown body (electron/release-notes.cjs summaryBody writes
+ * the body). T3 Code carries this notice:
  *
  *   MIT License
  *
@@ -75,6 +80,30 @@ export interface NotesEntry {
 	version: string;
 	publishedAt: string;
 	items: string[];
+	stats?: string;
+	intro?: string;
+	footer?: string;
+}
+
+export interface ReleaseCommit {
+	subject: string;
+	authorName: string;
+	/** The commit's hash, to match it to the PR it merged. */
+	sha?: string;
+}
+
+export interface PullRequest {
+	body: string;
+	author: { __typename: string; login: string; name?: string | null } | null;
+	/** The hash of the commit that merged it (a squash merge: the commit on main). */
+	mergeCommit?: string | null;
+}
+
+/** A summary's parts: the highlight items, and the count of the rest as a footer, or as the intro with no highlights. */
+export interface ReleaseSummary {
+	items: string[];
+	footer?: string;
+	intro?: string;
 }
 
 const stripPullRequestNumber = (subject: string) => subject.replace(PULL_REQUEST_NUMBER, "").trim();
@@ -84,11 +113,70 @@ const pullRequestNumber = (subject: string) => {
 	return match ? Number(match[1]) : undefined;
 };
 
-/** Oldest first, as the model reads them (T3's order). */
-export function readCommits(previousTag: string, ref: string): string[] {
+/** Oldest first, as the model reads them (T3's order), each with its git author. */
+export function readCommits(previousTag: string, ref: string): ReleaseCommit[] {
 	const range = previousTag ? `${previousTag}..${ref}` : ref;
-	const log = execFileSync("git", ["log", "--no-merges", "--reverse", "--format=%s", range], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
-	return log.split("\n").filter((line) => line.trim() !== "");
+	const log = execFileSync("git", ["log", "--no-merges", "--reverse", "--format=%H%x1f%s%x1f%an", range], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+	return log.split("\n").filter((line) => line.trim() !== "").map((line) => {
+		const [sha = "", subject = "", authorName = ""] = line.split("\x1f");
+		return { subject, authorName, sha };
+	});
+}
+
+/**
+ * The PR a commit names, when it really is that commit's. A commit imported from upstream keeps
+ * upstream's "(#190)", and this repo's own #190 is another PR: it counts only when it merged this
+ * commit, or its author is the commit's (login or profile name). Otherwise the commit counts by
+ * its git author and the model gets no body for it. Decided per commit, so a number shared by a
+ * fork PR and an imported commit gives each its own answer.
+ */
+export function pullRequestFor(commit: ReleaseCommit, pullRequests: ReadonlyMap<number, PullRequest>): PullRequest | undefined {
+	const number = pullRequestNumber(commit.subject);
+	const pullRequest = number === undefined ? undefined : pullRequests.get(number);
+	if (!pullRequest) return undefined;
+	if (pullRequest.mergeCommit && commit.sha && pullRequest.mergeCommit === commit.sha) return pullRequest;
+	const author = pullRequest.author;
+	return author && commit.authorName && (author.login === commit.authorName || author.name === commit.authorName) ? pullRequest : undefined;
+}
+
+/** PR authors without bots, plus authors of direct pushes who have no PR in the range (T3's countContributors). */
+export function countContributors(commits: readonly ReleaseCommit[], pullRequests: ReadonlyMap<number, PullRequest>): number {
+	const people = new Set<string>();
+	// A PR's squash commit carries its author's git name, which may differ from the profile name.
+	const prAuthorNames = new Set<string>();
+	const directAuthors: string[] = [];
+	for (const commit of commits) {
+		const author = pullRequestFor(commit, pullRequests)?.author;
+		if (!author) {
+			directAuthors.push(commit.authorName);
+			continue;
+		}
+		if (author.__typename === "Bot" || author.login.endsWith("[bot]")) continue;
+		people.add(author.login);
+		prAuthorNames.add(commit.authorName);
+		if (author.name) prAuthorNames.add(author.name);
+	}
+	for (const name of directAuthors) {
+		if (name && !name.endsWith("[bot]") && !prAuthorNames.has(name)) people.add(name);
+	}
+	return people.size;
+}
+
+/**
+ * The entry's `items` as older clients read them: the highlights, then the
+ * intro or footer as a plain last item, so a server or desktop app from
+ * before the summary fields still shows "Plus 3 more bug fixes." or
+ * "3 bug fixes." (T3 keeps old popovers working the same way, with a
+ * "### Plus N more" line they skip). Newer clients drop that copy.
+ */
+export function entryItems(summary: ReleaseSummary): string[] {
+	return [...summary.items, ...(summary.intro ? [summary.intro] : []), ...(summary.footer ? [summary.footer] : [])];
+}
+
+/** T3's buildReleaseHeader without the "**vX** · " the release body adds. */
+export function releaseStats(changes: number, contributors: number): string {
+	const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+	return `${plural(changes, "change")} from ${plural(contributors, "contributor")}`;
 }
 
 /** The plain fallback: commit subjects, newest first, " (#N)" removed, first 8. */
@@ -108,12 +196,13 @@ export function trimPullRequestBody(body: string, limit = PULL_REQUEST_BODY_LIMI
 	return text.length > limit ? `${text.slice(0, limit)}...` : text;
 }
 
-export function buildSummaryInput(subjects: readonly string[], bodies: ReadonlyMap<number, string>): string {
+/** `bodyOf` says whether commit `index` may use the body its PR number names (pullRequestFor). */
+export function buildSummaryInput(subjects: readonly string[], bodies: ReadonlyMap<number, string>, bodyOf: (index: number) => boolean = () => true): string {
 	return subjects
 		.flatMap((subject, index) => {
 			const line = `[${index + 1}] ${subject}`;
 			const number = pullRequestNumber(subject);
-			const body = number === undefined ? "" : trimPullRequestBody(bodies.get(number) ?? "");
+			const body = number === undefined || !bodyOf(index) ? "" : trimPullRequestBody(bodies.get(number) ?? "");
 			return body ? [line, `  > ${body}`] : [line];
 		})
 		.join("\n");
@@ -151,12 +240,14 @@ export function parseHighlights(text: string): Highlight[] | null {
 }
 
 /**
- * Items from the chosen highlights (T3's formatReleaseSummary): one
- * "**Label.** detail" per highlight, then a count of the fix/perf commits
- * no highlight covers. Null when a highlight names a commit that is not in
- * the input (the whole result is rejected).
+ * The summary from the chosen highlights (T3's formatReleaseSummary): one
+ * "**Label.** detail" item per highlight, and the count of the fix/perf
+ * commits no highlight covers as the footer ("Plus 2 more bug fixes."), or
+ * as the intro when there are no highlights ("2 bug fixes."). Null when a
+ * highlight names a commit that is not in the input (the whole result is
+ * rejected).
  */
-export function formatItems(subjects: readonly string[], selected: readonly Highlight[]): string[] | null {
+export function formatSummary(subjects: readonly string[], selected: readonly Highlight[]): ReleaseSummary | null {
 	const highlights = selected.slice(0, MAX_HIGHLIGHTS);
 	const covered = new Set(highlights.flatMap((highlight) => highlight.commits));
 	for (const id of covered) if (id < 1 || id > subjects.length) return null;
@@ -166,29 +257,50 @@ export function formatItems(subjects: readonly string[], selected: readonly High
 		const kind = /^(fix|perf)(?:\([^)]*\))?!?:/i.exec(subject)?.[1]?.toLowerCase();
 		return kind ? [kind] : [];
 	});
-	if (remaining.length === 0) return items;
+	if (remaining.length === 0) return { items };
 	const count = remaining.length;
 	let kind = "bug fixes and performance improvements";
 	if (!remaining.includes("perf")) kind = count === 1 ? "bug fix" : "bug fixes";
 	if (!remaining.includes("fix")) kind = count === 1 ? "performance improvement" : "performance improvements";
-	return [...items, items.length > 0 ? `Plus ${count} more ${kind}.` : `${count} ${kind}.`];
+	return items.length > 0 ? { items, footer: `Plus ${count} more ${kind}.` } : { items, intro: `${count} ${kind}.` };
 }
 
-function readPullRequestBodies(repository: string, numbers: readonly number[]): Map<number, string> {
+/** `gh` with these arguments: its stdout. Throws on a non-zero exit (the error carries stdout). */
+export type GhRunner = (args: string[]) => string;
+const runGh: GhRunner = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+
+/**
+ * The PRs' bodies and authors, 100 per GraphQL query. A query naming a PR that doesn't exist here
+ * (an imported upstream number) makes gh exit non-zero, but its stdout still holds the data for the
+ * others: read that, so their bodies and authors (the contributor count) aren't lost.
+ */
+export function readPullRequests(repository: string, numbers: readonly number[], gh: GhRunner = runGh): Map<number, PullRequest> {
 	const [owner, name] = repository.split("/");
-	const bodies = new Map<number, string>();
+	const pullRequests = new Map<number, PullRequest>();
 	for (let start = 0; start < numbers.length; start += 100) {
-		const fields = numbers.slice(start, start + 100).map((n) => `pr${n}: pullRequest(number: ${n}) { body }`).join("\n");
+		const fields = numbers.slice(start, start + 100)
+			.map((n) => `pr${n}: pullRequest(number: ${n}) { body mergeCommit { oid } author { __typename login ... on User { name } } }`).join("\n");
 		const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
+		let out = "";
 		try {
-			const out = execFileSync("gh", ["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
-			const repo = (JSON.parse(out) as { data?: { repository?: Record<string, { body?: string } | null> } }).data?.repository ?? {};
-			for (const [alias, pr] of Object.entries(repo)) if (pr && typeof pr.body === "string") bodies.set(Number(alias.slice(2)), pr.body);
+			out = gh(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`]);
+		} catch (error) {
+			const stdout = (error as { stdout?: unknown }).stdout;
+			out = typeof stdout === "string" ? stdout : Buffer.isBuffer(stdout) ? stdout.toString("utf8") : "";
+		}
+		try {
+			const repo = (JSON.parse(out) as { data?: { repository?: Record<string, { body?: string; author?: PullRequest["author"]; mergeCommit?: { oid?: unknown } | null } | null> } }).data?.repository ?? {};
+			for (const [alias, pr] of Object.entries(repo)) {
+				if (!pr || typeof pr.body !== "string") continue;
+				const author = pr.author && typeof pr.author.login === "string" ? pr.author : null;
+				const mergeCommit = typeof pr.mergeCommit?.oid === "string" ? pr.mergeCommit.oid : null;
+				pullRequests.set(Number(alias.slice(2)), { body: pr.body, author, mergeCommit });
+			}
 		} catch {
-			/* PR bodies are extra context; subjects alone still work (imported upstream PRs may not exist here) */
+			/* PR bodies are extra context; subjects alone still work */
 		}
 	}
-	return bodies;
+	return pullRequests;
 }
 
 async function summarize(input: string, apiKey: string, model: string): Promise<Highlight[]> {
@@ -237,10 +349,13 @@ async function main() {
 	});
 	const { ref, version, output } = values;
 	if (!ref || !version || !output) throw new Error("--ref, --version and --output are required");
-	const subjects = readCommits(values["previous-tag"] ?? "", ref);
+	const commits = readCommits(values["previous-tag"] ?? "", ref);
+	const subjects = commits.map((commit) => commit.subject);
 	const publishedAt = values["published-at"] ?? new Date().toISOString();
 	if (values.fallback) {
-		writeAtomically(output, { version, publishedAt, items: fallbackItems(subjects) });
+		// No PR authors here: every git author counts once, bots aside.
+		const stats = commits.length > 0 ? { stats: releaseStats(commits.length, countContributors(commits, new Map())) } : {};
+		writeAtomically(output, { version, publishedAt, items: fallbackItems(subjects), ...stats });
 		return;
 	}
 	const apiKey = process.env.OPENROUTER_API_KEY;
@@ -248,12 +363,13 @@ async function main() {
 	if (!values.repository) throw new Error("--repository is required");
 	if (subjects.length === 0) throw new Error(`no commits in ${values["previous-tag"]}..${ref}`);
 	const numbers = [...new Set(subjects.flatMap((subject) => pullRequestNumber(subject) ?? []))];
-	const bodies = readPullRequestBodies(values.repository, numbers);
+	const pullRequests = readPullRequests(values.repository, numbers);
+	const bodies = new Map([...pullRequests].map(([number, pullRequest]) => [number, pullRequest.body]));
 	const model = process.env.OPENROUTER_MODEL || DEFAULT_MODEL;
-	const highlights = await summarize(buildSummaryInput(subjects, bodies), apiKey, model);
-	const items = formatItems(subjects, highlights);
-	if (!items) throw new Error("a highlight names a commit that is not in the range");
-	writeAtomically(output, { version, publishedAt, items });
+	const highlights = await summarize(buildSummaryInput(subjects, bodies, (index) => pullRequestFor(commits[index]!, pullRequests) !== undefined), apiKey, model);
+	const summary = formatSummary(subjects, highlights);
+	if (!summary) throw new Error("a highlight names a commit that is not in the range");
+	writeAtomically(output, { version, publishedAt, ...summary, items: entryItems(summary), stats: releaseStats(commits.length, countContributors(commits, pullRequests)) });
 }
 
 if (import.meta.main) {

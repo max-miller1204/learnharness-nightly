@@ -185,6 +185,18 @@ const isDesktopAppStatus = (value: unknown): value is DesktopAppStatus =>
 const MAX_NOTE_VERSION_LENGTH = 64;
 const MAX_RELEASED_AT_LENGTH = 40;
 const MAX_OMITTED_RELEASE_COUNT = 1000;
+const MAX_TOTAL_ITEMS = 10000;
+const SUMMARY_LIMITS = { intro: 600, stats: 120, footer: 220 } as const;
+
+function summaryFields(group: ReleaseNoteGroup): Pick<ReleaseNoteGroup, "intro" | "stats" | "footer"> {
+	const fields: Pick<ReleaseNoteGroup, "intro" | "stats" | "footer"> = {};
+	for (const key of ["intro", "stats", "footer"] as const) {
+		// Trimmed and collapsed first, so padding doesn't count against the bound.
+		const value = typeof group[key] === "string" ? group[key].trim().replace(/\s+/g, " ") : "";
+		if (value && value.length <= SUMMARY_LIMITS[key]) fields[key] = value;
+	}
+	return fields;
+}
 
 const isReleaseNoteGroup = (value: unknown): value is ReleaseNoteGroup =>
 	typeof value === "object" && value !== null && typeof (value as ReleaseNoteGroup).version === "string"
@@ -200,6 +212,8 @@ export function readDesktopAppStatus(value: unknown): DesktopAppStatus | null {
 		version: group.version,
 		...(typeof group.releasedAt === "string" && group.releasedAt.length <= MAX_RELEASED_AT_LENGTH ? { releasedAt: group.releasedAt } : {}),
 		items: group.items,
+		...(Number.isInteger(group.totalItems) && (group.totalItems as number) >= 0 ? { totalItems: Math.min(group.totalItems as number, MAX_TOTAL_ITEMS) } : {}),
+		...summaryFields(group),
 	}));
 	const { releaseNotes } = capReleaseNoteGroups(groups);
 	const omitted = value.omittedReleaseCount;

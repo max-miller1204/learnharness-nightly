@@ -214,11 +214,12 @@ jobs:
             node scripts/generate-release-notes.ts --fallback --ref "$SHA" --previous-tag "$PREV" \
               --version "$VERSION" --published-at "$PUBLISHED_AT" --output notes.json
           fi
+          # T3's generated body: "**vX** · stats", the highlights, "### Plus N more ...", then the
+          # folded full list. electron/release-notes.cjs writes it and the desktop reads it back.
+          summary="$(node -e 'process.stdout.write(require("./electron/release-notes.cjs").summaryBody(require("./notes.json")))')"
           {
-            if [ "$(node -p 'require("./notes.json").items.length')" != "0" ]; then
-              echo "### What's changed"
-              echo
-              node -e 'for (const item of require("./notes.json").items) console.log("- " + item)'
+            if [ -n "$summary" ]; then
+              echo "$summary"
               echo
             fi
             if [ -n "$PREV" ]; then
@@ -227,6 +228,15 @@ jobs:
               echo
               echo "### Changes since $PREV"
               git log -n 200 --no-merges --format='- %s (%h)' "$PREV..$SHA"
+              echo
+              echo "</details>"
+              echo
+            else
+              # A first nightly still folds a (short) list, so clients read the summary above as one.
+              echo "<details>"
+              echo "<summary>Full changelog</summary>"
+              echo
+              echo "The first nightly: there is no earlier one to compare with."
               echo
               echo "</details>"
               echo

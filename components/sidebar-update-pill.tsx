@@ -51,7 +51,7 @@ import { HostDialog } from "@/components/host-dialog";
 import { useOptionalInteractionLayers } from "@/components/interaction-layers";
 import { hasLegacyInteractionForeground } from "@/components/plugin-input-focus";
 import { InstallUpdateDialog } from "@/components/install-update-dialog";
-import { ReleaseNoteSections } from "@/components/release-notes-view";
+import { UpdateReleaseNotes } from "@/components/release-notes-view";
 import { APP_VERSION, HOMEPAGE, desktopOffer, useDesktopAppUpdate, useUpdateState, type DesktopAppStatus, type UpdateState } from "@/components/settings/update-settings";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -184,12 +184,28 @@ const DETAIL_KINDS: ReadonlySet<UpdateControlKind> = new Set(["download", "downl
  *  (SidebarUpdatePill.tsx:58-63, 279-280 at df09ced7): `showUpdateDetails && notes.length > 0`,
  *  and none while an Update everything run is going. The notes are this app's for its own
  *  states (everything, app-download, app-install, its own download) and the server's otherwise. */
-export function shownReleaseNotes(state: UpdateState | null, kind: UpdateControlKind | null, desktop: DesktopAppStatus | null = null): { releaseNotes: ReleaseNoteGroup[]; omittedReleaseCount: number } | null {
+export type ShownReleaseNotes = {
+	releaseNotes: ReleaseNoteGroup[];
+	omittedReleaseCount: number;
+	/** The offered version, whose generated summary needs no heading (T3's availableVersion). */
+	offeredVersion: string | null;
+	/** Its updater says "available": the popover's header is "Update ready to download" (T3's
+	 *  `state.status === "available"`, also under the everything state). */
+	available: boolean;
+};
+
+export function shownReleaseNotes(state: UpdateState | null, kind: UpdateControlKind | null, desktop: DesktopAppStatus | null = null): ShownReleaseNotes | null {
 	if (!kind || !DETAIL_KINDS.has(kind) || desktop?.phase === "updating") return null;
 	const appOwned = kind === "everything" || kind === "app-download" || kind === "app-install" || (kind === "downloading" && desktop?.phase === "downloading");
 	const source = appOwned ? desktop : state;
 	const releaseNotes = source?.releaseNotes ?? [];
-	return releaseNotes.length > 0 ? { releaseNotes, omittedReleaseCount: source?.omittedReleaseCount ?? 0 } : null;
+	if (releaseNotes.length === 0) return null;
+	return {
+		releaseNotes,
+		omittedReleaseCount: source?.omittedReleaseCount ?? 0,
+		offeredVersion: appOwned ? desktop?.target ?? null : state?.version ?? null,
+		available: appOwned ? desktop?.phase === "available" : state?.status === "available",
+	};
 }
 
 /** The second tooltip line of "unavailable" (T3's getDesktopUpdateDisabledReason fallback). */
@@ -601,10 +617,14 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 								onKeyDown={onNotesKeyDown}
 								className="flex max-h-[min(32rem,calc(100vh-6rem))] w-fit max-w-[min(24rem,calc(100vw-2rem))] flex-col rounded-lg border border-border bg-popover p-3 text-left text-pretty text-popover-foreground shadow-lg"
 							>
-								<div className="shrink-0 px-1 text-sm leading-5 font-medium">{tooltip}</div>
-								<div className="min-h-0 overflow-y-auto px-1 pt-3 pb-1">
-									<ReleaseNoteSections groups={shownNotes.releaseNotes} omittedReleaseCount={shownNotes.omittedReleaseCount} homepage={homepage} />
-								</div>
+								<UpdateReleaseNotes
+									groups={shownNotes.releaseNotes}
+									omittedReleaseCount={shownNotes.omittedReleaseCount}
+									homepage={homepage}
+									offeredVersion={shownNotes.offeredVersion}
+									available={shownNotes.available}
+									title={tooltip}
+								/>
 							</div>
 						</Popper.Content>,
 						document.body,

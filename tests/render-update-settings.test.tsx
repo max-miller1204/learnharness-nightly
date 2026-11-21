@@ -15,7 +15,7 @@ import { UpdateSettings, readDesktopAppStatus, updateStatusText, MANUAL_UPDATE_H
 import { AUTO_RELOAD_KEY, AUTO_RELOAD_MEMORY, claimAutoReload, downloadingTooltip, downloadRingOffset, hasUnsentMessage, shownReleaseNotes, SidebarUpdatePill, updateControlTooltip } from "../components/sidebar-update-pill.tsx";
 import { createRequire } from "node:module";
 import { ServerEventsProvider } from "../components/server-events.tsx";
-import { ReleaseNoteSections } from "../components/release-notes-view.tsx";
+import { formatReleaseAge, ReleaseNoteSections, UpdateReleaseNotes } from "../components/release-notes-view.tsx";
 import WhatsNewDialog, { WhatsNewBody } from "../components/whats-new-dialog.tsx";
 import { InstallUpdateDialog } from "../components/install-update-dialog.tsx";
 import { SettingsDialogBody, SettingsDialogProvider } from "../components/settings/settings-dialog.tsx";
@@ -660,7 +660,7 @@ describe("General update rows", () => {
 		assert.equal(field('<div role="textbox" contenteditable="false">x</div>'), false);
 	});
 
-	it("the pill's hover shows T3-style notes: What's changed, Changes in X, Read more", async () => {
+	it("the pill's hover shows T3-style notes: What's changed, Changes in X, release links", async () => {
 		const notes = [
 			{ version: "0.3.9", items: ["**Cards.** Practice with cards.", "Plain item"] },
 			{ version: "0.3.8", items: ["Older change"] },
@@ -736,7 +736,7 @@ describe("General update rows", () => {
 			assert.ok(q(document, "update-pill-notes"), "keyboard focus opens the notes");
 			await key(pill, "Tab");
 			const links = [...q(document, "update-pill-notes")!.querySelectorAll("a")];
-			assert.equal(links.length, 2, "one Read more per release");
+			assert.equal(links.length, 2, "one release link per release");
 			assert.ok(document.activeElement === links[0], "Tab is on the first link");
 			await key(links[0], "Tab");
 			assert.ok(document.activeElement === links[1], "Tab moves to the next link");
@@ -949,14 +949,89 @@ describe("General update rows", () => {
 		}
 	});
 
-	it("release note sections link each group's release (Read more) and the older ones", () => {
+	it("release note sections link each group's release with T3's labels, and the older ones", () => {
 		const html = renderToStaticMarkup(<ReleaseNoteSections homepage="https://github.com/o/r" omittedReleaseCount={2}
-			groups={[{ version: "0.3.9", items: ["a"] }, { version: "0.3.8", items: [] }]} />);
+			groups={[{ version: "0.3.9", items: ["a"] }, { version: "0.3.8", items: ["b", "c"], totalItems: 7 }, { version: "0.3.7", items: ["d"], totalItems: 2 }]} />);
 		assert.ok(html.includes('href="https://github.com/o/r/releases/tag/v0.3.9"'));
 		assert.ok(html.includes('href="https://github.com/o/r/releases/tag/v0.3.8"'));
-		assert.equal(html.match(/Read more/g)?.length, 2);
+		assert.equal(html.match(/View release on GitHub/g)?.length, 1, "every change shown: View release on GitHub");
+		assert.ok(html.includes("5 more changes on GitHub"), "the rest of a cut release");
+		assert.ok(html.includes("1 more change on GitHub"), "singular");
 		assert.ok(html.includes('href="https://github.com/o/r/releases"'));
 		assert.ok(html.includes("2 older releases on GitHub"));
+		const one = renderToStaticMarkup(<ReleaseNoteSections homepage="https://github.com/o/r" omittedReleaseCount={1} groups={[{ version: "0.3.9", items: ["a"] }]} />);
+		assert.ok(one.includes("1 older release on GitHub"));
+	});
+
+	it("a generated summary (T3's): its stats label the link, an intro replaces the items, the footer follows, and only older versions get an age heading", () => {
+		const now = Date.parse("2026-11-20T12:00:00Z");
+		const html = renderToStaticMarkup(<ReleaseNoteSections homepage="https://github.com/o/r" omittedReleaseCount={0} offeredVersion="0.3.9" now={now}
+			groups={[
+				{ version: "0.3.9", releasedAt: "2026-11-20T09:00:00Z", items: ["**Cards.** Practice with cards."], stats: "12 changes from 2 contributors", footer: "Plus 3 more bug fixes." },
+				{ version: "0.3.8", releasedAt: "2026-11-18", items: ["hidden by the intro"], intro: "2 bug fixes.", stats: "2 changes from 1 contributor" },
+				{ version: "0.3.7", items: ["plain"] },
+			]} />);
+		const text = parseHTML(`<div>${html}</div>`).document;
+		const headings = [...text.querySelectorAll("h3")].map((h) => h.textContent);
+		assert.deepEqual(headings, ["0.3.8 · 2d ago", "Changes in 0.3.7"], "no heading for the offered version's summary; an older summary reads version and age");
+		const links = [...text.querySelectorAll("a")].map((a) => a.textContent);
+		assert.deepEqual(links, ["12 changes from 2 contributors", "2 changes from 1 contributor", "View release on GitHub"]);
+		assert.equal(text.querySelector("[data-testid='release-notes-footer']")?.textContent, "Plus 3 more bug fixes.");
+		assert.equal(text.querySelector("[data-testid='release-notes-intro']")?.textContent, "2 bug fixes.");
+		assert.ok(!html.includes("hidden by the intro"), "an intro shows instead of the items");
+	});
+
+	it("the old-client copy of a footer or intro shows once, as itself; a bullet with the same text elsewhere stays", () => {
+		const footer = "Plus 2 more bug fixes.";
+		const html = renderToStaticMarkup(<ReleaseNoteSections homepage="https://github.com/o/r" omittedReleaseCount={0}
+			groups={[
+				{ version: "0.3.9", items: ["**Cards.** Practice.", footer], footer },
+				{ version: "0.3.8", items: ["3 bug fixes."], intro: "3 bug fixes.", stats: "3 changes from 1 contributor" },
+				{ version: "0.3.7", items: [footer, "New feature.", footer], footer },
+			]} />);
+		const text = parseHTML(`<div>${html}</div>`).document;
+		const sections = [...text.querySelectorAll("section")];
+		assert.deepEqual([...sections[0]!.querySelectorAll("li")].map((li) => li.textContent), ["Cards. Practice."], "the footer copy isn't a bullet");
+		assert.equal(sections[0]!.querySelector("[data-testid='release-notes-footer']")?.textContent, footer);
+		assert.equal(sections[1]!.querySelectorAll("li").length, 0, "an intro-only release shows its paragraph, no list");
+		assert.equal(sections[1]!.querySelector("[data-testid='release-notes-intro']")?.textContent, "3 bug fixes.");
+		assert.deepEqual([...sections[2]!.querySelectorAll("li")].map((li) => li.textContent), [footer, "New feature."], "only the trailing copy goes");
+		assert.deepEqual([...text.querySelectorAll("a")].map((a) => a.textContent), ["View release on GitHub", "3 changes from 1 contributor", "View release on GitHub"], "and no copy counts as a change left out");
+	});
+
+	it("an intro at its bound keeps T3's count once its copy is cut to 220 characters", () => {
+		const intro = "y".repeat(600);
+		const cut = `${"y".repeat(217)}...`;
+		const html = renderToStaticMarkup(<ReleaseNoteSections homepage="https://github.com/o/r" omittedReleaseCount={0}
+			// totalItems as main and the server set it: the intro, counted once before the cut.
+			groups={[{ version: "0.3.9", items: [cut], intro, totalItems: 1 }, { version: "0.3.8", items: ["3 bug fixes."], intro: "3 bug fixes.", totalItems: 1 }]} />);
+		const links = [...parseHTML(`<div>${html}</div>`).document.querySelectorAll("a")].map((a) => a.textContent);
+		assert.deepEqual(links, ["1 more change on GitHub", "1 more change on GitHub"], "a long intro's cut copy counts like a short one's");
+	});
+
+	it("formatReleaseAge is T3's: feed times read 3h ago, build days read today or 2d ago, an unreadable time reads nothing", () => {
+		const now = Date.parse("2026-11-20T12:00:00Z");
+		assert.equal(formatReleaseAge("2026-11-20T11:59:30Z", now), "just now");
+		assert.equal(formatReleaseAge("2026-11-20T11:55:00Z", now), "5m ago");
+		assert.equal(formatReleaseAge("2026-11-20T09:00:00Z", now), "3h ago");
+		assert.equal(formatReleaseAge("2026-11-17T12:00:00Z", now), "3d ago");
+		assert.equal(formatReleaseAge("2026-11-21T00:00:00Z", now), "just now", "a clock behind the feed is not negative");
+		assert.equal(formatReleaseAge("2026-11-20", now), "today");
+		assert.equal(formatReleaseAge("2026-11-18", now), "2d ago");
+		assert.equal(formatReleaseAge("2026-11-21", now), "today");
+		assert.equal(formatReleaseAge("yesterday", now), "");
+	});
+
+	it("the popover's header: Update ready to download over X · age for an available update, else the hover text", () => {
+		const now = Date.parse("2026-11-20T12:00:00Z");
+		const groups = [{ version: "0.3.9", releasedAt: "2026-11-20T09:00:00Z", items: ["a"] }];
+		const available = parseHTML(`<div>${renderToStaticMarkup(<UpdateReleaseNotes groups={groups} omittedReleaseCount={0} homepage="" offeredVersion="0.3.9" available title="Update 0.3.9 ready to download" now={now} />)}</div>`).document;
+		assert.equal(available.querySelector("[data-testid='update-notes-header']")?.textContent, "Update ready to download0.3.9 · 3h ago");
+		assert.equal(available.querySelector("[data-testid='update-notes-age']")?.textContent, "0.3.9 · 3h ago");
+		const undated = parseHTML(`<div>${renderToStaticMarkup(<UpdateReleaseNotes groups={[{ version: "0.3.9", items: ["a"] }]} omittedReleaseCount={0} homepage="" offeredVersion="0.3.9" available title="" now={now} />)}</div>`).document;
+		assert.equal(undated.querySelector("[data-testid='update-notes-age']")?.textContent, "0.3.9", "no time: the version alone");
+		const downloaded = parseHTML(`<div>${renderToStaticMarkup(<UpdateReleaseNotes groups={groups} omittedReleaseCount={0} homepage="" offeredVersion="0.3.9" available={false} title="Update 0.3.9 downloaded. Click to restart and install." now={now} />)}</div>`).document;
+		assert.equal(downloaded.querySelector("[data-testid='update-notes-header']")?.textContent, "Update 0.3.9 downloaded. Click to restart and install.");
 	});
 
 	it("a delayed older snapshot cannot overwrite a newer push in Settings or the banner", async () => {
@@ -1031,9 +1106,19 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		await hover(pill());
 		const popover = q(document, "update-pill-notes");
 		assert.ok(popover, "the notes open");
-		assert.equal(popover!.firstElementChild!.textContent, "Update this app and 1 server", "the popover's header is the summary");
+		// T3's header follows the app's own state: available reads "Update ready to download" (SidebarUpdateReleaseNotes.tsx:82-93).
+		assert.equal(q(popover!, "update-notes-header")!.firstElementChild!.firstElementChild!.textContent, "Update ready to download");
+		assert.equal(q(popover!, "update-notes-age")!.textContent, V72);
 		assert.equal(popover!.querySelector("strong")!.textContent, "Cards.", "this app's notes, not the server's");
 		assert.ok(!popover!.textContent!.includes("Server-side copy"));
+	});
+
+	it("everything with this app's update downloaded heads the notes with T3's summary", async () => {
+		const { pill } = await pillIn({ version: V71, target: V72, phase: "downloaded", error: null, releaseNotes: [{ version: V72, items: ["App change"] }], omittedReleaseCount: 0 },
+			state({ status: "up-to-date", runningVersion: V71 }));
+		assert.equal(pill().getAttribute("data-action"), "everything");
+		await hover(pill());
+		assert.equal(q(document, "update-notes-header")?.textContent, "Update this app and 1 server");
 	});
 
 	it("this app's download, downloading and install states show its notes; a run, or an app without notes, keeps the tooltip", async () => {
@@ -1066,7 +1151,7 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		assert.equal(readDesktopAppStatus({ version: V71 }), null);
 		assert.deepEqual(readDesktopAppStatus({ version: V71, target: V72, phase: "available", error: null }),
 			{ version: V71, target: V72, phase: "available", error: null, releaseNotes: [], omittedReleaseCount: 0 });
-		const good = { version: V72, items: ["a"] };
+		const good = { version: V72, items: ["a"], totalItems: 1 };
 		const read = readDesktopAppStatus({ version: V71, target: V72, phase: "available", error: null, omittedReleaseCount: "2",
 			releaseNotes: [good, { version: 3, items: [] }, { version: V71, items: [1] }, null] });
 		assert.deepEqual(read?.releaseNotes, [good]);
@@ -1074,17 +1159,26 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		// The bridge's caps again: a version of at most 64 characters, a date of at most 40, a bounded count.
 		const capped = readDesktopAppStatus({ version: V71, target: V72, phase: "available", error: null, omittedReleaseCount: 1e9,
 			releaseNotes: [{ version: "9".repeat(65), items: ["a"] }, { version: V72, releasedAt: `2026-11-18T00:00:00Z${"0".repeat(30)}`, items: ["b"] }, { version: V71, releasedAt: "2026-11-18", items: ["c"] }] });
-		assert.deepEqual(capped?.releaseNotes, [{ version: V72, items: ["b"] }, { version: V71, releasedAt: "2026-11-18", items: ["c"] }]);
+		assert.deepEqual(capped?.releaseNotes, [{ version: V72, items: ["b"], totalItems: 1 }, { version: V71, releasedAt: "2026-11-18", items: ["c"], totalItems: 1 }]);
+		// T3's summary fields come through, bounded like the bridge's.
+		const summary = readDesktopAppStatus({ version: V71, target: V72, phase: "available", error: null,
+			releaseNotes: [{ version: V72, items: ["b"], totalItems: 9, stats: "9 changes from 1 contributor", footer: "Plus 1 more bug fix.", intro: "x".repeat(601), extra: "dropped" }] });
+		assert.deepEqual(summary?.releaseNotes, [{ version: V72, items: ["b"], totalItems: 9, stats: "9 changes from 1 contributor", footer: "Plus 1 more bug fix." }]);
+		// Trimmed and collapsed before the bound: padding doesn't push a field over it.
+		const padded = readDesktopAppStatus({ version: V71, target: V72, phase: "available", error: null,
+			releaseNotes: [{ version: V72, items: ["b"], stats: `   ${"x".repeat(60)}     ${"y".repeat(58)}   ` }] });
+		assert.equal(padded?.releaseNotes?.[0]?.stats, `${"x".repeat(60)} ${"y".repeat(58)}`);
 		assert.equal(capped?.omittedReleaseCount, 1000);
 	});
 
 	it("shownReleaseNotes picks whose notes: this app's for its own states, the server's otherwise", () => {
 		const app = { version: V71, target: V72, phase: "available" as const, error: null, releaseNotes: [{ version: V72, items: ["app"] }], omittedReleaseCount: 1 };
 		const server = state({ status: "downloaded", version: V72, releaseNotes: [{ version: V72, items: ["server"] }], omittedReleaseCount: 2 });
-		assert.deepEqual(shownReleaseNotes(server, "everything", app), { releaseNotes: app.releaseNotes, omittedReleaseCount: 1 });
-		assert.deepEqual(shownReleaseNotes(server, "install", app), { releaseNotes: server.releaseNotes, omittedReleaseCount: 2 });
-		assert.deepEqual(shownReleaseNotes(server, "downloading", { ...app, phase: "downloading" }), { releaseNotes: app.releaseNotes, omittedReleaseCount: 1 });
-		assert.deepEqual(shownReleaseNotes(server, "downloading", null), { releaseNotes: server.releaseNotes, omittedReleaseCount: 2 });
+		assert.deepEqual(shownReleaseNotes(server, "everything", app), { releaseNotes: app.releaseNotes, omittedReleaseCount: 1, offeredVersion: V72, available: true });
+		assert.deepEqual(shownReleaseNotes(server, "install", app), { releaseNotes: server.releaseNotes, omittedReleaseCount: 2, offeredVersion: V72, available: false });
+		assert.deepEqual(shownReleaseNotes(server, "downloading", { ...app, phase: "downloading" }), { releaseNotes: app.releaseNotes, omittedReleaseCount: 1, offeredVersion: V72, available: false });
+		assert.deepEqual(shownReleaseNotes(server, "downloading", null), { releaseNotes: server.releaseNotes, omittedReleaseCount: 2, offeredVersion: V72, available: false });
+		assert.equal(shownReleaseNotes({ ...server, status: "available" }, "download", null)?.available, true, "the server's own available update");
 		assert.equal(shownReleaseNotes(server, "check", app), null);
 		assert.equal(shownReleaseNotes(server, "reload", app), null);
 		assert.equal(shownReleaseNotes(server, "everything", { ...app, phase: "updating" }), null);
@@ -1218,7 +1312,7 @@ describe("install confirm and What's new", () => {
 		assert.deepEqual(lines, ["Chat turn: Calculus", "Background job: Research", "Plugin worker: Cards", "Extraction: notes.pdf", "Compaction: Algebra"]);
 	});
 
-	it("What's new shows the groups, or Updated to X with Read more when there are none", () => {
+	it("What's new shows the groups, or Updated to X with View release on GitHub when there are none", () => {
 		const html = renderToStaticMarkup(<WhatsNewBody homepage="https://github.com/o/r" onDone={() => {}}
 			whatsNew={{ version: "0.3.9", releaseNotes: [{ version: "0.3.9", items: ["x"] }, { version: "0.3.8", items: ["y"] }], omittedReleaseCount: 0 }} />);
 		assert.ok(html.includes("What&#x27;s new in 0.3.9") || html.includes("What's new in 0.3.9"));
@@ -1226,6 +1320,7 @@ describe("install confirm and What's new", () => {
 		const empty = renderToStaticMarkup(<WhatsNewBody homepage="https://github.com/o/r" onDone={() => {}} whatsNew={{ version: "0.3.9", releaseNotes: [], omittedReleaseCount: 0 }} />);
 		assert.ok(empty.includes("Updated to version 0.3.9."));
 		assert.ok(empty.includes('href="https://github.com/o/r/releases/tag/v0.3.9"'));
+		assert.ok(empty.includes("View release on GitHub"));
 	});
 
 	it("Got it marks the running version seen on the server and closes the popup", async () => {
