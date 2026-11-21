@@ -32,6 +32,8 @@ dom.window.removeEventListener = ((type: string, listener: EventListenerOrEventL
 
 const { Toaster, toastManager, TOAST_LIMIT, TOAST_TIMEOUT_MS } = await import("../components/ui/toast.tsx");
 const updateToasts = await import("../components/update-toasts.tsx");
+const { InteractionLayersProvider } = await import("../components/interaction-layers.tsx");
+const { HostDialog } = await import("../components/host-dialog.tsx");
 
 async function key(element: Element, name: string, { shiftKey = false } = {}) {
 	const event = Object.assign(new dom.window.Event("keydown", { bubbles: true, cancelable: true }), { key: name, shiftKey, altKey: false, ctrlKey: false, metaKey: false });
@@ -123,6 +125,51 @@ describe("the toast primitive (T3's ui/toast.tsx)", () => {
 		await wait(90);
 		assert.deepEqual(titles(), [], "no composer either: the timer runs again, so nothing stays stranded");
 		assert.ok(!focusInToast());
+	});
+
+	it("is never a window drag band (Close and Read more stay clickable in the packaged app)", async () => {
+		await mount(<Toaster />);
+		assert.ok(q("toast-viewport")!.classList.contains("lh-no-drag"));
+	});
+
+	it("its live regions mount empty, so a toast raised before it mounted is inserted into them (and announced)", async () => {
+		toastManager.add({ type: "error", title: "Queued early" });
+		const host = document.createElement("div"); document.body.append(host);
+		const records: MutationRecord[] = [];
+		const observer = new dom.window.MutationObserver((list: MutationRecord[]) => { records.push(...list); });
+		observer.observe(host, { childList: true, subtree: true });
+		const root = createRoot(host); roots.push({ root, host });
+		await act(async () => { root.render(<Toaster />); });
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		records.push(...observer.takeRecords());
+		observer.disconnect();
+		const region = q("toast-announce-assertive")!;
+		assert.equal(region.textContent, "Queued early");
+		const added = (name: string) => records.findIndex((record) => [...record.addedNodes].some((node) => node.nodeName === name));
+		assert.ok(added("SECTION") >= 0 && added("P") > added("SECTION"), "the region mounted empty, then its text was inserted on its own");
+	});
+
+	it("with a modal dialog open the region moves into the dialog: not hidden from screen readers, and F6 reaches it through the focus trap", async () => {
+		const host = await mount(
+			<InteractionLayersProvider>
+				<HostDialog open aria-label="Settings" onClose={() => "closed"}><button type="button" data-testid="in-dialog">inside</button></HostDialog>
+				<Toaster />
+			</InteractionLayersProvider>,
+		);
+		await wait(5);
+		const inDialog = document.querySelector<HTMLElement>("[data-testid='in-dialog']")!;
+		await act(async () => { inDialog.focus(); });
+		await act(async () => { toastManager.add({ type: "error", title: "Download failed" }); });
+		const region = q("toast-viewport")!;
+		assert.ok(region.closest("[data-interaction-popup-host]"), "inside the dialog's popup host");
+		const live = q("toast-announce-assertive")!;
+		const hidden = (element: Element | null): boolean => !!element && (element.getAttribute("aria-hidden") === "true" || hidden(element.parentElement));
+		assert.equal(hidden(live), false, "the live region isn't under aria-hidden");
+		assert.equal(live.textContent, "Download failed");
+		await key(inDialog, "F6");
+		await wait(5);
+		assert.ok(document.activeElement === q("toast"), "F6 reached the toast and the trap kept it there");
+		void host;
 	});
 
 	it("keeps clear of the window's own buttons on Windows and Linux", async () => {

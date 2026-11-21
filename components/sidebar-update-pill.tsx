@@ -705,7 +705,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 						// T3's installLocalUpdate: a refused install shows the downloaded toast, a bridge that threw
 						// "Could not install update" (SidebarUpdatePill.tsx:172-195 at df09ced7).
 						let threw = false;
-						void install({ onError: () => { threw = true; showUpdateErrorToast(INSTALL_FAILED_TITLE, UNEXPECTED_ERROR); } }).then((accepted) => {
+						void install({ fromSidebar: true, onError: () => { threw = true; showUpdateErrorToast(INSTALL_FAILED_TITLE, UNEXPECTED_ERROR); } }).then((accepted) => {
 							if (accepted) startRestarting();
 							else if (!threw) showUpdateDownloadedToast(state.downloadedVersion ?? state.version);
 						});

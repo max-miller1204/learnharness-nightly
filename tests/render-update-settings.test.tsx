@@ -1247,6 +1247,63 @@ describe("the update control's toasts (T3's desktopUpdate.toast.tsx and SidebarU
 		assert.deepEqual(toastTitles(), [], "the server's state never says it");
 	});
 
+	it("only a visible page claims a notice; it acks once the toast shows; the toast reads the notice's own fixed text", async () => {
+		await unmountAll();
+		await act(async () => { toastManager.clear(); });
+		const calls: string[] = [];
+		const recovered = { ...downloaded, revision: 3, errorContext: "install" as const, message: "Couldn’t check for updates. Try again later.", installFailedNotice: 4, installFailedNoticeMessage: "Couldn’t install the update." };
+		bridge(recovered);
+		window.lh!.claimUpdateNotice = async (key: string) => { calls.push(`claim ${key}`); return true; };
+		window.lh!.ackUpdateNotice = async (key: string) => { calls.push(`ack ${key}`); return true; };
+		const visibility = Object.getOwnPropertyDescriptor(document, "visibilityState");
+		Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+		try {
+			await mount(<><UpdateLaunchNotice /><Toaster /></>);
+			await settle();
+			assert.deepEqual([calls, toastTitles()], [[], []], "a hidden page doesn't spend it");
+			Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+			await act(async () => { document.dispatchEvent(new window.Event("visibilitychange")); });
+			await settle();
+		} finally {
+			if (visibility) Object.defineProperty(document, "visibilityState", visibility); else Reflect.deleteProperty(document, "visibilityState");
+		}
+		assert.deepEqual(calls, ["claim install-failed:4", "ack install-failed:4"], "claimed when visible, acked once shown");
+		assert.deepEqual([toastTitles(), toastLines()], [["Could not install update"], ["Couldn’t install the update."]], "the notice's text, not whatever message the state holds now");
+	});
+
+	it("the sidebar's Install tells main it started it; Settings' Install doesn't (its failure raises no toast)", async () => {
+		await unmountAll();
+		const sources: unknown[] = [];
+		bridge(downloaded);
+		window.lh!.installUpdate = async (...args: unknown[]) => { sources.push(args[0]); return true; };
+		const host = await mount(<><SidebarUpdatePill /><UpdateSettings {...props} /></>);
+		await settle();
+		await click(q(host, "update-pill")); await click(q(document, "install-update-confirm")); await settle();
+		await click(q(host, "update-install")); await click(q(document, "install-update-confirm")); await settle();
+		assert.deepEqual(sources, ["sidebar", undefined]);
+	});
+
+	it("Ctrl+Escape on a focused toast is the toast's, with the release notes open: it never reaches the app's shortcuts", async () => {
+		await unmountAll();
+		await act(async () => { toastManager.clear(); });
+		bridge(state({ status: "available", version: "0.3.8", revision: 1, availableVersion: "0.3.8", releaseNotes: [{ version: "0.3.8", items: ["A change"] }] }));
+		const host = await mount(<><SidebarUpdatePill /><Toaster /></>);
+		await settle();
+		await hover(q(host, "update-pill")!);
+		await act(async () => { toastManager.add({ title: "Hello" }); });
+		await key(q(host, "update-pill")!, "F6");
+		const reached: string[] = [];
+		const onWindow = (event: Event) => { reached.push((event as KeyboardEvent).key); };
+		window.addEventListener("keydown", onWindow);
+		try {
+			await key(q(document, "toast")!, "Escape", { ctrlKey: true });
+		} finally {
+			window.removeEventListener("keydown", onWindow);
+		}
+		assert.deepEqual(reached, [], "not the chat's abort");
+		assert.deepEqual(toastTitles(), [], "the toast took it");
+	});
+
 	it("a focused toast gets Escape before open release notes", async () => {
 		await unmountAll();
 		await act(async () => { toastManager.clear(); });

@@ -20,13 +20,18 @@
  * leaves focus alone. Each toast is announced as it appears: its text goes
  * into an always-present live region, assertive for errors and polite for
  * the others. On Windows and Linux the region keeps clear of the window's
- * own buttons (`.lh-toast-region`, app/globals.css).
+ * own buttons (`.lh-toast-region`, app/globals.css), and it is never a
+ * window drag band (`.lh-no-drag`). While a modal dialog is open the region
+ * moves into the dialog's own popup host, so the dialog neither hides it
+ * from screen readers nor traps F6 away from it.
  *
  * T3 Code is MIT licensed, Copyright (c) 2026 T3 Tools Inc. (the full notice
  * is in components/release-notes-view.tsx).
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { useOptionalInteractionLayers } from "@/components/interaction-layers";
 import { CircleAlertIcon, CircleCheckIcon, InfoIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -55,6 +60,9 @@ let nextId = 1;
 const listeners = new Set<() => void>();
 const emit = () => { for (const listener of [...listeners]) listener(); };
 const EMPTY: readonly ToastRecord[] = [];
+const noSubscribe = () => () => {};
+const NO_LAYERS: readonly unknown[] = [];
+const noLayers = () => NO_LAYERS;
 
 export const toastManager = {
 	/** Shows a toast; the oldest goes past TOAST_LIMIT. Returns its id. */
@@ -154,6 +162,12 @@ export function Toaster() {
 	// region was entered with F6 (only then does focus move on to the next toast when one goes).
 	const returnTo = useRef<HTMLElement | null>(null);
 	const enteredWithKeyboard = useRef(false);
+	// The live regions mount empty, then take the toasts' text.
+	const [ready, setReady] = useState(false);
+	useEffect(() => { setReady(true); }, []);
+	const layers = useOptionalInteractionLayers();
+	useSyncExternalStore(layers?.subscribe ?? noSubscribe, layers?.getSnapshot ?? noLayers, noLayers);
+	const modalHost = layers?.getActiveModal()?.portalRef?.current ?? null;
 
 	const leave = useCallback(() => {
 		const target = returnTo.current;
@@ -201,7 +215,8 @@ export function Toaster() {
 	}, [items, focused, leave]);
 
 	const onKeyDown = (event: KeyboardEvent<HTMLOListElement>) => {
-		if (event.metaKey || event.ctrlKey || event.altKey) return;
+		// Escape with any modifier is the focused toast's, as in the release notes: never the app's
+		// shortcuts (Ctrl+Escape must not reach the chat's abort).
 		if (event.key === "Escape") {
 			const item = (event.target as HTMLElement).closest<HTMLElement>("[data-toast-item]");
 			const id = items.find((toast) => item?.dataset.toastId === String(toast.id))?.id;
@@ -210,7 +225,7 @@ export function Toaster() {
 			if (id !== undefined) toastManager.close(id);
 			return;
 		}
-		if (event.key !== "Tab") return;
+		if (event.metaKey || event.ctrlKey || event.altKey || event.key !== "Tab") return;
 		event.preventDefault();
 		event.stopPropagation();
 		const all = stops(region.current);
@@ -220,14 +235,16 @@ export function Toaster() {
 		else leave();
 	};
 
-	return (
-		<section aria-label="Notifications" data-testid="toast-viewport" data-toast-region className="lh-toast-region pointer-events-none fixed z-[100] w-[calc(100%-2rem)] max-w-90">
-			{/* Always present, so each toast's text is announced as it is inserted. */}
+	const announced = ready ? items : EMPTY;
+	const region_ = (
+		<section aria-label="Notifications" data-testid="toast-viewport" data-toast-region className="lh-toast-region lh-no-drag pointer-events-none fixed z-[100] w-[calc(100%-2rem)] max-w-90">
+			{/* Always present, and empty when first mounted, so each toast's text is announced as it is
+			    inserted (also the ones raised before the region mounted). */}
 			<div className="sr-only" aria-live="assertive" aria-atomic="false" data-testid="toast-announce-assertive">
-				{items.filter((toast) => toast.type === "error").map((toast) => <p key={toast.id}>{announcement(toast)}</p>)}
+				{announced.filter((toast) => toast.type === "error").map((toast) => <p key={toast.id}>{announcement(toast)}</p>)}
 			</div>
 			<div className="sr-only" aria-live="polite" aria-atomic="false" data-testid="toast-announce-polite">
-				{items.filter((toast) => toast.type !== "error").map((toast) => <p key={toast.id}>{announcement(toast)}</p>)}
+				{announced.filter((toast) => toast.type !== "error").map((toast) => <p key={toast.id}>{announcement(toast)}</p>)}
 			</div>
 			<ol
 				ref={region}
@@ -248,4 +265,7 @@ export function Toaster() {
 			</ol>
 		</section>
 	);
+	// Inside an open modal's popup host: within its boundary, so neither its hideOthers nor its
+	// focus trap shuts the toasts out (components/host-dialog.tsx).
+	return modalHost ? createPortal(region_, modalHost) : region_;
 }

@@ -108,10 +108,12 @@ declare global {
 			/** A manual check; resolves once it ended, whether one ran (T3's { checked }). Older apps resolve nothing. */
 			checkForUpdates?: () => Promise<UpdateCheckResult | void>;
 			/** Resolves whether main took the install (false while Update everything owns the updater). */
-			installUpdate?: () => Promise<boolean>;
+			installUpdate?: (source?: "sidebar") => Promise<boolean>;
 			/** Claims a once-per-launch update notice ("install-failed:<n>", "not-applied:<version>"):
 			 *  true only the first time this launch, whatever window or page asks. */
 			claimUpdateNotice?: (key: string) => Promise<boolean>;
+			/** The claimed notice's toast is showing: main won't give it to any page again this launch. */
+			ackUpdateNotice?: (key: string) => Promise<boolean>;
 			/** Download the "available" update (downloads happen only on click); resolves T3's
 			 *  { accepted, completed } with the state. Older apps resolve nothing. */
 			downloadUpdate?: () => Promise<UpdateActionResult | void>;

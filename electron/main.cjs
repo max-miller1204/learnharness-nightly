@@ -163,6 +163,9 @@ let desktopAPISecret = null;
 let desktopSessionToken = null;
 let reopenWindow = null;
 let localOrigin = null;
+// The bundled server's last origin: a window still on it may claim its update notices after a
+// restart that failed (stopping the backend clears localOrigin).
+let lastLocalOrigin = null;
 let serverList = null;
 const trustedAppWindows = new Set();
 
@@ -529,19 +532,47 @@ let serverStoppedForInstall = null;
 // The install this launch didn't apply (T3's notAppliedVersion), from the install record.
 let notAppliedVersion = null;
 // The notices the page shows once per launch (revision PR 4): main owns "once", so a reload, a
-// new port or a new local window never repeats one. installFailedNotice counts installs main
-// recovered from; the page claims "install-failed:<n>" and "not-applied:<version>" once each.
+// new port or a new local window never repeats one. "not-applied:<version>" for the launch's
+// install record; "install-failed:<n>" for an install the sidebar started that failed, with its
+// fixed text, carried only until the next state change (then it is no longer current).
+// Two steps: a visible page claims a notice (reserved for that page), shows the toast, then acks
+// it (shown). A page that navigates or closes before its ack gives its reservation back.
 let installFailedNotice = 0;
-const claimedNotices = new Set();
+let installNotice = null; // { id, message } while current
+let installNotifies = false; // the running install was started from the sidebar
+const shownNotices = new Set();
+const reservedNotices = new Map(); // key -> the webContents that reserved it
 const NOTICE_KEY = /^(?:install-failed:[1-9]\d{0,5}|not-applied:\d+\.\d+\.\d+(?:-[a-z]+\.\d{8}\.\d+)?)$/;
 
-/** True the first time this launch a page claims `key` for a notice the state carries now. */
-function claimUpdateNotice(key) {
-	if (typeof key !== "string" || !NOTICE_KEY.test(key) || claimedNotices.has(key)) return false;
-	const current = key.startsWith("install-failed:") ? `install-failed:${installFailedNotice}` : `not-applied:${notAppliedVersion}`;
-	if (key !== current) return false;
-	claimedNotices.add(key);
+const currentNotice = (key) => key === (key.startsWith("install-failed:") ? `install-failed:${installNotice?.id}` : `not-applied:${notAppliedVersion}`);
+
+/** Reserves `key` for `contents` when it is a notice the state carries now and no page showed it yet. */
+function claimUpdateNotice(key, contents) {
+	if (typeof key !== "string" || !NOTICE_KEY.test(key) || shownNotices.has(key) || !currentNotice(key)) return false;
+	const holder = reservedNotices.get(key);
+	if (holder && holder !== contents && !holder.isDestroyed?.()) return false;
+	reservedNotices.set(key, contents);
+	const release = () => { if (reservedNotices.get(key) === contents) reservedNotices.delete(key); };
+	contents?.once?.("destroyed", release);
+	contents?.once?.("did-start-navigation", release);
 	return true;
+}
+
+/** The page showed the toast for `key`: no page shows it again this launch. */
+function ackUpdateNotice(key, contents) {
+	if (typeof key !== "string" || reservedNotices.get(key) !== contents) return false;
+	reservedNotices.delete(key);
+	shownNotices.add(key);
+	return true;
+}
+
+/** A failed install the sidebar started becomes the page's notice, with its fixed text. */
+function noticeInstallFailure(message) {
+	if (!installNotifies) return;
+	installNotifies = false;
+	installFailedNotice += 1;
+	installNotice = { id: installFailedNotice, message };
+	setUpdateState({ ...updateState }, { notice: true });
 }
 
 const nowIso = () => new Date().toISOString();
@@ -577,10 +608,7 @@ function recoverFailedInstall() {
 	serverStoppedForInstall = null;
 	// The page's "Could not install update" toast follows this notice. With the server to bring
 	// back, only once its windows reloaded onto it: a toast raised before would go with the old page.
-	const notify = () => {
-		installFailedNotice += 1;
-		setUpdateState({ ...updateState });
-	};
+	const notify = () => noticeInstallFailure(INSTALL_FAILED);
 	// T3 restarts its backends once they stopped: the old child's close would otherwise dispose the
 	// new backend, and two servers would share the data folder.
 	if (stopped) {
@@ -615,10 +643,18 @@ async function restartLocalAfterFailedInstall() {
 const offeredNotes = () => releaseNotes.capGroups(offeredGroups);
 const INSTALL_RECORD = () => path.join(app.getPath("userData"), updateMachine.INSTALL_RECORD_FILE);
 
-/** Broadcast the next state (a reducer's result); the revision moves on. */
-function setUpdateState(next) {
+/** Broadcast the next state (a reducer's result); the revision moves on. Any change but the
+ *  notice's own ends the install notice: it is no longer current. */
+function setUpdateState(next, { notice = false } = {}) {
 	try {
-		updateState = { ...next, revision: updateState.revision + 1, ...(notAppliedVersion ? { notAppliedVersion } : {}), ...(installFailedNotice ? { installFailedNotice } : {}) };
+		if (!notice) installNotice = null;
+		const { installFailedNotice: _id, installFailedNoticeMessage: _message, ...rest } = next;
+		updateState = {
+			...rest,
+			revision: updateState.revision + 1,
+			...(notAppliedVersion ? { notAppliedVersion } : {}),
+			...(installNotice ? { installFailedNotice: installNotice.id, installFailedNoticeMessage: installNotice.message } : {}),
+		};
 		for (const win of trustedAppWindows) {
 			try {
 				win.webContents.send("lh:update-status", updateState);
@@ -780,9 +816,12 @@ function installAccepted() {
 }
 
 /** The user confirmed Install: re-check, take a newer build if one appeared, then quit and install. */
-async function installUpdateNow() {
+/** `fromSidebar`: the sidebar control started it, so its failure is the page's notice (Settings,
+ *  the menu and Update everything report theirs their own way). */
+async function installUpdateNow({ fromSidebar = false } = {}) {
 	if (installing || !installAccepted()) return;
 	installing = true;
+	installNotifies = fromSidebar;
 	// Installing again after a failed install: the last failure no longer applies.
 	if (updateState.errorContext === "install") setUpdateState({ ...updateState, errorContext: null, message: null });
 	const downloaded = updateState.downloadedVersion;
@@ -804,10 +843,13 @@ async function installUpdateNow() {
 		try {
 			await autoUpdater.downloadUpdate();
 		} catch (err) {
-			// Install nothing; offer the newer one again, with T3's "Download failed for X" retry.
+			// Install nothing; offer the newer one again, with T3's "Download failed for X" retry. From
+			// the sidebar it says so too, as T3's installLocalUpdate does with that failed result
+			// (apps/web/src/components/sidebar/SidebarUpdatePill.tsx:172-195 at df09ced7).
 			log(`install: downloading ${offered.version} failed (${err?.message ?? err}); nothing installed`);
 			installing = false;
 			setUpdateState(updateMachine.reduceOnDownloadFailure(updateState, DOWNLOAD_FAILED));
+			noticeInstallFailure(DOWNLOAD_FAILED);
 			return;
 		}
 	}
@@ -1141,6 +1183,7 @@ async function startLocalServer(signal) {
 	if (serverProcess !== child || !child.connected) throw new Error("Bundled server stopped before login completed.");
 	desktopSessionToken = token;
 	localOrigin = ownedOrigin;
+	lastLocalOrigin = ownedOrigin;
 	log("desktop session ready");
 	return url;
 }
@@ -1228,10 +1271,10 @@ async function main() {
 	// are log lines — this can never block boot.
 	setupAutoUpdater();
 	// Answers whether main took the install, so the page shows "Restarting" only when it did.
-	ipcMain.handle("lh:update-install", (event) => {
+	ipcMain.handle("lh:update-install", (event, source) => {
 		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
 		const accepted = installAccepted();
-		void installUpdateNow();
+		void installUpdateNow({ fromSidebar: source === "sidebar" });
 		return accepted;
 	});
 	ipcMain.handle("lh:update:download", (event) => {
@@ -1243,10 +1286,16 @@ async function main() {
 		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
 		return updateState;
 	});
-	// The page claims a notice once per launch (main owns "once"; see claimUpdateNotice).
+	// The page claims a notice, then acks it once shown (main owns "once"; see claimUpdateNotice).
+	// Also from a window still on the last local origin when the server's restart failed.
+	const noticeSender = (event) => trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) && trustedSender(event, localOrigin ?? lastLocalOrigin, BrowserWindow);
 	ipcMain.handle("lh:update:claim-notice", (event, key) => {
-		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");
-		return claimUpdateNotice(key);
+		if (!noticeSender(event)) throw new Error("Untrusted desktop request.");
+		return claimUpdateNotice(key, event.sender);
+	});
+	ipcMain.handle("lh:update:ack-notice", (event, key) => {
+		if (!noticeSender(event)) throw new Error("Untrusted desktop request.");
+		return ackUpdateNotice(key, event.sender);
 	});
 	ipcMain.handle("lh:update:check", (event) => {
 		if (!trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, localOrigin, BrowserWindow)) throw new Error("Untrusted desktop request.");

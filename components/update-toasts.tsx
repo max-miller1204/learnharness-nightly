@@ -71,34 +71,54 @@ export function showUpdateErrorToast(title: string, description: string): void {
 	toastManager.add({ type: "error", title, description });
 }
 
-/** Main's notices, each once per launch (main's claim, so a reload or a new local window never
- *  repeats one): "did not apply" (T3's startDesktopUpdateLaunchNotice), and "Could not install
- *  update" for an install main recovered from, after it reloaded this page onto the restarted
- *  server (so the toast isn't lost with the old page). Desktop app's local window only. */
+/** The fixed line of main's install-failure notice when the state carries none (main's INSTALL_FAILED). */
+export const INSTALL_FAILED_LINE = "Couldn’t install the update.";
+
+/**
+ * Main's notices, each once per launch: "did not apply" (T3's startDesktopUpdateLaunchNotice), and
+ * "Could not install update" for an install the sidebar started that failed (after main reloaded
+ * this page onto the restarted server, so the toast isn't lost with the old page), with the fixed
+ * text main carries in the notice. Two steps with main: only a visible page claims a notice, shows
+ * the toast, then acks it, so a page that closes or hides first never spends it. Desktop app's
+ * local window only.
+ */
 export function UpdateLaunchNotice({ current = APP_VERSION }: { current?: string } = {}) {
 	const { state, transport } = useUpdateState();
 	const desktop = transport === "desktop";
 	const notApplied = desktop ? state?.notAppliedVersion : undefined;
 	const installFailed = desktop ? state?.installFailedNotice : undefined;
-	// The state's fixed message as it is when the notice comes.
-	const message = useRef(state?.message);
-	message.current = state?.message;
+	const installFailedLine = state?.installFailedNoticeMessage;
+	const line = useRef(installFailedLine);
+	line.current = installFailedLine;
 	useEffect(() => {
 		if (!notApplied) return;
-		void claim(`not-applied:${notApplied}`).then((first) => {
-			if (first) showUpdateErrorToast(NOT_APPLIED_TITLE, notAppliedLine(current, notApplied));
-		});
+		return showNotice(`not-applied:${notApplied}`, () => showUpdateErrorToast(NOT_APPLIED_TITLE, notAppliedLine(current, notApplied)));
 	}, [notApplied, current]);
 	useEffect(() => {
 		if (!installFailed) return;
-		void claim(`install-failed:${installFailed}`).then((first) => {
-			if (first) showUpdateErrorToast(INSTALL_FAILED_TITLE, message.current ?? UNEXPECTED_ERROR);
-		});
+		return showNotice(`install-failed:${installFailed}`, () => showUpdateErrorToast(INSTALL_FAILED_TITLE, line.current ?? INSTALL_FAILED_LINE));
 	}, [installFailed]);
 	return null;
 }
 
-/** Main's once-per-launch claim; no bridge (or a throw) means no toast rather than a repeat. */
+/** Once the page is visible: claim the notice from main, show it, ack it. Returns a cancel. */
+function showNotice(key: string, show: () => void): () => void {
+	let live = true;
+	const attempt = () => {
+		if (!live || document.visibilityState === "hidden") return;
+		document.removeEventListener("visibilitychange", attempt);
+		void claim(key).then((first) => {
+			if (!first || !live) return;
+			show();
+			void window.lh?.ackUpdateNotice?.(key)?.catch?.(() => {});
+		});
+	};
+	document.addEventListener("visibilitychange", attempt);
+	attempt();
+	return () => { live = false; document.removeEventListener("visibilitychange", attempt); };
+}
+
+/** Main's claim; no bridge (or a throw) means no toast rather than a repeat. */
 async function claim(key: string): Promise<boolean> {
 	try {
 		return (await window.lh?.claimUpdateNotice?.(key)) === true;

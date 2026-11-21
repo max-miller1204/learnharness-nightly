@@ -47,8 +47,10 @@ export type UpdateState = {
 	canRetry?: boolean;
 	/** Desktop only: the version the last install meant to reach, while this launch is still the old one. */
 	notAppliedVersion?: string;
-	/** Desktop only: how many installs main recovered from this launch (the "Could not install update" notice). */
+	/** Desktop only: the current "Could not install update" notice (an install the sidebar started
+	 *  failed), and its fixed text; gone with the next state change. */
 	installFailedNotice?: number;
+	installFailedNoticeMessage?: string;
 	/** Newest first: versions newer than the running one up to the offered one. */
 	releaseNotes?: ReleaseNoteGroup[];
 	omittedReleaseCount?: number;
@@ -170,11 +172,12 @@ export function useUpdateState() {
 	/** Apply now. Callers confirm first (InstallUpdateDialog). Resolves false when the request
 	 *  failed or the app turned it down (the sidebar control then shows its normal button again),
 	 *  never rejects. */
-	const install = useCallback(async ({ onError }: { onError?: () => void } = {}): Promise<boolean> => {
+	/** `fromSidebar`: the sidebar control's own Install, whose failure main reports as a notice. */
+	const install = useCallback(async ({ onError, fromSidebar = false }: { onError?: () => void; fromSidebar?: boolean } = {}): Promise<boolean> => {
 		try {
 			const lh = localDesktopBridge();
 			// The app can turn it down (an Update everything run owns the updater): only its yes counts.
-			if (lh) return (await lh.installUpdate?.()) === true;
+			if (lh) return (await (fromSidebar ? lh.installUpdate?.("sidebar") : lh.installUpdate?.())) === true;
 			accept(await fetchWebState("/api/updates/install", "POST"));
 			return true;
 		} catch {
