@@ -375,10 +375,14 @@ try {
 	fs.mkdirSync(path.join(home, "desktop-profile"), { recursive: true });
 	fs.mkdirSync(path.join(home, "desktop-profile-dev"), { recursive: true });
 	fs.writeFileSync(launcher, `const {app,session}=require('electron');\napp.setPath('home',${JSON.stringify(home)});\napp.setPath('userData',${JSON.stringify(path.join(home, "desktop-profile"))});\napp.commandLine.appendSwitch('remote-debugging-port',${JSON.stringify(String(debugPort))});\napp.commandLine.appendSwitch('disable-background-networking');\napp.commandLine.appendSwitch('disable-sync');\napp.whenReady().then(()=>session.defaultSession.webRequest.onBeforeRequest((details,cb)=>{let u;try{u=new URL(details.url)}catch{return cb({cancel:true})}cb({cancel:!(${JSON.stringify(origin)}===u.origin||(u.protocol==='ws:'&&u.host===${JSON.stringify(new URL(origin).host)})||['about:','data:','devtools:'].includes(u.protocol))});}));\nrequire(${JSON.stringify(path.join(root, "electron", "main.cjs"))});\nconsole.log('LH_FILE_PATH_PROFILE '+JSON.stringify({home:app.getPath('home'),userData:app.getPath('userData')}));\n`);
-	// Electron on Linux needs the parent's display, and Chromium needs a UTF-8
+	// Electron on Linux needs the parent's X display, and Chromium needs a UTF-8
 	// locale to turn the α fixture's name into a File (without one, input.files
 	// stays empty). Set one when the parent's isn't UTF-8.
-	const desktopEnv = Object.fromEntries(["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "LANG", "LC_ALL", "LC_CTYPE"].flatMap(name => process.env[name] ? [[name, process.env[name]]] : []));
+	const desktopEnv = Object.fromEntries(["DISPLAY", "XAUTHORITY", "LANG", "LC_ALL", "LC_CTYPE"].flatMap(name => process.env[name] ? [[name, process.env[name]]] : []));
+	// The child's HOME is the temp folder, so without XAUTHORITY (ssh -X,
+	// startx) X would look for the cookie there: point it at the real one.
+	const xauthority = path.join(os.homedir(), ".Xauthority");
+	if (desktopEnv.DISPLAY && !desktopEnv.XAUTHORITY && fs.existsSync(xauthority)) desktopEnv.XAUTHORITY = xauthority;
 	if (!/utf-?8/i.test(desktopEnv.LC_ALL || desktopEnv.LC_CTYPE || desktopEnv.LANG || "")) desktopEnv.LC_ALL = "C.UTF-8";
 	const electron = spawn(require("electron"), [launcher], { cwd: root, env: { ...env, ...desktopEnv, LH_DEV_URL: origin }, stdio: ["ignore", "pipe", "pipe"] }); children.push(electron);
 	const captureElectron = data => { electronLogs = (electronLogs + data).slice(-24000); }; electron.stdout.on("data", captureElectron); electron.stderr.on("data", captureElectron);
