@@ -113,9 +113,17 @@ function decide(files, full = false) {
 }
 
 /** Paths from `git diff -z --name-only`: NUL-separated and never quoted, so
- *  a non-ASCII name, a space or a newline in a name comes through as is. */
+ *  a name with a non-ASCII character or a newline (which Git quotes without
+ *  -z) comes through as is. */
 function splitPaths(text) {
 	return text.split("\0").filter(Boolean);
+}
+
+/** A --paths file, or null (run every job) when it isn't `-z` output: `-z`
+ *  ends every name with NUL, so a non-empty file without one is some other
+ *  format, and reading it as one name would skip jobs. */
+function pathsFile(text) {
+	return text.length > 0 && !text.includes("\0") ? null : splitPaths(text);
 }
 
 /** The paths a push changed, from the commit main was at before it to HEAD,
@@ -142,14 +150,14 @@ function main() {
 		? pushPaths(args[beforeIndex + 1])
 		: pathsIndex === -1
 			? null
-			: splitPaths(fs.readFileSync(args[pathsIndex + 1], "utf8"));
+			: pathsFile(fs.readFileSync(args[pathsIndex + 1], "utf8"));
 	const full = args.includes("--full");
 	for (const file of files ?? []) console.error(`${classify(file)}: ${JSON.stringify(file)}`);
-	if (files === null) console.error("No diff: running every job.");
+	if (files === null) console.error(pathsIndex !== -1 && beforeIndex === -1 ? "The paths file is not NUL-separated (git diff -z): running every job." : "No diff: running every job.");
 	if (full) console.error(files === null ? "Full run: running every job." : "Full run: running every job but iPhone, which follows the diff.");
 	for (const [key, value] of Object.entries(decide(files, full))) console.log(`${key}=${value}`);
 }
 
-module.exports = { classify, decide, pushPaths, splitPaths, GATES };
+module.exports = { classify, decide, pathsFile, pushPaths, splitPaths, GATES };
 
 if (require.main === module) main();
