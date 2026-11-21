@@ -191,8 +191,9 @@ const SUMMARY_LIMITS = { intro: 600, stats: 120, footer: 220 } as const;
 function summaryFields(group: ReleaseNoteGroup): Pick<ReleaseNoteGroup, "intro" | "stats" | "footer"> {
 	const fields: Pick<ReleaseNoteGroup, "intro" | "stats" | "footer"> = {};
 	for (const key of ["intro", "stats", "footer"] as const) {
-		const value = group[key];
-		if (typeof value === "string" && value.trim() && value.length <= SUMMARY_LIMITS[key]) fields[key] = value;
+		// Trimmed and collapsed first, so padding doesn't count against the bound.
+		const value = typeof group[key] === "string" ? group[key].trim().replace(/\s+/g, " ") : "";
+		if (value && value.length <= SUMMARY_LIMITS[key]) fields[key] = value;
 	}
 	return fields;
 }

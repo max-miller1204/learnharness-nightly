@@ -2,7 +2,7 @@
 
 const { GenericProvider } = require("electron-updater/out/providers/GenericProvider");
 const { newUrlFromBase } = require("electron-updater/out/util");
-const { compareVersions, summaryBody, FULL_CHANGELOG_MARKER } = require("./release-notes.cjs");
+const { compareVersions } = require("./release-notes.cjs");
 
 const NIGHTLY_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-nightly\.[1-9]\d{7}\.(?:0|[1-9]\d*)$/;
 const ASSET_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -50,11 +50,12 @@ class NightlyProvider extends GenericProvider {
 			.filter((entry) => typeof entry?.version === "string" && NIGHTLY_VERSION.test(entry.version) &&
 				compareVersions(entry.version, current) > 0 && compareVersions(entry.version, version) <= 0 &&
 				Array.isArray(entry.items))
-			// Each note as its generated release body's summary (T3's format), so
-			// electron/release-notes.cjs reads the stats, intro and footer too.
+			// The feed's own fields, structured: electron/release-notes.cjs reads them as they are,
+			// never through Markdown (an item reading "<br>" or "- x" keeps its shape).
 			.map((entry) => ({
 				version: entry.version,
-				note: `${summaryBody({ ...entry, items: entry.items.filter((item) => typeof item === "string") })}\n\n${FULL_CHANGELOG_MARKER}`,
+				items: entry.items.filter((item) => typeof item === "string"),
+				...Object.fromEntries(["stats", "intro", "footer"].filter((key) => typeof entry[key] === "string").map((key) => [key, entry[key]])),
 			})) : [];
 		return { ...info, releaseDate: typeof publishedAt === "string" ? publishedAt : info.releaseDate, releaseNotes };
 	}

@@ -12,14 +12,14 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { capReleaseNoteGroups, MAX_RELEASE_NOTE_ITEM_LENGTH } from "../src/core/release-notes.ts";
 import { feedNotesToGroups, groupsBetween, mergeNotesCache, readNotesCache, readUpdateRecord, whatsNew, writeUpdateRecord } from "../src/server/update-records.ts";
-import { buildSummaryInput, countContributors, fallbackItems, formatSummary, parseHighlights, releaseStats, trimPullRequestBody, type PullRequest } from "../scripts/generate-release-notes.ts";
+import { buildSummaryInput, countContributors, entryItems, fallbackItems, formatSummary, parseHighlights, readPullRequests, releaseStats, trimPullRequestBody, type PullRequest } from "../scripts/generate-release-notes.ts";
 
 const require = createRequire(import.meta.url);
 const electronNotes = require("../electron/release-notes.cjs") as {
 	releaseNoteGroups(info: unknown): Array<{ version: string; releasedAt?: string; items: string[]; totalItems: number; intro?: string; stats?: string; footer?: string }>;
 	summaryBody(note: unknown): string;
 	FULL_CHANGELOG_MARKER: string;
-	capGroups(groups: unknown[]): { releaseNotes: unknown[]; omittedReleaseCount: number };
+	capGroups(groups: unknown[]): { releaseNotes: Array<{ version: string; items: string[]; totalItems: number; intro?: string; stats?: string; footer?: string }>; omittedReleaseCount: number };
 	mergeNotesCache(dir: string, groups: unknown[]): void;
 };
 
@@ -41,6 +41,32 @@ describe("notes limits", () => {
 		assert.ok(releaseNotes[0]!.items[0]!.endsWith("..."));
 		assert.equal(releaseNotes[0]!.totalItems, 10, "the whole count survives the cut (N more changes on GitHub)");
 		assert.equal(capReleaseNoteGroups([{ version: V(1), items: [], intro: "3 bug fixes." }]).releaseNotes[0]!.totalItems, 1, "an intro counts as one");
+	});
+
+	it("older clients still see the intro or footer (written once more as the last item); newer ones drop that copy", () => {
+		const withFooter = { items: ["**Cards.** Practice."], footer: "Plus 2 more bug fixes." };
+		const introOnly = { items: [], intro: "3 bug fixes." };
+		assert.deepEqual(entryItems(withFooter), ["**Cards.** Practice.", "Plus 2 more bug fixes."], "an older server or app shows the count as a bullet");
+		assert.deepEqual(entryItems(introOnly), ["3 bug fixes."], "and an intro-only release isn't empty there");
+		assert.deepEqual(entryItems({ items: ["a"] }), ["a"]);
+		const groups = feedNotesToGroups([
+			{ version: V(12), publishedAt: "", items: entryItems(withFooter), footer: withFooter.footer },
+			{ version: V(11), publishedAt: "", items: entryItems(introOnly), intro: introOnly.intro },
+		]);
+		assert.deepEqual(groups.map((g) => g.items), [["**Cards.** Practice."], []], "the server shows the footer and intro once");
+		const desktop = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: [
+			{ version: V(12), items: entryItems(withFooter), footer: withFooter.footer },
+			{ version: V(11), items: entryItems(introOnly), intro: introOnly.intro },
+		] });
+		assert.deepEqual(desktop.map((g) => [g.items, g.totalItems]), [[["**Cards.** Practice."], 1], [[], 1]], "so does the desktop");
+		assert.equal(electronNotes.summaryBody({ version: V(12), items: entryItems(introOnly), intro: introOnly.intro }), "**3 bug fixes.**", "and the release page");
+		assert.ok(!electronNotes.summaryBody({ version: V(12), items: entryItems(withFooter), footer: withFooter.footer }).includes("- Plus 2"));
+	});
+
+	it("summary fields are trimmed and collapsed before their bounds", () => {
+		const padded = `  ${"x".repeat(60)}   ${"y".repeat(58)}  `;
+		const [group] = feedNotesToGroups([{ version: V(12), publishedAt: "", items: [], stats: padded }]);
+		assert.equal(group!.stats, `${"x".repeat(60)} ${"y".repeat(58)}`, "119 characters once collapsed: kept");
 	});
 
 	it("the server keeps a feed note's summary fields", () => {
@@ -134,6 +160,15 @@ describe("generate-release-notes", () => {
 		assert.equal(releaseStats(1, 1), "1 change from 1 contributor");
 	});
 
+	it("reads the PRs a partly failing GraphQL query still returned (gh exits non-zero on a missing PR)", () => {
+		const partial = JSON.stringify({ data: { repository: { pr1: { body: "Adds x.", author: { __typename: "User", login: "max", name: "Max" } }, pr9: null } }, errors: [{ message: "Could not resolve to a PullRequest with the number of 9." }] });
+		const gh = () => { throw Object.assign(new Error("gh: exit 1"), { stdout: partial }); };
+		const read = readPullRequests("o/r", [1, 9], gh);
+		assert.deepEqual([...read.keys()], [1]);
+		assert.equal(read.get(1)!.author!.login, "max");
+		assert.equal(readPullRequests("o/r", [1], () => { throw new Error("no gh"); }).size, 0, "no output at all: no PRs, no throw");
+	});
+
 	it("rejects a highlight that names a commit outside the input", () => {
 		assert.equal(formatSummary(subjects, [{ label: "X", detail: "Y", commits: [9] }]), null);
 	});
@@ -195,6 +230,32 @@ describe("electron release notes (T3 port)", () => {
 		assert.deepEqual([read!.items, read!.stats, read!.footer], [note.items, note.stats, note.footer]);
 		assert.equal(electronNotes.summaryBody({ version: V(12), items: [], intro: "2 bug fixes." }), "**2 bug fixes.**");
 		assert.equal(electronNotes.summaryBody({ version: V(12), items: [] }), "", "nothing to say: no summary");
+	});
+
+	it("any footer survives the release page's round trip, not only T3's Plus N more", () => {
+		const note = { version: V(12), items: ["a"], footer: "Thanks to everyone who tested." };
+		const [read] = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: `${electronNotes.summaryBody(note)}\n\n${electronNotes.FULL_CHANGELOG_MARKER}` });
+		assert.deepEqual([read!.items, read!.footer], [["a"], "Thanks to everyone who tested."]);
+		const headed = `### What's changed\n\n- a\n\n${electronNotes.FULL_CHANGELOG_MARKER}`;
+		assert.equal(electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: headed })[0]!.footer, undefined, "a heading before the items is still skipped");
+	});
+
+	it("main's own copy (the local window, via capGroups) and the notes cache hold the bridge's bounds", () => {
+		const long = "x".repeat(601);
+		const groups = [
+			{ version: V(12), items: Array.from({ length: 12 }, (_, i) => `item ${i}`), intro: long, stats: "s".repeat(121), footer: "f".repeat(221), extra: long },
+			{ version: "not a version", items: ["x"] },
+		];
+		const { releaseNotes, omittedReleaseCount } = electronNotes.capGroups(groups);
+		assert.equal(releaseNotes.length, 1, "an invalid version is dropped");
+		assert.deepEqual(Object.keys(releaseNotes[0]!), ["version", "items", "totalItems"], "no unbounded intro, stats or footer, no extra fields");
+		assert.equal(releaseNotes[0]!.items.length, 8);
+		assert.equal(releaseNotes[0]!.totalItems, 12, "the whole count survives the cut");
+		assert.equal(omittedReleaseCount, 0);
+		electronNotes.mergeNotesCache(dir, groups);
+		const cached = JSON.parse(fs.readFileSync(path.join(dir, "release-notes.json"), "utf8")).groups;
+		assert.equal(cached.length, 1);
+		assert.equal(cached[0].intro, undefined, "the cache holds the bounds too");
 	});
 
 	it("a plain list keeps its newest 8, newest first, with the whole count (GitHub lists oldest first)", () => {

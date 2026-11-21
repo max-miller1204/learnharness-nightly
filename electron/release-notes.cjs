@@ -47,6 +47,15 @@ const MAX_RELEASE_NOTE_GROUPS = 6;
 const MAX_RELEASE_NOTE_ITEMS_PER_GROUP = 8;
 const MAX_RELEASE_NOTE_ITEM_LENGTH = 220;
 const NOTES_CACHE_KEEP = 30;
+// The feed's own bounds (selfhost/src/release.ts FEED_NOTE_LIMITS): longer text is dropped.
+const SUMMARY_LIMITS = { intro: 600, stats: 120, footer: 220 };
+
+const cleanText = (value) => (typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "");
+
+function boundedText(value, limit) {
+	const text = cleanText(value);
+	return text && text.length <= limit ? text : undefined;
+}
 
 const HTML_ENTITY_REPLACEMENTS = new Map([
 	["amp", "&"],
@@ -125,6 +134,12 @@ function extractReleaseNoteSummary(summary) {
 		const plain = line.replace(/\*\*([^*]+)\*\*/g, "$1");
 		if (/^### Plus \d+ more /.test(plain)) {
 			footer = plain.slice(4);
+			continue;
+		}
+		// Any other "### " line after the summary's text is its footer too (summaryBody writes one
+		// for every footer); a heading before it, such as "### What's changed", is skipped as in T3.
+		if (/^###\s+\S/.test(plain) && (items.length > 0 || intro.length > 0)) {
+			footer = plain.replace(/^###\s+/, "");
 			continue;
 		}
 		if (plain === "" || /^#{1,6}\s+/.test(plain)) continue;
@@ -220,13 +235,32 @@ function releaseNoteGroups(info) {
 	for (const entry of raw) {
 		const version = entry.version.replace(/^v/, "");
 		if (seen.has(version)) continue;
-		const note = extractReleaseNoteItems(entry.note);
+		// A feed note (electron/nightly-updater.cjs) is already structured: its fields as they are,
+		// never through Markdown, where item text like "<br>" or "- x" would change shape.
+		const note = Array.isArray(entry.items) ? feedNoteFields(entry) : extractReleaseNoteItems(entry.note);
 		if (note.totalItems === 0 && !note.stats) continue;
 		seen.add(version);
 		const releasedAt = releasedAtOf(version, info.version, info.releaseDate);
 		groups.push({ version, ...note, ...(releasedAt ? { releasedAt } : {}) });
 	}
 	return groups;
+}
+
+/** Old clients read only `items`, so the generator also writes the intro or footer as the last
+ *  item; a client that reads those fields drops that copy. */
+function withoutSummaryEcho(items, { intro, footer } = {}) {
+	return items.filter((item) => item !== intro && item !== footer);
+}
+
+/** A feed note's own fields (latest.json notes, selfhost/src/release.ts FeedNote). */
+function feedNoteFields(entry) {
+	const summary = {};
+	for (const [key, limit] of Object.entries(SUMMARY_LIMITS)) {
+		const value = boundedText(entry[key], limit);
+		if (value) summary[key] = value;
+	}
+	const items = withoutSummaryEcho(entry.items.filter((item) => typeof item === "string").map(cleanText).filter(Boolean), summary);
+	return { items, totalItems: items.length + (summary.intro ? 1 : 0), ...summary };
 }
 
 /**
@@ -237,8 +271,8 @@ function releaseNoteGroups(info) {
  */
 function summaryBody(note) {
 	if (!note || typeof note.version !== "string") return "";
-	const text = (value) => (typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "");
-	const items = Array.isArray(note.items) ? note.items.map(text).filter(Boolean) : [];
+	const text = cleanText;
+	const items = withoutSummaryEcho(Array.isArray(note.items) ? note.items.map(text).filter(Boolean) : [], { intro: text(note.intro), footer: text(note.footer) });
 	const parts = [];
 	if (text(note.stats)) parts.push(`**v${note.version.replace(/^v/, "")}** · ${text(note.stats)}`);
 	if (text(note.intro)) parts.push(`**${text(note.intro)}**`);
@@ -268,10 +302,12 @@ function compareVersions(a, b) {
 	return Number(pa[6]) - Number(pb[6]);
 }
 
+/** What main keeps for the local window: the first 6 shown groups, bounded, and how many more. */
 function capGroups(groups) {
+	const shown = (Array.isArray(groups) ? groups : []).map(boundedGroup).filter(Boolean);
 	return {
-		releaseNotes: groups.slice(0, MAX_RELEASE_NOTE_GROUPS),
-		omittedReleaseCount: Math.max(0, groups.length - MAX_RELEASE_NOTE_GROUPS),
+		releaseNotes: shown.slice(0, MAX_RELEASE_NOTE_GROUPS),
+		omittedReleaseCount: Math.min(Math.max(0, shown.length - MAX_RELEASE_NOTE_GROUPS), MAX_OMITTED_RELEASE_COUNT),
 	};
 }
 
@@ -286,8 +322,8 @@ function mergeNotesCache(dataDir, groups) {
 	} catch {
 		/* no cache yet */
 	}
-	const byVersion = new Map(existing.map((group) => [group.version, group]));
-	for (const group of groups) byVersion.set(group.version, group);
+	const byVersion = new Map(existing.map(boundedGroup).filter(Boolean).map((group) => [group.version, group]));
+	for (const group of groups.map(boundedGroup).filter(Boolean)) byVersion.set(group.version, group);
 	const merged = [...byVersion.values()].sort((a, b) => compareVersions(b.version, a.version)).slice(0, NOTES_CACHE_KEEP);
 	fs.mkdirSync(dataDir, { recursive: true });
 	const temp = `${file}.${process.pid}.tmp`;
@@ -298,13 +334,25 @@ function mergeNotesCache(dataDir, groups) {
 const MAX_VERSION_LENGTH = 64;
 const MAX_OMITTED_RELEASE_COUNT = 1000;
 const MAX_TOTAL_ITEMS = 10000;
-// The feed's own bounds (selfhost/src/release.ts FEED_NOTE_LIMITS): longer text is dropped.
-const SUMMARY_LIMITS = { intro: 600, stats: 120, footer: 220 };
 
-function boundedText(value, limit) {
-	if (typeof value !== "string") return undefined;
-	const text = value.trim().replace(/\s+/g, " ");
-	return text && text.length <= limit ? text : undefined;
+/**
+ * One group as every reader may keep it (main's state for the local window,
+ * the notes cache, the remote page): a valid version, the rendered fields
+ * only, each bounded. Null when the group can't be shown.
+ */
+function boundedGroup(group) {
+	if (!group || typeof group.version !== "string" || group.version.length > MAX_VERSION_LENGTH || !VERSION_RE.test(group.version) || !Array.isArray(group.items)) return null;
+	const summary = {};
+	for (const [key, limit] of Object.entries(SUMMARY_LIMITS)) {
+		const value = boundedText(group[key], limit);
+		if (value) summary[key] = value;
+	}
+	const all = withoutSummaryEcho(group.items.filter((item) => typeof item === "string").map(cleanText).filter(Boolean), summary);
+	const items = all.slice(0, MAX_RELEASE_NOTE_ITEMS_PER_GROUP).map(truncateItem);
+	const counted = all.length + (summary.intro ? 1 : 0);
+	const totalItems = Number.isInteger(group.totalItems) && group.totalItems >= items.length ? Math.min(group.totalItems, MAX_TOTAL_ITEMS) : counted;
+	const releasedAt = safeReleasedAt(group.releasedAt);
+	return { version: group.version, ...(releasedAt ? { releasedAt } : {}), items, totalItems, ...summary };
 }
 
 /**
@@ -314,25 +362,9 @@ function boundedText(value, limit) {
  * most 6 groups of 8 items.
  */
 function bridgeNotes(releaseNotes, omittedReleaseCount) {
-	const shown = [];
-	for (const group of Array.isArray(releaseNotes) ? releaseNotes : []) {
-		if (shown.length >= MAX_RELEASE_NOTE_GROUPS) break;
-		if (!group || typeof group.version !== "string" || group.version.length > MAX_VERSION_LENGTH || !VERSION_RE.test(group.version) || !Array.isArray(group.items)) continue;
-		const items = group.items
-			.filter((item) => typeof item === "string" && item.trim() !== "")
-			.slice(0, MAX_RELEASE_NOTE_ITEMS_PER_GROUP)
-			.map((item) => truncateItem(item.trim().replace(/\s+/g, " ")));
-		const releasedAt = safeReleasedAt(group.releasedAt);
-		const summary = {};
-		for (const [key, limit] of Object.entries(SUMMARY_LIMITS)) {
-			const value = boundedText(group[key], limit);
-			if (value) summary[key] = value;
-		}
-		const total = Number.isInteger(group.totalItems) && group.totalItems >= items.length ? Math.min(group.totalItems, MAX_TOTAL_ITEMS) : items.length + (summary.intro ? 1 : 0);
-		shown.push({ version: group.version, ...(releasedAt ? { releasedAt } : {}), items, totalItems: total, ...summary });
-	}
+	const shown = (Array.isArray(releaseNotes) ? releaseNotes : []).map(boundedGroup).filter(Boolean).slice(0, MAX_RELEASE_NOTE_GROUPS);
 	const omitted = Number.isInteger(omittedReleaseCount) && omittedReleaseCount > 0 ? Math.min(omittedReleaseCount, MAX_OMITTED_RELEASE_COUNT) : 0;
 	return { releaseNotes: shown, omittedReleaseCount: omitted };
 }
 
-module.exports = { releaseNoteGroups, capGroups, mergeNotesCache, extractItems, extractReleaseNoteItems, compareVersions, bridgeNotes, safeReleasedAt, summaryBody, FULL_CHANGELOG_MARKER };
+module.exports = { releaseNoteGroups, capGroups, mergeNotesCache, extractItems, extractReleaseNoteItems, compareVersions, bridgeNotes, boundedGroup, safeReleasedAt, summaryBody, FULL_CHANGELOG_MARKER };

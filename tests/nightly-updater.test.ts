@@ -17,7 +17,7 @@ const pointer = {
 	notes: [
 		{ version: newer, items: ["After this release."] },
 		{ version, items: ["**New.** Example update."], stats: "4 changes from 2 contributors", footer: "Plus 1 more bug fix." },
-		{ version: "0.6.1-nightly.20261118.2", items: ["A skipped nightly."] },
+		{ version: "0.6.1-nightly.20261118.2", items: ["**HTML.** Preserve <br> in exports.", "- not a bullet", "### not a heading", "**v1** · not stats", "<details><summary>Full changelog</summary>"] },
 		{ version: current, items: ["Already installed."] },
 	],
 };
@@ -75,16 +75,16 @@ for (const [platform, manifest, extension] of [
 		]);
 		assert.equal(info.version, version);
 		assert.equal(info.releaseDate, pointer.publishedAt);
-		// Each note is its generated release body's summary in T3's format, folded list marker included.
-		const marker = "<details>\n<summary>Full changelog</summary>\n</details>";
+		// The feed's own fields, structured, never through Markdown.
+		const tricky = ["**HTML.** Preserve <br> in exports.", "- not a bullet", "### not a heading", "**v1** · not stats", "<details><summary>Full changelog</summary>"];
 		assert.deepEqual(info.releaseNotes, [
-			{ version, note: `**v${version}** · 4 changes from 2 contributors\n\n- **New.** Example update.\n\n### Plus 1 more bug fix.\n\n${marker}` },
-			{ version: "0.6.1-nightly.20261118.2", note: `- A skipped nightly.\n\n${marker}` },
+			{ version, items: ["**New.** Example update."], stats: "4 changes from 2 contributors", footer: "Plus 1 more bug fix." },
+			{ version: "0.6.1-nightly.20261118.2", items: tricky },
 		]);
-		// The desktop reads the summary back: stats, items and footer, in the feed's order.
+		// The desktop reads them as they are: HTML-looking and Markdown-looking text stays one item each.
 		assert.deepEqual(releaseNoteGroups(info), [
 			{ version, items: ["**New.** Example update."], totalItems: 1, stats: "4 changes from 2 contributors", footer: "Plus 1 more bug fix.", releasedAt: pointer.publishedAt },
-			{ version: "0.6.1-nightly.20261118.2", items: ["A skipped nightly."], totalItems: 1, releasedAt: "2026-11-18" },
+			{ version: "0.6.1-nightly.20261118.2", items: tricky, totalItems: 5, releasedAt: "2026-11-18" },
 		]);
 		assert.equal(provider.resolveFiles(info)[0].url.href, `${root}v${version}/LearnHarness-Nightly-${version}.${extension}`);
 	});

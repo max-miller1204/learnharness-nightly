@@ -231,6 +231,15 @@ jobs:
               echo
               echo "</details>"
               echo
+            else
+              # A first nightly still folds a (short) list, so clients read the summary above as one.
+              echo "<details>"
+              echo "<summary>Full changelog</summary>"
+              echo
+              echo "The first nightly: there is no earlier one to compare with."
+              echo
+              echo "</details>"
+              echo
             fi
             echo "Nightly build of \`${SHA::12}\` from \`main\`."
             echo

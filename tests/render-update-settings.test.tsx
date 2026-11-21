@@ -1136,6 +1136,10 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		const summary = readDesktopAppStatus({ version: V71, target: V72, phase: "available", error: null,
 			releaseNotes: [{ version: V72, items: ["b"], totalItems: 9, stats: "9 changes from 1 contributor", footer: "Plus 1 more bug fix.", intro: "x".repeat(601), extra: "dropped" }] });
 		assert.deepEqual(summary?.releaseNotes, [{ version: V72, items: ["b"], totalItems: 9, stats: "9 changes from 1 contributor", footer: "Plus 1 more bug fix." }]);
+		// Trimmed and collapsed before the bound: padding doesn't push a field over it.
+		const padded = readDesktopAppStatus({ version: V71, target: V72, phase: "available", error: null,
+			releaseNotes: [{ version: V72, items: ["b"], stats: `   ${"x".repeat(60)}     ${"y".repeat(58)}   ` }] });
+		assert.equal(padded?.releaseNotes?.[0]?.stats, `${"x".repeat(60)} ${"y".repeat(58)}`);
 		assert.equal(capped?.omittedReleaseCount, 1000);
 	});
 

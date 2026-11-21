@@ -22,6 +22,13 @@ export interface ReleaseNoteGroup {
 	footer?: string;
 }
 
+/** Old clients read only `items`, so the release script also writes the intro or footer as the
+ *  last item (scripts/generate-release-notes.ts entryItems); a client that reads those fields drops
+ *  that copy. */
+export function withoutSummaryEcho(items: readonly string[], { intro, footer }: { intro?: string; footer?: string }): string[] {
+	return items.filter((item) => item !== intro && item !== footer);
+}
+
 /** The release's whole count: what the feed said, else the items and the intro (T3's totalItems). */
 export const totalReleaseItems = (group: ReleaseNoteGroup): number =>
 	typeof group.totalItems === "number" && Number.isInteger(group.totalItems) && group.totalItems >= 0

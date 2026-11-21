@@ -143,6 +143,17 @@ export function countContributors(commits: readonly ReleaseCommit[], pullRequest
 	return people.size;
 }
 
+/**
+ * The entry's `items` as older clients read them: the highlights, then the
+ * intro or footer as a plain last item, so a server or desktop app from
+ * before the summary fields still shows "Plus 3 more bug fixes." or
+ * "3 bug fixes." (T3 keeps old popovers working the same way, with a
+ * "### Plus N more" line they skip). Newer clients drop that copy.
+ */
+export function entryItems(summary: ReleaseSummary): string[] {
+	return [...summary.items, ...(summary.intro ? [summary.intro] : []), ...(summary.footer ? [summary.footer] : [])];
+}
+
 /** T3's buildReleaseHeader without the "**vX** · " the release body adds. */
 export function releaseStats(changes: number, contributors: number): string {
 	const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
@@ -234,15 +245,30 @@ export function formatSummary(subjects: readonly string[], selected: readonly Hi
 	return items.length > 0 ? { items, footer: `Plus ${count} more ${kind}.` } : { items, intro: `${count} ${kind}.` };
 }
 
-function readPullRequests(repository: string, numbers: readonly number[]): Map<number, PullRequest> {
+/** `gh` with these arguments: its stdout. Throws on a non-zero exit (the error carries stdout). */
+export type GhRunner = (args: string[]) => string;
+const runGh: GhRunner = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+
+/**
+ * The PRs' bodies and authors, 100 per GraphQL query. A query naming a PR that doesn't exist here
+ * (an imported upstream number) makes gh exit non-zero, but its stdout still holds the data for the
+ * others: read that, so their bodies and authors (the contributor count) aren't lost.
+ */
+export function readPullRequests(repository: string, numbers: readonly number[], gh: GhRunner = runGh): Map<number, PullRequest> {
 	const [owner, name] = repository.split("/");
 	const pullRequests = new Map<number, PullRequest>();
 	for (let start = 0; start < numbers.length; start += 100) {
 		const fields = numbers.slice(start, start + 100)
 			.map((n) => `pr${n}: pullRequest(number: ${n}) { body author { __typename login ... on User { name } } }`).join("\n");
 		const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
+		let out = "";
 		try {
-			const out = execFileSync("gh", ["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+			out = gh(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`]);
+		} catch (error) {
+			const stdout = (error as { stdout?: unknown }).stdout;
+			out = typeof stdout === "string" ? stdout : Buffer.isBuffer(stdout) ? stdout.toString("utf8") : "";
+		}
+		try {
 			const repo = (JSON.parse(out) as { data?: { repository?: Record<string, { body?: string; author?: PullRequest["author"] } | null> } }).data?.repository ?? {};
 			for (const [alias, pr] of Object.entries(repo)) {
 				if (!pr || typeof pr.body !== "string") continue;
@@ -250,7 +276,7 @@ function readPullRequests(repository: string, numbers: readonly number[]): Map<n
 				pullRequests.set(Number(alias.slice(2)), { body: pr.body, author });
 			}
 		} catch {
-			/* PR bodies are extra context; subjects alone still work (imported upstream PRs may not exist here) */
+			/* PR bodies are extra context; subjects alone still work */
 		}
 	}
 	return pullRequests;
@@ -322,7 +348,7 @@ async function main() {
 	const highlights = await summarize(buildSummaryInput(subjects, bodies), apiKey, model);
 	const summary = formatSummary(subjects, highlights);
 	if (!summary) throw new Error("a highlight names a commit that is not in the range");
-	writeAtomically(output, { version, publishedAt, ...summary, stats: releaseStats(commits.length, countContributors(commits, pullRequests)) });
+	writeAtomically(output, { version, publishedAt, ...summary, items: entryItems(summary), stats: releaseStats(commits.length, countContributors(commits, pullRequests)) });
 }
 
 if (import.meta.main) {

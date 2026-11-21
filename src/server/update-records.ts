@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { PATHS } from "../../config.ts";
 import { writeFileAtomicSync } from "../store/atomic-write.ts";
-import { capReleaseNoteGroups, type ReleaseNoteGroup } from "../core/release-notes.ts";
+import { capReleaseNoteGroups, withoutSummaryEcho, type ReleaseNoteGroup } from "../core/release-notes.ts";
 import { compareVersions, FEED_NOTE_LIMITS, FEED_NOTES_KEEP, isExactVersion, type FeedNote } from "../../selfhost/src/release.ts";
 
 export interface UpdateRecord {
@@ -40,8 +40,12 @@ function readJson(file: string): unknown {
 	try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return undefined; }
 }
 
-const summaryText = (key: keyof typeof FEED_NOTE_LIMITS, value: unknown) =>
-	typeof value === "string" && value.trim() && value.length <= FEED_NOTE_LIMITS[key] ? { [key]: value.trim() } : {};
+/** A summary field trimmed, its whitespace collapsed, then held to the feed's bound (dropped past it). */
+function summaryText(key: keyof typeof FEED_NOTE_LIMITS, value: unknown): Partial<Record<keyof typeof FEED_NOTE_LIMITS, string>> {
+	if (typeof value !== "string") return {};
+	const text = value.trim().replace(/\s+/g, " ");
+	return text && text.length <= FEED_NOTE_LIMITS[key] ? { [key]: text } : {};
+}
 
 function parseGroups(value: unknown): ReleaseNoteGroup[] {
 	if (!Array.isArray(value)) return [];
@@ -50,16 +54,15 @@ function parseGroups(value: unknown): ReleaseNoteGroup[] {
 	for (const entry of value) {
 		if (!isRecord(entry) || typeof entry.version !== "string" || !isExactVersion(entry.version) || seen.has(entry.version) || !Array.isArray(entry.items)) continue;
 		seen.add(entry.version);
-		const items = entry.items.filter((item): item is string => typeof item === "string" && item.trim() !== "");
+		// T3's summary extras, when the feed (or an older cache) has them.
+		const summary = { ...summaryText("intro", entry.intro), ...summaryText("stats", entry.stats), ...summaryText("footer", entry.footer) };
+		const items = withoutSummaryEcho(entry.items.filter((item): item is string => typeof item === "string" && item.trim() !== ""), summary);
 		groups.push({
 			version: entry.version,
 			...(typeof entry.releasedAt === "string" && entry.releasedAt ? { releasedAt: entry.releasedAt } : {}),
 			items,
-			// T3's summary extras, when the feed (or an older cache) has them.
 			...(Number.isInteger(entry.totalItems) && (entry.totalItems as number) >= items.length ? { totalItems: entry.totalItems as number } : {}),
-			...summaryText("intro", entry.intro),
-			...summaryText("stats", entry.stats),
-			...summaryText("footer", entry.footer),
+			...summary,
 		});
 	}
 	return groups.sort((a, b) => compareVersions(b.version, a.version));
