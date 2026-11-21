@@ -79,6 +79,9 @@ try {
 		if (!page) throw new Error(`no Electron window showing ${APP}; pages: ${(await browser.pages()).map((p) => p.url()).join(", ")}`);
 		result.window = { bridge: await page.evaluate(() => typeof window.lh), title: await page.title() };
 		step("Electron window shows the app with the desktop bridge", result.window.bridge === "object", { note: JSON.stringify(result.window) });
+		// The dev window opened on the head server's sign-in page: give it the
+		// head session cookie, so every page the drive opens next is signed in.
+		await signInPage(page, inst);
 		if (inst.SEED_IN_PAGE === "1") {
 			const seeded = await page.evaluate(async (fake) => {
 				const r1 = await fetch("/api/custom-provider");

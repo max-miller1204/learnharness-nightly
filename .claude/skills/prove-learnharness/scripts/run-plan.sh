@@ -13,7 +13,9 @@
 # Exit: 0 every check passed (still not a verdict: read the evidence),
 # 1 a check failed, or the change itself failed to build, start or launch
 # (BROKEN: back to the builder), 2 BLOCKED (base or environment failed,
-# a planned surface, unmapped files), 3 no app surface.
+# a planned surface, unmapped files), 3 no app surface, 4 every scripted
+# check passed and a step by hand is still to do (the plan's "# MANUAL:"
+# lines: a mobile device proof, a CI script's CLI).
 #
 # --base <ref> is applied to the whole run (exported as PROVE_BASE_REF), so
 # the scope, the base build and every comparison use the same base.
@@ -61,6 +63,7 @@ trap 'exit 130' INT TERM
 checks_failed=0
 failed_parts=()
 blocked=""
+manual=""
 head_failed=""
 for step in "${STEPS[@]}"; do
 	case "$step" in
@@ -68,6 +71,7 @@ for step in "${STEPS[@]}"; do
 		'node scripts/scope.mjs'*)                                         # same scope args as this run
 			node scripts/scope.mjs "$@" >"$RUN/scope.txt" 2>&1; continue ;;
 		*'scripts/stop.sh'*) continue ;;                                   # cleanup() does it
+		'# MANUAL: '*) manual="${manual:+$manual / }${step#\# MANUAL: }"; continue ;; # a step for the checker by hand: not BLOCKED
 		'#'*) blocked="${step#\# }"; break ;;                              # a PLANNED surface: BLOCKED
 	esac
 	# A plan line chains commands with "; " (no planned command contains one);
@@ -108,9 +112,12 @@ cleanup
 	for p in "${failed_parts[@]}"; do echo "failed: $p"; done
 	[ -n "$head_failed" ] && echo "BROKEN: $head_failed (see run-plan.log and build-head.log or app.log)"
 	[ -n "$blocked" ] && echo "BLOCKED: $blocked (see run-plan.log)"
+	# The step by hand comes only once every scripted step passed.
+	[ -n "$manual" ] && [ -z "$head_failed" ] && [ -z "$blocked" ] && [ "$checks_failed" = 0 ] && echo "MANUAL (not a verdict): every scripted step passed; $manual"
 } | tee "$RUN/summary.txt" >&2
 echo "$RUN"
 [ -n "$head_failed" ] && exit 1
 [ -n "$blocked" ] && exit 2
 [ "$checks_failed" -gt 0 ] && exit 1
+[ -n "$manual" ] && exit 4
 exit 0

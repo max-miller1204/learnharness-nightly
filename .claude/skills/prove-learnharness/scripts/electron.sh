@@ -39,6 +39,10 @@ case "$MODE" in
 		WANT_URL=$APP_URL
 		SEED=0
 		E_DATA=$DATA_DIR
+		# The dev window loads the head server, which needs a login: web-teach
+		# gives the window the head instance's session cookie.
+		LOGIN="APP_PORT=$APP_PORT
+APP_TOKEN=$APP_TOKEN"
 		;;
 	packaged)
 		t0=$SECONDS
@@ -52,6 +56,7 @@ case "$MODE" in
 		WANT_URL=http://127.0.0.1
 		SEED=1
 		E_DATA="$ED/config/LearnHarness Nightly/data"
+		LOGIN=""
 		;;
 	*) die "mode must be dev or packaged" ;;
 esac
@@ -75,7 +80,9 @@ const puppeteer = require("puppeteer-core");
 	const browser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${process.argv[2]}`, defaultViewport: null });
 	const timeout = Number(process.argv[3]) * 1000;
 	try {
-		const target = await browser.waitForTarget((item) => item.type() === "page" && item.url().endsWith("/server-list.html"), { timeout });
+		// The picker's URL carries a theme query (server-list.html?mode=dark): match the path.
+		const onPicker = (item) => { try { return new URL(item.url()).pathname.endsWith("/server-list.html"); } catch { return false; } };
+		const target = await browser.waitForTarget((item) => item.type() === "page" && onPicker(item), { timeout });
 		const page = await target.page();
 		const choice = await page.waitForSelector("#run-local", { visible: true, timeout });
 		await choice.click();
@@ -101,5 +108,6 @@ BUILD_STAMP="$BUILD_STAMP"
 DATA_DIR="$E_DATA"
 FIXTURE=$FIXTURE
 MODEL_LOG=$MODEL_LOG
+$LOGIN
 EOF
 echo "$ED/instance.env"
