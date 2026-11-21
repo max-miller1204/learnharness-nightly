@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { authDataDir, authenticate, CREDENTIAL_HEADERS, readCredential, sessionCookie } from "./src/server/auth.ts";
+import { authDataDir, authenticate, CREDENTIAL_HEADERS, isApiPath, readCredential, sessionCookie } from "./src/server/auth.ts";
 import { NEVER_EXPIRES, touchLastSeen } from "./selfhost/src/auth-store.ts";
 import { SERVER_INFO_PATH } from "./src/client-protocol/index.ts";
 import { protocolRefusal } from "./src/server/server-info.ts";
@@ -10,7 +10,7 @@ import { protocolRefusal } from "./src/server/server-info.ts";
  * server info a client reads before pairing (docs/specs/client-protocol.md). */
 export const PUBLIC_PATHS = new Set(["/pair", "/api/health", "/api/auth/session", "/api/auth/browser-session", "/oauth/token", SERVER_INFO_PATH]);
 
-export const isApiPath = (pathname: string) => pathname === "/api" || pathname.startsWith("/api/");
+export { isApiPath };
 
 /** The login gate (T3 Code's model, no localhost bypass). Signed-out page
  * requests are rewritten to the pairing screen, because LearnHarness pages

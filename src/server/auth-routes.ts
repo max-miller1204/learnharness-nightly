@@ -18,7 +18,7 @@ import {
 	type SessionRecord,
 } from "../../selfhost/src/auth-store.ts";
 import { layout } from "../../selfhost/src/paths.ts";
-import { authDataDir, authenticate, clientInfo, cookieOriginAllowed, CREDENTIAL_HEADERS, CROSS_SITE_REFUSED, sessionCookie } from "./auth.ts";
+import { authDataDir, authenticate, clientInfo, cookieRuleAllows, CREDENTIAL_HEADERS, CROSS_SITE_REFUSED, sessionCookie } from "./auth.ts";
 import type { OAuthErrorResponse, SessionStateResponse, TokenExchangeResponse } from "../client-protocol/index.ts";
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
@@ -64,10 +64,14 @@ export function sessionState(request: Request): Response {
 }
 
 /** POST /api/auth/browser-session (public): body { credential } -> session cookie.
- * The cookie rule applies before the code is read, so another site's page
- * can neither sign this browser in (login CSRF) nor spend a code. */
+ * The cookie rule applies before the code is read, so a request from
+ * another site's page neither sets the cookie nor spends a code. (A page of
+ * this origin can still post a code: /pair asks before a link replaces a
+ * session, components/pair-screen.tsx.) JSON only, so a plain form can't
+ * post one. */
 export async function browserSession(request: Request): Promise<Response> {
-	if (!cookieOriginAllowed(request.headers, request.method)) return json({ error: CROSS_SITE_REFUSED }, 403);
+	if (!cookieRuleAllows(request)) return json({ error: CROSS_SITE_REFUSED }, 403);
+	if (request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json") return json({ error: "Expected JSON." }, 415);
 	const { credential } = await jsonBody(request);
 	if (typeof credential !== "string" || !credential) return json({ error: "Expected a pairing code." }, 400);
 	const claimed = await unlocked((options) => claimPairingCode(authDataDir(), credential, clientInfo(request), options));

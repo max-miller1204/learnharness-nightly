@@ -155,7 +155,6 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 
 **Could fool you**:
 - `fetch` can't forge `Host`: `api-check.mjs` uses raw `http.request` for that probe.
-- with login, a cross-site cookie write with only `Sec-Fetch-Site: cross-site` answers 200 where the answer key says 403 (app bug #303, on main too), and the scripted refusals don't send it: see [references/api.md](references/api.md). Report it, don't drop it.
 - shapes, not values, are diffed: a value change in a read route needs a recipe step that asserts the value. The list's order is one such value: `listOrder` (three sessions, labelled) is diffed against base, and a reversed sort fails it.
 
 ### Agent tools (`src/agent`)

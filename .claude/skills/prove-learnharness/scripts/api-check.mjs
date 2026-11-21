@@ -90,7 +90,8 @@ try {
 	step("read routes answer with their expected status", READS.every(([route, , want = 200]) => result.observations.readShapes.some((s) => s.startsWith(`GET ${route} ${want} `))), `${READS.length} routes`);
 
 	// A build with login (docs/specs/login-pairing.md) replaces the Host and
-	// cross-site checks with a credential and T3's cookie Origin rule.
+	// cross-site checks with a credential and the cookie rule (Fetch Metadata
+	// first, then T3's Origin fallback).
 	const cookie = inst.APP_TOKEN ? { cookie: `lh_session_${inst.APP_PORT}=${inst.APP_TOKEN}` } : {};
 	const refusals = inst.APP_TOKEN ? [
 		["no credential is 401", "GET", "/api/settings", { signedOut: true }, 401],
@@ -98,6 +99,9 @@ try {
 		["a forged bearer token is 401", "GET", "/api/settings", { signedOut: true, headers: { authorization: "Bearer forged.token" } }, 401],
 		["foreign Host is allowed with a login", "GET", "/api/settings", { signedOut: true, headers: { host: "evil.example", ...cookie } }, 200],
 		["cross-site Origin write with a cookie is refused", "POST", "/api/chats", { signedOut: true, headers: { origin: "http://evil.example", "sec-fetch-site": "cross-site", ...cookie }, body: "{}" }, 403],
+		// Issue #303: fetch metadata only, no Origin. A build that accepts it
+		// creates a session, which the loop below deletes again.
+		["cross-site fetch metadata write with a cookie is refused", "POST", "/api/chats", { signedOut: true, headers: { "sec-fetch-site": "cross-site", ...cookie }, body: JSON.stringify({ title: "zz-prove-it cross-site" }) }, 403],
 	] : [
 		["foreign Host is refused", "GET", "/api/health", { headers: { host: "evil.example" } }, 403],
 		["cross-site Origin write is refused", "POST", "/api/chats", { headers: { origin: "http://evil.example" }, body: "{}" }, 403],
@@ -111,6 +115,11 @@ try {
 	);
 	for (const [name, method, route, opts, want] of refusals) {
 		const r = await raw(method, route, opts);
+		if (method === "POST" && route === "/api/chats" && r.status === 200) {
+			let id;
+			try { id = JSON.parse(r.body).id; } catch { /* not a created session */ }
+			if (typeof id === "string") await raw("DELETE", `/api/chats/${encodeURIComponent(id)}?mode=preserve-graph`);
+		}
 		result.observations.refusals.push(`${name}: ${r.status}`);
 		step(name, r.status === want, `${method} ${route} -> ${r.status} (want ${want}) ${r.body.slice(0, 120)}`);
 	}

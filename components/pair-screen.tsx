@@ -3,12 +3,14 @@
  * The pairing screen (docs/specs/login-pairing.md), after T3 Code's
  * PairingRouteSurface (MIT): read the one-time code from `#token=` (or a
  * `?token=` fallback), strip it from the address bar first, submit it, then
- * load the app. Without a code, or after an error, a code field.
+ * load the app. A browser that is already signed in is asked first, because
+ * any site can open this page with a code of its own. Without a code, or
+ * after an error, a code field.
  */
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { browserAlreadyPaired, readPairingLocation, redeemBrowserCode } from "@/lib/browser-pair-handoff";
+import { browserAlreadyPaired, plainLinkStep, readPairingLocation, redeemBrowserCode } from "@/lib/browser-pair-handoff";
 
 const WRONG_CODE = "That code is wrong, expired or already used. Make a new one.";
 
@@ -22,6 +24,9 @@ export function PairScreen() {
 	const [code, setCode] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	// While a link waits for a yes: this server, and whether this browser is
+	// known to be signed in to it.
+	const [confirming, setConfirming] = useState<{ server: string; signedIn: boolean } | null>(null);
 	const started = useRef(false);
 	const target = useRef<string | undefined>(undefined);
 	const handoffCode = useRef<string | undefined>(undefined);
@@ -29,6 +34,7 @@ export function PairScreen() {
 	const submit = async (credential: string) => {
 		setBusy(true);
 		setError(null);
+		setConfirming(null);
 		try {
 			const res = await redeemBrowserCode(fetch, credential, target.current);
 			if (!res || res.ok) { enterApp(target.current); return; }
@@ -48,9 +54,20 @@ export function PairScreen() {
 		const location = readPairingLocation(window.location.href);
 		if (location.cleanLocation) window.history.replaceState(window.history.state, "", location.cleanLocation);
 		target.current = location.target;
-		if (location.token) {
-			if (location.target) handoffCode.current = location.token;
-			void submit(location.token);
+		const token = location.token;
+		if (token && location.target) {
+			handoffCode.current = token;
+			void submit(token);
+			return;
+		}
+		if (token) {
+			setBusy(true);
+			void plainLinkStep(fetch).then((step) => {
+				if (step === "redeem") return submit(token);
+				handoffCode.current = token;
+				setConfirming({ server: window.location.host, signedIn: step === "confirm" });
+				setBusy(false);
+			});
 			return;
 		}
 		if (window.location.pathname === "/pair") {
@@ -59,6 +76,28 @@ export function PairScreen() {
 			}).catch(() => {});
 		}
 	}, []);
+
+	if (confirming !== null) return (
+		<main data-testid="pair-screen" className="flex min-h-dvh items-center justify-center px-4">
+			<section data-testid="pair-confirm" aria-labelledby="pair-confirm-title" className="flex w-full max-w-sm flex-col gap-4">
+				<h1 id="pair-confirm-title" className="text-lg font-medium">Sign in with this link?</h1>
+				<p className="text-sm text-muted-foreground">
+					{confirming.signedIn
+						? <>This browser is already signed in to <span className="font-mono text-foreground">{confirming.server}</span>. Signing in with this link replaces that session here.</>
+						: <>Couldn&apos;t check whether this browser is already signed in to <span className="font-mono text-foreground">{confirming.server}</span>. Signing in with this link would replace that session here.</>}
+					{" "}Continue only if you opened the link yourself.
+				</p>
+				<div className="flex justify-end gap-2">
+					<Button type="button" variant="outline" data-testid="pair-confirm-cancel" autoFocus onClick={() => enterApp()}>
+						Cancel
+					</Button>
+					<Button type="button" data-testid="pair-confirm-accept" disabled={busy} onClick={() => { if (handoffCode.current) void submit(handoffCode.current); }}>
+						Sign in with this link
+					</Button>
+				</div>
+			</section>
+		</main>
+	);
 
 	return (
 		<main data-testid="pair-screen" className="flex min-h-dvh items-center justify-center px-4">

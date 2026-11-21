@@ -22,7 +22,12 @@ Goal: roadmap item 6. Every request to a LearnHarness server needs a credential.
 Today `desktop-access.ts` has two browser-mode checks. With login on, this PR drops both:
 
 - **Host allowlist (DNS rebinding defense).** It's no longer needed. A rebinding page runs on the attacker's host name, so the browser never sends it the LearnHarness cookie, and without a credential every data route refuses.
-- **Cross-site write refusal.** It is replaced by T3's own cookie check: a **cookie** credential is accepted only when the request has no `Origin` header, or has `Sec-Fetch-Site: same-origin`, or its `Origin` host equals the `Host` header. That covers reads too, not only writes. Bearer tokens skip this check, as in T3, because browsers never attach them on their own.
+- **Cross-site write refusal.** It is replaced by a cookie check built on T3's (issue #303 added the Fetch Metadata steps). A **cookie** credential is accepted when:
+  - `Sec-Fetch-Site` is `same-origin`; or
+  - `Sec-Fetch-Site` is `same-site` or `cross-site`, and the request is a top-level page load: `GET` or `HEAD`, no `Origin`, `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document` (or no `Sec-Fetch-Dest`), to a page, never a path under `/api/`. A link from another site still opens a page signed in. A fetch, frame, image or form post from another site's page is refused, and so is any request from another site to the API (some API `GET`s do work: they mint tokens or save records). No download route is excepted.
+  - `Sec-Fetch-Site` is `none` or missing (a typed address, a non-secure plain-http page, `curl`, `lh`, native clients): T3's Origin fallback, so no `Origin` header, or an `Origin` whose host equals the `Host` header.
+
+  That covers reads too, not only writes. A refused cookie answers 403 on the API and shows the pairing screen on a page. Bearer tokens skip this check, as in T3, because browsers never attach them on their own. `POST /api/auth/browser-session`, which sets the cookie, applies the same check before it reads the code, and accepts only an `application/json` body.
 
 What you give up compared with today's LearnHarness:
 
@@ -38,7 +43,7 @@ What you give up compared with today's LearnHarness:
 | Pairing code | Alphabet `23456789ABCDEFGHJKLMNPQRSTUVWXYZ` (no 0, 1, I, O), 12 characters, cryptographic random bytes with rejection sampling. Typed codes are case-insensitive, and spaces and `-` are ignored, so `ABCD-EFGH-JKLM` works. |
 | Expiry and use | 5 minutes. Single use: claiming a code marks it used in the same locked write that creates the session. |
 | Link shape | `<origin>/pair#token=<CODE>`. A `?token=` query is also read, then removed. The page removes the fragment from the address bar with `history.replaceState` before doing anything else. |
-| Pair page | Reads the token and submits it automatically. With no token (or after an error) it shows a code field and a **Pair** button. On success it loads `/`. |
+| Pair page | Reads the token and submits it automatically when this browser has no session. Any site can open `/pair#token=<its own code>`, and the page then posts it from this origin, so a browser that is already signed in (or whose session check fails) is asked first: it names the server and offers **Sign in with this link** and **Cancel** (focused, keeps the current session and loads `/`). The code stays unspent until the person chooses. A handoff link from the phone app (`#token=…&chat=…`) never replaces a session: signed in, it opens the chat; signed out, it pairs. With no token (or after an error) it shows a code field and a **Pair** button. On success it loads `/`. |
 | Session token | T3's compact signed format: `base64url(JSON claims) + "." + base64url(HMAC-SHA256(key, claims part))`. Claims: `{ v: 1, kind: "session", sid, iat, exp }` (epoch ms). The token itself isn't stored. LearnHarness keeps the format for compatibility. The signature and the active server-side session record determine whether the token is accepted. |
 | Signing key | 32 random bytes, created on first use, file mode `0600`, in a `0700` folder. |
 | One token, two carriers | The same token works as the cookie and as `Authorization: Bearer <token>`. The server checks the cookie first, then the bearer header. |

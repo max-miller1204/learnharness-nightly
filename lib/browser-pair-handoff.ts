@@ -20,7 +20,7 @@ export function readPairingLocation(href: string) {
 	return { token, target };
 }
 
-/** Spend a handoff code only after the browser reports that it has no session. */
+/** Whether this browser already has a session (GET /api/auth/session). */
 export async function browserAlreadyPaired(request: typeof fetch): Promise<boolean> {
 	const response = await request(PROTOCOL_ROUTES.session, { cache: "no-store", credentials: "same-origin" });
 	if (!response.ok) throw new Error("Couldn't check this browser's session.");
@@ -29,7 +29,23 @@ export async function browserAlreadyPaired(request: typeof fetch): Promise<boole
 	return session.authenticated;
 }
 
+/** What the pairing screen does first with a plain link's code (no `chat`).
+ * Any site can open `/pair#token=<its own code>` in a new top-level page,
+ * so a browser that is already signed in asks before a link replaces its
+ * session: "redeem" only when it has none, "confirm" when it has one, and
+ * "unchecked" when the check fails, which asks too (the code stays unspent
+ * until the person chooses). */
+export async function plainLinkStep(request: typeof fetch): Promise<"redeem" | "confirm" | "unchecked"> {
+	try {
+		return await browserAlreadyPaired(request) ? "confirm" : "redeem";
+	} catch {
+		return "unchecked";
+	}
+}
 
+/** A handoff (`chat` set, from the phone app) spends its code only after the
+ * browser reports that it has no session; signed in, it opens the chat in
+ * the current session (null). Without `chat`, the caller has already chosen. */
 export async function redeemBrowserCode(request: typeof fetch, credential: string, target?: string): Promise<Response | null> {
 	if (target && await browserAlreadyPaired(request)) return null;
 	return request("/api/auth/browser-session", {

@@ -5,8 +5,9 @@
  * with `lh`.
  *
  * Ported from T3 Code (github.com/pingdotgg/t3code, MIT, Copyright (c) 2026
- * T3 Tools Inc.): the credential order and cookie Origin rule of
- * apps/server/src/auth/EnvironmentAuth.ts, the cookie flags of
+ * T3 Tools Inc.): the credential order and the cookie Origin rule's Origin
+ * fallback of apps/server/src/auth/EnvironmentAuth.ts (the Fetch Metadata
+ * checks ahead of it are LearnHarness's own), the cookie flags of
  * apps/server/src/auth/http.ts, and the User-Agent and IP rules of
  * apps/server/src/auth/utils.ts.
  *
@@ -28,6 +29,8 @@ export const CREDENTIAL_HEADERS = { "Cache-Control": "no-store", Pragma: "no-cac
 
 type HeaderSource = { headers: Headers; url?: string; method?: string };
 
+export const isApiPath = (pathname: string) => pathname === "/api" || pathname.startsWith("/api/");
+
 function readCookie(headers: Headers, name: string): string | undefined {
 	const raw = headers.get("cookie");
 	if (!raw) return undefined;
@@ -43,10 +46,12 @@ function readCookie(headers: Headers, name: string): string | undefined {
 }
 
 /** A page load in the top-level window that another site started (a link or
- * a redirect): GET or HEAD, no Origin, and Fetch Metadata saying so. The
- * cookie's SameSite=Lax sends it cross-site only on these. A layout reads
- * headers with no method; it renders only for page loads. */
-function topLevelNavigation(headers: Headers, method: string | undefined): boolean {
+ * a redirect): GET or HEAD, no Origin, and Fetch Metadata saying so, to a
+ * page, never an API route (some API GETs do work: they mint tokens, save
+ * records). The cookie's SameSite=Lax sends it cross-site only on these. A
+ * layout reads headers with no method or path; it renders only for pages. */
+function topLevelNavigation(headers: Headers, method: string | undefined, pathname: string | null | undefined): boolean {
+	if (pathname === null || (pathname !== undefined && isApiPath(pathname))) return false;
 	if (method !== undefined && !["GET", "HEAD"].includes(method.toUpperCase())) return false;
 	if (headers.get("origin") !== null || headers.get("sec-fetch-mode") !== "navigate") return false;
 	const dest = headers.get("sec-fetch-dest");
@@ -55,15 +60,16 @@ function topLevelNavigation(headers: Headers, method: string | undefined): boole
 
 /** The rule for cookie credentials, and for the route that sets the cookie.
  * Fetch Metadata first: same-origin passes; same-site and cross-site pass
- * only as a top-level navigation, so another site's page can't send a
- * cookie write even without an Origin header. With no Fetch Metadata (a
- * non-secure context, a native client) or "none" (a typed address), T3's
- * Origin rule: no Origin, or an Origin whose host equals the Host header.
- * Bearer tokens skip it. */
-export function cookieOriginAllowed(headers: Headers, method?: string): boolean {
+ * only as a top-level page navigation, so another site's page can't send a
+ * cookie request to the API even without an Origin header. With no Fetch
+ * Metadata (a non-secure context, a native client) or "none" (a typed
+ * address), the Origin part of T3's rule: no Origin, or an Origin whose
+ * host equals the Host header. Bearer tokens skip it. `pathname` is null for a URL
+ * that doesn't parse, and left out only by a layout. */
+export function cookieOriginAllowed(headers: Headers, method?: string, pathname?: string | null): boolean {
 	const site = headers.get("sec-fetch-site");
 	if (site === "same-origin") return true;
-	if (site === "same-site" || site === "cross-site") return topLevelNavigation(headers, method);
+	if (site === "same-site" || site === "cross-site") return topLevelNavigation(headers, method, pathname);
 	const origin = headers.get("origin");
 	if (origin === null) return true;
 	const host = headers.get("host");
@@ -77,11 +83,19 @@ export function cookieOriginAllowed(headers: Headers, method?: string): boolean 
 
 export type Credential = { token: string; via: "cookie" | "bearer" };
 
+function requestPath(request: HeaderSource): string | null | undefined {
+	if (request.url === undefined) return undefined;
+	try { return new URL(request.url).pathname; } catch { return null; }
+}
+
+export const cookieRuleAllows = (request: HeaderSource): boolean =>
+	cookieOriginAllowed(request.headers, request.method, requestPath(request));
+
 /** The cookie first, then `Authorization: Bearer`. A cookie that fails the
- * Origin rule is not used; with no bearer to fall back on it's "refused". */
+ * cookie rule is not used; with no bearer to fall back on it's "refused". */
 export function readCredential(request: HeaderSource): Credential | "refused" | undefined {
 	const cookie = readCookie(request.headers, sessionCookieName());
-	if (cookie && cookieOriginAllowed(request.headers, request.method)) return { token: cookie, via: "cookie" };
+	if (cookie && cookieRuleAllows(request)) return { token: cookie, via: "cookie" };
 	const authorization = request.headers.get("authorization");
 	const bearer = authorization?.match(/^Bearer\s+(\S+)\s*$/i)?.[1];
 	if (bearer) return { token: bearer, via: "bearer" };

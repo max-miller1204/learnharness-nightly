@@ -2,7 +2,7 @@
  * Issue #303: another site's page can't use or set the sign-in cookie. The
  * cookie rule (src/server/auth.ts cookieOriginAllowed) reads Fetch Metadata
  * before Origin, so a cross-site or same-site request with no Origin is
- * refused unless it is a top-level page load. Bearer clients (the desktop
+ * refused unless it is a top-level load of a page (never /api/). Bearer clients (the desktop
  * windows, the phone app, `lh`) skip it. docs/specs/login-pairing.md
  */
 import "./helpers/auth-data-dir.ts";
@@ -103,7 +103,7 @@ describe("POST /api/auth/browser-session, the route that sets the cookie", () =>
 		return retry.status === 200;
 	};
 
-	it("refuses another site's page (login CSRF) without spending the code, and pairs same-origin and plain-http pages", async () => {
+	it("refuses a request from another site's page without spending the code, and pairs same-origin and plain-http pages", async () => {
 		for (const [label, headers] of Object.entries({
 			"cross-site, no Origin": { "sec-fetch-site": "cross-site" },
 			"cross-site form post": { "sec-fetch-site": "cross-site", ...NAVIGATE, origin: evil, "content-type": "text/plain" },
@@ -126,6 +126,53 @@ describe("POST /api/auth/browser-session, the route that sets the cookie", () =>
 			assert.equal(response.status, 200, label);
 			assert.match(response.headers.get("set-cookie") ?? "", new RegExp(`^${cookieName()}=`), label);
 		}
+	});
+
+	it("takes only a JSON body, so a plain HTML form can't post a code", async () => {
+		for (const type of ["text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x", ""]) {
+			const { code } = createPairingLink(AUTH_TEST_DATA_DIR);
+			const headers: Record<string, string> = { host, ...FETCH.sameOrigin };
+			const request = new Request(`${origin}/api/auth/browser-session`, { method: "POST", headers, body: JSON.stringify({ credential: code }) });
+			if (type) request.headers.set("content-type", type); else request.headers.delete("content-type");
+			const response = await browserSession(request);
+			assert.equal(response.status, 415, type || "no content type");
+			assert.equal(response.headers.get("set-cookie"), null, type);
+			assert.equal(await stillUnspent(code), true, `${type}: the code still works`);
+		}
+		const { code } = createPairingLink(AUTH_TEST_DATA_DIR);
+		const charset = new Request(`${origin}/api/auth/browser-session`, { method: "POST", headers: { host, ...FETCH.sameOrigin, "content-type": "Application/JSON; charset=utf-8" }, body: JSON.stringify({ credential: code }) });
+		assert.equal((await browserSession(charset)).status, 200, "a charset parameter and any case are fine");
+	});
+});
+
+describe("the navigation exception covers pages only", () => {
+	it("refuses another site's top-level GET to an API route, whatever the route does", () => {
+		const cookie = `${cookieName()}=${mintToken()}`;
+		const navigate = (pathname: string, site = "cross-site", method = "GET") =>
+			proxy(new NextRequest(origin + pathname, { method, headers: { cookie, host, "sec-fetch-site": site, ...NAVIGATE } }));
+		// API GETs that do work: persist a plugin question's cancellation, mint a
+		// Deepgram token, record the last-seen version, sweep stale jobs.
+		for (const pathname of ["/api/chats/chat_1", "/api/stt/token", "/api/whats-new", "/api/jobs?chatId=chat_1", "/api/activity", "/api/models", "/api/chats/chat_1/markdown", "/api", "/api/"]) {
+			for (const site of ["cross-site", "same-site"]) {
+				const response = navigate(pathname, site);
+				assert.equal(response.status, 403, `${site} ${pathname}`);
+				assert.equal(response.headers.get("set-cookie"), null, `${site} ${pathname}: no renewal`);
+			}
+		}
+		for (const pathname of ["/", "/chat/abc", "/settings", "/apix", "/plugins/x/y"]) assert(passes(navigate(pathname)), `a link to the page ${pathname}`);
+		assert(passes(navigate("/chat/abc", "cross-site", "HEAD")));
+		// Same-origin, typed and no-metadata API GETs are unchanged.
+		assert(passes(proxy(new NextRequest(`${origin}/api/stt/token`, { headers: { cookie, host, ...FETCH.sameOrigin } }))));
+		assert(passes(proxy(new NextRequest(`${origin}/api/chats/chat_1/markdown`, { headers: { cookie, host, ...FETCH.none } }))), "a typed address");
+		assert(passes(proxy(new NextRequest(`${origin}/api/stt/token`, { headers: { cookie, host } }))), "no Fetch Metadata");
+		// The rule itself, as route handlers and the layout call it.
+		const crossNav = new Headers({ host, "sec-fetch-site": "cross-site", ...NAVIGATE });
+		assert.equal(cookieOriginAllowed(crossNav, "GET", "/api/stt/token"), false);
+		assert.equal(cookieOriginAllowed(crossNav, "GET", null), false, "a URL that didn't parse");
+		assert.equal(cookieOriginAllowed(crossNav, "GET", "/chat/abc"), true);
+		assert.equal(cookieOriginAllowed(crossNav), true, "the layout: no method, no path, renders only for pages");
+		assert.equal(authenticate({ headers: new Headers({ cookie, ...Object.fromEntries(crossNav) }), url: `${origin}/api/auth/clients`, method: "GET" }).ok, false, "authenticate() reads the path from the URL");
+		assert.equal(authenticate({ headers: new Headers({ cookie, ...Object.fromEntries(crossNav) }), url: `${origin}/chat/abc`, method: "GET" }).ok, true);
 	});
 });
 
