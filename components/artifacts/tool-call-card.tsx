@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronRight } from "lucide-react";
-import type { ArtifactPartProps } from "@/src/core";
+import { toolStepHeadline, toolStepOutput, type ArtifactPartProps } from "@/src/core";
 
 /**
  * The generic tool-call card (sources v1, 2026-09-19): a quiet, collapsed
@@ -23,49 +23,11 @@ interface ToolCallPart {
 	errorText?: string;
 }
 
-/** The collapsed headline argument per tool: path for read/ls/show_image, pattern for
- *  find/grep — shown as given, never resolved (the absolute path lands in
- *  the expanded view when present in the output). */
-function headlineArg(tool: string, input: unknown): string {
-	const inp = (input ?? {}) as Record<string, unknown>;
-	if (tool === "read" || tool === "ls" || tool === "show_image") {
-		const p = typeof inp.path === "string" && inp.path.length > 0 ? inp.path : "~";
-		return p;
-	}
-	if (typeof inp.pattern === "string") return inp.pattern;
-	// list_propositions: the session id is the call's subject — the
-	// collapsed line reads "list_propositions chat_…". Shown as given
-	// (the id is exactly what list_sessions reported to the model).
-	if (tool === "list_propositions" && typeof inp.session === "string" && inp.session.length > 0) {
-		return inp.session;
-	}
-	return "";
-}
-
-/** Render a tool result body: plain strings verbatim, image-bearing read
- *  results show their text + an attachment note (the image itself is the
- *  model's — the learner sees only that it happened). */
-function outputText(output: unknown): string | null {
-	if (output == null) return null;
-	if (typeof output === "string") return output;
-	if (typeof output === "object" && "text" in (output as Record<string, unknown>)) {
-		const o = output as { text?: unknown; images?: unknown[] };
-		const text = typeof o.text === "string" ? o.text : null;
-		const n = Array.isArray(o.images) ? o.images.length : 0;
-		return n > 0 ? `${text ?? ""}\n[${n} image${n > 1 ? "s" : ""} attached to the model]`.trim() : text;
-	}
-	try {
-		return JSON.stringify(output, null, 2);
-	} catch {
-		return String(output);
-	}
-}
-
 export function ToolCallCard({ part }: ArtifactPartProps) {
 	const p = part as ToolCallPart;
 	const tool = p.type.replace(/^tool-/, "");
-	const arg = headlineArg(tool, p.input);
-	const out = outputText(p.output);
+	const arg = toolStepHeadline(tool, p.input);
+	const out = toolStepOutput(p.output);
 	const failed = p.state === "output-error" || typeof p.errorText === "string";
 	return (
 		<details

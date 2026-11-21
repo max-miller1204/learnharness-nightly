@@ -14,6 +14,7 @@ import { confirmExternalLink, Markdown } from "./Markdown";
 import { NativeMarkdown } from "./NativeMarkdown";
 import { blocksOf, equationsIn, equationsInTokens, type Equation } from "./message-math";
 import { AnswerLine } from "./AnswerLine";
+import { isToolStep, ToolStep } from "./ToolStep";
 import { SavedChips } from "./Attachments";
 import { PlanDiagram } from "./PlanDiagram";
 import { Label } from "./ui";
@@ -276,6 +277,7 @@ function Part({ part, context, blocks }: { part: LhViewPart; context: PartContex
       );
     }
   }
+  if (isToolStep(part)) return <ToolStep part={part} />;
   const helper = helperCard(part, context.jobs, context.liveHelpers);
   return helper ? <DispatchCard kind={helper.kind} job={helper.job} /> : null;
 }
