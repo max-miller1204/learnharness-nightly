@@ -14,7 +14,7 @@ import { confirmExternalLink, Markdown } from "./Markdown";
 import { NativeMarkdown } from "./NativeMarkdown";
 import { blocksOf, equationsIn, equationsInTokens, type Equation } from "./message-math";
 import { AnswerLine } from "./AnswerLine";
-import { isToolStep, ToolStep } from "./ToolStep";
+import { isRunning, isToolStep, ToolStep } from "./ToolStep";
 import { SavedChips } from "./Attachments";
 import { PlanDiagram } from "./PlanDiagram";
 import { Label } from "./ui";
@@ -255,6 +255,8 @@ function Part({ part, context, blocks }: { part: LhViewPart; context: PartContex
     if (image?.snapshotId && /^[a-f0-9]{64}$/.test(image.snapshotId)) {
       return <Snapshot api={api} chatId={chatId} snapshotId={image.snapshotId} caption={image.caption} width={image.width} height={image.height} />;
     }
+    // image-card.tsx: a finished call whose details can't be shown says so.
+    return <View style={s.card}><Text style={[s.prose, { fontSize: 14, lineHeight: 20, color: c.muted }]}>Image shown, but it could not be displayed.</Text></View>;
   }
   if (part.state === "output-available") {
     const answer = part.output as Partial<QuestionAnswerData> | undefined;
@@ -360,6 +362,7 @@ export function Transcript({ settled, batches, eager, batchWidth = 0, onBatchLay
               const last = messageIndex === live.length - 1 && index === message.parts.length - 1;
               return <ReasoningRow key={part.id ?? index} text={part.text ?? ""} streaming={last} />;
             }
+            if (isToolStep(part)) return <ToolStep key={part.toolCallId ?? index} part={part} running={isRunning(part)} />;
             return part.type === "text" && !!part.text ? <Text key={part.id ?? index} selectable style={s.prose}>{part.text}</Text> : null;
           })}
         </View>

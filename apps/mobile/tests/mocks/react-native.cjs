@@ -7,7 +7,20 @@ const Pressable = ({ style, children, ...props }) => React.createElement("Pressa
   { ...props, style: typeof style === "function" ? style({ pressed: false }) : style },
   typeof children === "function" ? children({ pressed: false }) : children);
 
+/** Animated: values hold a number; a started loop is counted in globalThis.startedLoops, so
+ * tests can tell a running animation from a still one. */
+class AnimatedValue {
+  constructor(value) { this.value = value; }
+  setValue(value) { this.value = value; }
+}
+const step = () => ({ start: () => {}, stop: () => {} });
+const Animated = {
+  Value: AnimatedValue, Text: "AnimatedText", View: "AnimatedView", timing: step, sequence: step,
+  loop: () => ({ start: () => { globalThis.startedLoops = (globalThis.startedLoops ?? 0) + 1; }, stop: () => {} }),
+};
+
 module.exports = {
+  Animated,
   View: "View", Text: "Text", TextInput: "TextInput", Image: "Image", ScrollView: "ScrollView", FlatList: "FlatList", Pressable,
   Keyboard: { dismiss: () => {} },
   StyleSheet: { create: (styles) => styles, flatten, hairlineWidth: 1 },

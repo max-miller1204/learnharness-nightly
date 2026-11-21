@@ -1,5 +1,5 @@
-import type { ReactNode } from "react";
-import { Pressable, Text, TextInput, View, type StyleProp, type TextInputProps, type ViewStyle } from "react-native";
+import { useEffect, useState, type ReactNode } from "react";
+import { AccessibilityInfo, Pressable, Text, TextInput, View, type StyleProp, type TextInputProps, type ViewStyle } from "react-native";
 import { fonts, radius, space, useTheme } from "./theme";
 
 type Variant = "primary" | "outline" | "ghost" | "success";
@@ -50,4 +50,20 @@ export function Notice({ children, boxed }: { children: ReactNode; boxed?: boole
   if (!children) return null;
   const text = <Text selectable accessibilityRole="alert" accessibilityLiveRegion="polite" style={s.error}>{children}</Text>;
   return boxed ? <View style={s.errorBox}>{text}</View> : text;
+}
+
+/** Whether the system's Reduce Motion (Android: Remove animations) is on, `assume` until the
+ * system says. */
+export function useReduceMotion(assume = false): boolean {
+  const [reduce, setReduce] = useState(assume);
+  useEffect(() => {
+    let live = true;
+    AccessibilityInfo.isReduceMotionEnabled().then((value) => { if (live) setReduce(value); }, () => {});
+    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduce);
+    return () => {
+      live = false;
+      subscription.remove();
+    };
+  }, []);
+  return reduce;
 }

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createElement } from "react";
+import { Platform } from "react-native";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import type { LhMessage } from "../../../src/client-protocol/index.ts";
 import { TOOL_STEPS } from "../../../src/core/tool-steps.ts";
@@ -13,6 +14,7 @@ import { Transcript } from "../src/Transcript.tsx";
 import { useTheme } from "../src/theme.ts";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+declare global { var startedLoops: number | undefined; }
 
 const quiz = () => JSON.parse(readFileSync(new URL("../../../tests/fixtures/mobile-quiz/chat_zzmobilequiz.json", import.meta.url), "utf8")) as { messages: LhMessage[] };
 const flat = (style: unknown) => [style].flat(Infinity).reduce<Record<string, unknown>>((all, part) => ({ ...all, ...(part as object) }), {});
@@ -90,4 +92,111 @@ test("tool steps are the web's tools, and a show_image that hasn't shown its pic
   assert.ok(isToolStep({ type: "tool-show_image", state: "output-error" }));
   assert.ok(!isToolStep({ type: "tool-show_image", state: "output-available" }));
   for (const type of ["tool-probe", "tool-research", "tool-plan_init", "text"]) assert.ok(!isToolStep({ type, state: "output-available" }), type);
+});
+
+const assistant = (id: string, content: unknown[]) => ({ role: "assistant", content, api: "openai-completions", provider: "custom", model: "m",
+  usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+  stopReason: "toolUse", id, timestamp: 1 }) as unknown as LhMessage;
+const result = (toolCallId: string, toolName: string, details: unknown, isError = false) => ({ role: "toolResult", toolCallId, toolName,
+  content: [{ type: "text", text: typeof details === "string" ? details : "failed" }], details, isError, id: `r_${toolCallId}`, timestamp: 2 }) as unknown as LhMessage;
+const transcript = (settled: LhMessage[], tail: LhMessage[]) => createElement(Transcript, { settled: projectView(settled), tail, api: {} as never, chatId: "chat",
+  jobs: [], liveHelpers: false, openPlan: () => {}, files: new Map(), unavailableFiles: new Set<string>() });
+const reading = assistant("a_live", [{ type: "text", text: "Let me look." }, { type: "toolCall", id: "call_live", name: "read", arguments: { path: "notes.md" } }, { type: "text", text: "Done." }]);
+
+test("during the turn a step shows in order with the text, breathing while its call runs, and settles in place", async () => {
+  globalThis.startedLoops = 0;
+  const tree = await render(transcript([], [reading]));
+  try {
+    const [row] = rows(tree.root);
+    assert.ok(row);
+    assert.equal(row.props.accessibilityLabel, "Reading a file… notes.md");
+    assert.ok(row.findAll((node) => String(node.type) === "AnimatedText" && texts(node).join("") === "Reading a file…").length === 1);
+    assert.equal(globalThis.startedLoops, 1, "the label breathes");
+    // In order with the streaming text: the text, the step, the text.
+    const live = row.step.parent as ReactTestInstance;
+    const order = live.children.map((child) => typeof child === "string" ? child : child.type === ToolStep ? "step" : texts(child).join(""));
+    assert.deepEqual(order, ["Let me look.", "step", "Done."]);
+    const runningLabel = flat(row.findAll((node) => String(node.type) === "AnimatedText")[0]?.props.style);
+    // The result arrives: the same row, settled, the same height.
+    await act(async () => tree.update(transcript([], [reading, result("call_live", "read", "# Notes")])));
+    const [settled] = rows(tree.root);
+    assert.equal(settled?.props.accessibilityLabel, "read notes.md");
+    const name = flat(settled?.findAll((node) => String(node.type) === "Text" && texts(node).join("") === "read")[0]?.props.style);
+    assert.equal(name.lineHeight, runningLabel.lineHeight);
+    assert.equal(flat(settled?.props.style).minHeight, 28);
+  } finally {
+    act(() => tree.unmount());
+  }
+});
+
+test("with Reduce Motion on, a running step's label stays still", async () => {
+  globalThis.startedLoops = 0;
+  Object.assign(globalThis, { reduceMotion: true });
+  const tree = await render(transcript([], [reading]));
+  try {
+    assert.equal(rows(tree.root).length, 1);
+    assert.equal(globalThis.startedLoops, 0);
+  } finally {
+    act(() => tree.unmount());
+    Object.assign(globalThis, { reduceMotion: false });
+  }
+});
+
+test("an opened step shows the start of long text with a note, and never takes the status bar's scroll to top", async () => {
+  const lines = Array.from({ length: 500 }, (_, at) => `line ${at}`).join("\n");
+  const tree = await render(createElement(ToolStep, { part: { type: "tool-list_propositions", state: "output-available", input: { session: "chat_x" }, output: lines } }));
+  try {
+    const [row] = rows(tree.root);
+    await act(async () => row?.props.onPress());
+    const shown = texts(tree.root);
+    assert.ok(shown.includes("Showing the first 200 of 500 lines."));
+    assert.ok(shown.some((text) => text.endsWith("line 199")) && !shown.some((text) => text.includes("line 200")));
+    for (const scroll of tree.root.findAll((node) => String(node.type) === "ScrollView")) assert.equal(scroll.props.scrollsToTop, false);
+  } finally {
+    act(() => tree.unmount());
+  }
+  const wide = await render(createElement(ToolStep, { part: { type: "tool-list_propositions", state: "output-available", input: { session: "chat_x" }, output: "x".repeat(500_008) } }));
+  try {
+    await act(async () => rows(wide.root)[0]?.props.onPress());
+    assert.ok(texts(wide.root).includes("Showing the first 8,192 of 500,008 characters."));
+    assert.ok(Math.max(...texts(wide.root).map((text) => text.length)) <= 8192);
+  } finally {
+    act(() => wide.unmount());
+  }
+});
+
+test("a step's name can't be disguised, its spoken headline is capped, and a closed row says so on iOS", async () => {
+  const was = Platform.OS;
+  Object.assign(Platform, { OS: "ios" });
+  try {
+    const tree = await render(createElement(ToolStep, { part: { type: "tool-read", state: "output-available", input: { path: `a‮txt.exe${"/x".repeat(300)}` }, output: "" } }));
+    try {
+      const [row] = rows(tree.root);
+      assert.ok(row);
+      const label = row.props.accessibilityLabel as string;
+      assert.ok(!/[‪-‮⁦-⁩]/.test(label + texts(row).join("")), "no bidirectional controls shown or spoken");
+      assert.ok(texts(row).some((text) => text.startsWith("a\\u202Etxt.exe")));
+      assert.ok(label.length <= "read ".length + 201 && label.endsWith("…"), `spoken headline capped: ${label.length}`);
+      assert.deepEqual(row.props.accessibilityValue, { text: "collapsed" });
+      await act(async () => row.props.onPress());
+      const [open] = rows(tree.root);
+      assert.equal(open?.props.accessibilityValue, undefined);
+      assert.deepEqual(open?.props.accessibilityState, { expanded: true });
+    } finally {
+      act(() => tree.unmount());
+    }
+  } finally {
+    Object.assign(Platform, { OS: was });
+  }
+});
+
+test("a finished show_image whose picture can't be shown says so, as the web's card does", async () => {
+  const shown = assistant("a_img", [{ type: "toolCall", id: "call_img", name: "show_image", arguments: { path: "a.png" } }]);
+  const tree = await render(transcript([shown, result("call_img", "show_image", { snapshotId: "not-a-hash" })], []));
+  try {
+    assert.ok(texts(tree.root).includes("Image shown, but it could not be displayed."));
+    assert.equal(rows(tree.root).length, 0);
+  } finally {
+    act(() => tree.unmount());
+  }
 });

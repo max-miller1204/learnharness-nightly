@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject, type ComponentRef } from "react";
-import { AccessibilityInfo, Alert, Keyboard, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { Alert, Keyboard, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import {
   ATTACHMENT_UPLOADS, BROWSER_HANDOFF_ROUTES, BROWSER_HANDOFF_V1, LESSON_VIEW_V1, PRACTICE_CONTROLS_V1, hasCapability,
@@ -11,7 +11,7 @@ import { browserDestination, type MobileApi } from "./protocol";
 import { errorText, useSession } from "./use-session";
 import { BuiltinQuestion } from "./BuiltinQuestion";
 import { Transcript } from "./Transcript";
-import { Button, Label, Notice } from "./ui";
+import { Button, Label, Notice, useReduceMotion } from "./ui";
 import { fonts, radius, space, useTheme } from "./theme";
 import { revealOffset } from "./reveal";
 import { checkNeedsReveal, livePlan, PHASE_LABEL, sessionPhase, skipAnswer, skipParked } from "./lesson";
@@ -24,20 +24,6 @@ import { MathWindowContext } from "./math-window";
 
 const EMPTY: LhMessage[] = [];
 
-/** Whether the system's Reduce Motion (Android: Remove animations) is on. */
-function useReduceMotion(): boolean {
-  const [reduce, setReduce] = useState(false);
-  useEffect(() => {
-    let live = true;
-    AccessibilityInfo.isReduceMotionEnabled().then((value) => { if (live) setReduce(value); }, () => {});
-    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduce);
-    return () => {
-      live = false;
-      subscription.remove();
-    };
-  }, []);
-  return reduce;
-}
 
 /** T3's round "Scroll to end" button (floating-working-control.tsx), shown while the session
  * is scrolled away from its end. It scrolls with animation unless Reduce Motion is on
