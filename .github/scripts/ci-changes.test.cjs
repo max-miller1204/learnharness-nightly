@@ -77,7 +77,7 @@ test("the command line prints one gate per line for GITHUB_OUTPUT", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ci-changes-"));
 	try {
 		const list = path.join(dir, "paths");
-		fs.writeFileSync(list, "docs/a.md\ntests/jobs.test.ts\n");
+		fs.writeFileSync(list, "docs/a.md\0tests/jobs.test.ts\0");
 		const script = path.join(__dirname, "ci-changes.cjs");
 		const run = (...args) => execFileSync(process.execPath, [script, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
 		assert.equal(run("--paths", list), "typecheck=true\ntest=true\nselfhost=false\nstandalone=false\nmobile=false\niphone=false\n");
@@ -113,6 +113,41 @@ test("a push is diffed from the commit before it, every commit included, and run
 			assert.equal(pushPaths(unknown, dir), null, unknown);
 			assert.deepEqual(decide(pushPaths(unknown, dir), true), { ...all, mobile: true, iphone: true }, unknown);
 		}
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("names Git would quote reach the gates as they are, from a pull request's diff file and from a push", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ci-quoted-"));
+	try {
+		// Default Git settings, so core.quotePath is on, as on the runner.
+		const git = (...args) => execFileSync("git", ["-c", "core.quotePath=true", ...args], { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+		git("init", "-q");
+		fs.writeFileSync(path.join(dir, "README.md"), "base");
+		git("add", "-A");
+		git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "base");
+		const before = git("rev-parse", "HEAD").trim();
+		const names = ["apps/mobile/src/\u00e9.ts", "apps/mobile/src/course notes.ts", "docs/line\nbreak.md"];
+		for (const name of names) {
+			fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+			fs.writeFileSync(path.join(dir, name), name);
+		}
+		git("add", "-A");
+		git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "names");
+		const expected = [...names].sort();
+		const gates = { ...none, mobile: true, iphone: true };
+
+		// A push: ci-changes reads the diff itself.
+		assert.deepEqual([...pushPaths(before, dir)].sort(), expected);
+		assert.deepEqual(decide(pushPaths(before, dir)), gates);
+
+		// A pull request: ci.yml writes the diff to a file, the same command as the workflow's.
+		const list = path.join(dir, ".git", "changed-paths");
+		fs.writeFileSync(list, git("diff", "-z", "--name-only", "--no-renames", "HEAD^1", "HEAD"));
+		const script = path.join(__dirname, "ci-changes.cjs");
+		const out = execFileSync(process.execPath, [script, "--paths", list], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+		assert.equal(out, Object.entries(gates).map(([key, value]) => `${key}=${value}`).join("\n") + "\n");
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}

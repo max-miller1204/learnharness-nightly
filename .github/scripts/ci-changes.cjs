@@ -112,6 +112,12 @@ function decide(files, full = false) {
 	return outputs;
 }
 
+/** Paths from `git diff -z --name-only`: NUL-separated and never quoted, so
+ *  a non-ASCII name, a space or a newline in a name comes through as is. */
+function splitPaths(text) {
+	return text.split("\0").filter(Boolean);
+}
+
 /** The paths a push changed, from the commit main was at before it to HEAD,
  *  or null when that commit is unknown (a new branch, the all-zero SHA, or a
  *  commit gone after a force push). A shallow checkout fetches it first. */
@@ -122,7 +128,7 @@ function pushPaths(before, cwd = process.cwd()) {
 		try { git("fetch", "-q", "--no-tags", "--depth=1", "origin", before); } catch { return null; }
 	}
 	try {
-		return git("diff", "--name-only", "--no-renames", before, "HEAD").split("\n").map((line) => line.trim()).filter(Boolean);
+		return splitPaths(git("diff", "-z", "--name-only", "--no-renames", before, "HEAD"));
 	} catch {
 		return null;
 	}
@@ -136,14 +142,14 @@ function main() {
 		? pushPaths(args[beforeIndex + 1])
 		: pathsIndex === -1
 			? null
-			: fs.readFileSync(args[pathsIndex + 1], "utf8").split("\n").map((line) => line.trim()).filter(Boolean);
+			: splitPaths(fs.readFileSync(args[pathsIndex + 1], "utf8"));
 	const full = args.includes("--full");
-	for (const file of files ?? []) console.error(`${classify(file)}: ${file}`);
+	for (const file of files ?? []) console.error(`${classify(file)}: ${JSON.stringify(file)}`);
 	if (files === null) console.error("No diff: running every job.");
 	if (full) console.error(files === null ? "Full run: running every job." : "Full run: running every job but iPhone, which follows the diff.");
 	for (const [key, value] of Object.entries(decide(files, full))) console.log(`${key}=${value}`);
 }
 
-module.exports = { classify, decide, pushPaths, GATES };
+module.exports = { classify, decide, pushPaths, splitPaths, GATES };
 
 if (require.main === module) main();
