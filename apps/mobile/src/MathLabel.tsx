@@ -8,10 +8,19 @@ import { useTheme } from "./theme";
 
 /** The web draws math with KaTeX at 1.21em; MathJax's TeX fonts share its metrics. */
 export const MATH_SCALE = 1.21;
-/** Source Sans 3's ascent and descent (hhea 1024 and 400 per 1000), which the phone lays
- * prose lines out with. */
+/** Source Sans 3's ascent and descent (hhea 1024 and 400 per 1000, every weight and slant),
+ * which the phone lays prose lines out with. */
 const ASCENT = 1.024;
 const DESCENT = 0.4;
+/** JetBrains Mono's (hhea 1020 and 300 per 1000), for inline code. */
+const MONO = { ascent: 1.02, descent: 0.3 };
+/** The descender of the font iOS gives an inline view's character, in points: React Native
+ * gives that character no font (RCTNSAttributedStringFragmentFromFragment), so TextKit uses
+ * its default, Helvetica at 12 points (descender 0.23 em), at any text size. */
+const VIEW_FONT_DESCENT = 2.76;
+
+/** A font in a line of text: its size, and whether it is the code face. */
+export type TextRun = { fontSize: number; mono?: boolean };
 /** Row and screen padding beside a label, so inline math wider than this scales down. */
 const BESIDE_LABEL = 120;
 /** No equation is drawn taller than this many lines, so huge math never allocates a huge picture. */
@@ -94,6 +103,37 @@ export function lineHeightFor(sizes: Size[], fontSize: number, line: number, fon
   return paragraphLine(scaled, fontSize * fontScale, line * fontScale);
 }
 
+/** The fonts around an inline picture on iOS: those in the hard line it sits in (up to and
+ * including that line's newline), and every one in its Text. */
+export type InlineFonts = { line: TextRun[]; text: TextRun[] };
+
+/** The largest descent and the tallest line height among some fonts, in points. */
+function iosFonts(runs: TextRun[]) {
+  const fonts = runs.map(({ fontSize, mono }) => mono ? { ascent: MONO.ascent * fontSize, descent: MONO.descent * fontSize }
+    : { ascent: ASCENT * fontSize, descent: DESCENT * fontSize });
+  return { descent: Math.max(...fonts.map((font) => font.descent)), tallest: Math.max(...fonts.map((font) => font.ascent + font.descent)) };
+}
+
+/** How far an inline picture must rise on iOS to sit on its line's baseline, in points at
+ * the font scale. React Native's iOS text puts an inline view's bottom at its line's bottom
+ * plus its character's font descender (RCTTextLayoutManager's attachment frames), and that
+ * character's font is TextKit's default, not the text's. The text's baseline is its line's
+ * largest descent up from the bottom (TextKit), raised by half the lineHeight over the Text's
+ * tallest font (RCTApplyBaselineOffsetForRange, over the whole Text). A line with no text has
+ * only TextKit's font, so its pictures already sit on its baseline. The lift never takes a
+ * picture above its line's top: a picture taller than the line leaves above the baseline sits
+ * lower instead, as the line doesn't grow for it. A line known here is a hard line; when text
+ * wraps, a wrapped line holding only math is lifted as if it held the hard line's text, still
+ * inside its line. Android puts an inline view on the baseline itself. */
+export function inlineLift(lineHeight: number, size: Size, fonts: InlineFonts, fontScale: number, platform: string = Platform.OS): number {
+  if (platform !== "ios" || !fonts.line.length) return 0;
+  const { descent } = iosFonts(fonts.line);
+  const { tallest } = iosFonts(fonts.text);
+  const baseline = (descent + Math.max(0, (lineHeight - tallest) / 2)) * fontScale;
+  const room = (lineHeight - (size.height - size.depth)) * fontScale - VIEW_FONT_DESCENT;
+  return Math.max(0, Math.min(baseline - VIEW_FONT_DESCENT, room));
+}
+
 /** A label with its math drawn as pictures, sized before it is drawn so the row never
  * grows later. It is never reachable by a screen reader on its own: whatever holds it
  * carries the spoken label. `style` must set fontSize and lineHeight. */
@@ -127,10 +167,26 @@ export function MathLabel({ pieces, style, color }: { pieces: LabelPiece[]; styl
         }
         const sizes = block.map((piece) => piece.kind === "math" ? fit(piece.drawn, em, maxWidth, maxHeight) : undefined);
         const line = lineHeightFor(sizes.filter((size) => size !== undefined), fontSize, lineHeight, fontScale);
+        // The block's text is all in the label's font: each hard line's, and the line each picture is on.
+        const lines: TextRun[][] = [[]];
+        const lineOf = block.map((piece) => {
+          if (piece.kind === "math") return lines.length - 1;
+          piece.text.split("\n").forEach((part, at) => {
+            if (at) {
+              // A newline belongs to the line it ends.
+              lines.at(-1)?.push({ fontSize });
+              lines.push([]);
+            }
+            if (part) lines.at(-1)?.push({ fontSize });
+          });
+          return -1;
+        });
+        const text = lines.flat();
         return (
           <Text key={index} style={[style, { lineHeight: line }]}>
             {block.map((piece, at) => piece.kind === "text" ? piece.text
-              : <MathPicture key={at} svg={piece.drawn.svg[c.mode]} drawn={piece.drawn} size={sizes[at] as Size} scale={fontScale} color={color} live={live} inline />)}
+              : <MathPicture key={at} svg={piece.drawn.svg[c.mode]} drawn={piece.drawn} size={sizes[at] as Size} scale={fontScale} color={color} live={live} inline
+                lift={inlineLift(line, sizes[at] as Size, { line: lines[lineOf[at] as number] ?? [], text }, fontScale)} />)}
           </Text>
         );
       })}
@@ -140,8 +196,10 @@ export function MathLabel({ pieces, style, color }: { pieces: LabelPiece[]; styl
 
 /** A drawn equation in a box of its exact size. Without `live` the box stays empty, so a
  * picture coming or going never moves anything. */
-export function MathPicture({ svg, drawn, size, scale, color, inline, live = true }: {
+export function MathPicture({ svg, drawn, size, scale, color, inline, live = true, lift = 0 }: {
   svg: string; drawn: DrawnMath; size: Size; scale: number; color: string; inline?: boolean; live?: boolean;
+  /** Inline only: inlineLift for the line it sits in, in points at the font scale. */
+  lift?: number;
 }) {
   const width = size.width * scale;
   const height = size.height * scale;
@@ -154,9 +212,10 @@ export function MathPicture({ svg, drawn, size, scale, color, inline, live = tru
     );
   }
   // The inline box is the math above the baseline, which it sits on; the picture hangs
-  // below it by the depth, into the space paragraphLine leaves.
+  // below it by the depth, into the space paragraphLine leaves. Lifting moves only what
+  // is drawn, so the line's layout is unchanged.
   return (
-    <View style={{ width, height: (size.height - size.depth) * scale }}>
+    <View style={{ width, height: (size.height - size.depth) * scale, transform: lift ? [{ translateY: -lift }] : undefined }}>
       <View style={{ position: "absolute", top: 0, left: 0, width, height }}>
         {live && <Picture svg={svg} color={color} />}
       </View>
