@@ -7,12 +7,15 @@
  */
 import "./helpers/auth-data-dir.ts";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { describe, it } from "node:test";
 import { NextRequest } from "next/server";
 import { proxy } from "../proxy.ts";
-import { createPairingLink } from "../selfhost/src/auth-store.ts";
+import { authDir, createPairingLink, revokeSession, tokenState, verifyToken } from "../selfhost/src/auth-store.ts";
+import nextConfig from "../next.config.ts";
 import { browserSession, createPairingToken, listClients, revokeClient, revokeOtherClients, sessionState } from "../src/server/auth-routes.ts";
-import { authenticate, cookieOriginAllowed } from "../src/server/auth.ts";
+import { authenticate, cookieOriginAllowed, reachesApi } from "../src/server/auth.ts";
 import { AUTH_TEST_DATA_DIR, cookieName, mintToken } from "./helpers/auth-data-dir.ts";
 
 const origin = "http://localhost:3000";
@@ -205,5 +208,92 @@ describe("the signed-in auth routes (they re-check the session themselves)", () 
 		// The public session check reads, and treats another site's request as signed out.
 		assert.deepEqual(await sessionState(request("/api/auth/session", { cookie, ...FETCH.crossSite })).json(), { authenticated: false });
 		assert.equal((await sessionState(request("/api/auth/session", { cookie, ...FETCH.sameOrigin })).json() as { authenticated: boolean }).authenticated, true);
+	});
+});
+
+describe("percent-encoded paths are API paths too (Next routes them decoded)", () => {
+	it("refuses another site's top-level GET to an encoded API path, and answers 401 to one signed out", () => {
+		const cookie = `${cookieName()}=${mintToken()}`;
+		const navigate = (pathname: string) => proxy(new NextRequest(origin + pathname, { headers: { cookie, host, "sec-fetch-site": "cross-site", ...NAVIGATE } }));
+		for (const pathname of ["/%61pi/stt/token", "/api%2Fwhats-new", "/%61pi/jobs?chatId=chat_1", "/%2561pi/whats-new", "/API/stt/token", "/%2F%2Fapi/activity", "/x/%2e%2e/api/models", "/%5Capi/stt/token", "/%E0%A4%A"]) {
+			const response = navigate(pathname);
+			assert.equal(response.status, 403, pathname);
+			assert.equal(response.headers.get("set-cookie"), null, `${pathname}: no renewal`);
+		}
+		for (const pathname of ["/chat/%E2%80%A6", "/chat/abc%3Fx", "/settings"]) assert(passes(navigate(pathname)), `the page ${pathname}`);
+		// Signed out, an encoded API path is an API request (401 JSON), not a page.
+		for (const pathname of ["/%61pi/settings", "/api%2Fsettings"]) {
+			const signedOut = proxy(new NextRequest(origin + pathname));
+			assert.equal(signedOut.status, 401, pathname);
+			assert.equal(signedOut.headers.get("x-middleware-rewrite"), null, `${pathname}: not the pairing screen`);
+		}
+		assert(rewrittenToPair(proxy(new NextRequest(`${origin}/chat/%E2%80%A6`))), "an encoded page still shows the pairing screen");
+		assert.equal(reachesApi("/%25252561pi/x"), true, "still encoded after three decodings: fail closed");
+		assert.equal(reachesApi("/apix"), false);
+	});
+});
+
+describe("POST /api/auth/browser-session keeps a live session (the check-then-redeem race)", () => {
+	const post = (code: string, headers: Record<string, string>, extra: Record<string, unknown> = {}) =>
+		browserSession(new Request(`${origin}/api/auth/browser-session`, { method: "POST", headers: { "content-type": "application/json", host, ...FETCH.sameOrigin, ...headers }, body: JSON.stringify({ credential: code, ...extra }) }));
+	const unspent = async (code: string) => (await post(code, {})).status === 200;
+
+	it("refuses with 409 and spends nothing when the cookie names a live session, unless replace is sent", async () => {
+		const live = mintToken("live");
+		const cookie = `${cookieName()}=${live}`;
+		const first = createPairingLink(AUTH_TEST_DATA_DIR).code;
+		const refused = await post(first, { cookie });
+		assert.equal(refused.status, 409);
+		assert.equal(refused.headers.get("set-cookie"), null);
+		assert.equal((await refused.json() as { reason?: string }).reason, "already_signed_in");
+		for (const replace of [false, "true", 1]) assert.equal((await post(first, { cookie }, { replace })).status, 409, `replace: ${JSON.stringify(replace)}`);
+		assert.equal(await unspent(first), true, "the code still works");
+		const second = createPairingLink(AUTH_TEST_DATA_DIR).code;
+		const replaced = await post(second, { cookie }, { replace: true });
+		assert.equal(replaced.status, 200, "the person chose this link");
+		assert.notEqual(replaced.headers.get("set-cookie")?.split(";")[0], cookie, "a new session cookie");
+		// A cookie that names no live session is no session to keep.
+		const stale = mintToken("stale");
+		const session = verifyToken(AUTH_TEST_DATA_DIR, stale);
+		assert(session);
+		revokeSession(AUTH_TEST_DATA_DIR, session.id);
+		assert.equal((await post(createPairingLink(AUTH_TEST_DATA_DIR).code, { cookie: `${cookieName()}=${stale}` })).status, 200, "revoked");
+		assert.equal((await post(createPairingLink(AUTH_TEST_DATA_DIR).code, { cookie: `${cookieName()}=forged.token` })).status, 200, "forged");
+	});
+
+	it("never takes a login store it can't read for signed out: 503, and the code stays unspent", async () => {
+		const live = mintToken("unreadable");
+		const code = createPairingLink(AUTH_TEST_DATA_DIR).code;
+		const sessions = path.join(authDir(AUTH_TEST_DATA_DIR), "sessions.json");
+		const aside = `${sessions}.aside`;
+		fs.renameSync(sessions, aside);
+		fs.mkdirSync(sessions);
+		let response: Response;
+		let state: string;
+		try {
+			state = tokenState(AUTH_TEST_DATA_DIR, live).state;
+			response = await post(code, { cookie: `${cookieName()}=${live}` });
+		} finally {
+			fs.rmdirSync(sessions);
+			fs.renameSync(aside, sessions);
+		}
+		assert.equal(state, "unknown");
+		assert.equal(verifyToken(AUTH_TEST_DATA_DIR, "x.y"), undefined, "verifyToken keeps its meaning");
+		assert.equal(response.status, 503);
+		assert.equal(response.headers.get("set-cookie"), null);
+		assert.equal(tokenState(AUTH_TEST_DATA_DIR, live).state, "active", "readable again");
+		assert.equal(await unspent(code), true, "the code still works");
+	});
+});
+
+describe("no page can be framed", () => {
+	it("sends frame-ancestors 'none' and X-Frame-Options: DENY on every path", async () => {
+		const rules = await nextConfig.headers?.() ?? [];
+		const all = rules.find((rule) => rule.source === "/:path*");
+		assert(all, "a rule for every path");
+		const header = (key: string) => all.headers.find((h) => h.key.toLowerCase() === key.toLowerCase())?.value;
+		assert.equal(header("Content-Security-Policy"), "frame-ancestors 'none'");
+		assert.equal(header("X-Frame-Options"), "DENY");
+		assert.equal(all.has ?? all.missing, undefined, "unconditional");
 	});
 });

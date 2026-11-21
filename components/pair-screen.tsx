@@ -7,32 +7,37 @@
  * any site can open this page with a code of its own. Without a code, or
  * after an error, a code field.
  */
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { browserAlreadyPaired, plainLinkStep, readPairingLocation, redeemBrowserCode } from "@/lib/browser-pair-handoff";
 
 const WRONG_CODE = "That code is wrong, expired or already used. Make a new one.";
 
-/** The app has no native Tab (docs/keyboard.md), so the confirmation moves
- * focus between its two buttons itself: Tab, Shift+Tab and the arrow keys
- * wrap, Home and End jump, Enter and Space press the focused button, Esc
- * cancels. Handled here, so the app's own Tab and Shift+Tab never see it. */
-function confirmKeys(event: ReactKeyboardEvent<HTMLElement>, buttons: (HTMLButtonElement | null)[], cancel: () => void) {
-	if (event.altKey || event.ctrlKey || event.metaKey) return;
+/** The confirmation's keys, read on the document in the capture phase while
+ * it is shown, so they work wherever focus is (a click on its text leaves it
+ * on the page) and nothing else in the app sees them: not its Tab, Shift+Tab
+ * or Esc, and no shortcut. The app has no native Tab (docs/keyboard.md), so
+ * Tab, Shift+Tab and the arrow keys move between the two buttons (from
+ * anywhere else, onto the first or last), Home and End jump, Esc cancels,
+ * and Enter and Space keep their native press of the focused button. */
+function confirmKeys(event: KeyboardEvent, buttons: (HTMLButtonElement | null)[], cancel: () => void) {
+	event.stopPropagation();
 	const live = buttons.filter((button): button is HTMLButtonElement => !!button && !button.disabled);
 	const at = live.indexOf(document.activeElement as HTMLButtonElement);
+	const modified = event.altKey || event.ctrlKey || event.metaKey;
+	const forward = (step: 1 | -1) => (at < 0 ? (step === 1 ? 0 : live.length - 1) : at + step);
 	let next: number | undefined;
-	if (event.key === "Tab") next = event.shiftKey ? at - 1 : at + 1;
-	else if (event.key === "ArrowRight" || event.key === "ArrowDown") next = at + 1;
-	else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = at - 1;
+	if (event.key === "Escape") { event.preventDefault(); cancel(); return; }
+	if (modified) return;
+	if (event.key === "Tab") next = forward(event.shiftKey ? -1 : 1);
+	else if (event.key === "ArrowRight" || event.key === "ArrowDown") next = forward(1);
+	else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = forward(-1);
 	else if (event.key === "Home") next = 0;
 	else if (event.key === "End") next = live.length - 1;
-	else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancel(); return; }
-	if (next === undefined || !live.length) return;
+	if (next === undefined) return;
 	event.preventDefault();
-	event.stopPropagation();
-	live[(next + live.length) % live.length]?.focus();
+	if (live.length) live[(next + live.length) % live.length]?.focus();
 }
 
 function enterApp(target?: string) {
@@ -53,14 +58,31 @@ export function PairScreen() {
 	const handoffCode = useRef<string | undefined>(undefined);
 	const cancelRef = useRef<HTMLButtonElement>(null);
 	const acceptRef = useRef<HTMLButtonElement>(null);
+	const showing = confirming !== null;
 
-	const submit = async (credential: string) => {
+	useEffect(() => {
+		if (!showing) return;
+		const onKeyDown = (event: KeyboardEvent) => confirmKeys(event, [cancelRef.current, acceptRef.current], () => enterApp());
+		document.addEventListener("keydown", onKeyDown, true);
+		return () => document.removeEventListener("keydown", onKeyDown, true);
+	}, [showing]);
+
+	const submit = async (credential: string, replace = false) => {
 		setBusy(true);
 		setError(null);
 		setConfirming(null);
 		try {
-			const res = await redeemBrowserCode(fetch, credential, target.current);
+			const res = await redeemBrowserCode(fetch, credential, target.current, replace);
 			if (!res || res.ok) { enterApp(target.current); return; }
+			// Signed in since the check (another tab): a handoff opens its chat in
+			// that session; any other code asks, and stays unspent.
+			if (res.status === 409) {
+				if (target.current) { enterApp(target.current); return; }
+				handoffCode.current = credential;
+				setConfirming({ server: window.location.host, signedIn: true });
+				setBusy(false);
+				return;
+			}
 			// Only a refused code is the code's fault; anything else (a busy or
 			// damaged login store) leaves the code usable.
 			if (res.status === 401) handoffCode.current = undefined;
@@ -102,10 +124,10 @@ export function PairScreen() {
 
 	if (confirming !== null) return (
 		<main data-testid="pair-screen" className="flex min-h-dvh items-center justify-center px-4">
-			<section data-testid="pair-confirm" aria-labelledby="pair-confirm-title" className="flex w-full max-w-sm flex-col gap-4"
-				onKeyDown={(event) => confirmKeys(event, [cancelRef.current, acceptRef.current], () => enterApp())}>
+			<section role="alertdialog" aria-modal="true" data-testid="pair-confirm" aria-labelledby="pair-confirm-title" aria-describedby="pair-confirm-warning"
+				className="flex w-full max-w-sm flex-col gap-4">
 				<h1 id="pair-confirm-title" className="text-lg font-medium">Sign in with this link?</h1>
-				<p className="text-sm text-muted-foreground">
+				<p id="pair-confirm-warning" className="text-sm text-muted-foreground">
 					{confirming.signedIn
 						? <>This browser is already signed in to <span className="font-mono text-foreground">{confirming.server}</span>. Signing in with this link replaces that session here.</>
 						: <>Couldn&apos;t check whether this browser is already signed in to <span className="font-mono text-foreground">{confirming.server}</span>. Signing in with this link would replace that session here.</>}
@@ -115,7 +137,7 @@ export function PairScreen() {
 					<Button ref={cancelRef} type="button" variant="outline" data-testid="pair-confirm-cancel" autoFocus onClick={() => enterApp()}>
 						Cancel
 					</Button>
-					<Button ref={acceptRef} type="button" data-testid="pair-confirm-accept" disabled={busy} onClick={() => { if (handoffCode.current) void submit(handoffCode.current); }}>
+					<Button ref={acceptRef} type="button" data-testid="pair-confirm-accept" disabled={busy} onClick={() => { if (handoffCode.current) void submit(handoffCode.current, true); }}>
 						Sign in with this link
 					</Button>
 				</div>

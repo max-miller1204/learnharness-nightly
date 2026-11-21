@@ -45,12 +45,14 @@ export async function plainLinkStep(request: typeof fetch): Promise<"redeem" | "
 
 /** A handoff (`chat` set, from the phone app) spends its code only after the
  * browser reports that it has no session; signed in, it opens the chat in
- * the current session (null). Without `chat`, the caller has already chosen. */
-export async function redeemBrowserCode(request: typeof fetch, credential: string, target?: string): Promise<Response | null> {
+ * the current session (null). The server checks again: a browser that
+ * signed in meanwhile gets 409 and keeps its session, unless `replace`,
+ * which only the person's "Sign in with this link" sends. */
+export async function redeemBrowserCode(request: typeof fetch, credential: string, target?: string, replace = false): Promise<Response | null> {
 	if (target && await browserAlreadyPaired(request)) return null;
 	return request("/api/auth/browser-session", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ credential }),
+		body: JSON.stringify(replace ? { credential, replace: true } : { credential }),
 	});
 }

@@ -15,10 +15,11 @@ import {
 	NEVER_EXPIRES,
 	revokeOthers,
 	revokeSession,
+	tokenState,
 	type SessionRecord,
 } from "../../selfhost/src/auth-store.ts";
 import { layout } from "../../selfhost/src/paths.ts";
-import { authDataDir, authenticate, clientInfo, cookieRuleAllows, CREDENTIAL_HEADERS, CROSS_SITE_REFUSED, sessionCookie } from "./auth.ts";
+import { authDataDir, authenticate, clientInfo, cookieRuleAllows, CREDENTIAL_HEADERS, CROSS_SITE_REFUSED, presentedCookie, sessionCookie } from "./auth.ts";
 import type { OAuthErrorResponse, SessionStateResponse, TokenExchangeResponse } from "../client-protocol/index.ts";
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
@@ -63,17 +64,27 @@ export function sessionState(request: Request): Response {
 	return json({ authenticated: true, sessionId: result.session.id, ...sessionExpiry(result.session) } satisfies SessionStateResponse);
 }
 
-/** POST /api/auth/browser-session (public): body { credential } -> session cookie.
- * The cookie rule applies before the code is read, so a request from
- * another site's page neither sets the cookie nor spends a code. (A page of
- * this origin can still post a code: /pair asks before a link replaces a
- * session, components/pair-screen.tsx.) JSON only, so a plain form can't
- * post one. */
+export const ALREADY_SIGNED_IN = "already_signed_in";
+
+/** POST /api/auth/browser-session (public): body { credential, replace? } ->
+ * session cookie. The cookie rule applies before the code is read, so a
+ * request from another site's page neither sets the cookie nor spends a
+ * code. JSON only, so a plain form can't post one. A browser whose cookie
+ * names a live session keeps it: 409 already_signed_in, code unspent,
+ * unless the body says replace: true, which /pair sends only after the
+ * person chooses "Sign in with this link" (components/pair-screen.tsx). A
+ * store that can't be read is never taken for signed out: 503. */
 export async function browserSession(request: Request): Promise<Response> {
 	if (!cookieRuleAllows(request)) return json({ error: CROSS_SITE_REFUSED }, 403);
 	if (request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json") return json({ error: "Expected JSON." }, 415);
-	const { credential } = await jsonBody(request);
+	const { credential, replace } = await jsonBody(request);
 	if (typeof credential !== "string" || !credential) return json({ error: "Expected a pairing code." }, 400);
+	const held = replace === true ? undefined : presentedCookie(request.headers);
+	if (held) {
+		const current = tokenState(authDataDir(), held);
+		if (current.state === "active") return json({ error: "This browser is already signed in.", reason: ALREADY_SIGNED_IN }, 409);
+		if (current.state === "unknown") return json({ error: "Couldn't check this browser's session. Try again in a moment." }, 503, { "Retry-After": "1" });
+	}
 	const claimed = await unlocked((options) => claimPairingCode(authDataDir(), credential, clientInfo(request), options));
 	if (claimed === BUSY) return busy();
 	if (!claimed.ok) return json({ error: "That code is wrong, expired or already used. Make a new one.", reason: claimed.reason }, 401);

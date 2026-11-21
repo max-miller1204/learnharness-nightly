@@ -118,7 +118,10 @@ try {
 		if (method === "POST" && route === "/api/chats" && r.status === 200) {
 			let id;
 			try { id = JSON.parse(r.body).id; } catch { /* not a created session */ }
-			if (typeof id === "string") await raw("DELETE", `/api/chats/${encodeURIComponent(id)}?mode=preserve-graph`);
+			if (typeof id === "string") {
+				const cleanup = await raw("DELETE", `/api/chats/${encodeURIComponent(id)}?mode=preserve-graph`).catch((error) => ({ status: 0, body: String(error) }));
+				if (cleanup.status !== 200) step(`cleanup after "${name}"`, false, `DELETE ${id} -> ${cleanup.status}: zz-prove-it session left on disk at ${path.join(inst.DATA_DIR, "chats", `${id}.json`)}`);
+			}
 		}
 		result.observations.refusals.push(`${name}: ${r.status}`);
 		step(name, r.status === want, `${method} ${route} -> ${r.status} (want ${want}) ${r.body.slice(0, 120)}`);

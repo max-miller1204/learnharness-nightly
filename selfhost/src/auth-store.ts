@@ -383,25 +383,36 @@ const active = (s: SessionRecord, now: number) => !s.revokedAt && (s.expiresAt =
  * record's expiry is the one that counts: a token's `exp` claim is only
  * structure, so tokens minted when sessions lasted 30 days keep working. */
 export function verifyToken(dataDir: string, token: string, options: { now?: number } = {}): SessionRecord | undefined {
+	const result = tokenState(dataDir, token, options);
+	return result.state === "active" ? result.session : undefined;
+}
+
+/** verifyToken, telling "no live session" apart from "the store couldn't be
+ * read" (an unreadable key or sessions file), for callers that must not take
+ * a failed read for signed out. */
+export function tokenState(dataDir: string, token: string, options: { now?: number } = {}):
+	| { state: "active"; session: SessionRecord }
+	| { state: "inactive" }
+	| { state: "unknown" } {
 	const now = options.now ?? Date.now();
 	const parts = token.split(".");
-	if (parts.length !== 2 || !parts[0] || !parts[1]) return undefined;
+	if (parts.length !== 2 || !parts[0] || !parts[1]) return { state: "inactive" };
 	const [payload, signature] = parts as [string, string];
 	let key: Buffer;
 	try {
-		if (stampOf(files(dataDir).key) === undefined) return undefined;
+		if (stampOf(files(dataDir).key) === undefined) return { state: "inactive" };
 		key = signingKey(dataDir);
-	} catch { return undefined; }
+	} catch { return { state: "unknown" }; }
 	const expected = sign(key, payload);
 	const supplied = Buffer.from(signature, "base64url");
-	if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) return undefined;
+	if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) return { state: "inactive" };
 	let claims: { v?: unknown; kind?: unknown; sid?: unknown; exp?: unknown };
-	try { claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); } catch { return undefined; }
-	if (claims.v !== 1 || claims.kind !== "session" || typeof claims.sid !== "string" || typeof claims.exp !== "number") return undefined;
+	try { claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); } catch { return { state: "inactive" }; }
+	if (claims.v !== 1 || claims.kind !== "session" || typeof claims.sid !== "string" || typeof claims.exp !== "number") return { state: "inactive" };
 	let sessions: SessionRecord[];
-	try { sessions = readSessionsFile(dataDir).sessions; } catch { return undefined; }
+	try { sessions = readSessionsFile(dataDir).sessions; } catch { return { state: "unknown" }; }
 	const session = sessions.find((s) => s.id === claims.sid);
-	return session && active(session, now) ? session : undefined;
+	return session && active(session, now) ? { state: "active", session } : { state: "inactive" };
 }
 
 /** Signed-in devices, newest first. Hidden (`lh`) sessions are left out. */

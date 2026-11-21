@@ -34,6 +34,9 @@ Object.assign(globalThis, { window: dom.window, document: dom.document, Element:
 type Session = "signed-in" | "signed-out" | "broken";
 let session: Session = "signed-out";
 let posts: string[] = [];
+// Another tab signed this browser in after the page's own check.
+let raced = false;
+let conflicts = 0;
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 	const route = String(input);
@@ -42,7 +45,13 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 		return Response.json({ authenticated: session === "signed-in" });
 	}
 	if (route === "/api/auth/browser-session" && init?.method === "POST") {
-		posts.push(JSON.parse(String(init.body)).credential);
+		const body = JSON.parse(String(init.body)) as { credential: string; replace?: boolean };
+		// The server's own check (src/server/auth-routes.ts browserSession).
+		if ((session === "signed-in" || raced) && body.replace !== true) {
+			conflicts++;
+			return Response.json({ error: "This browser is already signed in.", reason: "already_signed_in" }, { status: 409 });
+		}
+		posts.push(body.credential);
 		return Response.json({ authenticated: true });
 	}
 	throw new Error(`unexpected request ${route}`);
@@ -54,8 +63,8 @@ let host: HTMLDivElement | undefined;
 async function settle() {
 	for (let i = 0; i < 5; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
-async function open(url: string, as: Session) {
-	href = url; session = as; posts = []; replacedWith = undefined; focusedId = null; focused = undefined;
+async function open(url: string, as: Session, options: { raced?: boolean } = {}) {
+	href = url; session = as; posts = []; replacedWith = undefined; focusedId = null; focused = undefined; raced = options.raced ?? false; conflicts = 0;
 	host = document.createElement("div");
 	document.body.appendChild(host);
 	root = createRoot(host);
@@ -128,6 +137,63 @@ describe("a plain pairing link", () => {
 		}
 	});
 
+	it("keeps every key inside the confirmation: Enter never reaches app shortcuts, and keys work after focus leaves the buttons", async () => {
+		await open(`https://box.tail.ts.net:8443/pair#token=${CODE}`, "signed-in");
+		let reachedWindow = 0;
+		const onWindow = () => { reachedWindow++; };
+		window.addEventListener("keydown", onWindow);
+		const press = async (target: Element, key: string) => {
+			const event = new dom.window.Event("keydown", { bubbles: true, cancelable: true });
+			Object.defineProperties(event, { key: { value: key }, shiftKey: { value: false } });
+			await act(async () => { target.dispatchEvent(event); });
+			return event.defaultPrevented;
+		};
+		try {
+			for (const key of ["Enter", " ", "b", "k"]) {
+				assert.equal(await press(byId("pair-confirm-cancel")!, key), false, `${JSON.stringify(key)} keeps its native press`);
+			}
+			assert.equal(reachedWindow, 0, "Enter, Space and letters never reach the app's shortcuts");
+			// A click on the explanation leaves focus on the page.
+			focused = undefined; focusedId = null;
+			await press(document.body, "Tab");
+			assert.equal(focusedId, "pair-confirm-cancel", "Tab from the page lands on the first button");
+			focused = undefined; focusedId = null;
+			await press(document.body, "ArrowLeft");
+			assert.equal(focusedId, "pair-confirm-accept", "back from the page lands on the last button");
+			focused = undefined; focusedId = null;
+			assert.equal(reachedWindow, 0);
+			await press(document.body, "Escape");
+			await settle();
+			assert.equal(reachedWindow, 0, "the shell never sees Esc");
+			assert.equal(replacedWith, "/", "Esc from the page still cancels");
+			assert.deepEqual(posts, []);
+		} finally {
+			window.removeEventListener("keydown", onWindow);
+		}
+	});
+
+	it("is an alertdialog that screen readers announce with its warning", async () => {
+		await open(`https://box.tail.ts.net:8443/pair#token=${CODE}`, "signed-in");
+		const dialog = byId("pair-confirm");
+		assert.equal(dialog?.getAttribute("role"), "alertdialog");
+		assert.equal(dialog?.getAttribute("aria-modal"), "true");
+		const title = document.getElementById(dialog?.getAttribute("aria-labelledby") ?? "");
+		const warning = document.getElementById(dialog?.getAttribute("aria-describedby") ?? "");
+		assert.equal(title?.textContent, "Sign in with this link?");
+		assert.match(warning?.textContent ?? "", /already signed in to box\.tail\.ts\.net:8443.*replaces that session/);
+	});
+
+	it("asks when the server finds a session the page's check missed (another tab signed in)", async () => {
+		await open(`http://localhost:3000/pair#token=${CODE}`, "signed-out", { raced: true });
+		assert.equal(conflicts, 1, "the page tried, and the server said 409");
+		assert.deepEqual(posts, [], "the code is not spent");
+		assert.equal(replacedWith, undefined, "the current session stays");
+		assert.equal(shown("pair-confirm"), true, "the person is asked instead");
+		await click("pair-confirm-accept");
+		assert.deepEqual(posts, [CODE], "only the person's choice sends replace");
+		assert.equal(replacedWith, "/");
+	});
+
 	it("signs in with the link only after the person chooses it", async () => {
 		await open(`https://box.tail.ts.net:8443/pair#token=${CODE}`, "signed-in");
 		await click("pair-confirm-accept");
@@ -165,6 +231,15 @@ describe("a handoff link from the phone app (#token=…&chat=…)", () => {
 
 		await open(`https://box.tail.ts.net:8443/pair#token=${CODE}&chat=chat_123`, "signed-out");
 		assert.deepEqual(posts, [CODE]);
+		assert.equal(replacedWith, "/chat/chat_123");
+		await act(async () => { root?.unmount(); }); root = undefined; host?.remove();
+
+		// Signed in by another tab between the check and the redemption: the
+		// server refuses, and the handoff opens its chat in that session.
+		await open(`https://box.tail.ts.net:8443/pair#token=${CODE}&chat=chat_123`, "signed-out", { raced: true });
+		assert.equal(conflicts, 1);
+		assert.deepEqual(posts, []);
+		assert.equal(shown("pair-confirm"), false);
 		assert.equal(replacedWith, "/chat/chat_123");
 	});
 });

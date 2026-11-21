@@ -31,6 +31,28 @@ type HeaderSource = { headers: Headers; url?: string; method?: string };
 
 export const isApiPath = (pathname: string) => pathname === "/api" || pathname.startsWith("/api/");
 
+/** Whether a request path can reach an API route. Next looks a path up both
+ * as written and percent-decoded, and its Proxy matcher tries both
+ * (next/dist/server/lib/router-utils/filesystem.js, resolve-routes.js), so
+ * `/%61pi/stt/token` and `/api%2Fwhats-new` are API routes too. Each decoding
+ * (up to three) is checked after resolving dot segments and backslashes,
+ * merging repeated slashes and ignoring case (a decoded `?` or `#` stays part
+ * of the path); a path that won't decode, or is still encoded after three,
+ * counts as one (fail closed). */
+export function reachesApi(pathname: string): boolean {
+	let path = pathname;
+	for (let round = 0; round < 3; round++) {
+		let normal: string;
+		try { normal = new URL(path.replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/\?/g, "%3F").replace(/#/g, "%23"), "http://x").pathname.replace(/\/{2,}/g, "/").toLowerCase(); } catch { return true; }
+		if (isApiPath(normal)) return true;
+		let decoded: string;
+		try { decoded = decodeURIComponent(path); } catch { return true; }
+		if (decoded === path) return false;
+		path = decoded;
+	}
+	return true;
+}
+
 function readCookie(headers: Headers, name: string): string | undefined {
 	const raw = headers.get("cookie");
 	if (!raw) return undefined;
@@ -51,7 +73,7 @@ function readCookie(headers: Headers, name: string): string | undefined {
  * records). The cookie's SameSite=Lax sends it cross-site only on these. A
  * layout reads headers with no method or path; it renders only for pages. */
 function topLevelNavigation(headers: Headers, method: string | undefined, pathname: string | null | undefined): boolean {
-	if (pathname === null || (pathname !== undefined && isApiPath(pathname))) return false;
+	if (pathname === null || (pathname !== undefined && reachesApi(pathname))) return false;
 	if (method !== undefined && !["GET", "HEAD"].includes(method.toUpperCase())) return false;
 	if (headers.get("origin") !== null || headers.get("sec-fetch-mode") !== "navigate") return false;
 	const dest = headers.get("sec-fetch-dest");
@@ -82,6 +104,9 @@ export function cookieOriginAllowed(headers: Headers, method?: string, pathname?
 }
 
 export type Credential = { token: string; via: "cookie" | "bearer" };
+
+/** The session cookie this request carries, whatever the cookie rule says. */
+export const presentedCookie = (headers: Headers): string | undefined => readCookie(headers, sessionCookieName());
 
 function requestPath(request: HeaderSource): string | null | undefined {
 	if (request.url === undefined) return undefined;
