@@ -999,6 +999,16 @@ describe("General update rows", () => {
 		assert.deepEqual([...text.querySelectorAll("a")].map((a) => a.textContent), ["View release on GitHub", "3 changes from 1 contributor", "View release on GitHub"], "and no copy counts as a change left out");
 	});
 
+	it("an intro at its bound keeps T3's count once its copy is cut to 220 characters", () => {
+		const intro = "y".repeat(600);
+		const cut = `${"y".repeat(217)}...`;
+		const html = renderToStaticMarkup(<ReleaseNoteSections homepage="https://github.com/o/r" omittedReleaseCount={0}
+			// totalItems as main and the server set it: the intro, counted once before the cut.
+			groups={[{ version: "0.3.9", items: [cut], intro, totalItems: 1 }, { version: "0.3.8", items: ["3 bug fixes."], intro: "3 bug fixes.", totalItems: 1 }]} />);
+		const links = [...parseHTML(`<div>${html}</div>`).document.querySelectorAll("a")].map((a) => a.textContent);
+		assert.deepEqual(links, ["1 more change on GitHub", "1 more change on GitHub"], "a long intro's cut copy counts like a short one's");
+	});
+
 	it("formatReleaseAge is T3's: feed times read 3h ago, build days read today or 2d ago, an unreadable time reads nothing", () => {
 		const now = Date.parse("2026-11-20T12:00:00Z");
 		assert.equal(formatReleaseAge("2026-11-20T11:59:30Z", now), "just now");

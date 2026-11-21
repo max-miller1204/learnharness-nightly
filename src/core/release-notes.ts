@@ -24,6 +24,13 @@ export interface ReleaseNoteGroup {
 
 const normalized = (text: string | undefined) => (text ?? "").trim().replace(/\s+/g, " ");
 
+/** Whether `item` is `text`, as written or as the item limits cut it (a 600-character intro's copy is cut to 220). */
+function isCopyOf(item: string, text: string | undefined): boolean {
+	if (text === undefined) return false;
+	const whole = normalized(text);
+	return whole !== "" && (item === whole || item === truncateReleaseNoteItem(whole));
+}
+
 /**
  * Old clients read only `items`, so the release script also writes the intro or footer once more
  * as the last item (scripts/generate-release-notes.ts entryItems). Every stored or sent copy of the
@@ -32,7 +39,7 @@ const normalized = (text: string | undefined) => (text ?? "").trim().replace(/\s
  */
 export function withoutSummaryEcho(items: readonly string[], { intro, footer }: { intro?: string; footer?: string }): string[] {
 	const last = items.length > 0 ? normalized(items[items.length - 1]) : "";
-	const echoes = last !== "" && ((footer !== undefined && last === normalized(footer)) || (intro !== undefined && last === normalized(intro)));
+	const echoes = last !== "" && (isCopyOf(last, footer) || isCopyOf(last, intro));
 	return echoes ? items.slice(0, -1) : [...items];
 }
 
@@ -52,6 +59,18 @@ export function truncateReleaseNoteItem(item: string): string {
 	const clean = item.trim().replace(/\s+/g, " ");
 	if (clean.length <= MAX_RELEASE_NOTE_ITEM_LENGTH) return clean;
 	return `${clean.slice(0, MAX_RELEASE_NOTE_ITEM_LENGTH - 3).trimEnd()}...`;
+}
+
+// A date the page can show: YYYY-MM-DD, or an ISO time with a zone (electron/release-notes.cjs safeReleasedAt).
+const RELEASED_AT = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
+const PRERELEASE_BUILD_DAY = /-(?:nightly|preview)\.(\d{4})(\d{2})(\d{2})\.\d+$/;
+
+/** A note's date, the same on every surface: the feed's own time when it gives a valid one, else the
+ *  nightly's UTC build day from its version (T3's fallback), else none. */
+export function noteReleasedAt(value: unknown, version: string): string | undefined {
+	if (typeof value === "string" && value.length <= 40 && RELEASED_AT.test(value) && Number.isFinite(Date.parse(value))) return value;
+	const day = PRERELEASE_BUILD_DAY.exec(version);
+	return day ? `${day[1]}-${day[2]}-${day[3]}` : undefined;
 }
 
 /** Cap a newest-first list to what the UI shows; the rest is counted. */

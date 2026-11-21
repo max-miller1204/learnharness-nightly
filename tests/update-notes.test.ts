@@ -96,6 +96,39 @@ describe("notes limits", () => {
 		assert.deepEqual([fromPage?.stats, fromPage?.footer], ["1 change from 1 contributor", "Thanks to everyone who tested."]);
 	});
 
+	it("the same note reads the same date on the server and the desktop: the feed's time, else the build day", () => {
+		const notes = [
+			{ version: V(18), publishedAt: "2026-11-14T08:00:00Z", items: ["dated by the feed"] },
+			{ version: V(17), publishedAt: "", items: ["no feed time"] },
+			{ version: V(16), publishedAt: "last week", items: ["an unreadable one"] },
+		];
+		const server = feedNotesToGroups(notes).map((g) => [g.version, g.releasedAt]);
+		// The desktop's NightlyProvider hands each note over with its publish time as releasedAt.
+		const desktop = electronNotes.releaseNoteGroups({ version: V(18), releaseNotes: notes.map((n) => ({ version: n.version, items: n.items, ...(n.publishedAt ? { releasedAt: n.publishedAt } : {}) })) }).map((g) => [g.version, g.releasedAt]);
+		assert.deepEqual(server, [[V(18), "2026-11-14T08:00:00Z"], [V(17), "2026-11-17"], [V(16), "2026-11-16"]]);
+		assert.deepEqual(desktop, server);
+	});
+
+	it("one limit set everywhere: the server's groups and cache match the desktop's, 8 items of 220 characters, counted whole", () => {
+		const long = "y".repeat(600);
+		const note = { version: V(12), publishedAt: "", items: [...Array.from({ length: 8 }, (_, i) => `item ${i}`), long], intro: undefined };
+		const [server] = feedNotesToGroups([note]);
+		const [desktop] = electronNotes.capGroups([{ version: V(12), items: note.items }]).releaseNotes;
+		assert.equal(server!.items.length, 8);
+		assert.deepEqual([server!.items, server!.totalItems], [desktop!.items, desktop!.totalItems]);
+		assert.equal(server!.totalItems, 9, "the cut ninth still counts");
+		// An intro at its 600-character bound, with its copy cut to 220: still the copy, on both.
+		const introNote = { version: V(11), publishedAt: "", items: [long], intro: long };
+		const [serverIntro] = feedNotesToGroups([introNote]);
+		const [desktopIntro] = electronNotes.capGroups([{ version: V(11), items: [long], intro: long }]).releaseNotes;
+		assert.equal(serverIntro!.items[0]!.length, 220);
+		assert.deepEqual([serverIntro!.items, serverIntro!.totalItems], [desktopIntro!.items, desktopIntro!.totalItems]);
+		assert.deepEqual(withoutSummaryEcho(serverIntro!.items, serverIntro!), [], "its cut copy is recognised");
+		assert.equal(totalReleaseItems(serverIntro!), 1, "the intro counts once, as T3 counts it");
+		mergeNotesCache([serverIntro!], dir);
+		assert.deepEqual(readNotesCache(dir)[0]!.items, serverIntro!.items, "the server's cache holds the same");
+	});
+
 	it("summary fields are trimmed and collapsed before their bounds", () => {
 		const padded = `  ${"x".repeat(60)}   ${"y".repeat(58)}  `;
 		const [group] = feedNotesToGroups([{ version: V(12), publishedAt: "", items: [], stats: padded }]);
@@ -104,8 +137,8 @@ describe("notes limits", () => {
 
 	it("the server keeps a feed note's summary fields", () => {
 		assert.deepEqual(feedNotesToGroups([{ version: V(12), publishedAt: "2026-11-12T08:00:00Z", items: ["a"], stats: "4 changes from 2 contributors", footer: "Plus 1 more bug fix." }, { version: V(11), publishedAt: "", items: [], intro: "2 bug fixes." }]), [
-			{ version: V(12), releasedAt: "2026-11-12T08:00:00Z", items: ["a"], stats: "4 changes from 2 contributors", footer: "Plus 1 more bug fix." },
-			{ version: V(11), items: [], intro: "2 bug fixes." },
+			{ version: V(12), releasedAt: "2026-11-12T08:00:00Z", items: ["a"], totalItems: 1, stats: "4 changes from 2 contributors", footer: "Plus 1 more bug fix." },
+			{ version: V(11), releasedAt: "2026-11-11", items: [], totalItems: 1, intro: "2 bug fixes." },
 		]);
 	});
 

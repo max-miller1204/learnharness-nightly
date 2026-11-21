@@ -55,6 +55,8 @@ class NightlyProvider extends GenericProvider {
 			.map((entry) => ({
 				version: entry.version,
 				items: entry.items.filter((item) => typeof item === "string"),
+				// Its own publish time, as the server shows it (not only the offered version's).
+				...(typeof entry.publishedAt === "string" && entry.publishedAt ? { releasedAt: entry.publishedAt } : {}),
 				...Object.fromEntries(["stats", "intro", "footer"].filter((key) => typeof entry[key] === "string").map((key) => [key, entry[key]])),
 			})) : [];
 		return { ...info, releaseDate: typeof publishedAt === "string" ? publishedAt : info.releaseDate, releaseNotes };

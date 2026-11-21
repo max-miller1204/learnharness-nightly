@@ -241,7 +241,8 @@ function releaseNoteGroups(info) {
 		// T3 drops a release with nothing to show; a footer alone is something.
 		if (note.totalItems === 0 && !note.stats && !note.footer) continue;
 		seen.add(version);
-		const releasedAt = releasedAtOf(version, info.version, info.releaseDate);
+		// A feed note carries its own publish time (the server reads the same one); else T3's rule.
+		const releasedAt = safeReleasedAt(entry.releasedAt) ?? releasedAtOf(version, info.version, info.releaseDate);
 		groups.push({ version, ...note, ...(releasedAt ? { releasedAt } : {}) });
 	}
 	return groups;
@@ -253,9 +254,16 @@ function releaseNoteGroups(info) {
  * before the fields shows it); counting and the release page drop it. Only that one trailing item,
  * compared as the full text with both sides normalized (src/core/release-notes.ts withoutSummaryEcho).
  */
+function isCopyOf(item, text) {
+	if (text === undefined) return false;
+	const whole = cleanText(text);
+	// As written, or as the item limits cut it (a 600-character intro's copy is cut to 220).
+	return whole !== "" && (item === whole || item === truncateItem(whole));
+}
+
 function withoutSummaryEcho(items, { intro, footer } = {}) {
 	const last = items.length > 0 ? cleanText(items[items.length - 1]) : "";
-	const echoes = last !== "" && ((footer !== undefined && last === cleanText(footer)) || (intro !== undefined && last === cleanText(intro)));
+	const echoes = last !== "" && (isCopyOf(last, footer) || isCopyOf(last, intro));
 	return echoes ? items.slice(0, -1) : [...items];
 }
 
@@ -276,9 +284,16 @@ function feedNoteFields(entry) {
  * header, the intro (bold, as T3 writes a count with no highlights), the
  * "- " items, then "### <footer>". Empty when there is nothing to say.
  */
+/**
+ * Note text made safe for the body: GitHub shows these entities as the characters, and the parser
+ * above decodes them only after its tag, line-break and link rules ran (stripMarkup), so an item
+ * reading "Keep <br> in exports." or "[x](y)" comes back exactly as written.
+ */
+const escapeBodyText = (text) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\[/g, "&#91;").replace(/\]/g, "&#93;");
+
 function summaryBody(note) {
 	if (!note || typeof note.version !== "string") return "";
-	const text = cleanText;
+	const text = (value) => escapeBodyText(cleanText(value));
 	const items = withoutSummaryEcho(Array.isArray(note.items) ? note.items.map(text).filter(Boolean) : [], { intro: text(note.intro), footer: text(note.footer) });
 	const parts = [];
 	if (text(note.stats)) parts.push(`**v${note.version.replace(/^v/, "")}** · ${text(note.stats)}`);

@@ -76,6 +76,15 @@ test("a later nightly folds the commit list under the summary", () => {
 	assert.ok(!body.includes("- Plus 2 more"), "the old-client copy of the footer stays out of the page");
 });
 
+test("highlights that look like HTML or links come back exactly from the real release body", () => {
+	const tricky = ["**HTML.** Keep <br> in exports.", "**Links.** Use [a link](https://x.test) & <b>tags</b> as text.", "**Entities.** Write &amp; and &lt; literally."];
+	const body = runStep({ ...generated, items: [...tricky, generated.footer] }, "v0.6.1-nightly.20261119.1");
+	const [group] = releaseNoteGroups({ version: VERSION, releaseNotes: body });
+	assert.deepEqual(group!.items, tricky, "three highlights, none split off as an intro");
+	assert.equal(group!.intro, undefined);
+	assert.equal(group!.footer, "Plus 2 more bug fixes.");
+});
+
 test("with nothing to say the body starts with the folded list", () => {
 	const body = runStep({ version: VERSION, publishedAt: "t", items: [] }, "");
 	assert.ok(body.startsWith("<details>"));

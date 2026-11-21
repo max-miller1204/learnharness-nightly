@@ -17,7 +17,7 @@ const pointer = {
 	notes: [
 		{ version: newer, items: ["After this release."] },
 		{ version, items: ["**New.** Example update."], stats: "4 changes from 2 contributors", footer: "Plus 1 more bug fix." },
-		{ version: "0.6.1-nightly.20261118.2", items: ["**HTML.** Preserve <br> in exports.", "- not a bullet", "### not a heading", "**v1** · not stats", "<details><summary>Full changelog</summary>"] },
+		{ version: "0.6.1-nightly.20261118.2", publishedAt: "2026-11-12T06:00:00Z", items: ["**HTML.** Preserve <br> in exports.", "- not a bullet", "### not a heading", "**v1** · not stats", "<details><summary>Full changelog</summary>"] },
 		{ version: current, items: ["Already installed."] },
 	],
 };
@@ -79,12 +79,13 @@ for (const [platform, manifest, extension] of [
 		const tricky = ["**HTML.** Preserve <br> in exports.", "- not a bullet", "### not a heading", "**v1** · not stats", "<details><summary>Full changelog</summary>"];
 		assert.deepEqual(info.releaseNotes, [
 			{ version, items: ["**New.** Example update."], stats: "4 changes from 2 contributors", footer: "Plus 1 more bug fix." },
-			{ version: "0.6.1-nightly.20261118.2", items: tricky },
+			{ version: "0.6.1-nightly.20261118.2", items: tricky, releasedAt: "2026-11-12T06:00:00Z" },
 		]);
 		// The desktop reads them as they are: HTML-looking and Markdown-looking text stays one item each.
 		assert.deepEqual(releaseNoteGroups(info), [
 			{ version, items: ["**New.** Example update."], totalItems: 1, stats: "4 changes from 2 contributors", footer: "Plus 1 more bug fix.", releasedAt: pointer.publishedAt },
-			{ version: "0.6.1-nightly.20261118.2", items: tricky, totalItems: 5, releasedAt: "2026-11-18" },
+			// Its own publish time, as the server shows it, not its build day.
+			{ version: "0.6.1-nightly.20261118.2", items: tricky, totalItems: 5, releasedAt: "2026-11-12T06:00:00Z" },
 		]);
 		assert.equal(provider.resolveFiles(info)[0].url.href, `${root}v${version}/LearnHarness-Nightly-${version}.${extension}`);
 	});
