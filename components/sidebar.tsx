@@ -69,8 +69,8 @@ const IS_ELECTRON = typeof navigator !== "undefined" && navigator.userAgent.incl
 declare global {
 	interface Window {
 		/** Preload bridge (electron/preload.cjs): Electron only, absent in the browser.
-		 *  The desktop app's window onto a self-hosted server gets only `desktopUpdate`
-		 *  (electron/remote-preload.cjs), so every other member may be missing. */
+		 *  The desktop app's window onto a self-hosted server gets only `desktopUpdate` and
+		 *  `chatgptSignIn` (electron/remote-preload.cjs), so every other member may be missing. */
 		lh?: {
 			/** Read-only host OS; determines the native-control gutter. */
 			platform?: string;
@@ -86,6 +86,14 @@ declare global {
 			expandWindow?: () => void;
 			/** Remote window only: this app's own update (roadmap item 23 Update everything). */
 			desktopUpdate?: DesktopUpdateBridge;
+			/** Remote window only: this desktop's verified ChatGPT sign-in for the window's server
+			 *  (electron/remote-chatgpt-ipc.cjs). `accountId` signs in again to that saved account;
+			 *  cancel() ends the attempt. */
+			chatgptSignIn?: {
+				start: (accountId?: string) => Promise<{ ok: true } | { error: string }>;
+				/** `ended`: it ended this window's own attempt. */
+				cancel: () => Promise<{ ok: true; ended: boolean }>;
+			};
 			/** Native chrome follows the active theme (theme wave): main sets
 			 *  themeSource and repaints the window background / overlay. */
 			setAppearance?: (a: { mode: ThemeMode; background: string }) => void;

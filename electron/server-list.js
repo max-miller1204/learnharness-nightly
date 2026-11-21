@@ -17,14 +17,14 @@ function showPair(origin = "") {
 }
 
 function render() {
-	const { servers, active, defaultServer, damaged, busy, removing, problem, notice, signingIn } = state;
+	const { servers, active, defaultServer, damaged, busy, removing, problem, notice } = state;
 	// Also with This computer open once every saved server and the default are removed:
 	// what is picked on the setup screen then becomes the default.
 	const firstRun = !defaultServer && !problem && servers.length === 0 && !notice;
 	$("welcome").hidden = !firstRun || adding;
 	$("list").hidden = (firstRun || adding) && !problem;
 	$("add-server").hidden = !adding || !!problem;
-	$("notice").textContent = removing ? "Removing…" : busy ? "Connecting…" : signingIn ? "Finish sign-in in your browser." : notice;
+	$("notice").textContent = removing ? "Removing…" : busy ? "Connecting…" : notice;
 	$("recovery").hidden = !problem;
 	if (problem) {
 		$("problem").textContent = problem.message;
@@ -81,10 +81,8 @@ function render() {
 	}));
 	$("add").hidden = damaged;
 	$("reset").hidden = !damaged;
-	$("sign-in").hidden = !active || active === "local";
 	$("pair-submit").textContent = busy && !removing ? "Connecting…" : "Connect";
 	document.querySelectorAll("button, input").forEach((input) => { input.disabled = busy; });
-	$("sign-in").disabled = busy || signingIn;
 }
 api.onChange((next) => { state = next; render(); });
 void api.state().then((next) => { state = next; render(); });
@@ -94,7 +92,6 @@ $("connect-remote").onclick = () => showPair();
 $("reset").onclick = () => void api.reset();
 $("add").onclick = () => { state = { ...state, problem: null }; showPair(); };
 $("back").onclick = () => { adding = false; render(); };
-$("sign-in").onclick = () => void api.signIn();
 // A pasted pairing link becomes the address and fills in the code.
 $("address").addEventListener("input", async (event) => {
 	$("filled").hidden = true;

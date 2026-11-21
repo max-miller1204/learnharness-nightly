@@ -450,7 +450,7 @@ test("the bridge answers only the remote window's main frame at its origin, with
 	assert.deepEqual(calls, ["status", "install"]);
 });
 
-test("the remote preload exposes only window.lh.desktopUpdate with four methods", () => {
+test("the remote preload exposes only window.lh.desktopUpdate with four methods and window.lh.chatgptSignIn", () => {
 	const source = fs.readFileSync(path.join(import.meta.dirname, "..", "electron", "remote-preload.cjs"), "utf8");
 	const exposed = new Map<string, unknown>();
 	const invoked: unknown[][] = [];
@@ -466,10 +466,16 @@ test("the remote preload exposes only window.lh.desktopUpdate with four methods"
 	run("https:");
 	assert.deepEqual([...exposed.keys()], ["lh"]);
 	const lh = exposed.get("lh") as { desktopUpdate: Record<string, (...args: unknown[]) => unknown> };
-	assert.deepEqual(Object.keys(lh), ["desktopUpdate"]);
+	assert.deepEqual(Object.keys(lh), ["desktopUpdate", "chatgptSignIn"]);
 	assert.deepEqual(Object.keys(lh.desktopUpdate), ["getStatus", "check", "download", "install"]);
 	lh.desktopUpdate.install!("0.0.1-evil", "https://evil.example");
 	assert.deepEqual(invoked, [["lh:desktop-update", "install"]], "arguments from the page are never forwarded");
+	const signIn = (lh as unknown as { chatgptSignIn: Record<string, (...args: unknown[]) => unknown> }).chatgptSignIn;
+	assert.deepEqual(Object.keys(signIn), ["start", "cancel"]);
+	signIn.start!();
+	signIn.start!("account-id", "https://evil.example", "extra");
+	signIn.cancel!("https://evil.example");
+	assert.deepEqual(invoked.slice(1), [["lh:chatgpt-sign-in", "start"], ["lh:chatgpt-sign-in", "start", "account-id"], ["lh:chatgpt-sign-in", "cancel"]], "at most the one account id, which main checks");
 });
 
 test("a run names the server it updates from its confirmation to its end, so the list can hold that server", async () => {

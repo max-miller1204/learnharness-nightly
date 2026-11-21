@@ -14,6 +14,7 @@ import { ModelControl } from "../components/model-picker.tsx";
 import type { ChatGPTStatus, ChatGPTControlBridge } from "../src/core/index.ts";
 import { completedWithin } from "./completion.ts";
 import { InteractionLayersProvider } from "../components/interaction-layers.tsx";
+import { ServerEventsProvider, type NotifySource } from "../components/server-events.tsx";
 import { installModalDom } from "./modal-dom.ts";
 
 const dom = parseHTML("<html><body></body></html>");
@@ -822,4 +823,168 @@ test("a slow read never overwrites typing and never reaches a later attempt; one
   await act(async () => release("http://127.0.0.1:1/auth/callback?state=old&code=c"));
   assert.equal(pasteField().value, "", "a read from an ended attempt changes nothing");
  } finally { page.restore(); restore(); }
+});
+
+test("Settings in the desktop app's window onto a server signs in through the desktop bridge, without paste-back", async () => {
+ const page = webPage("desktop.tail1234.ts.net");
+ const calls: (string | undefined)[] = [];
+ let finish!: (result: { ok: true } | { error: string }) => void;
+ window.lh = { chatgptSignIn: { start: (accountId?: string) => { calls.push(accountId); return new Promise((resolve) => { finish = resolve; }); }, cancel: async () => ({ ok: true, ended: false }) } };
+ window.open = () => assert.fail("no sign-in tab in the desktop app");
+ try {
+  await mount(); await click(byTest("chatgpt-login"));
+  assert(byTest("chatgpt-privacy-notice").textContent?.includes("on the machine running LearnHarness"), "credentials still live on the server");
+  assert(!document.querySelector('[data-testid="chatgpt-remote-ahead"]'), "no paste-back warning: the callback reaches this computer");
+  await click(byTest("chatgpt-proceed"));
+  assert.deepEqual(calls, [undefined], "one click starts the desktop's sign-in");
+  assert.deepEqual(page.ops, [], "the page doesn't start the server's login itself");
+  assert(!document.querySelector('[data-testid="chatgpt-paste"]'));
+  await act(async () => finish({ error: "ChatGPT sign-in ended. Try again." }));
+  assert.equal(document.querySelector('[data-testid="chatgpt-account-dialog"] [role="alert"]')?.textContent, "ChatGPT sign-in ended. Try again.");
+ } finally { page.restore(); }
+});
+
+/** Mounts with a server-events source the test can fire "subscriptions-changed" on. */
+async function mountWithEvents() {
+ let changed = () => {};
+ const source: NotifySource = { onEvent: (name, cb) => { if (name === "subscriptions-changed") changed = () => cb("{}"); }, onOpen() {}, close() {} };
+ host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+ await act(async () => root!.render(<InteractionLayersProvider><ServerEventsProvider connect={() => source}><ChatGPTUIProvider><ChatGPTConnection /></ChatGPTUIProvider></ServerEventsProvider></InteractionLayersProvider>));
+ return { fire: () => act(async () => { changed(); await new Promise((resolve) => setTimeout(resolve, 0)); }) };
+}
+
+test("paste-back is hidden only while this page's own desktop sign-in runs; it returns once that ends", async () => {
+ const page = webPage("desktop.tail1234.ts.net");
+ let pending = false;
+ globalThis.fetch = async (_input, init) => {
+  if (init?.method) { page.ops.push({ op: JSON.parse(String(init.body)).op }); return Response.json({ value: { ...disconnected(), pending } }); }
+  return Response.json({ chatgpt: { ...disconnected(), pending }, native: [] });
+ };
+ let finish!: (result: { ok: true } | { error: string }) => void;
+ const cancels: string[] = [];
+ window.lh = { chatgptSignIn: {
+  start: () => new Promise((resolve) => { finish = resolve; }),
+  cancel: async () => { cancels.push("desktop"); finish({ error: "ChatGPT sign-in ended. Try again." }); return { ok: true, ended: true }; },
+ } };
+ try {
+  const events = await mountWithEvents();
+  await click(byTest("chatgpt-login")); await click(byTest("chatgpt-proceed"));
+  pending = true; await events.fire();
+  assert(document.body.textContent?.includes("Waiting for browser sign-in"));
+  assert(!document.querySelector('[data-testid="chatgpt-paste-reveal"]'), "no paste-back while the bridge's own attempt runs");
+  assert(!document.querySelector('[data-testid="chatgpt-paste"]'));
+  // The desktop's attempt fails while another device's sign-in waits on the server: the open
+  // dialog shows why, and paste-back for that attempt, at once.
+  await act(async () => { finish({ error: "Couldn’t reserve the local ChatGPT callback port." }); await new Promise((resolve) => setTimeout(resolve, 0)); });
+  assert.equal(document.querySelector('[data-testid="chatgpt-account-dialog"] [role="alert"]')?.textContent, "Couldn’t reserve the local ChatGPT callback port.");
+  assert.equal(byTest("chatgpt-paste-reveal").textContent, CHATGPT_PASTE_COPY.reveal, "no reopening Settings needed");
+  await click(byTest("chatgpt-paste-reveal")); assert(byTest("chatgpt-paste"));
+ } finally { page.restore(); }
+});
+
+test("a sign-in adopted from another device keeps paste-back in the desktop app, and Cancel there cancels it on the server", async () => {
+ const page = webPage("desktop.tail1234.ts.net");
+ const cancels: string[] = [];
+ window.lh = { chatgptSignIn: { start: async () => ({ ok: true }), cancel: async () => { cancels.push("desktop"); return { ok: true, ended: false }; } } };
+ const ops: string[] = [];
+ globalThis.fetch = async (_input, init) => {
+  if (init?.method) { ops.push(JSON.parse(String(init.body)).op); return Response.json({ value: disconnected() }); }
+  return Response.json({ chatgpt: { ...disconnected(), pending: true }, native: [] });
+ };
+ try {
+  await mount(); await click(byTest("chatgpt-login"));
+  assert(document.body.textContent?.includes("Waiting for browser sign-in"));
+  assert.equal(byTest("chatgpt-paste-reveal").textContent, CHATGPT_PASTE_COPY.reveal, "the phone's attempt can be finished here");
+  await click(byTest("chatgpt-paste-reveal")); assert(byTest("chatgpt-paste"));
+  await click(button("Cancel", byTest("chatgpt-account-dialog")));
+  assert.deepEqual(cancels, ["desktop"]);
+  assert.deepEqual(ops, ["cancel"], "the desktop had none of its own, so the page cancels the adopted one");
+ } finally { page.restore(); }
+});
+
+test("Cancel of this page's desktop sign-in, with another device's sign-in now pending, takes that one up: paste-back, no error", async () => {
+ const page = webPage("desktop.tail1234.ts.net");
+ let pending = false;
+ const ops: string[] = [];
+ globalThis.fetch = async (_input, init) => {
+  if (init?.method) { ops.push(JSON.parse(String(init.body)).op); return Response.json({ value: { ...disconnected(), pending } }); }
+  return Response.json({ chatgpt: { ...disconnected(), pending }, native: [] });
+ };
+ let finish!: (result: { ok: true } | { error: string }) => void;
+ window.lh = { chatgptSignIn: {
+  start: () => new Promise((resolve) => { finish = resolve; }),
+  // The desktop ends its own attempt (scoped); meanwhile a phone started one, so the server still waits.
+  cancel: async () => { finish({ error: "ChatGPT sign-in ended. Try again." }); pending = true; return { ok: true, ended: true }; },
+ } };
+ try {
+  const events = await mountWithEvents();
+  await click(byTest("chatgpt-login")); await click(byTest("chatgpt-proceed"));
+  pending = true; await events.fire();
+  assert(!document.querySelector('[data-testid="chatgpt-paste-reveal"]'));
+  await click(button("Cancel", byTest("chatgpt-account-dialog")));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  assert.deepEqual(ops, [], "no unscoped cancel of the phone's sign-in");
+  assert(byTest("chatgpt-account-dialog"), "the dialog stays for the pending sign-in");
+  assert.equal(document.querySelector('[data-testid="chatgpt-account-dialog"] [role="alert"]'), null, "no error for a cancel the user asked for");
+  assert(document.body.textContent?.includes("Waiting for browser sign-in"));
+  assert.equal(byTest("chatgpt-paste-reveal").textContent, CHATGPT_PASTE_COPY.reveal, "paste-back for the phone's attempt at once");
+ } finally { page.restore(); }
+});
+
+test("in the desktop app, with no saved account to pick, Connect alone starts the sign-in; a browser still asks for Continue first", async () => {
+ let page = webPage("desktop.tail1234.ts.net");
+ let pending = false;
+ const firstTime = () => ({ ...disconnected(), accounts: [], pending });
+ globalThis.fetch = async (_input, init) => {
+  if (init?.method) { page.ops.push({ op: JSON.parse(String(init.body)).op }); return Response.json({ value: firstTime() }); }
+  return Response.json({ chatgpt: firstTime(), native: [] });
+ };
+ const started: (string | undefined)[] = [];
+ let finish!: (result: { ok: true } | { error: string }) => void;
+ window.lh = { chatgptSignIn: { start: (accountId?: string) => { started.push(accountId); return new Promise((resolve) => { finish = resolve; }); }, cancel: async () => ({ ok: true, ended: true }) } };
+ window.open = () => assert.fail("no tab in the desktop app");
+ try {
+  const events = await mountWithEvents();
+  await click(byTest("chatgpt-login"));
+  assert.deepEqual(started, [undefined], "one click: no Continue step");
+  assert.deepEqual(page.ops, [], "the server's login comes from the desktop, not the page");
+  assert(byTest("chatgpt-account-dialog"), "the dialog shows the attempt");
+  pending = true; await events.fire();
+  assert(document.body.textContent?.includes("Waiting for browser sign-in"));
+  assert(button("Cancel", byTest("chatgpt-account-dialog")), "Cancel stays");
+  pending = false;
+  await act(async () => { finish({ error: "Couldn’t reserve the local ChatGPT callback port." }); await new Promise((resolve) => setTimeout(resolve, 0)); });
+  assert.equal(document.querySelector('[data-testid="chatgpt-account-dialog"] [role="alert"]')?.textContent, "Couldn’t reserve the local ChatGPT callback port.", "the same failure handling");
+ } finally { page.restore(); }
+ await remount();
+ delete window.lh;
+ page = webPage("100.64.0.5");
+ try {
+  await mount(); await click(byTest("chatgpt-login"));
+  assert.equal(page.ops.length, 0, "a browser opens the dialog and waits");
+  assert(byTest("chatgpt-remote-ahead"), "with its paste-back warning");
+  await click(byTest("chatgpt-proceed"));
+  assert.deepEqual(page.ops.map((op) => op.op), ["login"]);
+  assert(byTest("chatgpt-paste"), "and paste-back once pending");
+ } finally { page.restore(); }
+});
+
+test("in the desktop app, with saved accounts, Connect keeps the dialog to pick one, and Sign in again is the one click", async () => {
+ const page = webPage("desktop.tail1234.ts.net");
+ const started: (string | undefined)[] = [];
+ window.lh = { chatgptSignIn: { start: async (accountId?: string) => { started.push(accountId); return { error: "ChatGPT sign-in ended. Try again." }; }, cancel: async () => ({ ok: true, ended: true }) } };
+ try {
+  await mount(); await click(byTest("chatgpt-login"));
+  assert.deepEqual(started, [], "a saved account to pick: no sign-in yet");
+  const select = document.querySelector<HTMLSelectElement>('select[aria-label="Saved ChatGPT account"]')!;
+  assert.equal(select.disabled, false, "the saved-account choice stays open");
+  assert.equal((toggle() as HTMLButtonElement).disabled, false, "and the background-use switch");
+  await selectAccount("Saved ChatGPT account", "signed-out-record");
+  await click(button("Manage…", byTest("chatgpt-account-dialog")));
+  await click(button("Sign in again", byTest("chatgpt-account-dialog")));
+  assert.deepEqual(started, ["signed-out-record"], "Sign in again for that account starts at once");
+  await remount();
+  await mount(); await click(byTest("chatgpt-login")); await click(byTest("chatgpt-proceed"));
+  assert.deepEqual(started, ["signed-out-record", undefined], "Continue adds another account");
+ } finally { page.restore(); }
 });

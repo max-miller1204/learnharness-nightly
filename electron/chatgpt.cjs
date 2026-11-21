@@ -284,6 +284,8 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 		const verifier = random();
 		const nonce = random();
 		const expectedState = random();
+		// Scopes a cancel to this attempt, so a stale one never ends a newer sign-in. Not a secret.
+		const attemptId = random();
 		const abort = new AbortController();
 		let finish;
 		const completion = new Promise((resolve) => { finish = resolve; });
@@ -347,7 +349,7 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 			await accept(params);
 			return snapshot();
 		};
-		pending = { abort, cancel, complete };
+		pending = { abort, cancel, complete, id: attemptId };
 		lastError = null;
 		notify();
 		try {
@@ -393,7 +395,12 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 		void completion;
 		return snapshot();
 	}
-	function cancelLogin() { pending?.cancel(); return snapshot(); }
+	/** `attemptId`: cancel only that attempt (pendingAttempt() when it started); without it, whatever is pending. */
+	function cancelLogin(attemptId) {
+		if (attemptId === undefined || pending?.id === attemptId) pending?.cancel();
+		return snapshot();
+	}
+	function pendingAttempt() { return pending?.id ?? null; }
 	async function completeLogin(callbackUrl) {
 		if (!pending) throw fail("inactive");
 		return pending.complete(callbackUrl);
@@ -590,7 +597,7 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 	function close() { closed = true; pending?.cancel(); stop(); }
 	function pause() { paused = true; pending?.cancel(); stop(); notify(); }
 	function resume() { paused = false; if (!storageDenied) suspended = false; notify(); }
-	return { status, login, cancelLogin, completeLogin, lease, models, select, consent, disconnect, logout, close, pause, resume, stamp };
+	return { status, login, cancelLogin, pendingAttempt, completeLogin, lease, models, select, consent, disconnect, logout, close, pause, resume, stamp };
 }
 
 module.exports = { createChatGPT, fileStore, publicError, allowedAuthEndpoint, pastedCallback, AUTHORIZE, SCOPES, validateState };

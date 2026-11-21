@@ -32,6 +32,38 @@ fi
 SD=$RUN/$SIDE
 [ ! -f "$SD/instance.env" ] || die "$SD already has an instance; stop it first (stop.sh $RUN)"
 mkdir -p "$SD/home" "$SD/data"
+# The server prints a one-time pairing link (/pair#token=...) to stdout at
+# boot (src/server/startup-pairing.ts), so app.log can hold a live credential.
+# Blank its token in place (same length, same file, so the server's own
+# writes carry on at their offsets) on every way out of this script. A start
+# that fails stops its server first, and waits for it to be gone, so nothing
+# prints a link after the last redaction.
+blank_pairing() { node -e 'const fs = require("fs"); const f = process.argv[1]; if (!fs.existsSync(f)) process.exit(0); const s = fs.readFileSync(f, "latin1"); const fd = fs.openSync(f, "r+"); for (const m of s.matchAll(/#token=([^\s)]+)/g)) fs.writeSync(fd, "x".repeat(m[1].length), m.index + 7, "latin1"); fs.closeSync(fd);' "$SD/app.log"; }
+# A pid file left by an earlier failed start of this side is stale: drop it,
+# so app.pid only ever names the server this invocation launches.
+[ ! -f "$SD/app.pid" ] || rm -- "$SD/app.pid"
+# <pgid>: a live member of that process group is this side's server (its
+# environment names this side's data dir), so the group is ours to stop.
+ours() { local p; for p in $(pgrep -g "$1" 2>/dev/null); do grep -qaF -- "LH_DATA_DIR=$SD/data" "/proc/$p/environ" 2>/dev/null && return 0; done; return 1; }
+gone() { ! kill -0 -- "-$1" 2>/dev/null; }
+STARTED=0
+on_exit() {
+	local pid
+	if [ "$STARTED" != 1 ] && [ -f "$SD/app.pid" ]; then
+		pid=$(cat "$SD/app.pid")
+		case "$pid" in ''|*[!0-9]*) pid= ;; esac
+		if [ -n "$pid" ] && ours "$pid"; then
+			kill -TERM -- "-$pid" 2>/dev/null
+			for _ in $(seq 1 40); do gone "$pid" && break; sleep 0.25; done
+			if ! gone "$pid"; then
+				kill -KILL -- "-$pid" 2>/dev/null
+				for _ in $(seq 1 20); do gone "$pid" && break; sleep 0.25; done
+			fi
+		fi
+	fi
+	blank_pairing
+}
+trap on_exit EXIT
 printf '{}\n' >"$SD/auth.json"
 chmod 600 "$SD/auth.json"
 FIXTURE=$SD/home/zz-prove-it-fixture.txt
@@ -66,9 +98,11 @@ APP_URL=http://127.0.0.1:$APP_PORT
 FAKE_URL=http://127.0.0.1:$FAKE_PORT/v1
 wait_for 10 curl -sf "http://127.0.0.1:$FAKE_PORT/__prove/state" || { cat "$SD/fake-model.log" >&2; die "fake model did not start"; }
 if ! wait_for "$BOOT_TIMEOUT_S" curl -sf "$APP_URL/api/health"; then
+	blank_pairing
 	tail -40 "$SD/app.log" >&2
 	die "$SIDE server not healthy within ${BOOT_TIMEOUT_S}s"
 fi
+blank_pairing
 # PROVE_SEED=0: a cold start with no model configured (a break-it probe).
 if [ "${PROVE_SEED:-1}" = 1 ]; then
 	APP_TOKEN=$APP_TOKEN node "$PROVE_SCRIPTS/seed.mjs" "$APP_URL" "$FAKE_URL" "$PROVE_MODEL" "$PROVE_REAL_MODEL_ID" >"$SD/seed.log" 2>&1 || { cat "$SD/seed.log" >&2; die "seeding the model failed"; }
@@ -95,4 +129,5 @@ APP_LOG=$SD/app.log
 SCENARIO=$SCENARIO
 MODEL=$PROVE_MODEL
 EOF
+STARTED=1
 echo "$SD/instance.env"

@@ -40,6 +40,8 @@ import {
 	ModelsNotConfiguredError,
 	PROVIDER_KEY_MISSING_CODE,
 	ProviderKeyMissingError,
+	SUBSCRIPTION_UNREACHABLE_CODE,
+	SubscriptionUnreachableError,
 	type EmissionStats,
 } from "@/src/core";
 
@@ -54,10 +56,11 @@ interface ImportResult {
 	error?: string;
 	/** The machine discriminator when ok:false is a config refusal — the
 	 * BYOK models refusal (owner, 2026-09-22) or the provider-key refusal
-	 * (2026-09-25); the client can open the setup/keys flow off it. */
-	code?: "models_not_configured" | (typeof PROVIDER_KEY_MISSING_CODE);
+	 * (2026-09-25); the client can open the setup/keys flow off it. An
+	 * unreachable subscription is an outage, not setup: import again later. */
+	code?: "models_not_configured" | (typeof PROVIDER_KEY_MISSING_CODE) | (typeof SUBSCRIPTION_UNREACHABLE_CODE);
 	missing?: string[];
-	/** The key-refusal specifics (provider_key_missing only). */
+	/** Whose key or connection (provider_key_missing, subscription_unreachable). */
 	provider?: string;
 	slots?: string[];
 	/** Shown beside a completed import (every PDF: scanner text may be wrong). */
@@ -189,6 +192,10 @@ async function runImport(filePath: string, requestIndex: number, input: NotesInp
 		if (err instanceof ProviderKeyMissingError) {
 			return { filePath, ok: false, requestIndex, outcome: "failed", error: err.envelope.error,
 				code: PROVIDER_KEY_MISSING_CODE, provider: err.envelope.provider, slots: err.envelope.slots };
+		}
+		if (err instanceof SubscriptionUnreachableError) {
+			return { filePath, ok: false, requestIndex, outcome: "failed", error: err.envelope.error,
+				code: SUBSCRIPTION_UNREACHABLE_CODE, provider: err.envelope.provider };
 		}
 		return { filePath, requestIndex, ok: false,
 			outcome: err instanceof NotesImportError ? err.outcome : "failed",

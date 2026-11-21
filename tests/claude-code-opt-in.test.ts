@@ -87,7 +87,7 @@ test("a saved CLI background job is refused before model execution while opt-in 
 	let calls = 0;
 	const runner = createJobRunner({ chatStore, jobStore, deliver: async () => {},
 		engineFor: () => ({ model: CLAUDE_CODE_MODELS[0]!, streamFn: () => { calls++; assert.fail("must not run a disabled CLI model"); } }),
-		providerKeyMissing: (provider, tier) => providerKeyPresent(provider) ? null : providerKeyMissing(provider, [tier]),
+		connectionRefusal: (provider, tier) => providerKeyPresent(provider) ? null : providerKeyMissing(provider, [tier]),
 	});
 	await runner.runJob(job.id, { question: "Synthetic fixture only" });
 	assert.equal(calls, 0);

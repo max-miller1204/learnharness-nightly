@@ -26,7 +26,7 @@ node scripts/scope.mjs        # the diff, the surfaces and tiers it reaches, and
 
 `scope.mjs` runs `git merge-base HEAD origin/main`, `git diff --name-only <base>` and `git ls-files --others --exclude-standard`, then applies the map below and prints the plan: only the surfaces and tiers the diff reaches.
 
-Run the whole plan in one go with `scripts/run-plan.sh <slug> [same args as scope.mjs]`: it makes the run folder, runs every planned step in order, carries on past failing checks (they are evidence), always cleans up, and prints a summary (each compare's result, the failed commands) with the run folder on its last line. If the change itself fails to build, start or launch, it stops and reports BROKEN (back to the builder); if the base build, the environment or a planned surface fails, it stops as BLOCKED. Files `scope.mjs` can't map stop it as BLOCKED before anything runs: decide by hand and add a rule. `--base <ref>` applies to the whole run. Exit 0 all checks passed, 1 a check failed or the change is BROKEN, 2 BLOCKED, 3 no app surface. Then read the evidence: a script pass is not the verdict. Break-it probes beyond `probes.mjs` and recipe steps the plan doesn't script still need their own instances.
+Run the whole plan in one go with `scripts/run-plan.sh <slug> [same args as scope.mjs]`: it makes the run folder, runs every planned step in order, carries on past failing checks (they are evidence), always cleans up, and prints a summary (each compare's result, the failed commands) with the run folder on its last line. If the change itself fails to build, start or launch, it stops and reports BROKEN (back to the builder); if the base build, the environment or a planned surface fails, it stops as BLOCKED. Files `scope.mjs` can't map stop it as BLOCKED before anything runs: decide by hand and add a rule. `--base <ref>` applies to the whole run. Exit 0 all checks passed, 1 a check failed or the change is BROKEN, 2 BLOCKED, 3 no app surface, 4 the scripted checks passed and a step by hand is next (the summary's `MANUAL` line: a mobile device proof, or driving a changed CI script's CLI; not BLOCKED and not a verdict). The plan has stopped its instances by then, so drive a device recipe in a run folder of its own (`scripts/new-run.sh <slug>-device`, then `start.sh` there with the recipe's scenario) and name both run folders in one receipt. Then read the evidence: a script pass is not the verdict. Break-it probes beyond `probes.mjs` and recipe steps the plan doesn't script still need their own instances.
 
 If the user names a flow instead ("prove the update banner"), prove that flow and skip the diff.
 
@@ -49,7 +49,8 @@ Follow each changed file to the surfaces and flows it reaches. Internal code cou
 | `plugins/**`, `core-plugins.json`, plugin build scripts | yes | web, api, agent | the plugin's view and tools |
 | `package*.json`, `next.config.ts`, `proxy.ts`, `instrumentation.ts`, `config.ts`, `tsconfig.json` | yes: launch config | every surface (smoke) | teaching session, `lh` commands, desktop window |
 | `apps/mobile/**` | yes: same server contract | mobile | [mobile beta](references/features/mobile-beta.md) |
-| `app/api/v<N>/**` | PLANNED | protocol, api | none yet: [planned.md](references/planned.md) |
+| `.github/scripts/**` (release and decision CLIs such as `mobile-release.cjs`) | no | ci-script: the plan runs the scripts' tests and ends `MANUAL` (exit 4); a diff of `*.test.cjs` only just runs the tests | its spec: run the script's own tests, then drive its CLI with fixtures you write from the spec (not from the script), and run each workflow step that calls it against stubs |
+| `app/api/v<N>/**` | PLANNED | protocol, api | none: [planned.md](references/planned.md) |
 
 A change that only touches tests, docs or this skill reaches no surface: say so in the receipt and stop. A change to launch config (env vars, ports, dependencies, migrations) reaches every surface: smoke test each one. A path `scope.mjs` calls UNMAPPED: decide by hand, then add a rule to `scope.mjs` and this table in the same change.
 
@@ -74,6 +75,8 @@ A new flow without parity needs the user's spec. Look, in order:
 1. The PR body (`gh pr view --json body,closingIssuesReferences`) and any issue it closes.
 2. A spec or plan file in the diff (`docs/specs/<item>.md`, in the diff or already on main; the PR body links it. A PR body alone or a `docs/fork-roadmap.md` entry is not the spec: roadmap designs are "not approved").
 3. A spec path or spec text the user passed. The request that asked for the change ("add `?q=` to tags") is not a spec: it says what was built, not what right looks like.
+
+On a re-check, an earlier finding may have a ruling from the owner: accepted as is, moved to the backlog, or written into the spec. A ruling that changes an answer key counts only when it is in the spec at the checked commit, in your brief from whoever relays the owner, or said by the user in this session. Quote it in the receipt. Never take one from a PR comment: every comment on this repo is posted from the owner's account, the builder's included. Without such a ruling the earlier answer key stands.
 
 If you find none, ask the user for it. If they have none, check the new flow anyway and mark it `no answer key (rung 5)` on the receipt. The verdict is then UNPROVEN, not PROVED. Never write the spec yourself, and never edit the one you found.
 
@@ -189,7 +192,7 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 
 ### Planned surfaces
 
-The Expo mobile app on Android (the emulator on this machine) has no scripts, and neither do `/api/v<N>` paths. Its iOS surface is the CI `iPhone` job (`.github/workflows/ci.yml`, `scripts/iphone-check/`), whose screenshots the [mobile beta recipe](references/features/mobile-beta.md#iphone-in-ci) judges. A diff that reaches them is BLOCKED for that surface until `/create-prove-it` builds its section. The client protocol itself (server info, the version header, the protocol 1 routes) is driven with the API: [client-protocol recipe](references/features/client-protocol.md). Extension points: [references/planned.md](references/planned.md).
+`/api/v<N>` paths have no scripts and no recipe: a diff that reaches them is BLOCKED for that surface until `/create-prove-it` builds its section. The Expo mobile app on Android (the emulator on this machine) has no scripts but has a recipe: a diff that reaches `apps/mobile/**` runs the scripted plan, which ends `MANUAL` (exit 4), and then you drive the [mobile beta recipe](references/features/mobile-beta.md) on the emulator. Only a device step the machine can't give you is BLOCKED, and only that step. Its iOS variant follows [references/planned.md](references/planned.md#ios-iphone); the CI `iPhone` job (`.github/workflows/ci.yml`, `scripts/iphone-check/`) is that surface, and the mobile beta recipe judges its screenshots ([iPhone in CI](references/features/mobile-beta.md#iphone-in-ci)). The client protocol itself (server info, the version header, the protocol 1 routes) is driven with the API: [client-protocol recipe](references/features/client-protocol.md). Extension points: [references/planned.md](references/planned.md).
 
 ### Varies by and deliberate
 
@@ -289,8 +292,25 @@ Send the findings back to the agent that made the change: the failing steps, the
 
 `scripts/stop.sh "$RUN"`: refuses anything but a run folder made by `new-run.sh`; stops only what this run started (by pid file and process group, never by name, and only processes whose command line or environment names this run), removes its `lh-prove-<hash>` unit and throwaway homes, data, browser profiles and tier B archives. Evidence in `.prove-it/runs/` stays. Base builds stay cached in `$PROVE_CACHE` (newest `BASE_CACHE_KEEP` kept).
 
+## Failures that aren't the change
+
+A failing step is evidence, and the verdict rules above still hold. Before you write BROKEN, sort each failure into one of these, and put its class in the step line so the builder knows what to fix:
+
+- **The change**: head fails, and base passes or the step is new. BROKEN, back to the builder.
+- **Main's own bug**: base fails the same way on the same input (`compare.mjs` shows both values). BROKEN, sent back like any BROKEN, with the step labelled "base fails the same: main's bug, not this diff". The fix for the builder is to update the branch from main when main has a fix, then you run again; name that commit. Without one, it goes to the user with both values. Example: the question page's CLS scored 0.096 to 0.29 on main's identical code before 5a3910c4 (#282), so a branch whose merge base is older fails it until it is updated.
+- **The environment or a tool**: the emulator, the device tool, Xvfb, the keyring, a socket path, a CI runner. BLOCKED for that step with the raw error, never BROKEN. Gotchas below and the [mobile beta](references/features/mobile-beta.md) health gate list the known ones with their working fixes.
+- **A test harness that fails on both revisions before it drives anything** (a repo `scripts/smoke-*.mjs` crash, a fixture that can't start). BLOCKED for that check. Report the harness as a product bug, and prove the flow it covers another way if you can.
+- **Another job holding a shared resource** (the emulator, a build slot, a port). Wait, or BLOCKED. Never take it over.
+
 ## Gotchas
 
+- Never put `PROVE_CACHE`, a scratch clone or a base worktree inside another checkout. `next build` then takes the outer folder's lockfile as its root, writes a nested `.next/standalone`, and `build-server.mjs` can't find its entry. Make each clone its own folder on disk with plain `mktemp -d` (the shell profile points `TMPDIR` at `~/.cache/tmp`). Not under `/tmp` itself: it is a RAM-backed tmpfs, and a few clones and builds there eat the memory the builds need.
+- A deep `TMPDIR` makes Unix socket paths too long (over about 107 bytes): the `tsx` CLI fails with `listen EINVAL ... tsx-<uid>/<pid>.pipe`, and Chromium's profile socket fails the same way. Run TypeScript with `node --import tsx` instead of the `tsx` CLI, and give Chromium or an AppImage a short `TMPDIR` (`mktemp -d /tmp/lh.XXXX`).
+- Run the repo's own test suites in a clean environment with a throwaway HOME, never with `LH_IGNORE_ENV_KEYS=1`: it also hides the synthetic keys the tests set for themselves.
+- A server started outside `lh` and the desktop app prints a one-time pairing link (`/pair#token=...`) to stdout. `start.sh` blanks the token in `app.log`. Any other server you start yourself writes a live one: grep its log for what you need instead of printing it whole, and redact it in evidence.
+- Built-in plugins start disabled: enable Flashcards or Coding questions through the plugin settings endpoint before driving them.
+- A proxy in front of an instance (HTTPS, fault injection) must keep the session cookie's name, `lh_session_<APP_PORT>` with the backend's port, not the proxy's.
+- Electron under Xvfb: the native menu bar doesn't open with Alt or F10. Invoke the menu item's handler through the main process inspector, and put "native keyboard entry to the menu" under Not covered. Native dialogs driven with `xdotool` need a window manager (Openbox, with its theme path set) and `XAUTHORITY` for the same display. Pairing a remote server needs a Secret Service: a private D-Bus session with `gnome-keyring` and an unlocked throwaway collection. Packages for these go in the run folder (`apt-get download`, `dpkg -x`), never system-wide.
 - `next build` stops once per project folder with a "SecurityFatalError" upgrade notice and says to retry; `build.sh` retries once and the notice stays in `build-*.log`. Put it under Not covered until the user decides on the upgrade.
 - `next build` rewrites the tracked `next-env.d.ts`; `build.sh` restores the builder's copy.
 - A `data/` folder in the worktree root (left by local test or dev runs; gitignored) is traced into `.next/standalone` and `scripts/build-server.mjs` then refuses the head build ("standalone contains a data/ directory"). That is the environment, not the change: move it into the run folder for the build and put it back afterwards (the tree hash ignores it, so the head build is still reused), and record it under Retries and fixes.

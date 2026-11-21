@@ -26,7 +26,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { after, describe, it } from "node:test";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall, type FauxResponseStep, type ToolCall, type Usage } from "@earendil-works/pi-ai";
-import type { PiEngine } from "../src/agent/models.ts";
+import { ModelUnavailableError, type PiEngine } from "../src/agent/models.ts";
 import type { LhMessage } from "../src/core/native-messages.ts";
 import { newPlanBlockMessage } from "../src/core/native-messages.ts";
 import { projectView as projectNative } from "../src/core/view.ts";
@@ -57,7 +57,7 @@ import {
 	NOTES_EXTRACTOR_INSTRUCTIONS,
 } from "../src/agent/subagents/extraction.ts";
 import { getGraph, simplifyChains } from "../src/core/graph.ts";
-import { ModelsNotConfiguredError, ProviderKeyMissingError, providerKeyMissing, type ModelSlotName } from "../src/core/settings.ts";
+import { ModelsNotConfiguredError, ProviderKeyMissingError, providerKeyMissing, SubscriptionUnreachableError, subscriptionUnreachable, type ModelSlotName } from "../src/core/settings.ts";
 import { coverageOf, coverageSlots, messageViewLines } from "../src/core/coverage.ts";
 import { chatStore } from "../src/store/chats.ts";
 import { subscribe } from "../src/core/events.ts";
@@ -556,7 +556,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 			graphStore: ledgers,
 			extractor,
 			auditor,
-			providerKeyMissing: (provider, tier) => {
+			connectionRefusal: (provider, tier) => {
 				seen.push([provider, tier]);
 				return providerKeyMissing(provider, [tier]);
 			},
@@ -583,7 +583,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 			graphStore: ledgers,
 			extractor: fauxEngine([]),
 			auditor: fauxEngine([]),
-			providerKeyMissing: (provider, tier) => (calls++ < 1 ? null : providerKeyMissing(provider, [tier])),
+			connectionRefusal: (provider, tier) => (calls++ < 1 ? null : providerKeyMissing(provider, [tier])),
 		});
 		await assert.rejects(pipeline.runExtraction(chatId), (err: unknown) => {
 			assert.ok(err instanceof ProviderKeyMissingError, "the auditor's refusal surfaces after the extractor passed");
@@ -591,6 +591,74 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 		});
 		assert.equal(calls, 2, "both stages were checked, in order");
 		assert.equal(ledgers.readCoverage().length, 0);
+	});
+
+	it("a stage engine the gate's refresh removed is gone (re-resolved after the gate), not run from the stale engine", async () => {
+		const { chatId } = fixtureChat();
+		const ledgers = memoryLedgers();
+		const engine = fauxEngine([]);
+		let resolved = 0;
+		const pipeline = createExtractionPipeline({
+			chatStore, graphStore: ledgers,
+			engineFor: () => { if (resolved++ < 2) return engine; throw new ModelUnavailableError("chatgpt", "gpt-retired"); },
+			connectionRefusal: async () => null,
+		});
+		await assert.rejects(pipeline.runExtraction(chatId), ModelUnavailableError);
+		assert.equal(ledgers.readCoverage().length, 0);
+	});
+
+	it("a stage pin that moved to another provider during the gate's wait is gated again before it runs", async () => {
+		const { chatId } = fixtureChat();
+		const ledgers = memoryLedgers();
+		const faux = fauxEngine([]);
+		const before = { ...faux, model: { ...faux.model, provider: "chatgpt" } };
+		const after = { ...faux, model: { ...faux.model, provider: "openai" } };
+		let resolved = 0;
+		const gated: string[] = [];
+		const pipeline = createExtractionPipeline({
+			chatStore, graphStore: ledgers,
+			engineFor: () => (resolved++ < 2 ? before : after),
+			connectionRefusal: async (provider, tier) => { gated.push(provider); return provider === "openai" ? providerKeyMissing("openai", [tier]) : null; },
+		});
+		await assert.rejects(pipeline.runExtraction(chatId), ProviderKeyMissingError);
+		assert.deepEqual(gated, ["chatgpt", "chatgpt", "openai"]);
+		assert.equal(ledgers.readCoverage().length, 0);
+	});
+
+	it("a built-in model the catalog dropped is gone at once, never a key to ask for", async () => {
+		const { chatId } = fixtureChat();
+		let checks = 0;
+		const pipeline = createExtractionPipeline({
+			chatStore, graphStore: memoryLedgers(),
+			engineFor: () => { throw new ModelUnavailableError("openai", "gpt-retired-builtin"); },
+			connectionRefusal: () => { checks++; return providerKeyMissing("openai", ["cheap"]); },
+		});
+		await assert.rejects(pipeline.runExtraction(chatId), ModelUnavailableError);
+		assert.equal(checks, 0, "the key gate never runs for a gone built-in model");
+	});
+
+	it("an unreachable subscription defers the run (an outage, not setup); the same pipeline extracts once it answers", async () => {
+		const { chatId } = fixtureChat();
+		const ledgers = memoryLedgers();
+		let reachable = false;
+		const pipeline = createExtractionPipeline({
+			chatStore,
+			graphStore: ledgers,
+			extractor: submitModel("submit_findings", FINDINGS),
+			auditor: submitModel("submit_review", { links: [] }),
+			connectionRefusal: async () => (reachable ? null : subscriptionUnreachable("chatgpt")),
+		});
+		await assert.rejects(pipeline.runExtraction(chatId), (err: unknown) => {
+			assert.ok(err instanceof SubscriptionUnreachableError, "the outage throw, never the setup refusal");
+			assert.ok(!(err instanceof ProviderKeyMissingError));
+			assert.deepEqual(err.envelope, subscriptionUnreachable("chatgpt"));
+			return true;
+		});
+		assert.equal(ledgers.readCoverage().length, 0, "nothing ran: the messages stay uncovered for the next trigger");
+
+		reachable = true;
+		assert.deepEqual(await pipeline.runExtraction(chatId), { nodes: 2, chains: 1 }, "recovery needs no settings change");
+		assert.ok(ledgers.readCoverage().length > 0);
 	});
 
 	it("the LLM cluster-namer is DEAD (wave 7): a merge mints no naming runs — labels are session names now", async () => {
@@ -2515,7 +2583,41 @@ describe("notes import completion and retry reliability", () => {
 		assert.deepEqual(await make(ledgers, submitModel("submit_findings", { propositions: [], chains: [] })).importNotes(input), { nodes: 0, chains: 0 });
 		assert.deepEqual(await make(ledgers).importNotes({ ...input, text: " \n" }), { nodes: 0, chains: 0 });
 		await assert.rejects(createExtractionPipeline({ chatStore, graphStore: ledgers }).importNotes({ ...input, text: "" }), ModelsNotConfiguredError);
-		await assert.rejects(createExtractionPipeline({ chatStore, graphStore: ledgers, extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT), providerKeyMissing: () => providerKeyMissing("openai", ["cheap"]) }).importNotes(input), ProviderKeyMissingError);
+		await assert.rejects(createExtractionPipeline({ chatStore, graphStore: ledgers, extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT), connectionRefusal: () => providerKeyMissing("openai", ["cheap"]) }).importNotes(input), ProviderKeyMissingError);
+		await assert.rejects(createExtractionPipeline({ chatStore, graphStore: ledgers, extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT), connectionRefusal: async () => subscriptionUnreachable("chatgpt") }).importNotes(input), SubscriptionUnreachableError);
+	});
+
+	it("a refused import still lists its source, as on main: no models configured, a missing key, an outage", async () => {
+		for (const gate of [undefined, () => providerKeyMissing("openai", ["cheap"]), async () => subscriptionUnreachable("chatgpt")]) {
+			const ledgers = memoryLedgers();
+			const models = gate ? { extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT), connectionRefusal: gate } : {};
+			await assert.rejects(createExtractionPipeline({ chatStore, graphStore: ledgers, ...models }).importNotes(input));
+			assert.deepEqual(ledgers.readSources().map((source) => source.filePath), [input.filePath]);
+			assert.equal(ledgers.readNodes().length, 0);
+		}
+	});
+
+	it("a new import whose source is deleted while the connection check waits writes no nodes", async () => {
+		const ledgers = memoryLedgers();
+		const pipeline = createExtractionPipeline({
+			chatStore, graphStore: ledgers, extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT),
+			connectionRefusal: async () => { ledgers.deleteSources(new Set(ledgers.readSources().map((source) => source.id))); return null; },
+		});
+		await assert.rejects(pipeline.importNotes(input), incomplete("aborted", 0));
+		assert.equal(ledgers.readSources().length, 0, "the deletion wins");
+		assert.equal(ledgers.readNodes().length, 0);
+	});
+
+	it("a re-import whose source is deleted while the connection check waits stops instead of bringing it back", async () => {
+		const ledgers = memoryLedgers();
+		assert.deepEqual(await make(ledgers).importNotes(input), { nodes: 1, chains: 0 });
+		const [source] = ledgers.readSources();
+		const pipeline = createExtractionPipeline({
+			chatStore, graphStore: ledgers, extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT),
+			connectionRefusal: async () => { ledgers.deleteSources(new Set([source!.id])); return null; }, // the deletion lands during the wait
+		});
+		await assert.rejects(pipeline.importNotes(input), incomplete("aborted", 0));
+		assert.equal(ledgers.readSources().length, 0, "the deletion wins");
 	});
 
 	it("isolates an ordinary failed chunk, reports partial, and keeps earlier/later merges and usage", async () => {

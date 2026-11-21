@@ -1,6 +1,10 @@
 # Planned surfaces (extension points)
 
-Not built yet. A diff that reaches one of these is BLOCKED for that surface until `/create-prove-it` adds its section to SKILL.md (Scope map row, Answer keys row, a surface section, scripts, a recipe). Keep these notes current as the specs land in `docs/specs/`.
+A surface here has no section in SKILL.md. A diff that reaches one is BLOCKED for that surface until `/create-prove-it` adds its section to SKILL.md (Scope map row, Answer keys row, a surface section, scripts, a recipe). When a spec for one lands in `docs/specs/`, update its note here.
+
+## iOS (iPhone)
+
+An Android run says nothing about iOS rendering: #277's quiz choice math passed on Android and still shipped with the answered card's math on the wrong baseline on the iPhone. A diff that reaches `apps/mobile/**` therefore has an iOS variant, and the Android steps run as usual. Drive the iOS variant with the iPhone CI job when the [mobile beta recipe](features/mobile-beta.md) has a section for it. Without one, the iOS variant is BLOCKED, with the owner's TestFlight check as the unlock. Never count an Android pass as an iOS pass.
 
 ## Client protocol
 

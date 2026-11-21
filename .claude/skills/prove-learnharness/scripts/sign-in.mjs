@@ -24,7 +24,9 @@ export function signIn(inst) {
 
 export async function signInPage(page, inst) {
 	const token = inst.APP_TOKEN;
-	if (!token || inst.CDP_URL) return; // the desktop window signs itself in
+	// The packaged window signs itself in (desktop secret) and its instance has
+	// no APP_TOKEN; the dev window loads the head server and needs the cookie.
+	if (!token || inst.SEED_IN_PAGE === "1") return;
 	await page.setCookie({ name: `lh_session_${inst.APP_PORT}`, value: token, url: inst.APP_URL, httpOnly: true, sameSite: "Lax" });
 }
 

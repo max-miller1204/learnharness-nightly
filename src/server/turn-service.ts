@@ -24,7 +24,7 @@ import { planBlocksFor } from "../core/plan-blocks.ts";
 import { coverageOf } from "../core/coverage.ts";
 import type { ChatStore, GraphStore } from "../core/ports.ts";
 import type { ExtractionPipeline } from "../agent/subagents/extraction.ts";
-import { ModelsNotConfiguredError, ProviderKeyMissingError } from "../core/settings.ts";
+import { ModelsNotConfiguredError, ProviderKeyMissingError, SubscriptionUnreachableError } from "../core/settings.ts";
 
 /** Distinguish a failed canonical save from later bookkeeping failures. */
 export class TurnPersistenceError extends Error {
@@ -129,6 +129,12 @@ export function triggerExtraction(
 			}
 			if (err instanceof ProviderKeyMissingError) {
 				console.info(`[chat ${chatId}] extraction skipped — ${err.envelope.error} (provider: ${err.envelope.provider})`);
+				return;
+			}
+			// An unreachable subscription is an outage: skip the same way;
+			// the next trigger runs once the connection answers again.
+			if (err instanceof SubscriptionUnreachableError) {
+				console.info(`[chat ${chatId}] extraction deferred: ${err.envelope.error}`);
 				return;
 			}
 			console.error(`[chat ${chatId}] extraction pipeline failed:`, err);

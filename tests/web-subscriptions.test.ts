@@ -203,3 +203,34 @@ test("the optional desktop login port requires a bearer and keeps completion on 
 	assert.equal(completed.status, 200);
 	assert.match((await completed.json()).value.error, /cancelled/);
 });
+
+test("the desktop's login gets its attempt id, and a cancel naming an old attempt never ends a newer sign-in", async () => {
+	const { issueSession } = await import("../selfhost/src/auth-store.ts");
+	const { token } = issueSession(process.env.LH_DATA_DIR!, { method: "pairing", client: { deviceType: "desktop" } });
+	const origin = "https://desktop.example.test";
+	const control = async (command: Record<string, unknown>, bearer = true) => {
+		const base = request({ providerId: "chatgpt", ...command }, origin);
+		if (bearer) base.headers.set("authorization", `Bearer ${token}`);
+		const response = await subscriptionControlsResponse(base);
+		assert.equal(response.status, 200);
+		return response.json();
+	};
+	const pending = async () => (await webSubscriptionOwner().chatgpt.status()).pending;
+	const first = await control({ op: "login", desktopRedirectPort: 42425 });
+	assert.equal(typeof first.attemptId, "string");
+	await control({ op: "cancel", attemptId: "some-other-attempt" });
+	assert.equal(await pending(), true, "a cancel for another attempt leaves this one");
+	await control({ op: "cancel", attemptId: first.attemptId });
+	assert.equal(await pending(), false, "its own cancel ends it");
+	// A web sign-in (a phone's paste-back) started since then is not the desktop's.
+	const web = await control({ op: "login" }, false);
+	assert.equal(web.attemptId, undefined, "only the desktop relay's login reply carries one");
+	assert.equal(await pending(), true);
+	const refused = await control({ op: "login", desktopRedirectPort: 42426 });
+	assert.equal(typeof refused.value.error, "string", "a desktop login while another is pending is refused");
+	assert.equal(refused.attemptId, undefined, "and never carries the other attempt's id");
+	await control({ op: "cancel", attemptId: first.attemptId });
+	assert.equal(await pending(), true, "the desktop's late cancel can't end it");
+	await control({ op: "cancel" }, false);
+	assert.equal(await pending(), false, "an unscoped Cancel still ends whatever is pending");
+});

@@ -15,6 +15,8 @@ interface BridgeState {
  pending: Map<string, Pending>; controllers: Map<AbortController, boolean>; listeners: Set<() => void>; counter: number; catalogRequest: number;
  /** Status and catalog checks, numbered when they start (see settleCheck). */
  checks: number; lastCheck: number; unreachable: boolean;
+ /** The newest catalog request, which a superseded success waits for. */
+ latestCatalog?: { sequence: number; done: Promise<void> };
 }
 const key = Symbol.for("lh.chatgpt.bridge");
 const unavailable = (): ChatGPTStatus => ({ available: false, pending: false, allowBackgroundUse: true, activeId: null, accounts: [], error: null });
@@ -35,13 +37,17 @@ function bridge(): BridgeState {
    const m = raw as { channel?: string; kind?: string; id?: string; op?: string; ok?: boolean; value?: unknown; stamp: Stamp; status: ChatGPTStatus; invalidate?: string; error?: string };
    if (m?.channel !== "lh:chatgpt") return;
    if (m.kind === "state" && validStamp(m.stamp) && m.stamp.revision >= state.stamp.revision) {
+    // Every push bumps the revision, and the owner pushes after each failed
+    // catalog load: listeners hear only a push that says something new, so a
+    // refresh made on a wake never wakes anyone.
+    const before = pushKey(state);
     acceptStatus(state, { ...m.stamp, status: m.status });
     settleCheck(state, ++state.checks, !!m.status?.catalogError);
     if (m.invalidate === "all") { state.catalogRequest++; clearCatalog(state); }
     if (m.invalidate === "all" || m.invalidate === "background") {
      for (const [controller, background] of state.controllers) if (m.invalidate === "all" || background) controller.abort(m.invalidate === "all" ? "all" : "background");
     }
-    for (const listener of state.listeners) listener();
+    if (m.invalidate === "all" || m.invalidate === "background" || pushKey(state) !== before) for (const listener of state.listeners) listener();
    }
    if (m.id) {
     const call = state.pending.get(m.id);
@@ -65,6 +71,7 @@ function bridge(): BridgeState {
  return global[key];
 }
 function clearCatalog(state: BridgeState) { state.models = []; state.catalogAccount = null; }
+function pushKey(state: BridgeState): string { return JSON.stringify([state.stamp.epoch, state.stamp.authorityRevision, state.status]); }
 /** The one rule for "unreachable": the latest completed check, ordered by when
  * it started, failed or answered with a catalog error. An older answer never
  * overwrites a newer one. Listeners hear when the answer changes. */
@@ -167,23 +174,47 @@ function accountModel(entry: AccountModelEntry, template: Model<"openai-response
 }
 /** Preserve account order. Pi-known models keep Pi's capabilities; others are
  * built by accountModel() when an account model Pi knows can serve as template. */
-export async function refreshChatGPTModels(supported: Model<"openai-responses">[]): Promise<void> {
+export function refreshChatGPTModels(supported: Model<"openai-responses">[]): Promise<void> {
  const state = bridge();
- if (!runtimeConnected()) { clearCatalog(state); return; }
+ if (!runtimeConnected()) { clearCatalog(state); return Promise.resolve(); }
  const sequence = ++state.catalogRequest;
- try {
-  const value = await checked(state, chatGPTRequest<ModelsValue>("models"));
-  if (sequence !== state.catalogRequest || !validStamp(value)) return;
-  acceptStatus(state, value);
-  if (value.epoch !== state.stamp.epoch || value.authorityRevision !== state.stamp.authorityRevision || value.accountId !== state.status.activeId || !chatGPTConnected()) return;
-  state.catalogAccount = value.accountId;
-  const known = (entry: AccountModelEntry) => supported.find((m) => m.id === entry.id && m.api === "openai-responses");
-  const template = value.models.map(known).find((m) => m !== undefined);
-  state.models = value.models.flatMap((entry) => {
-   const base = known(entry) ?? (template && accountModel(entry, template));
-   return base ? [{ ...base, provider: "chatgpt", name: entry.name, headers: undefined, samplingParams: undefined, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] : [];
-  });
- } catch { if (sequence === state.catalogRequest) clearCatalog(state); }
+ const done = loadCatalog(state, sequence, supported);
+ state.latestCatalog = { sequence, done };
+ return done;
+}
+async function loadCatalog(state: BridgeState, sequence: number, supported: Model<"openai-responses">[]): Promise<void> {
+ const started = ++state.checks;
+ let value: ModelsValue;
+ try { value = await chatGPTRequest<ModelsValue>("models"); }
+ catch {
+  settleCheck(state, started, true);
+  if (sequence === state.catalogRequest) clearCatalog(state);
+  return;
+ }
+ const failed = !validStamp(value) || !!value.status?.catalogError;
+ // A success a newer refresh superseded installs no catalog, so it must not
+ // clear the outage either: the newer reply settles both together, and this
+ // caller waits for it, so a gate never answers before the catalog it vouches
+ // for is installed.
+ if (sequence !== state.catalogRequest) {
+  if (failed) { settleCheck(state, started, true); return; }
+  const latest = state.latestCatalog;
+  if (latest && latest.sequence > sequence) await latest.done;
+  return;
+ }
+ if (validStamp(value)) installCatalog(state, value, supported); // a catalogError reply installs its empty list
+ settleCheck(state, started, failed);
+}
+function installCatalog(state: BridgeState, value: ModelsValue, supported: Model<"openai-responses">[]) {
+ acceptStatus(state, value);
+ if (value.epoch !== state.stamp.epoch || value.authorityRevision !== state.stamp.authorityRevision || value.accountId !== state.status.activeId || !chatGPTConnected()) return;
+ state.catalogAccount = value.accountId;
+ const known = (entry: AccountModelEntry) => supported.find((m) => m.id === entry.id && m.api === "openai-responses");
+ const template = value.models.map(known).find((m) => m !== undefined);
+ state.models = value.models.flatMap((entry) => {
+  const base = known(entry) ?? (template && accountModel(entry, template));
+  return base ? [{ ...base, provider: "chatgpt", name: entry.name, headers: undefined, samplingParams: undefined, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] : [];
+ });
 }
 export function chatGPTAbortController(background = true): { controller: AbortController; release: () => void } {
  const state = bridge(); const controller = new AbortController(); state.controllers.set(controller, background);

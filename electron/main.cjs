@@ -35,6 +35,7 @@ const { setTraceSink } = require("./first-frame.cjs");
 const { createServerList } = require("./server-list.cjs");
 const { createUpdateEverything } = require("./update-everything.cjs");
 const { registerDesktopUpdateIPC } = require("./update-everything-ipc.cjs");
+const { registerChatGPTSignInIPC } = require("./remote-chatgpt-ipc.cjs");
 const { createUpdateActions } = require("./update-actions.cjs");
 const { requestServer } = require("./remote-server.cjs");
 const { openWebSubscriptionBrowser } = require("./web-subscription-browser.cjs");
@@ -1077,6 +1078,9 @@ async function main() {
 		reopenWindow = () => serverList.reopen();
 		updateEverything = createUpdateEverything(updateEverythingDeps(serverList));
 		registerDesktopUpdateIPC(ipcMain, { current: () => serverList.current(), updateEverything });
+		registerChatGPTSignInIPC(ipcMain, {
+			current: () => serverList.current(), signIn: (accountId) => serverList.chatgptSignIn(accountId), cancel: () => serverList.chatgptCancel(),
+		});
 		const relaunch = updateEverything.takeLaunch();
 		await serverList.launch({ server: relaunch?.server });
 		// The app update didn't apply: offer the app-only retry of that same version.

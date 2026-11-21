@@ -348,7 +348,7 @@ bindings fail closed and Settings explains the conflict. Clickable actions still
 
 ### Controlled host UI
 
-All 15 `ctx.ui` methods take final `{ signal }` options and return a handle with
+Every `ctx.ui` method takes final `{ signal }` options and returns a handle with
 shallow `update(partialProps)` and idempotent `dispose()`. Replace whole nested props
 when updating them. Abort/plugin disable disposes associated mounts/overlays. The
 plugin owns values and persistence; feed accepted values back through `update`.
