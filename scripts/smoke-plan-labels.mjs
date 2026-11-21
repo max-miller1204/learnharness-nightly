@@ -30,6 +30,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import puppeteer from "puppeteer-core";
+import { issueSession } from "../selfhost/src/auth-store.ts";
 
 const root = path.resolve(import.meta.dirname, "..");
 const outArg = process.argv.indexOf("--out");
@@ -133,10 +134,18 @@ function seedData() {
 	return data;
 }
 
+/** Every request needs a login (docs/specs/login-pairing.md, no localhost
+ *  bypass): a session written into the store the server reads, the way
+ *  scripts/smoke-server.mjs and `lh` do. The poll sends it as a bearer and the
+ *  browser as its session cookie. */
+let session = "";
+
 async function startServer(data) {
 	if (!fs.existsSync(path.join(root, ".next", "BUILD_ID"))) throw new Error("No production build: run `npm run build` first.");
 	const port = await freePort();
-	const env = { ...process.env, NODE_ENV: "production", LH_DATA_DIR: data, LH_AUTH_FILE: path.join(home, "auth.json"), LH_IGNORE_ENV_KEYS: "1", NEXT_TELEMETRY_DISABLED: "1" };
+	session = issueSession(data, { method: "cli", client: { label: "smoke-plan-labels", deviceType: "bot" } }).token;
+	// PORT names the session cookie (lh_session_<port>, src/server/auth.ts).
+	const env = { ...process.env, NODE_ENV: "production", PORT: String(port), LH_DATA_DIR: data, LH_AUTH_FILE: path.join(home, "auth.json"), LH_IGNORE_ENV_KEYS: "1", NEXT_TELEMETRY_DISABLED: "1" };
 	server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", String(port)], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
 	server.stdout.on("data", (d) => (serverLogs += d));
 	server.stderr.on("data", (d) => (serverLogs += d));
@@ -145,7 +154,7 @@ async function startServer(data) {
 	for (;;) {
 		if (server.exitCode !== null) throw new Error(`Server exited: ${serverLogs}`);
 		try {
-			if ((await fetch(`${origin}/api/chats`)).ok) return origin;
+			if ((await fetch(`${origin}/api/chats`, { headers: { Authorization: `Bearer ${session}` } })).ok) return origin;
 		} catch {}
 		if (Date.now() > deadline) throw new Error(`Server never answered: ${serverLogs}`);
 		await new Promise((r) => setTimeout(r, 500));
@@ -434,6 +443,7 @@ async function main() {
 	});
 	try {
 		const page = await browser.newPage();
+		await page.setCookie({ name: `lh_session_${new URL(origin).port}`, value: session, url: origin, httpOnly: true, sameSite: "Lax" });
 		page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text()));
 		page.on("pageerror", (e) => consoleErrors.push(e.message));
 		page.on("response", (r) => { if (r.status() >= 400) consoleErrors.push(`${r.status()} ${r.url()}`); });

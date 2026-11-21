@@ -139,6 +139,8 @@ export async function deleteFolderWithSessions(folderId: string, mode: ChatDelet
 		if (running.has(id)) throw blockedIn(title, "extraction_winding_down", "");
 	}
 	const chatIds = new Set(targets.chatIds);
+	// The sessions' uploads go with them (docs/specs/remote-safe-attachments.md), as in deleteSources.
+	for (const id of chatIds) scheduleChatAttachmentRemoval(id);
 	deleteSourcesTraces(stores.graphStore, chatIds, mode);
 	for (const id of chatIds) {
 		const outcome = deleteIdleChatRecord(id);

@@ -293,13 +293,20 @@ export function DeleteFolderDialog({
 		const mode: ChatDeleteMode = traces ? "delete-nodes" : "preserve-graph";
 		setBusy(true);
 		setFailure(null);
+		// Before the request, as the session Delete does: every session in the
+		// folder holds its view's reads until the outcome, so an open one never
+		// 404s in the gap (docs/specs/polish-first-load.md, item 4).
+		const settles = folder.scope.chatIds.map((id) => [id, beginSessionDelete(id)] as const);
+		const settle = (deletedIds: readonly string[]) => { for (const [id, done] of settles) done(deletedIds.includes(id)); };
 		try {
 			const res = await fetch(`/api/graph/sources/folders/${encodeURIComponent(folder.id)}?mode=${mode}`, {
 				method: "DELETE",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(folder.scope),
 			});
-			const body = (await res.json()) as { error?: string; code?: string; graphRevision?: number; deletedChatIds?: string[] };
+			// An unreadable body never undoes a delete the status confirmed: the scope is exact.
+			const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string; graphRevision?: number; deletedChatIds?: string[] };
+			settle(res.ok ? body.deletedChatIds ?? folder.scope.chatIds : []);
 			if (body.code === "folder_scope_changed" || body.code === "not_found") {
 				onStale(body.error ?? "This folder changed. Nothing was deleted.");
 				return;
@@ -309,8 +316,9 @@ export function DeleteFolderDialog({
 				setBusy(false);
 				return;
 			}
-			onDeleted({ deletedChatIds: body.deletedChatIds ?? [], graphRevision: body.graphRevision ?? 0 });
+			onDeleted({ deletedChatIds: body.deletedChatIds ?? folder.scope.chatIds, graphRevision: body.graphRevision ?? 0 });
 		} catch {
+			settle([]); // no answer: the sessions are still there as far as we know
 			setFailure({ code: "network", error: "Delete failed — network error. Try again." });
 			setBusy(false);
 		}

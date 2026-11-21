@@ -206,3 +206,27 @@ test("wire behavior survives validated refresh and offline restore; mixed shard 
 	fs.writeFileSync(snapshot, "invalid json");
 	assert.deepEqual(startupModels(scratch), [null, null, null]);
 });
+
+test("a refresh never brings back a model Pi retired: it stays unrunnable and keeps its recorded price", async (t) => {
+	const { callCost } = await import("../src/server/pricing.ts");
+	const { setModelCatalogOverlay } = await import("../src/agent/models.ts");
+	const retired = "openai/gpt-3.5-turbo"; // src/server/retired-models.ts
+	const priced = callCost({ inputTokens: 1_000_000, outputTokens: 1_000_000 }, `openrouter:${retired}`);
+	assert.equal(priced, 2, "the retirement table's $0.50 + $1.50");
+	process.env.OPENROUTER_API_KEY = "synthetic-openrouter-key";
+	const route = piModels().getModels("openrouter").find((model) => model.api === "openai-completions")!;
+	const feedRow = { ...row, id: retired, name: "Back from the feed", provider: "openrouter", api: route.api, baseUrl: route.baseUrl, cost: { input: 2, output: 5, cacheRead: 0, cacheWrite: 0 } };
+	t.mock.method(globalThis, "fetch", async (url: URL) => Response.json(url.pathname.endsWith("/openrouter") ? [feedRow] : []));
+	await refreshModelCatalog();
+	assert.equal(piModels().getModel("openrouter", retired), undefined, "never imported");
+	assert.throws(() => piEngineForSpec({ provider: "openrouter", id: retired }), /is no longer available/);
+	assert.equal(callCost({ inputTokens: 1_000_000, outputTokens: 1_000_000 }, `openrouter:${retired}`), 2, "history keeps its price");
+	// Even a catalog that somehow lists it never reprices the history.
+	setModelCatalogOverlay(new Map([["openrouter", [{ ...route, id: retired, cost: feedRow.cost }]]]));
+	try {
+		assert.equal(callCost({ inputTokens: 1_000_000, outputTokens: 1_000_000 }, `openrouter:${retired}`), 2);
+	} finally {
+		setModelCatalogOverlay(new Map());
+		delete process.env.OPENROUTER_API_KEY;
+	}
+});

@@ -130,6 +130,18 @@ function assertSuccess(loop: Loop, run: Awaited<ReturnType<typeof runLoop>>) {
 }
 
 // All global/env cases in this file are deliberately serial.
+describe("Anthropic message threads and the key", () => {
+	it("a fixed key keeps its thread's session id; another key gets its own; the key never appears", async () => {
+		const { anthropicThreadSession } = await import("../src/agent/models.ts");
+		const first = anthropicThreadSession("chat_1", { apiKey: "sk-ant-first-secret" });
+		assert.equal(anthropicThreadSession("chat_1", { apiKey: "sk-ant-first-secret" }), first, "the same key continues the same thread");
+		assert.notEqual(anthropicThreadSession("chat_1", { apiKey: "sk-ant-rotated-secret" }), first, "a rotated key starts another");
+		assert.notEqual(anthropicThreadSession("chat_1", { headers: { authorization: "Bearer other" } }), first, "header auth counts as the credential too");
+		assert.ok(first.startsWith("chat_1:key-"));
+		assert.ok(!first.includes("secret"), "a hash, never the key");
+	});
+});
+
 describe("provider-neutral raw agent loops", { concurrency: false }, () => {
 	for (const loop of LOOPS) {
 		it(`${loop}: every actual stream request has NO credential override (recording faux engine)`, async () => {
@@ -218,8 +230,9 @@ describe("provider-neutral raw agent loops", { concurrency: false }, () => {
 						assert.equal(request.headers.get(transport.authHeader), transport.authHeader === "authorization" ? `Bearer ${expected}` : expected);
 						if (transport.provider !== "openrouter") assert.ok(!JSON.stringify({ ...request, headers: Object.fromEntries(request.headers) }).includes(OR_KEY));
 						if (transport.provider === "anthropic") {
-							assert.ok(!Object.hasOwn(request.body, "thread"), "key rotation must not reuse a server-side thread");
-							assert.doesNotMatch(request.headers.get("anthropic-beta") ?? "", /message-threads/);
+							// Upstream's concern: a rotated key never continues the old key's thread.
+							if (round === 1) assert.equal((request.body.thread as { type?: string } | undefined)?.type, "create", "key rotation starts a new server-side thread");
+							assert.match(request.headers.get("anthropic-beta") ?? "", /message-threads/);
 							assert.match(JSON.stringify(request.body), /cache_control/, "native prompt caching is independent of threads");
 						}
 						assertPayload(transport, loop, round, request.body);
@@ -290,17 +303,33 @@ function closedFetch(transport: Transport, loop: Loop, requests: RecordedRequest
 
 function assertPayload(transport: Transport, loop: Loop, round: number, body: Record<string, unknown>) {
 	if (transport.api !== "google-generative-ai") assert.equal(body.model, transport.id);
-	// No provider gets a server-side message thread here: direct Anthropic
-	// auth resolves per request (this suite rotates the key), and Pi's thread
-	// fingerprint doesn't include that credential, so every round replays the
-	// whole conversation (upstream 0.7.0, src/agent/models.ts).
-	assert.equal(body.thread, undefined);
+	// Only Anthropic's own endpoint gets message threads: a later round with the
+	// same key continues the thread, sending just the new turn, and the server
+	// keeps the tools and earlier messages. This suite rotates the key after
+	// round 0, so round 1 starts a new thread for the new key and round 2
+	// continues it (src/agent/models.ts anthropicThreadSession).
+	const thread = body.thread as { type?: string; previous_message_id?: string } | undefined;
+	assert.equal(thread?.type, transport.provider === "anthropic" ? (round < 2 ? "create" : "continue") : undefined, `round ${round}`);
 	const json = JSON.stringify(body);
-	// Native Responses models may declare tools in additional_tools input
-	// items rather than top-level tools; assert the SDK's complete payload.
-	assert.match(json, new RegExp(loop === "visual" ? "write_svg" : "pdf_extract"));
-	assert.match(json, new RegExp(loop === "visual" ? "render_svg" : "pdf_render"));
-	assert.match(json, new RegExp(loop === "visual" ? "white square" : "Read page 1"));
+	if (thread?.type === "continue") {
+		// A continue builds on the previous reply and carries exactly that
+		// reply's tool results: nothing earlier (the server has it), nothing
+		// missing (or the thread would lose the conversation).
+		assert.equal(thread.previous_message_id, `msg_offline_${round - 1}`);
+		assert.equal(body.system, undefined, "the thread keeps its system prompt");
+		assert.equal(body.tools, undefined, "the thread keeps its tools");
+		const messages = body.messages as { role: string; content: { type: string; tool_use_id?: string }[] }[];
+		assert.ok(messages.every((message) => message.role === "user"), "the assistant reply is already in the thread");
+		const results = messages.flatMap((message) => message.content).filter((part) => part.type === "tool_result").map((part) => part.tool_use_id);
+		assert.deepEqual(results, callsFor(loop, round - 1).map((_, i) => `call_${round - 1}_${i}`));
+		assert.doesNotMatch(json, new RegExp(loop === "visual" ? "white square" : "Read page 1"), "the opening prompt is not resent");
+	} else {
+		// Native Responses models may declare tools in additional_tools input
+		// items rather than top-level tools; assert the SDK's complete payload.
+		assert.match(json, new RegExp(loop === "visual" ? "write_svg" : "pdf_extract"));
+		assert.match(json, new RegExp(loop === "visual" ? "render_svg" : "pdf_render"));
+		assert.match(json, new RegExp(loop === "visual" ? "white square" : "Read page 1"));
+	}
 	if (transport.api === "google-generative-ai") assert.ok(Array.isArray(body.contents));
 	else if (transport.api === "openai-responses") assert.ok(Array.isArray(body.input));
 	else assert.ok(Array.isArray(body.messages));

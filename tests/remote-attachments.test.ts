@@ -28,7 +28,9 @@ const { createReadTool } = await import("../src/agent/tools/read.ts");
 const { setFileAccessPolicy } = await import("../src/agent/tools/file-access.ts");
 const { claimAttachments, claimedAttachmentPath, scheduleAttachmentRemoval, sweepAttachments } = await import("../src/store/attachments.ts");
 const { deleteChatSession } = await import("../src/server/chats.ts");
-const { deleteSources } = await import("../src/server/source-deletion.ts");
+const { deleteFolderWithSessions, deleteSources } = await import("../src/server/source-deletion.ts");
+const { sourceDirectory } = await import("../src/server/source-organization.ts");
+const { folderDeletionScope } = await import("../src/core/index.ts");
 const { stores } = await import("../src/server/stores.ts");
 const { persistTurn } = await import("../src/server/turn-service.ts");
 const { chatStore } = await import("../src/store/chats.ts");
@@ -374,6 +376,23 @@ test("sweep cleans staging despite corrupt metadata and defers claimed deletion 
 	}
 	sweepAttachments();
 	assert.equal(fs.existsSync(copy), false);
+});
+
+test("a folder Delete removes its sessions' uploads too", async () => {
+	const inside = chatStore.createChat("Attachment in a deleted folder");
+	const kept = chatStore.createChat("Attachment outside it");
+	const { id } = await uploadForChat(inside.id, "inside.txt", "text/plain", new TextEncoder().encode("inside"));
+	const { id: keptId } = await uploadForChat(kept.id, "kept.txt", "text/plain", new TextEncoder().encode("kept"));
+	const organization = stores.sourceOrganizationStore.read();
+	stores.sourceOrganizationStore.write({ ...organization, folders: [...organization.folders, { id: "uploads-folder", name: "Uploads", parentId: null, createdAt: "now" }], placements: { ...organization.placements, [inside.id]: { folderId: "uploads-folder" } } });
+	const claimed = claimedAttachmentPath(id)!;
+	assert.ok(fs.existsSync(claimed));
+	const result = await deleteFolderWithSessions("uploads-folder", "preserve-graph", folderDeletionScope(sourceDirectory.read(), "uploads-folder"));
+	assert.deepEqual(result.deletedChatIds, [inside.id]);
+	sweepAttachments();
+	assert.equal(claimedAttachmentPath(id), undefined, "the deleted session's upload is collected");
+	assert.equal(fs.existsSync(claimed), false);
+	assert.ok(claimedAttachmentPath(keptId), "another session's upload stays");
 });
 
 test("a cleanup marker failure preserves chat traces for direct and source deletion", async () => {

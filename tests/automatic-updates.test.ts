@@ -835,12 +835,12 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 			{ sender, senderFrame: { url: sender.mainFrame.url } },
 			{ sender, senderFrame: undefined },
 			{ sender: foreign, senderFrame: foreign.mainFrame },
-		]) assert.throws(() => install(bad), (error) => /Untrusted|Cannot read|undefined/.test(String(error)));
+		]) assert.throws(() => install(bad), (error) => /Untrusted desktop request/.test(String(error)), JSON.stringify(Object.keys(bad)));
 		const ownUrl = sender.mainFrame.url;
 		for (const url of ["https://untrusted.invalid/", "http://127.0.0.1:9001/", "not a URL"]) {
 			sender.mainFrame.url = url; // Navigation changes the current frame's URL, not its identity.
 			// Errors from the main.cjs context are another realm's: match by message.
-			assert.throws(() => install({ sender, senderFrame: sender.mainFrame }), (error) => /Untrusted|Invalid URL/.test(String(error)), url);
+			assert.throws(() => install({ sender, senderFrame: sender.mainFrame }), (error) => /Untrusted desktop request/.test(String(error)), url);
 		}
 		await settleMenu();
 		assert.deepEqual(f.order, [], "untrusted requests neither kill the server nor reach quit-and-install");

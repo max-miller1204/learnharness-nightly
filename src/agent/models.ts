@@ -10,6 +10,7 @@ import {
 	type Provider,
 	type StreamFunction,
 } from "@earendil-works/pi-ai";
+import { createHash } from "node:crypto";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { lazyApi, lazyStream } from "@earendil-works/pi-ai/api/lazy";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -227,14 +228,29 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 			}
 			const purpose = typeof background === "function" ? background : () => background;
 			const stream = spec.provider === "chatgpt" ? chatGPTStream(purpose, lifecycle) : nativeId ? nativeSubscriptionStream(models.getProvider(nativeId)!, purpose, lifecycle) : models.streamSimple.bind(models);
-			// Direct Anthropic auth is resolved per request. Keep full replay: Pi's
-			// message-thread fingerprint does not include that rotating credential.
-			const wireModel = requestModel.provider === "anthropic" && requestModel.api === "anthropic-messages"
-				? { ...requestModel, compat: { ...requestModel.compat, supportsMessageThreads: false } }
-				: requestModel;
-			return stream(wireModel, context, requestOptions);
+			// Direct Anthropic auth is resolved per request, and Pi keys a message
+			// thread by the session id alone. A thread belongs to the key that made
+			// it, so the session id Pi sees carries a fingerprint of the credential
+			// in use (a hash, never the key): the same key continues its thread, a
+			// rotated key starts a new one (the owner keeps threads on, #278).
+			if (requestModel.provider === "anthropic" && requestModel.api === "anthropic-messages" && typeof requestOptions.sessionId === "string") {
+				const sessionId = requestOptions.sessionId;
+				return lazyStream(requestModel, async () => {
+					const resolved = await models.getAuth(requestModel, { apiKey: requestOptions.apiKey, env: requestOptions.env, signal: requestOptions.signal });
+					return stream(requestModel, context, { ...requestOptions, sessionId: anthropicThreadSession(sessionId, resolved?.auth) });
+				}, undefined, requestOptions.signal);
+			}
+			return stream(requestModel, context, requestOptions);
 		},
 	};
+}
+
+/** The session id Pi keys an Anthropic message thread by: the chat's, plus a
+ *  short hash of the credential that request uses, so a thread is never
+ *  continued with another key. Exported for tests. */
+export function anthropicThreadSession(sessionId: string, auth: { apiKey?: string; headers?: Record<string, string | null> } | undefined): string {
+	const credential = JSON.stringify([auth?.apiKey ?? null, auth?.headers ?? null]);
+	return `${sessionId}:key-${createHash("sha256").update(credential).digest("hex").slice(0, 16)}`;
 }
 
 /** The LEGACY role entry point — BYOK made it an honest THROWER (owner,

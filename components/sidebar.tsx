@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { MenuShell } from "@/components/menu-shell";
 import { DeleteFolderDialog, DeleteSessionDialog, folderDeleteCopy, type DeleteDialogCopy } from "@/components/delete-session-dialog";
+import { leaveDeletedSession } from "@/components/session-deletion";
 import type { ChatDeleteMode, ThemeMode } from "@/src/core";
 import { DumbbellIcon, FolderPlusIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, PlusIcon, SearchIcon, SettingsIcon } from "lucide-react";
 import { ActivitySection } from "@/components/activity-dock";
@@ -762,10 +763,9 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 		setDeletingFolder(null);
 		const gone = new Set(deletedChatIds);
 		setChats((prev) => (prev ? prev.filter((c) => !gone.has(c.id)) : prev));
-		const openId = pathname.startsWith("/chat/") ? pathname.slice("/chat/".length) : null;
-		if (openId !== null && gone.has(openId)) router.push("/");
+		leaveDeletedSession(pathname, gone, onViewedSessionDeleted, (href) => router.replace(href));
 		window.dispatchEvent(new CustomEvent("lh:graph-revision", { detail: { revision: graphRevision } }));
-	}, [pathname, router]);
+	}, [pathname, router, onViewedSessionDeleted]);
 	// The folder Delete (owner, 2026-11-18): the folder, its subfolders and
 	// every session inside go — practice sessions hidden by the type filter
 	// included — after the session dialog's confirmation; imported notes

@@ -38,6 +38,17 @@ export function beginSessionDelete(chatId: string): (wasDeleted: boolean) => voi
 /** null for a session nobody is deleting (read now, no extra tick).
  *  Otherwise a promise to await before the read: it resolves once a delete
  *  in flight is refused or fails, and never if the session was deleted. */
+/** After a delete: when the open session (`pathname`) is one of `deletedIds`,
+ *  drop its view at once (`drop`, before the navigation commits, so its
+ *  timers can't fetch it) and leave with `replace`, never push: Back must not
+ *  lead to a session that no longer exists (T3 Code's rule). */
+export function leaveDeletedSession(pathname: string, deletedIds: Iterable<string>, drop: (id: string) => void, replace: (href: string) => void): void {
+	const openId = pathname.startsWith("/chat/") ? pathname.slice("/chat/".length) : null;
+	if (openId === null || !new Set(deletedIds).has(openId)) return;
+	drop(openId);
+	replace("/");
+}
+
 export function sessionReadHold(chatId: string): Promise<void> | null {
 	if (deleted.has(chatId)) return never();
 	const pending = inFlight.get(chatId);

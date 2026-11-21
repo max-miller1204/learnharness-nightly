@@ -10,6 +10,7 @@ import { AUTH_PROVIDER_KEYS } from "../core/auth-keys.ts";
 import type { ModelCatalogRefreshOutcome } from "../core/contracts/models.ts";
 import { writeFileAtomicSync } from "../store/atomic-write.ts";
 import { keyValue } from "./keys.ts";
+import { RETIRED_MODELS } from "./retired-models.ts";
 import { readBoundedJson } from "./custom-provider-body.ts";
 
 const FILE = path.join(/* turbopackIgnore: true */ PATHS.data, "model-catalog.json");
@@ -145,9 +146,11 @@ function checkedModels(provider: string, rows: readonly unknown[]): Model<Api>[]
 	const models = new Map<string, Model<Api>>();
 	for (const row of rows) {
 		if (!record(row) || typeof row.id !== "string") throw new Error("Invalid pi.dev model");
-		// Deliberate skips: non-chat kinds, bundled IDs and routes the shipped
-		// provider cannot use. An eligible but invalid row fails the refresh.
-		if (row.type === "image" || row.type === "classifier" || known.has(row.id)) continue;
+		// Deliberate skips: non-chat kinds, bundled IDs, models Pi retired (they
+		// never run again and keep their recorded price, retired-models.ts) and
+		// routes the shipped provider cannot use. An eligible but invalid row
+		// fails the refresh.
+		if (row.type === "image" || row.type === "classifier" || known.has(row.id) || Object.hasOwn(RETIRED_MODELS, `${provider}:${row.id}`)) continue;
 		if (typeof row.api !== "string" || !row.api || typeof row.baseUrl !== "string" || !row.baseUrl) throw new Error("Invalid pi.dev model route");
 		const routes = baseline.filter((model) => model.api === row.api && model.baseUrl === row.baseUrl);
 		const route = routes[0];
