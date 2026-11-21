@@ -348,21 +348,54 @@ describe("self-hosted updater", () => {
 		return { f, failing, archives };
 	};
 
-	it("the fallback is the newest staged version, not one a later check pointed at", async () => {
+	it("the fallback is the newest staged version that is still valid, shown with its own notes", async () => {
 		const { f, failing } = disk();
 		const u = createSelfUpdater(f.deps);
 		for (const version of [NEXT, NEWER]) { f.flags.latest = version; await u.check(); await u.download(); }
-		f.flags.latest = NEWEST;
-		await u.check();
-		f.flags.latest = NEXT; // the feed points back for a moment: NEXT is on disk
-		await u.check();
-		assert.deepEqual([u.state().status, u.state().version], ["downloaded", NEXT]);
 		f.flags.latest = NEWEST;
 		failing.push(NEWEST);
 		await u.install();
 		assert.deepEqual(f.sent, [{ type: "request-update", targetVersion: NEWER }], "NEWER is staged and valid");
 		assert.deepEqual([u.state().version, u.state().availableVersion], [NEWER, NEWER], "the state names what restarts");
 		assert.deepEqual(u.state().releaseNotes.map((g) => g.version), [NEWER, NEXT], "with its own notes, not the failed build's");
+	});
+
+	it("a staged version the feed went below is withdrawn for good: never a fallback, unless the feed names it again", async () => {
+		// The V2, V3, V4, V2, V4 sequence: the feed went below NEWER, so NEXT is the newest valid one.
+		const a = disk([NEWEST]);
+		const u = createSelfUpdater(a.f.deps);
+		for (const version of [NEXT, NEWER]) { a.f.flags.latest = version; await u.check(); await u.download(); }
+		a.f.flags.latest = NEWEST;
+		await u.check();
+		a.f.flags.latest = NEXT;
+		await u.check();
+		a.f.flags.latest = NEWEST;
+		await u.check(); // the feed comes back above it: NEWER stays withdrawn
+		await u.install();
+		assert.deepEqual(a.f.sent, [{ type: "request-update", targetVersion: NEXT }], "never the withdrawn NEWER");
+		assert.deepEqual(u.state().releaseNotes.map((g) => g.version), [NEXT]);
+		// V3 ready, the feed drops to V2 (not staged), then V4 fails: nothing valid to fall back to.
+		const b = disk([NEXT, NEWEST]);
+		const v = createSelfUpdater(b.f.deps);
+		b.f.flags.latest = NEWER;
+		await v.check(); await v.download();
+		b.f.flags.latest = NEXT;
+		await v.check();
+		b.f.flags.latest = NEWEST;
+		await v.install();
+		assert.deepEqual(b.f.sent, [], "the withdrawn NEWER is not installed");
+		// Named again by the feed, it is a candidate again.
+		const c = disk([NEWEST]);
+		const w = createSelfUpdater(c.f.deps);
+		for (const version of [NEXT, NEWER]) { c.f.flags.latest = version; await w.check(); await w.download(); }
+		c.f.flags.latest = NEXT;
+		await w.check();
+		c.f.flags.latest = NEWER;
+		await w.check();
+		assert.deepEqual([w.state().status, w.state().version], ["downloaded", NEWER]);
+		c.f.flags.latest = NEWEST;
+		await w.install();
+		assert.deepEqual(c.f.sent, [{ type: "request-update", targetVersion: NEWER }]);
 	});
 
 	it("a feed that goes below a staged version offers the version it names, with its own notes; the withdrawn one is never a fallback", async () => {

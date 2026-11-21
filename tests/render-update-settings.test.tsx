@@ -1932,6 +1932,39 @@ describe("Settings integration", () => {
 		assert.equal(document.activeElement, button);
 	});
 
+	it("Tab goes through every control of Settings → Providers and wraps, a link nested in a row's button included", async () => {
+		bridge(state({ status: "idle", revision: 1 }));
+		const { AUTH_KEYS } = await import("../src/core/auth-keys.ts");
+		const keys = AUTH_KEYS.map((info) => ({ id: info.id, info, present: false, masked: null, source: "none", shadowedByEnv: false }));
+		globalThis.fetch = async (input) => {
+			const url = String(input);
+			if (url === "/api/keys") return Response.json({ keys, providers: [] });
+			if (url === "/api/settings") return Response.json({ settings: { version: 1 } });
+			return Response.json({}, { status: 404 });
+		};
+		const router = { bfcacheId: "settings-tab-keys", back() {}, forward() {}, refresh() {}, push() {}, replace() {}, prefetch() {} };
+		const host = await mount(<><AppRouterContext.Provider value={router}><KeyboardShortcuts /></AppRouterContext.Provider><SettingsDialogBody initialSection="keys" onClose={() => {}} /></>);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		const dialog = q(host, "settings-dialog")!;
+		const nested = [...dialog.querySelectorAll<HTMLElement>("button a[href]")];
+		assert.ok(nested.length > 0, "Providers has links nested in its rows' buttons (Deepgram's key ↗)");
+		const start = q(host, "settings-nav-general")!;
+		await act(async () => { start.focus(); });
+		const visits: Element[] = [];
+		for (let i = 0; i < 200; i++) {
+			const before = document.activeElement as HTMLElement;
+			await keyTab(before);
+			assert.notEqual(document.activeElement, before, `Tab moved on from step ${i}`);
+			if (document.activeElement === start) break;
+			visits.push(document.activeElement!);
+		}
+		assert.equal(document.activeElement, start, "a full lap wraps back to the start");
+		for (const link of nested) assert.equal(visits.filter((element) => element === link).length, 1, "each nested link is one stop of the lap");
+		assert.equal(new Set(visits).size, visits.length, "no control is visited twice in a lap");
+		assert.ok(visits.length > nested.length + 5, "the controls after the links are reached");
+	});
+
 	it("the shell's navigation request opens General, but opening alone never checks", async () => {
 		const b = bridge();
 		globalThis.fetch = async () => Response.json({ settings: { version: 1 } });

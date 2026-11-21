@@ -154,9 +154,10 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 	/** The feed entry of the version on offer ("available"), what Download stages: always the
 	 *  one the last successful check read, asset included. */
 	let offer: LatestFeed | null = null;
-	/** Every version staged on disk this run, with the notes it was offered with: Install's
-	 *  fallback when a newer one its own check found fails to stage. */
-	const staged = new Map<string, Pick<SelfUpdateState, "releaseNotes" | "omittedReleaseCount">>();
+	/** Every version staged on disk this run, with the notes it was offered with, and whether a
+	 *  feed went below it since (withdrawn): Install's fallback when a newer one its own check
+	 *  found fails to stage. */
+	const staged = new Map<string, Pick<SelfUpdateState, "releaseNotes" | "omittedReleaseCount"> & { withdrawn: boolean }>();
 	/** Checks started, and the last one that read the feed: Install falls back only after its own. */
 	let checkRuns = 0;
 	let lastReadRun = 0;
@@ -216,6 +217,12 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			const feed = await deps.fetchLatest(deps.feedUrl);
 			if (requested) return;
 			lastReadRun = run;
+			// A staged version the feed went below is withdrawn: never a fallback again, unless the
+			// feed names it again.
+			for (const [version, entry] of staged) {
+				if (version === feed.version) entry.withdrawn = false;
+				else if (compareVersions(version, feed.version) > 0) entry.withdrawn = true;
+			}
 			const known = isExactVersion(deps.currentVersion);
 			const bad = deps.readState()?.badVersions ?? [];
 			// Nothing newer to offer (the release was pulled, or the feed rolled back): T3's
@@ -238,14 +245,13 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			// Otherwise the feed's version is what shows, with its own notes, even below a ready one
 			// (T3's reduceDesktopUpdateStateOnUpdateAvailable, apps/desktop/src/updates/updateMachine.ts:89-111
 			// at df09ced7: "downloaded" only when the downloaded version is that version). A ready
-			// version the feed went below is withdrawn: Install falls back only to a version older
-			// than a newer one its own check found (install()), never to it.
+			// version the feed went below is withdrawn (marked above), never Install's fallback.
 			const notes = notesFor(feed);
 			// Already on disk (staged before a restart): ready at once. Otherwise offered exactly as the
 			// feed now names it, asset included (T3's reduceOnUpdateAvailable), never downloaded here.
 			if (deps.isInstalled(feed.version) && !stale) {
 				offer = null;
-				staged.set(feed.version, notes);
+				staged.set(feed.version, { ...notes, withdrawn: false });
 				set({ status: "downloaded", version: feed.version, availableVersion: feed.version, message: null, ...notes });
 			} else {
 				staged.delete(feed.version);
@@ -273,7 +279,7 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		}
 		if (requested) return;
 		if (offer === feed) offer = null;
-		staged.set(feed.version, { releaseNotes: state.releaseNotes, omittedReleaseCount: state.omittedReleaseCount });
+		staged.set(feed.version, { releaseNotes: state.releaseNotes, omittedReleaseCount: state.omittedReleaseCount, withdrawn: false });
 		set({ status: "downloaded", version: feed.version, availableVersion: feed.version, message: null });
 	};
 
@@ -300,12 +306,12 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 		return pending;
 	};
 
-	/** The newest version staged this run that the launcher can still switch to: on disk, newer
-	 *  than the running one, not marked bad. */
+	/** The newest version staged this run that the launcher can still switch to: not withdrawn,
+	 *  on disk, newer than the running one, not marked bad. */
 	const newestStaged = (): string | null => {
 		const bad = deps.readState()?.badVersions ?? [];
 		const known = isExactVersion(deps.currentVersion);
-		const valid = [...staged.keys()].filter((version) => deps.isInstalled(version) && !bad.includes(version) && (!known || compareVersions(version, deps.currentVersion) > 0));
+		const valid = [...staged].filter(([, entry]) => !entry.withdrawn).map(([version]) => version).filter((version) => deps.isInstalled(version) && !bad.includes(version) && (!known || compareVersions(version, deps.currentVersion) > 0));
 		return valid.sort(compareVersions).at(-1) ?? null;
 	};
 
@@ -387,7 +393,8 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 			const fallback = failed ? newestStaged() : null;
 			if (offered && fallback && compareVersions(offered, fallback) > 0) {
 				// The state shows what restarts: the fallback and its notes, not the failed build.
-				requestUpdate(fallback, { availableVersion: fallback, ...(staged.get(fallback) ?? { releaseNotes: [], omittedReleaseCount: 0 }) });
+				const entry = staged.get(fallback);
+				requestUpdate(fallback, { availableVersion: fallback, releaseNotes: entry?.releaseNotes ?? [], omittedReleaseCount: entry?.omittedReleaseCount ?? 0 });
 			}
 		},
 		/** POST /api/updates/install-version (Update everything, roadmap item 23): checks the
