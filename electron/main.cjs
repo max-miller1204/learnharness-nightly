@@ -779,7 +779,7 @@ async function downloadUpdateNow({ expect = null } = {}) {
 		}
 		if (expect !== null && updateState.availableVersion !== expect) {
 			log(`menu download: the feed now offers ${updateState.availableVersion}, not ${expect}; nothing downloads`);
-			return { accepted: true, completed: false };
+			return { accepted: true, completed: false, superseded: true };
 		}
 		setUpdateState(updateMachine.reduceOnDownloadStart(updateState));
 		try {
@@ -809,10 +809,11 @@ function installAccepted() {
 /** `fromSidebar`: the sidebar control started it, so its failure is the page's notice (Settings,
  *  the menu and Update everything report theirs their own way). */
 /** `expect`: the menu's Restart names the version its dialog showed. Another one staged, or a
- *  newer one the re-check finds, installs nothing: the state then offers what the feed names. */
+ *  newer one the re-check finds, installs nothing: the state then offers what the feed names,
+ *  and it resolves { superseded: true } for the menu to say so. */
 async function installUpdateNow({ fromSidebar = false, expect = null } = {}) {
-	if (installing || !installAccepted()) return;
-	if (expect !== null && updateState.downloadedVersion !== expect) return;
+	if (installing || !installAccepted()) return undefined;
+	if (expect !== null && updateState.downloadedVersion !== expect) return { superseded: true };
 	installing = true;
 	installNotifies = fromSidebar;
 	// Installing again after a failed install: the last failure no longer applies.
@@ -833,7 +834,7 @@ async function installUpdateNow({ fromSidebar = false, expect = null } = {}) {
 		adoptOfferedNotes(offered);
 		const notes = offeredNotes();
 		setUpdateState(updateMachine.reduceOnUpdateAvailable({ ...updateState, downloadedVersion: null }, offered.version, nowIso(), notes.releaseNotes, notes.omittedReleaseCount));
-		return;
+		return { superseded: true };
 	}
 	if (offered) {
 		log(`install: ${offered.version} is newer than the downloaded ${downloaded}; downloading it first`);
@@ -931,11 +932,9 @@ const updateActions = createUpdateActions({
 	// Read when used: main.cjs loads before Electron's app is ready (and under test fakes).
 	get appVersion() { return app.getVersion(); },
 	compareVersions: releaseNotes.compareVersions,
-	// `parent`: the window the menu just activated (focus arrives late on Linux and Windows).
-	show: (options, parent) => {
-		const owner = parent && !parent.isDestroyed() ? parent : BrowserWindow.getFocusedWindow();
-		return owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options);
-	},
+	// `parent`: the app window the menu activated (focus arrives late on Linux and Windows). With
+	// none, no parent at all: the focused window may be the Switch server… panel.
+	show: (options, parent) => (parent && !parent.isDestroyed() ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options)),
 	// The menu's Download and Restart name the version their dialog showed: never another one.
 	download: (version) => downloadUpdateNow({ expect: version }),
 	install: (version) => installUpdateNow({ expect: version }),
@@ -1111,11 +1110,11 @@ function installMenu() {
 			label: app.name,
 			submenu: [
 				{ role: "about" },
-				// T3's native dialogs, in the local window and onto a server (revision PR 6); onto a
-				// server also the way out when this app is too old to open it (owner, 2026-11-18).
-				// macOS only, as in T3 (DesktopApplicationMenu.ts:217-225 at df09ced7): on Windows and
-				// Linux the sidebar control and Settings are the entry points.
-				...(process.platform === "darwin" ? [{ label: "Check for Updates…", click: () => { void updateActions.checkNatively(); } }] : []),
+				// T3's native dialogs, in the local window and onto a server (revision PR 6). In every
+				// platform's menu, unlike T3 (macOS only, DesktopApplicationMenu.ts:217-225 at df09ced7):
+				// it is the way out when this app is too old to open its server, when there is no server
+				// page, so no sidebar control or Settings (owner, 2026-11-18 and 2026-11-21).
+				{ label: "Check for Updates…", click: () => { void updateActions.checkNatively(); } },
 				...(serverList ? [{ label: "Switch server…", click: () => serverList.show({ check: true }) }] : []),
 				{ type: "separator" },
 				{ role: "hide" },

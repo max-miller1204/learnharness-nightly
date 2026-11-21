@@ -31,6 +31,8 @@ function fixture({ state = { status: "available", version: V72 } as State, offer
 		running, installing: false, checkFails: false, downloadFails: false, inFlight: null as string | null, offered, pinnedFeed: null as string | null, activateFails: false,
 		/** Whether the menu's own check ran ({ checked }), and what happens while a dialog is open. */
 		checked: true, whileOpen: null as (() => void) | null,
+		/** What main's Download or Restart does when pressed: by default it takes it. */
+		onAction: null as (() => unknown) | null,
 	};
 	const updater = Object.assign(new EventEmitter(), {
 		checkForUpdates: async () => {
@@ -51,7 +53,8 @@ function fixture({ state = { status: "available", version: V72 } as State, offer
 	let present: typeof updater | null = updater;
 	const actions = createUpdateActions({
 		updater: () => present,
-		state: () => current,
+		// A copy, as main replaces its state on every change (setUpdateState).
+		state: () => ({ ...current }),
 		downloadFailed: (version: string) => { log.push(`offer ${version}`); Object.assign(current, { status: "available", version }); },
 		// Main's own check: a failure shows main's fixed line in the state.
 		check: async () => {
@@ -72,8 +75,8 @@ function fixture({ state = { status: "available", version: V72 } as State, offer
 			flags.whileOpen?.();
 			return { response: answers.shift() ?? 1 };
 		},
-		download: (version: string) => log.push(`menu download ${version}`),
-		install: async (version: string) => { log.push(`menu install ${version}`); },
+		download: async (version: string) => { log.push(`menu download ${version}`); return flags.onAction?.(); },
+		install: async (version: string) => { log.push(`menu install ${version}`); return flags.onAction?.(); },
 		running: () => flags.running,
 		pinFeed: (version: string | null) => { log.push(`pin feed ${version}`); flags.pinnedFeed = version; if (version) flags.offered = version; },
 		log: () => {},
@@ -289,6 +292,34 @@ for (const [status, action] of [["downloaded", "menu install"], ["available", "m
 		const f = fixture({ state: shown(), answers: [0] });
 		await f.actions.checkNatively();
 		assert.equal(f.log.at(-1), `${action} ${V72}`);
+	});
+}
+
+for (const [status, action] of [["downloaded", "menu install"], ["available", "menu download"]] as const) {
+	const shown = () => ({ status, version: V72, revision: 3, availableVersion: V72, downloadedVersion: status === "downloaded" ? V72 : null });
+	test(`${action}: a background check that only bumps the revision while its dialog is open doesn't stop it`, async () => {
+		const f = fixture({ state: shown(), answers: [0] });
+		f.flags.whileOpen = () => { f.current.revision = 7; };
+		await f.actions.checkNatively();
+		assert.equal(f.log.at(-1), `${action} ${V72}`);
+	});
+	test(`${action}: refused by main for another version, the dialog for the new state follows, once`, async () => {
+		const f = fixture({ state: shown(), answers: [0, 0] });
+		f.flags.onAction = () => {
+			Object.assign(f.current, { status: "available", version: V73, availableVersion: V73, downloadedVersion: null });
+			return { superseded: true };
+		};
+		await f.actions.checkNatively();
+		assert.deepEqual(f.dialogs.map((dialog) => dialog.message).slice(1), [`LearnHarness ${V73} is available.`], "the user sees why");
+		assert.deepEqual(f.log.filter((line) => line.startsWith("menu ")), [`${action} ${V72}`, `menu download ${V73}`], "its Download acts on what it names");
+		assert.equal(f.dialogs.length, 2, "a second refusal shows nothing more");
+		assert.deepEqual(f.parents, [f.appWindow, f.appWindow]);
+	});
+	test(`${action}: a refusal that isn't for another version (a failed download) shows no follow-up`, async () => {
+		const f = fixture({ state: shown(), answers: [0] });
+		f.flags.onAction = () => ({ accepted: true, completed: false });
+		await f.actions.checkNatively();
+		assert.equal(f.dialogs.length, 1);
 	});
 }
 

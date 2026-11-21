@@ -19,9 +19,11 @@
  *   adoptNotes(info)     keep the offered version's release notes
  *   appVersion           this app's version
  *   compareVersions(a, b)
- *   show(options, parent) dialog.showMessageBox over `parent` when given, resolving { response }
- *   download(version)    the menu's Download (downloadUpdateNow), of exactly `version`
- *   install(version)     the menu's Restart (installUpdateNow, which re-checks), of exactly `version`
+ *   show(options, parent) dialog.showMessageBox over `parent`, or with no parent; resolving { response }
+ *   download(version)    the menu's Download (downloadUpdateNow), of exactly `version`; resolves
+ *                        { superseded: true } when the feed now names another version
+ *   install(version)     the menu's Restart (installUpdateNow, which re-checks), of exactly
+ *                        `version`; resolves { superseded: true } likewise
  *   running()            an Update everything run (or its confirmation) is going
  *   pinFeed(version)     make the feed offer exactly `version` (null: the newest again)
  *   log(line), wait(ms)
@@ -101,7 +103,8 @@ function createUpdateActions(deps) {
 	 * sidebar and Settings follow, and the menu raises no toast. The dialogs' text is fixed: the
 	 * state's message is one of main's fixed lines, never an updater error. LearnHarness's own: no
 	 * dialog while an install is under way, "Update in progress" while Update everything runs,
-	 * which owns the updater, and Download and Restart act only on the state their dialog showed.
+	 * which owns the updater, and Download and Restart act only on the state their dialog showed;
+	 * when main then refuses one for another version, the dialog for the new state follows.
 	 */
 	async function checkNatively() {
 		const show = deps.show;
@@ -125,12 +128,23 @@ function createUpdateActions(deps) {
 		// what T3's state would then say: "Update downloading" during a download, else nothing (a
 		// check under way reads "checking" in T3). Never a stale offer from before that check.
 		if (!checked && state.status !== "downloading") return;
+		await dialogFor(state, parent, true);
+	}
+
+	/** The dialog for `state` (T3's checkForUpdatesFromMenu branches). `followUp`: when main refuses
+	 *  its Download or Restart because the feed now names another version, the dialog for the new
+	 *  state follows once, so the user sees why. */
+	async function dialogFor(state, parent, followUp) {
+		const show = deps.show;
 		const offered = state.availableVersion ?? state.version ?? null;
-		/** A button acts only on the state its dialog showed: the same revision and version, with no
+		/** A button acts only on the state its dialog showed: the same status and version, with no
 		 *  Update everything run, so it never downloads or installs a version it didn't name. */
 		const unchanged = (version) => {
 			const now = deps.state();
-			return !deps.running() && now.revision === state.revision && now.status === state.status && (now.downloadedVersion ?? now.availableVersion ?? now.version ?? null) === version;
+			return !deps.running() && now.status === state.status && (now.downloadedVersion ?? now.availableVersion ?? now.version ?? null) === version;
+		};
+		const superseded = async (result) => {
+			if (followUp && result?.superseded) await dialogFor(deps.state(), parent, false);
 		};
 		if (state.status === "up-to-date") {
 			// :76-84
@@ -142,7 +156,7 @@ function createUpdateActions(deps) {
 				message: offered ? `LearnHarness ${offered} is available.` : "A new version of LearnHarness is available.",
 				detail: `You're running LearnHarness ${deps.appVersion}.`, buttons: ["Download", "Later"], defaultId: 0, cancelId: 1,
 			}, parent);
-			if (response === 0 && offered && unchanged(offered)) void deps.download(offered);
+			if (response === 0 && offered && unchanged(offered)) await superseded(await deps.download(offered));
 		} else if (state.status === "downloading") {
 			// :103-113
 			await show({ type: "info", title: "Update downloading", message: offered ? `LearnHarness ${offered} is already downloading.` : "A new version of LearnHarness is already downloading.", buttons: ["OK"] }, parent);
@@ -154,7 +168,7 @@ function createUpdateActions(deps) {
 				message: version ? `LearnHarness ${version} is ready to install.` : "A new version of LearnHarness is ready to install.",
 				detail: "LearnHarness will restart to install it. Any running tasks will be interrupted.", buttons: ["Restart", "Later"], defaultId: 0, cancelId: 1,
 			}, parent);
-			if (response === 0 && version && unchanged(version)) void deps.install(version);
+			if (response === 0 && version && unchanged(version)) await superseded(await deps.install(version));
 		} else if (state.status === "error") {
 			// :128-136
 			await show({ type: "warning", title: "Update check failed", message: "Could not check for updates.", detail: state.message ?? "An unknown error occurred. Please try again later.", buttons: ["OK"] }, parent);

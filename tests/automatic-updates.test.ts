@@ -923,14 +923,70 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 		assert.equal(g.updater.downloads, 1, "the named version downloads");
 	});
 
-	it("Check for Updates… is in the macOS app menu only, as in T3; Windows and Linux reach updates from the sidebar and Settings", async () => {
-		for (const platform of ["linux", "win32"]) {
+	it("Check for Updates… is in every platform's menu (the way out when the app is too old for its server), with no accelerator", async () => {
+		for (const platform of ["darwin", "linux", "win32"]) {
 			const f = fixture({ platform }); await f.run("main()");
-			const items = f.menu().flatMap((top) => top.submenu ?? []).map((item) => item.label);
-			assert.equal(items.includes("Check for Updates…"), false, platform);
+			const item = f.menu()[0]!.submenu!.find((entry) => entry.label === "Check for Updates…") as { accelerator?: string } | undefined;
+			assert.ok(item, platform);
+			assert.equal(item.accelerator, undefined, platform);
 		}
-		const mac = fixture(); await mac.run("main()");
-		assert.ok(mac.menu()[0]!.submenu!.some((item) => item.label === "Check for Updates…"));
+	});
+
+	it("while the app window is still reopening (an async reopen), the dialog has no parent, never the focused Switch server panel", async () => {
+		const f = fixture(); await f.run("main()");
+		f.windows[0]!.close();
+		const panel = f.untrustedWindow();
+		panel.focused = true;
+		f.run("reopenWindow = () => new Promise((resolve) => setTimeout(() => resolve(createWindow(process.env.LH_DEV_URL).win), 50))");
+		await f.menuCheck();
+		await settleMenu();
+		assert.deepEqual([f.dialogs[0]!.options.title, f.dialogs[0]!.parent], ["You're up to date!", null]);
+		// The activated window closed before its dialog: no parent either, never the panel.
+		const g = fixture(); await g.run("main()");
+		const gone = g.windows[0]!;
+		let release!: () => void;
+		const original = g.updater.checkForUpdates.bind(g.updater);
+		g.updater.checkForUpdates = function () { this.checks++; return new Promise((resolve) => { release = () => resolve(original()); }); };
+		const clicked = g.menuCheck();
+		await settleMenu();
+		gone.close();
+		g.untrustedWindow().focused = true;
+		g.updater.checkForUpdates = original;
+		release();
+		await clicked; await settleMenu();
+		assert.deepEqual([g.dialogs[0]!.options.title, g.dialogs[0]!.parent], ["You're up to date!", null]);
+	});
+
+	it("a Restart main refuses (the re-check found a newer build) is followed by that build's Update available", async () => {
+		const f = fixture(); await f.run("main()");
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		f.answers.push(0, 1);
+		f.updater.offer = { version: "0.3.9" };
+		await f.menuCheck();
+		await settleMenu();
+		assert.deepEqual(f.dialogs.map((d) => d.options.title), ["Update ready", "Update available"]);
+		assert.equal(f.dialogs[1]!.options.message, "LearnHarness 0.3.9 is available.");
+		assert.deepEqual(f.installArgs, []);
+	});
+
+	it("a Download main refuses (the feed moved while its dialog was open) is followed by the new Update available", async () => {
+		const f = fixture(); await f.run("main()");
+		f.updater.offer = { version: "0.3.8" };
+		let answer!: (value: { response: number }) => void;
+		const show = f.run("dialog").showMessageBox;
+		let calls = 0;
+		f.run("dialog").showMessageBox = (...args: unknown[]) => {
+			calls++;
+			if (calls === 1) return new Promise((resolve) => { answer = resolve; });
+			return show(...args);
+		};
+		const clicked = f.menuCheck();
+		await settleMenu();
+		f.updater.offer = { version: "0.3.9" };
+		answer({ response: 0 });
+		await clicked; await settleMenu();
+		assert.equal(f.updater.downloads, 0, "never the 0.3.9 its dialog didn't name");
+		assert.deepEqual(f.dialogs.map((d) => d.options.message), ["LearnHarness 0.3.9 is available."], "then the dialog for it");
 	});
 
 	it("the menu reopens a window when none is open, then shows its dialog", async () => {
