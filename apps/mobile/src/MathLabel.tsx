@@ -18,6 +18,10 @@ const MONO = { ascent: 1.02, descent: 0.3 };
  * gives that character no font (RCTNSAttributedStringFragmentFromFragment), so TextKit uses
  * its default, Helvetica at 12 points (descender 0.23 em), at any text size. */
 const VIEW_FONT_DESCENT = 2.76;
+/** React Native rounds an inline view's origin to the pixel grid (ParagraphShadowNode's
+ * roundToPixel), moving it up to half a pixel: half a point at most. Room is left for that
+ * wherever a picture would otherwise touch the edge of what cuts it off. */
+const PIXEL_ROUNDING = 0.5;
 
 /** A font in a line of text: its size, and whether it is the code face. */
 export type TextRun = { fontSize: number; mono?: boolean };
@@ -104,8 +108,9 @@ export function lineHeightFor(sizes: Size[], fontSize: number, line: number, fon
 }
 
 /** The fonts around an inline picture on iOS: those in the hard line it sits in (up to and
- * including that line's newline), and every one in its Text. */
-export type InlineFonts = { line: TextRun[]; text: TextRun[] };
+ * including that line's newline) and every one in its Text, and whether that line is the
+ * Text's last. */
+export type InlineFonts = { line: TextRun[]; text: TextRun[]; last: boolean };
 
 /** The largest descent and the tallest line height among some fonts, in points. */
 function iosFonts(runs: TextRun[]) {
@@ -120,18 +125,39 @@ function iosFonts(runs: TextRun[]) {
  * character's font is TextKit's default, not the text's. The text's baseline is its line's
  * largest descent up from the bottom (TextKit), raised by half the lineHeight over the Text's
  * tallest font (RCTApplyBaselineOffsetForRange, over the whole Text). A line with no text has
- * only TextKit's font, so its pictures already sit on its baseline. The lift never takes a
+ * no descent: its baseline is its bottom. In a Text with no text at all that line is the whole
+ * Text, as tall as its pictures' boxes, so they come down by the descender onto it, or the
+ * Text would cut off their tops. A line with no text in a Text with text is laid out taller,
+ * with React Native's baseline offset, so its pictures stay where they are. The lift never takes a
  * picture above its line's top: a picture taller than the line leaves above the baseline sits
  * lower instead, as the line doesn't grow for it. A line known here is a hard line; when text
  * wraps, a wrapped line holding only math is lifted as if it held the hard line's text, still
  * inside its line. Android puts an inline view on the baseline itself. */
 export function inlineLift(lineHeight: number, size: Size, fonts: InlineFonts, fontScale: number, platform: string = Platform.OS): number {
-  if (platform !== "ios" || !fonts.line.length) return 0;
+  if (platform !== "ios") return 0;
+  if (!fonts.line.length) return fonts.text.length ? 0 : -(VIEW_FONT_DESCENT + PIXEL_ROUNDING);
   const { descent } = iosFonts(fonts.line);
   const { tallest } = iosFonts(fonts.text);
   const baseline = (descent + Math.max(0, (lineHeight - tallest) / 2)) * fontScale;
-  const room = (lineHeight - (size.height - size.depth)) * fontScale - VIEW_FONT_DESCENT;
+  const room = (lineHeight - (size.height - size.depth)) * fontScale - VIEW_FONT_DESCENT - PIXEL_ROUNDING;
   return Math.max(0, Math.min(baseline - VIEW_FONT_DESCENT, room));
+}
+
+/** The room an iOS Text must leave below its last line for the depth of the pictures there,
+ * in points at the font scale. A Text cuts off what it holds at its frame (Text.js's default
+ * overflow: hidden), and a last line with no text has no descent to hold a depth. */
+export function depthRoom(pictures: { size: Size; fonts: InlineFonts }[], fontScale: number, platform: string = Platform.OS): number {
+  if (platform !== "ios") return 0;
+  return Math.max(0, ...pictures.filter(({ fonts }) => fonts.last && !fonts.line.length)
+    .map(({ size, fonts }) => size.depth * fontScale - VIEW_FONT_DESCENT - inlineLift(0, size, fonts, fontScale, platform) + PIXEL_ROUNDING));
+}
+
+/** A Text's bottom padding with `room` added to what its style already gives. */
+export function bottomPadding(style: StyleProp<TextStyle>, room: number): { paddingBottom?: number } {
+  if (room <= 0) return {};
+  const { paddingBottom, paddingVertical, padding } = StyleSheet.flatten(style) ?? {};
+  const given = [paddingBottom, paddingVertical, padding].find((value) => typeof value === "number") ?? 0;
+  return { paddingBottom: given + room };
 }
 
 /** A label with its math drawn as pictures, sized before it is drawn so the row never
@@ -182,11 +208,16 @@ export function MathLabel({ pieces, style, color }: { pieces: LabelPiece[]; styl
           return -1;
         });
         const text = lines.flat();
+        const pictures = block.map((_, at) => sizes[at] && { size: sizes[at], fonts: { line: lines[lineOf[at] as number] ?? [], text, last: lineOf[at] === lines.length - 1 } });
+        const below = depthRoom(pictures.filter((picture) => picture !== undefined), fontScale);
         return (
-          <Text key={index} style={[style, { lineHeight: line }]}>
-            {block.map((piece, at) => piece.kind === "text" ? piece.text
-              : <MathPicture key={at} svg={piece.drawn.svg[c.mode]} drawn={piece.drawn} size={sizes[at] as Size} scale={fontScale} color={color} live={live} inline
-                lift={inlineLift(line, sizes[at] as Size, { line: lines[lineOf[at] as number] ?? [], text }, fontScale)} />)}
+          <Text key={index} style={[style, { lineHeight: line, ...bottomPadding(style, below) }]}>
+            {block.map((piece, at) => {
+              const picture = pictures[at];
+              if (piece.kind === "text") return piece.text;
+              return picture && <MathPicture key={at} svg={piece.drawn.svg[c.mode]} drawn={piece.drawn} size={picture.size} scale={fontScale} color={color} live={live} inline
+                lift={inlineLift(line, picture.size, picture.fonts, fontScale)} />;
+            })}
           </Text>
         );
       })}
