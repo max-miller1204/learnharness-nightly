@@ -101,10 +101,15 @@ if (globalThis.location?.protocol !== "file:") {
 			ipcRenderer.on("lh:update-status", listener);
 			return () => ipcRenderer.removeListener("lh:update-status", listener);
 		},
-		installUpdate: () => ipcRenderer.invoke("lh:update-install"),
+		// "sidebar": the sidebar control started it, so a failure comes back as its notice.
+		installUpdate: (source) => (source === "sidebar" ? ipcRenderer.invoke("lh:update-install", "sidebar") : ipcRenderer.invoke("lh:update-install")),
 		downloadUpdate: () => ipcRenderer.invoke("lh:update:download"),
 		getUpdateState: () => ipcRenderer.invoke("lh:update:get"),
 		checkForUpdates: () => ipcRenderer.invoke("lh:update:check"),
+		// A once-per-launch update notice ("install-failed:<n>", "not-applied:<version>"): true the first time.
+		claimUpdateNotice: (key) => ipcRenderer.invoke("lh:update:claim-notice", typeof key === "string" ? key : ""),
+		// The claimed notice's toast is showing: no page shows it again this launch.
+		ackUpdateNotice: (key) => ipcRenderer.invoke("lh:update:ack-notice", typeof key === "string" ? key : ""),
 		onOpenSettings: (cb) => {
 			openSettingsListener = cb;
 			if (pendingOpenSettings !== null) {

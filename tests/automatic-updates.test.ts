@@ -24,7 +24,7 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 	const order: string[] = [];
 	const intervals: { callback: () => void; delay: number }[] = [];
 	const timeouts: { callback: () => void; delay: number }[] = [];
-	const handles = new Map<string, (event: unknown) => unknown>();
+	const handles = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
 	const windows: FakeWindow[] = [];
 	let userData = "/fixture/custom-user-data";
 	let menu: { submenu?: { label?: string; click?: () => void | Promise<void> }[] }[] = [];
@@ -110,7 +110,7 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 	const electron = {
 		app, BrowserWindow: FakeWindow,
 		Menu: { buildFromTemplate: (value: typeof menu) => value, setApplicationMenu: (value: typeof menu) => { menu = value; } },
-		ipcMain: { on() {}, handle: (channel: string, fn: (event: unknown) => unknown) => handles.set(channel, fn) },
+		ipcMain: { on() {}, handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => unknown) => handles.set(channel, fn) },
 		nativeTheme: { shouldUseDarkColors: true, themeSource: "system", on() {} },
 		session: { defaultSession: {
 			setPermissionRequestHandler(fn: unknown) { permissions.request = fn as typeof permissions.request; },
@@ -634,6 +634,121 @@ describe("status observation never controls the updater", () => {
 		f.updater.emit("update-available", { version: "0.3.9" });
 		assert.equal(f.state().notAppliedVersion, undefined);
 		assert.equal(f.record.removed, true);
+	});
+
+	it("the check and Download IPC resolve T3's results with the state, for the sidebar's toasts", async () => {
+		const f = fixture(); await f.run("main()");
+		const sender = f.windows[0]!.webContents;
+		const event = { sender, senderFrame: sender.mainFrame };
+		const check = f.handles.get("lh:update:check")!;
+		const ran = await check(event) as { checked: boolean; state: { status: string } };
+		assert.deepEqual([ran.checked, ran.state.status], [true, "up-to-date"]);
+		f.updater.failure = new Error("https://private.example 500");
+		const failed = await check(event) as { checked: boolean; state: { status: string; message: string } };
+		assert.deepEqual([failed.checked, failed.state.status], [true, "error"], "it ran; the state says how it went");
+		assert.ok(!JSON.stringify(failed).includes("private"));
+		f.updater.failure = null;
+		const download = f.handles.get("lh:update:download")!;
+		const refused = await download(event) as { accepted: boolean; completed: boolean; state: { status: string } };
+		assert.deepEqual([refused.accepted, refused.completed, refused.state.status], [false, false, "error"], "nothing offered: refused, with the state");
+		f.updater.emit("update-available", { version: "0.3.8" });
+		f.updater.offer = { version: "0.3.8" }; f.updater.downloadFails = true;
+		const failedDownload = await download(event) as { accepted: boolean; completed: boolean; state: { message: string } };
+		assert.deepEqual([failedDownload.accepted, failedDownload.completed, failedDownload.state.message], [true, false, "Couldn’t download the update. Try again."]);
+		f.updater.downloadFails = false;
+		const done = await download(event) as { accepted: boolean; completed: boolean; state: { status: string } };
+		assert.deepEqual([done.accepted, done.completed, done.state.status], [true, true, "downloaded"]);
+		const none = fixture({ updaterMissing: true }); await none.run("main()");
+		const noneSender = none.windows[0]!.webContents;
+		assert.equal((await none.handles.get("lh:update:check")!({ sender: noneSender, senderFrame: noneSender.mainFrame }) as { checked: boolean }).checked, false, "no updater: no check ran");
+	});
+
+	it("main owns once per launch in two steps: a visible page claims (reserves), shows, then acks; a page that goes first gives it back", async () => {
+		const f = fixture({ installRecord: JSON.stringify({ fromVersion: "0.3.7", targetVersion: "0.3.8" }) }); await f.run("main()");
+		const sender = f.windows[0]!.webContents;
+		const event = { sender, senderFrame: sender.mainFrame };
+		const claim = f.handles.get("lh:update:claim-notice")!;
+		const ack = f.handles.get("lh:update:ack-notice")!;
+		assert.equal(f.state().notAppliedVersion, "0.3.8", "in the first snapshot, before any check");
+		assert.equal((f.handles.get("lh:update:get")!(event) as { notAppliedVersion?: string }).notAppliedVersion, "0.3.8");
+		assert.equal(await claim(event, "not-applied:0.3.9"), false, "not the version the state carries");
+		for (const bad of ["install-failed:1", "anything", 7, "not-applied:../x"]) assert.equal(await claim(event, bad), false);
+		assert.throws(() => claim({ sender: {}, senderFrame: sender.mainFrame }, "not-applied:0.3.8"), /Untrusted/);
+		// Another window's page, reserving before the first page shows it.
+		const otherWin = f.run("createWindow(process.env.LH_DEV_URL).win") as { webContents: typeof sender };
+		const otherEvent = { sender: otherWin.webContents, senderFrame: otherWin.webContents.mainFrame };
+		assert.equal(await claim(event, "not-applied:0.3.8"), true, "reserved for this page");
+		assert.equal(await claim(otherEvent, "not-applied:0.3.8"), false, "not while another page holds it");
+		// The first page reloads (or closes) before showing it: its reservation goes back.
+		sender.emit("did-start-navigation");
+		assert.equal(await claim(otherEvent, "not-applied:0.3.8"), true, "the other page may take it now");
+		assert.equal(await ack(event, "not-applied:0.3.8"), false, "only the holder acks");
+		assert.equal(await ack(otherEvent, "not-applied:0.3.8"), true, "shown");
+		assert.equal(await claim(event, "not-applied:0.3.8"), false, "never again this launch");
+		assert.equal(await claim(otherEvent, "not-applied:0.3.8"), false);
+	});
+
+	it("a window still on the last local origin claims after the server's restart failed (localOrigin cleared)", async () => {
+		const f = fixture({ installRecord: JSON.stringify({ fromVersion: "0.3.7", targetVersion: "0.3.8" }) }); await f.run("main()");
+		const sender = f.windows[0]!.webContents;
+		const origin = new URL(sender.mainFrame.url).origin;
+		f.run(`lastLocalOrigin = ${JSON.stringify(origin)}; localOrigin = null`);
+		assert.equal(await f.handles.get("lh:update:claim-notice")!({ sender, senderFrame: sender.mainFrame }, "not-applied:0.3.8"), true);
+	});
+
+	it("only an install the sidebar started becomes the notice, once its server's windows reloaded, with its fixed text; it goes with the next state change", async () => {
+		const settle = () => new Promise((resolve) => setImmediate(resolve));
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.run("var fixtureReload; restartLocalAfterFailedInstall = () => new Promise((resolve) => { fixtureReload = resolve; })");
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		f.updater.failure = new Error("offline");
+		await f.run("serverProcess = fixtureChild; installUpdateNow({ fromSidebar: true })");
+		f.updater.emit("error", new Error("installer refused"));
+		f.run("fixtureChild.emit('close', 0, null)");
+		await settle();
+		assert.equal(f.state().installFailedNotice, undefined, "not before the reload: that page goes");
+		f.run("fixtureReload()");
+		await settle();
+		assert.deepEqual([f.state().installFailedNotice, f.state().installFailedNoticeMessage], [1, "Couldn’t install the update."], "the reloaded page reads it, with its fixed text");
+		const page = {}; // a page's webContents, as main sees it
+		assert.equal(f.run("claimUpdateNotice")("install-failed:1", page), true);
+		assert.equal(f.run("ackUpdateNotice")("install-failed:1", page), true);
+		assert.equal(f.run("claimUpdateNotice")("install-failed:1", page), false);
+		// A later state change: no longer current, so no page shows it later.
+		f.updater.failure = null;
+		f.updater.emit("checking-for-update"); f.updater.emit("update-not-available", {});
+		f.run("setUpdateState(updateMachine.reduceOnCheckFailure(updateState, 'x', 'now'))");
+		assert.equal(f.state().installFailedNotice, undefined);
+		// Settings' Install (no sidebar source), Update everything (installPinned) and the menu raise none.
+		for (const start of ["installUpdateNow()", "updateActions.installPinned('0.3.8')"]) {
+			const g = fixture(); g.run("setupAutoUpdater()");
+			g.updater.emit("update-downloaded", { version: "0.3.8" });
+			g.updater.failure = new Error("offline");
+			await g.run(start);
+			g.updater.emit("error", new Error("installer refused"));
+			await settle();
+			assert.deepEqual([g.state().errorContext, g.state().installFailedNotice], ["install", undefined], start);
+		}
+		// No server to restart: the sidebar's notice comes at once.
+		const h = fixture(); h.run("setupAutoUpdater()");
+		h.updater.emit("update-downloaded", { version: "0.3.8" });
+		h.updater.failure = new Error("offline");
+		await h.run("installUpdateNow({ fromSidebar: true })");
+		h.updater.emit("error", new Error("installer refused"));
+		assert.equal(h.state().installFailedNotice, 1);
+	});
+
+	it("Install from the sidebar whose newer download fails says so with the download's fixed text (T3's installLocalUpdate)", async () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		f.updater.offer = { version: "0.3.9" }; f.updater.downloadFails = true;
+		await f.run("serverProcess = fixtureChild; installUpdateNow({ fromSidebar: true })");
+		assert.deepEqual([f.state().status, f.state().installFailedNotice, f.state().installFailedNoticeMessage], ["available", 1, "Couldn’t download the update. Try again."]);
+		const g = fixture(); g.run("setupAutoUpdater()");
+		g.updater.emit("update-downloaded", { version: "0.3.8" });
+		g.updater.offer = { version: "0.3.9" }; g.updater.downloadFails = true;
+		await g.run("serverProcess = fixtureChild; installUpdateNow()");
+		assert.equal(g.state().installFailedNotice, undefined, "not from Settings");
 	});
 
 	it("Install is a trusted IPC call that answers whether main took it", async () => {

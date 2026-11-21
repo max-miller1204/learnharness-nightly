@@ -47,10 +47,19 @@ export type UpdateState = {
 	canRetry?: boolean;
 	/** Desktop only: the version the last install meant to reach, while this launch is still the old one. */
 	notAppliedVersion?: string;
+	/** Desktop only: the current "Could not install update" notice (an install the sidebar started
+	 *  failed), and its fixed text; gone with the next state change. */
+	installFailedNotice?: number;
+	installFailedNoticeMessage?: string;
 	/** Newest first: versions newer than the running one up to the offered one. */
 	releaseNotes?: ReleaseNoteGroup[];
 	omittedReleaseCount?: number;
 };
+
+/** T3's check result (main's lh:update:check): whether a check ran, and the state after it. */
+export type UpdateCheckResult = { checked: boolean; state?: UpdateState };
+/** T3's action result (main's lh:update:download): admitted, finished, and the state after it. */
+export type UpdateActionResult = { accepted: boolean; completed: boolean; state?: UpdateState };
 
 /** Which updater this window talks to: the Electron shell, or the self-hosted server. */
 export type UpdateTransport = "desktop" | "web";
@@ -152,32 +161,43 @@ export function useUpdateState() {
 		return () => { live = false; offEvent?.(); offResync?.(); };
 	}, [accept, hub]);
 
-	const check = useCallback(async (): Promise<void> => {
+	/** Desktop: resolves T3's check result once the check ended (rejects when the bridge throws). */
+	const check = useCallback(async (): Promise<UpdateCheckResult | undefined> => {
 		const lh = localDesktopBridge();
-		if (lh) return lh.checkForUpdates?.();
+		if (lh) return (await lh.checkForUpdates?.()) ?? undefined;
 		accept(await fetchWebState("/api/updates/check", "POST"));
+		return undefined;
 	}, [accept]);
 
 	/** Apply now. Callers confirm first (InstallUpdateDialog). Resolves false when the request
 	 *  failed or the app turned it down (the sidebar control then shows its normal button again),
 	 *  never rejects. */
-	const install = useCallback(async (): Promise<boolean> => {
+	/** `fromSidebar`: the sidebar control's own Install, whose failure main reports as a notice. */
+	const install = useCallback(async ({ onError, fromSidebar = false }: { onError?: () => void; fromSidebar?: boolean } = {}): Promise<boolean> => {
 		try {
 			const lh = localDesktopBridge();
 			// The app can turn it down (an Update everything run owns the updater): only its yes counts.
-			if (lh) return (await lh.installUpdate?.()) === true;
+			if (lh) return (await (fromSidebar ? lh.installUpdate?.("sidebar") : lh.installUpdate?.())) === true;
 			accept(await fetchWebState("/api/updates/install", "POST"));
 			return true;
 		} catch {
 			setFailed(true);
+			onError?.();
 			return false;
 		}
 	}, [accept]);
 
-	/** Desktop only: download the "available" version. */
-	const download = useCallback((): void => {
+	/** Desktop only: download the "available" version. Resolves T3's action result, or "threw"
+	 *  when the bridge rejected (never rejects itself). */
+	const download = useCallback(async (): Promise<UpdateActionResult | "threw" | undefined> => {
 		const pending = localDesktopBridge()?.downloadUpdate?.();
-		if (pending) void pending.catch(() => setFailed(true));
+		if (!pending) return undefined;
+		try {
+			return (await pending) ?? undefined;
+		} catch {
+			setFailed(true);
+			return "threw";
+		}
 	}, []);
 
 	/** Self-hosted only: hide the rollback notice on every browser of this server. */

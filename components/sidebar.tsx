@@ -15,6 +15,8 @@ import { KeyboardShortcuts } from "@/components/keyboard-shortcuts";
 import { SettingsDialogProvider, useSettingsDialog } from "@/components/settings/settings-dialog.tsx";
 import { SidebarUpdatePill } from "@/components/sidebar-update-pill";
 import WhatsNewDialog from "@/components/whats-new-dialog";
+import { Toaster } from "@/components/ui/toast";
+import { UpdateLaunchNotice } from "@/components/update-toasts";
 import { Hint } from "@/components/ui/hint";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -60,7 +62,7 @@ const STORAGE_KEY = SIDEBAR_STORAGE_KEY;
  * script applies the same rule); it mirrors electron/main.cjs: keep in sync.
  */
 import type { ChatGPTControlBridge, NativeSubscriptionControlBridge } from "@/src/core";
-import type { DesktopUpdateBridge, UpdateState } from "@/components/settings/update-settings.tsx";
+import type { DesktopUpdateBridge, UpdateActionResult, UpdateCheckResult, UpdateState } from "@/components/settings/update-settings.tsx";
 import { FilePathDropZone } from "@/components/file-path-drop-zone";
 
 // Module scope, guarded for SSR (the server has no navigator).
@@ -103,12 +105,18 @@ declare global {
 			/** Observational update events and a snapshot for late subscribers. */
 			onUpdateStatus?: (cb: (status: UpdateState) => void) => () => void;
 			getUpdateState?: () => Promise<UpdateState>;
-			/** Explicit manual check also downloads and stages available updates. */
-			checkForUpdates?: () => Promise<void>;
+			/** A manual check; resolves once it ended, whether one ran (T3's { checked }). Older apps resolve nothing. */
+			checkForUpdates?: () => Promise<UpdateCheckResult | void>;
 			/** Resolves whether main took the install (false while Update everything owns the updater). */
-			installUpdate?: () => Promise<boolean>;
-			/** Download the "available" update (downloads happen only on click). */
-			downloadUpdate?: () => Promise<void>;
+			installUpdate?: (source?: "sidebar") => Promise<boolean>;
+			/** Claims a once-per-launch update notice ("install-failed:<n>", "not-applied:<version>"):
+			 *  true only the first time this launch, whatever window or page asks. */
+			claimUpdateNotice?: (key: string) => Promise<boolean>;
+			/** The claimed notice's toast is showing: main won't give it to any page again this launch. */
+			ackUpdateNotice?: (key: string) => Promise<boolean>;
+			/** Download the "available" update (downloads happen only on click); resolves T3's
+			 *  { accepted, completed } with the state. Older apps resolve nothing. */
+			downloadUpdate?: () => Promise<UpdateActionResult | void>;
 			onOpenSettings?: (cb: (section: string) => void) => () => void;
 		};
 	}
@@ -1020,6 +1028,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 				{/* The one-time "What's new in X" popup after an update
 				    (docs/specs/t3-style-updates.md, section 6). */}
 				<WhatsNewDialog />
+				{/* Toasts (revision PR 4): the update control's, and "did not apply" once per launch. */}
+				<UpdateLaunchNotice />
+				<Toaster />
 			</SettingsDialogProvider></InteractionLayersProvider>
 		</HostContentRootContext.Provider>
 		</HostRouteLifetimeProvider>
