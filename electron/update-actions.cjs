@@ -12,8 +12,8 @@
  *   check()              main's check (checkForUpdates), the sidebar's: resolves { checked }
  *   activate()           show and focus the app's window (starting to reopen one), before the
  *                        check; the window to parent the dialog on, or null
- *   appWindow()          the app window when it is alive and shown, else null: the parent of the
- *                        dialogs shown before activation
+ *   appWindow()          the app window when it is alive and shown, else null: every dialog's
+ *                        parent, read as the dialog is about to show
  *   downloadStarted(version)  "downloading" `version` at 0%, as the Download button does
  *   downloadFailed(version)   the download failed: offer `version` again with T3's retry
  *   installing()         an install is already under way
@@ -138,6 +138,9 @@ function createUpdateActions(deps) {
 	 *  state follows once, so the user sees why. */
 	async function dialogFor(state, parent, followUp) {
 		const show = deps.show;
+		// The parent is picked as each dialog is about to show: the app window if it is alive and
+		// shown at that moment (it may have finished reopening during a slow check), else none.
+		const parentNow = () => (deps.appWindow ? deps.appWindow() : parent);
 		const offered = state.availableVersion ?? state.version ?? null;
 		/** A button acts only on the state its dialog showed: the same status and version, with no
 		 *  Update everything run, so it never downloads or installs a version it didn't name. */
@@ -150,18 +153,18 @@ function createUpdateActions(deps) {
 		};
 		if (state.status === "up-to-date") {
 			// :76-84
-			await show({ type: "info", title: "You're up to date!", message: `LearnHarness ${deps.appVersion} is currently the newest version available.`, buttons: ["OK"] }, parent);
+			await show({ type: "info", title: "You're up to date!", message: `LearnHarness ${deps.appVersion} is currently the newest version available.`, buttons: ["OK"] }, parentNow());
 		} else if (state.status === "available") {
 			// :85-102
 			const { response } = await show({
 				type: "info", title: "Update available",
 				message: offered ? `LearnHarness ${offered} is available.` : "A new version of LearnHarness is available.",
 				detail: `You're running LearnHarness ${deps.appVersion}.`, buttons: ["Download", "Later"], defaultId: 0, cancelId: 1,
-			}, parent);
+			}, parentNow());
 			if (response === 0 && offered && unchanged(offered)) await superseded(await deps.download(offered));
 		} else if (state.status === "downloading") {
 			// :103-113
-			await show({ type: "info", title: "Update downloading", message: offered ? `LearnHarness ${offered} is already downloading.` : "A new version of LearnHarness is already downloading.", buttons: ["OK"] }, parent);
+			await show({ type: "info", title: "Update downloading", message: offered ? `LearnHarness ${offered} is already downloading.` : "A new version of LearnHarness is already downloading.", buttons: ["OK"] }, parentNow());
 		} else if (state.status === "downloaded") {
 			// :114-127
 			const version = state.downloadedVersion ?? offered;
@@ -169,11 +172,11 @@ function createUpdateActions(deps) {
 				type: "info", title: "Update ready",
 				message: version ? `LearnHarness ${version} is ready to install.` : "A new version of LearnHarness is ready to install.",
 				detail: "LearnHarness will restart to install it. Any running tasks will be interrupted.", buttons: ["Restart", "Later"], defaultId: 0, cancelId: 1,
-			}, parent);
+			}, parentNow());
 			if (response === 0 && version && unchanged(version)) await superseded(await deps.install(version));
 		} else if (state.status === "error") {
 			// :128-136
-			await show({ type: "warning", title: "Update check failed", message: "Could not check for updates.", detail: state.message ?? "An unknown error occurred. Please try again later.", buttons: ["OK"] }, parent);
+			await show({ type: "warning", title: "Update check failed", message: "Could not check for updates.", detail: state.message ?? "An unknown error occurred. Please try again later.", buttons: ["OK"] }, parentNow());
 		}
 		// "idle" shows nothing, as in T3.
 	}

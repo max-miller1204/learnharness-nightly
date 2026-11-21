@@ -915,8 +915,8 @@ const updateActions = createUpdateActions({
 	// The menu's check is main's own (the sidebar's): its failure handling, and its { checked }.
 	check: () => checkForUpdates(),
 	activate: () => activateWindow(),
-	// The dialogs shown before any activation (Update in progress, Updates unavailable) sit on the
-	// app window too while it is alive and shown, without restoring it.
+	// Every menu dialog's parent, read as it is about to show: the app window while it is alive and
+	// shown (also for Update in progress and Updates unavailable, which restore nothing).
 	appWindow: () => dialogParent(appWindow()),
 	// A pinned download names its version from the start: electron-updater drops an older staged
 	// download once it starts another, so the state no longer claims it.

@@ -1011,6 +1011,22 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 		assert.equal(g.run("fixtureHidden").visible, false, "nor is it shown by the menu");
 	});
 
+	it("a window that finishes reopening during a slow check is the dialog's parent: it is picked as the dialog shows", async () => {
+		const f = fixture(); await f.run("main()"); await settleMenu();
+		f.windows[0]!.close();
+		let release!: () => void;
+		const original = f.updater.checkForUpdates.bind(f.updater);
+		f.updater.checkForUpdates = function () { this.checks++; return new Promise((resolve) => { release = () => resolve(original()); }); };
+		const clicked = f.menuCheck(); // reopens a hidden replacement, then the check is slow
+		await settleMenu();
+		const replacement = f.windows[0]!;
+		assert.equal(replacement.visible, true, "painted and shown while the check runs");
+		f.updater.checkForUpdates = original;
+		release();
+		await clicked; await settleMenu();
+		assert.ok(f.dialogs[0]!.parent === replacement, "the dialog sits on it");
+	});
+
 	it("Update in progress sits on the app window while it is alive and shown, without restoring it or checking", async () => {
 		const f = fixture(); await f.run("main()"); await settleMenu();
 		const win = f.windows[0]!;
