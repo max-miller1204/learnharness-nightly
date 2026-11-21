@@ -262,27 +262,28 @@ function overlayIn(elements) {
 	return elements.find((el) => label(el) === "Close menu" || label(el) === "Typing Predictions" || /^Open debugger to view/.test(label(el)));
 }
 
-/** A screenshot taken only once the screen has settled: two shots in a row
- * match, and the page background at the left gutter has the mode's colour
- * (light near white, dark near black), so no cross-fade or dimmed overlay is
- * pictured. Fails after 20 s. */
+/** A screenshot taken only once the appearance has settled: two shots 0.7 s
+ * apart both show the page background in the mode's colour at the left
+ * gutter (light near white, dark near black), so no cross-fade or dimmed
+ * overlay is pictured. (Frames are not compared: a spinner may always move.)
+ * Fails after 20 s. */
 async function settledShot(screen, mode, file) {
 	const deadline = Date.now() + 20_000;
-	const hashOf = (f) => createHash("sha256").update(readFileSync(f)).digest("hex");
+	const background = () => {
+		const [r, g, b] = pngPixel(file, 6, Math.round(screenSize.height * 1.5));
+		const light = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+		return { rgb: `${r},${g},${b}`, right: mode === "light" ? light > 200 : light < 70 };
+	};
 	for (;;) {
 		const overlay = overlayIn(await settled(screen));
 		if (overlay) fail(screen, `an overlay is on screen for the ${mode} picture: "${label(overlay)}"`);
 		await simctl("io", UDID, "screenshot", file);
-		const first = hashOf(file);
+		const first = background();
 		await sleep(700);
 		await simctl("io", UDID, "screenshot", file);
-		const [r, g, b] = pngPixel(file, 6, Math.round(screenSize.height * 1.5));
-		const light = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-		const right = mode === "light" ? light > 200 : light < 70;
-		if (first === hashOf(file) && right) return hashOf(file);
-		if (Date.now() > deadline) {
-			fail(screen, `the ${mode} picture never settled: background ${r},${g},${b}${first === hashOf(file) ? "" : ", still changing"}`);
-		}
+		const second = background();
+		if (first.right && second.right) return createHash("sha256").update(readFileSync(file)).digest("hex");
+		if (Date.now() > deadline) fail(screen, `the ${mode} picture never settled: page background ${second.rgb}`);
 		await sleep(800);
 	}
 }
