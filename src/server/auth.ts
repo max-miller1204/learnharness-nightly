@@ -26,7 +26,7 @@ export function sessionCookieName(env: Record<string, string | undefined> = proc
 
 export const CREDENTIAL_HEADERS = { "Cache-Control": "no-store", Pragma: "no-cache" } as const;
 
-type HeaderSource = { headers: Headers; url?: string };
+type HeaderSource = { headers: Headers; url?: string; method?: string };
 
 function readCookie(headers: Headers, name: string): string | undefined {
 	const raw = headers.get("cookie");
@@ -42,12 +42,30 @@ function readCookie(headers: Headers, name: string): string | undefined {
 	return undefined;
 }
 
-/** T3's rule for cookie credentials: no Origin, or Sec-Fetch-Site same-origin,
- * or an Origin whose host equals the Host header. Bearer tokens skip it. */
-export function cookieOriginAllowed(headers: Headers): boolean {
+/** A page load in the top-level window that another site started (a link or
+ * a redirect): GET or HEAD, no Origin, and Fetch Metadata saying so. The
+ * cookie's SameSite=Lax sends it cross-site only on these. A layout reads
+ * headers with no method; it renders only for page loads. */
+function topLevelNavigation(headers: Headers, method: string | undefined): boolean {
+	if (method !== undefined && !["GET", "HEAD"].includes(method.toUpperCase())) return false;
+	if (headers.get("origin") !== null || headers.get("sec-fetch-mode") !== "navigate") return false;
+	const dest = headers.get("sec-fetch-dest");
+	return dest === null || dest === "document";
+}
+
+/** The rule for cookie credentials, and for the route that sets the cookie.
+ * Fetch Metadata first: same-origin passes; same-site and cross-site pass
+ * only as a top-level navigation, so another site's page can't send a
+ * cookie write even without an Origin header. With no Fetch Metadata (a
+ * non-secure context, a native client) or "none" (a typed address), T3's
+ * Origin rule: no Origin, or an Origin whose host equals the Host header.
+ * Bearer tokens skip it. */
+export function cookieOriginAllowed(headers: Headers, method?: string): boolean {
+	const site = headers.get("sec-fetch-site");
+	if (site === "same-origin") return true;
+	if (site === "same-site" || site === "cross-site") return topLevelNavigation(headers, method);
 	const origin = headers.get("origin");
 	if (origin === null) return true;
-	if (headers.get("sec-fetch-site") === "same-origin") return true;
 	const host = headers.get("host");
 	if (!host) return false;
 	try {
@@ -63,7 +81,7 @@ export type Credential = { token: string; via: "cookie" | "bearer" };
  * Origin rule is not used; with no bearer to fall back on it's "refused". */
 export function readCredential(request: HeaderSource): Credential | "refused" | undefined {
 	const cookie = readCookie(request.headers, sessionCookieName());
-	if (cookie && cookieOriginAllowed(request.headers)) return { token: cookie, via: "cookie" };
+	if (cookie && cookieOriginAllowed(request.headers, request.method)) return { token: cookie, via: "cookie" };
 	const authorization = request.headers.get("authorization");
 	const bearer = authorization?.match(/^Bearer\s+(\S+)\s*$/i)?.[1];
 	if (bearer) return { token: bearer, via: "bearer" };
@@ -76,9 +94,11 @@ export type AuthResult =
 
 export const SIGN_IN_REQUIRED = "Sign in required: pair this device with a pairing link (run `lh pair` on the server machine).";
 
+export const CROSS_SITE_REFUSED = "Cross-site requests to LearnHarness are not allowed.";
+
 export function authenticate(request: HeaderSource, dataDir: string = authDataDir()): AuthResult {
 	const credential = readCredential(request);
-	if (credential === "refused") return { ok: false, status: 403, error: "Cross-site requests to LearnHarness are not allowed." };
+	if (credential === "refused") return { ok: false, status: 403, error: CROSS_SITE_REFUSED };
 	if (!credential) return { ok: false, status: 401, error: SIGN_IN_REQUIRED };
 	const session = verifyToken(dataDir, credential.token);
 	if (!session) return { ok: false, status: 401, error: SIGN_IN_REQUIRED };

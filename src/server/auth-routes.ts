@@ -18,7 +18,7 @@ import {
 	type SessionRecord,
 } from "../../selfhost/src/auth-store.ts";
 import { layout } from "../../selfhost/src/paths.ts";
-import { authDataDir, authenticate, clientInfo, CREDENTIAL_HEADERS, sessionCookie } from "./auth.ts";
+import { authDataDir, authenticate, clientInfo, cookieOriginAllowed, CREDENTIAL_HEADERS, CROSS_SITE_REFUSED, sessionCookie } from "./auth.ts";
 import type { OAuthErrorResponse, SessionStateResponse, TokenExchangeResponse } from "../client-protocol/index.ts";
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
@@ -63,8 +63,11 @@ export function sessionState(request: Request): Response {
 	return json({ authenticated: true, sessionId: result.session.id, ...sessionExpiry(result.session) } satisfies SessionStateResponse);
 }
 
-/** POST /api/auth/browser-session (public): body { credential } -> session cookie. */
+/** POST /api/auth/browser-session (public): body { credential } -> session cookie.
+ * The cookie rule applies before the code is read, so another site's page
+ * can neither sign this browser in (login CSRF) nor spend a code. */
 export async function browserSession(request: Request): Promise<Response> {
+	if (!cookieOriginAllowed(request.headers, request.method)) return json({ error: CROSS_SITE_REFUSED }, 403);
 	const { credential } = await jsonBody(request);
 	if (typeof credential !== "string" || !credential) return json({ error: "Expected a pairing code." }, 400);
 	const claimed = await unlocked((options) => claimPairingCode(authDataDir(), credential, clientInfo(request), options));
