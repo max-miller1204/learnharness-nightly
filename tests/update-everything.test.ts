@@ -408,6 +408,24 @@ test("an app install that fails after the server committed offers the app-only r
 	assert.equal(f.ue.takeLaunch(), null, "offered once: nothing saved for the next launch");
 });
 
+test("an installer error main recovers from ends a run waiting on its install, with the app-only retry, so a second install works", async () => {
+	const f = fixture({ answers: [0, "wait", 1] });
+	f.remote.onInstall = () => { f.remote.running = V72; f.remote.health = V72; f.remote.instance = "new"; };
+	await f.ue.install();
+	await f.done;
+	assert.deepEqual(f.log.slice(-1), [`install ${V72}`]);
+	assert.equal(f.ue.running(), true, "waiting on the app install: Restarting");
+	assert.equal(f.ue.status().phase, "updating");
+	f.ue.installFailed();
+	await until(() => f.prompts.some((prompt) => prompt.message === "The app update didn’t finish."));
+	assert.ok(f.log.includes(`reconnect ${ORIGIN}`), "the server's new page shows again");
+	await until(() => !f.ue.running());
+	assert.notEqual(f.ue.status().phase, "updating", "no longer Restarting");
+	assert.equal(f.ue.takeLaunch(), null, "nothing saved for a relaunch that won't come");
+	f.ue.installFailed();
+	assert.equal(f.prompts.filter((prompt) => prompt.message === "The app update didn’t finish.").length, 1, "once");
+});
+
 test("after a relaunch the retry installs the pinned version, even once the feed has moved on", async () => {
 	const saved = { savedAt: 1_000_000 - 1000, server: ORIGIN, updated: ORIGIN, from: V71, target: V72 };
 	const f = fixture({ saved, offered: V73, answers: [0] });

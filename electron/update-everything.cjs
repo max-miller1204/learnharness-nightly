@@ -229,6 +229,12 @@ function createUpdateEverything(deps) {
 			// `retried`: if this install fails too (seen only after the relaunch, on every platform),
 			// the next launch says so instead of offering Try Again again.
 			deps.saveResult({ savedAt: deps.now(), server: deps.selection()?.origin ?? retry.server, updated: retry.updated ?? retry.server, from: deps.appVersion, target: retry.target, retried: true });
+			// An installer error main recovers from (installFailed): the same failure text, once.
+			run.installFailed = async () => {
+				run = null;
+				forgetResult();
+				await retryFailed(retry);
+			};
 			deps.updater.installPinned(retry.target);
 		} catch {
 			run = null;
@@ -306,6 +312,18 @@ function createUpdateEverything(deps) {
 			}
 			// Reopen the server that is open now (the user may have switched); `updated` is the one the run moved.
 			deps.saveResult({ savedAt: deps.now(), server: deps.selection()?.origin ?? selection.origin, updated: selection.origin, from: deps.appVersion, target });
+			// An installer error main recovers from (installFailed) ends the run as a failed app install
+			// would: with the server on the target, its page and the app-only retry; else a notice.
+			run.installFailed = async () => {
+				run = null;
+				forgetResult();
+				if (serverDone) {
+					deps.reconnect(selection.origin, target);
+					await offerRetry({ target, server: selection.origin, updated: selection.origin });
+				} else {
+					await deps.tell({ message: "Couldn’t update everything.", detail: "Couldn’t install the app update. Try again." });
+				}
+			};
 			deps.updater.installPinned(target);
 		} catch (error) {
 			const saved = run?.step === "restarting";
@@ -327,6 +345,12 @@ function createUpdateEverything(deps) {
 		status,
 		/** A run, or its confirmation, is going: the plain install and the menu wait. */
 		running: () => run !== null || asking,
+		/** Main recovered from an installer error (T3's recoverFailedInstall): a run waiting on its
+		 *  app install ends with a retryable failure instead of "Restarting" for good. */
+		installFailed() {
+			const fail = run?.step === "restarting" ? run.installFailed : null;
+			if (fail) void fail();
+		},
 		/** The origin a run is updating, from its confirmation to its end, or null. */
 		server: () => against,
 		check() {

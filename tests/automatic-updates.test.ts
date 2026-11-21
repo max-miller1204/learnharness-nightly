@@ -18,6 +18,8 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 	const settingsReads: string[] = [];
 	// userData/desktop-update-install.json: written before an install, read once at launch.
 	const record = { text: installRecord, removed: false };
+	// The session's permission handlers createWindow installs (the last window's).
+	const permissions: { request?: (wc: unknown, permission: string, callback: (ok: boolean) => void, details: { requestingUrl?: string }) => void; check?: (wc: unknown, permission: string, origin: string) => boolean } = {};
 	const installArgs: unknown[][] = [];
 	const order: string[] = [];
 	const intervals: { callback: () => void; delay: number }[] = [];
@@ -79,6 +81,7 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 		constructor() { super(); windows.push(this); }
 		loadURL() { this.webContents.loading = true; }
 		isMinimized() { return this.minimized; }
+		isDestroyed() { return !windows.includes(this); }
 		restore() { this.minimized = false; }
 		focus() { this.focused = true; }
 		show() {}
@@ -106,7 +109,10 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 		Menu: { buildFromTemplate: (value: typeof menu) => value, setApplicationMenu: (value: typeof menu) => { menu = value; } },
 		ipcMain: { on() {}, handle: (channel: string, fn: (event: unknown) => unknown) => handles.set(channel, fn) },
 		nativeTheme: { shouldUseDarkColors: true, themeSource: "system", on() {} },
-		session: { defaultSession: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} } },
+		session: { defaultSession: {
+			setPermissionRequestHandler(fn: unknown) { permissions.request = fn as typeof permissions.request; },
+			setPermissionCheckHandler(fn: unknown) { permissions.check = fn as typeof permissions.check; },
+		} },
 	};
 	const context = createContext({
 		require: (id: string) => {
@@ -147,7 +153,7 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 	runInContext(mainSource, context, { filename: mainFile });
 	const run = (code: string) => runInContext(code, context);
 	return {
-		run, updater, windows, intervals, timeouts, handles, settingsReads, order, app, record, installArgs,
+		run, updater, windows, intervals, timeouts, handles, settingsReads, order, app, record, installArgs, permissions,
 		setSettings: (value: unknown) => { settings = JSON.stringify(value); },
 		setSettingsFailure: (value: string | Error) => { settings = value; },
 		window: () => run("createWindow(process.env.LH_DEV_URL).win") as FakeWindow,
@@ -436,11 +442,16 @@ describe("status observation never controls the updater", () => {
 		assert.deepEqual([failed.status, failed.errorContext, failed.canRetry, failed.downloadedVersion, failed.message], ["downloaded", "install", true, "0.3.8", "Couldn’t install the update."], "T3's install failure, with no generic error on top");
 		assert.equal(f.record.text, null, "never applied: the record goes");
 		assert.equal(f.run("installing"), false, "the install flags reset");
-		assert.equal(f.run("fixtureRestarts"), 1, "the bundled server stopped for the install starts again");
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(f.run("fixtureRestarts"), 0, "not while the old server is still stopping (its close would dispose the new backend)");
+		f.run("fixtureChild.emit('close', 0, null)");
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(f.run("fixtureRestarts"), 1, "the bundled server stopped for the install starts again once it stopped");
 		f.updater.emit("error", new Error("a later background error"));
 		assert.equal(f.state().status, "downloaded", "a later error doesn't hide it");
 		// Install again works, and the failure no longer applies.
 		f.updater.failure = null;
+		f.run("fixtureChild.removeAllListeners('close')");
 		await f.run("serverProcess = fixtureChild; installUpdateNow()");
 		assert.deepEqual(f.installArgs, [[true, true], [true, true]]);
 		assert.equal(f.state().errorContext, null);
@@ -451,6 +462,70 @@ describe("status observation never controls the updater", () => {
 		await g.run("serverProcess = fixtureChild; installUpdateNow()");
 		assert.deepEqual([g.state().status, g.state().errorContext], ["downloaded", null], "the re-check's error is not an install failure");
 		assert.deepEqual(g.installArgs, [[true, true]]);
+	});
+
+	it("after a failed install the local window reloads through its own load(): permissions and navigation follow the new port", async () => {
+		const f = fixture(); const win = f.window();
+		const loaded: string[] = [];
+		const original = win.loadURL.bind(win);
+		win.loadURL = ((url: string) => { loaded.push(url); original(); }) as typeof win.loadURL;
+		f.run("startLocalServer = async () => 'http://127.0.0.1:9555'");
+		await f.run("restartLocalAfterFailedInstall()");
+		assert.deepEqual(loaded, ["http://127.0.0.1:9555"]);
+		assert.equal(f.permissions.check!(null, "media", "http://127.0.0.1:9555"), true, "the new origin's permissions");
+		assert.equal(f.permissions.check!(null, "media", "http://127.0.0.1:9000"), false, "not the old one's");
+		let prevented = false;
+		win.webContents.emit("will-navigate", { preventDefault: () => { prevented = true; } }, "http://127.0.0.1:9555/chat");
+		assert.equal(prevented, false, "same-origin navigation on the new port stays in the window");
+	});
+
+	it("a failed pinned install ends the Update everything run instead of leaving it on Restarting", async () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.run("var fixtureRunEnded = 0; updateEverything = { running: () => false, installFailed: () => { fixtureRunEnded++; } }");
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		f.run(`updateActions.installPinned("0.3.8")`);
+		f.updater.emit("error", new Error("installer refused"));
+		assert.equal(f.run("fixtureRunEnded"), 1);
+		assert.equal(f.state().errorContext, "install");
+	});
+
+	it("no check runs while an install is under way, so a feed error can't read as the install's", async () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		f.updater.quitAndInstall = function (...args: unknown[]) { f.installArgs.push(args); };
+		await f.run("installUpdateNow()");
+		const checks = f.updater.checks;
+		f.updater.failure = new Error("feed down");
+		await f.check(true);
+		f.intervals.forEach((t) => t.callback());
+		await f.run("updateActions.checkNatively()");
+		assert.equal(f.updater.checks, checks, "the timer, Settings and the menu all wait");
+		assert.equal(f.state().status, "downloaded", "and nothing recovered");
+		assert.equal(f.run("installing"), true);
+	});
+
+	it("a retry from error whose re-check fails downloads the known offer, never sticking on Checking", async () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.updater.emit("update-available", { version: "0.3.8" });
+		f.updater.offer = { version: "0.3.8" }; f.updater.downloadFails = true;
+		await f.run("downloadUpdateNow()");
+		f.updater.emit("error", new Error("background"));
+		assert.deepEqual([f.state().status, f.state().errorContext], ["error", "download"]);
+		f.updater.failure = new Error("offline"); f.updater.downloadFails = false;
+		const statuses: string[] = [];
+		f.updater.on("checking-for-update", () => statuses.push(f.state().status));
+		await f.run("downloadUpdateNow()");
+		assert.deepEqual(statuses, ["error"], "the retry's re-check doesn't flip it to Checking");
+		assert.equal(f.state().status, "downloaded");
+	});
+
+	it("the menu's failed check never replaces a download under way", async () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.updater.emit("update-available", { version: "0.3.8" });
+		f.run("setUpdateState(updateMachine.reduceOnDownloadStart(updateState))");
+		f.updater.failure = new Error("feed down");
+		await (f.run("updateActions.checkNatively()") as Promise<void>).catch(() => {});
+		assert.equal(f.state().status, "downloading");
 	});
 
 	it("a Download click during a running check waits for it, then downloads (T3's admitAfterCheck)", async () => {

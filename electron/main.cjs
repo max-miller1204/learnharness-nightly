@@ -152,6 +152,8 @@ if (process.argv.includes("--browser-service")) {
 }
 
 let serverProcess = null;
+// Each app window's own load(), which also moves its allowed origin (createWindow).
+const windowLoaders = new WeakMap();
 let chatgpt = null;
 let chatgptChild = null;
 let subscriptions = null;
@@ -428,6 +430,7 @@ function createWindow(url) {
 		appOrigin = new URL(target).origin;
 		return win.loadURL(target);
 	};
+	windowLoaders.set(win, load);
 	if (url) void load(url);
 	// Zoom truth reaches the renderer for EVERY load (reload, nav): the
 	// renderer's --lh-zoom must never go stale. The fallback catcher below
@@ -520,9 +523,9 @@ let quitRequested = false;
 let activeAction = null;
 // The running check's promise, so a Download click can wait for it (T3's admitAfterCheck).
 let activeCheck = null;
-// The install's quit watch, and whether it stopped the bundled server (recovery starts it again).
+// The install's quit watch, and the bundled server's stop for it (recovery waits for it, then starts it again).
 let installWatch = null;
-let serverStoppedForInstall = false;
+let serverStoppedForInstall = null;
 // The install this launch didn't apply (T3's notAppliedVersion), from the install record.
 let notAppliedVersion = null;
 
@@ -541,7 +544,9 @@ const INSTALL_FAILED = "Couldn’t install the update.";
  * starts again, with the local window reloaded onto it.
  */
 function recoverFailedInstall() {
-	if (!installing) return;
+	// T3's ownsRecovery: only the install that is still the active action recovers, once.
+	if (!installing || activeAction !== "install") return;
+	activeAction = null;
 	if (installWatch) {
 		clearTimeout(installWatch.timer);
 		app.removeListener("before-quit", installWatch.markQuitting);
@@ -551,16 +556,27 @@ function recoverFailedInstall() {
 	quitRequested = false;
 	removeInstallRecord();
 	setUpdateState(updateMachine.reduceOnInstallFailure(updateState, INSTALL_FAILED));
-	if (serverStoppedForInstall) {
-		serverStoppedForInstall = false;
-		void restartLocalAfterFailedInstall().catch((err) => log(`could not restart the server after a failed install: ${err?.message ?? err}`));
+	// An Update everything run waiting on this install ends with a retryable failure.
+	updateEverything?.installFailed?.();
+	const stopped = serverStoppedForInstall;
+	serverStoppedForInstall = null;
+	// T3 restarts its backends once they stopped: the old child's close would otherwise dispose the
+	// new backend, and two servers would share the data folder.
+	if (stopped) {
+		void stopped
+			.then(() => restartLocalAfterFailedInstall())
+			.catch((err) => log(`could not restart the server after a failed install: ${err?.message ?? err}`));
 	}
 }
 
+/** The bundled server again, and each local window loaded onto its new origin through its own
+ *  load(), so permissions and same-origin navigation follow the new port. */
 async function restartLocalAfterFailedInstall() {
 	const url = await startLocalServer(new AbortController().signal);
 	for (const win of trustedAppWindows) {
-		if (!win.isDestroyed()) await win.loadURL(url).catch(() => {});
+		if (win.isDestroyed()) continue;
+		const load = windowLoaders.get(win);
+		try { await (load ? load(url) : win.loadURL(url)); } catch { /* its own load error stays in the window */ }
 	}
 }
 const offeredNotes = () => releaseNotes.capGroups(offeredGroups);
@@ -647,7 +663,8 @@ function checkForUpdates({ manual = false } = {}) {
 	// Do not gate on display state: a stale spinner or error must never disable future background
 	// checks. Only a check or download of ours still running skips this one, as T3's active action
 	// does (DesktopUpdates.ts:583-591); electron-updater owns the rest of its in-flight work.
-	if (activeAction) return;
+	// Nor during an install: its feed errors must never read as the install's.
+	if (activeAction || installing) return;
 	activeAction = "check";
 	activeCheck = autoUpdater
 		.checkForUpdates()
@@ -675,6 +692,8 @@ async function downloadUpdateNow() {
 	if (activeAction === "check" && activeCheck) await activeCheck.catch(() => {});
 	if (activeAction || installing || updateEverything?.running() || !updateMachine.hasDownloadableOffer(updateState)) return;
 	activeAction = "download";
+	// The offer as clicked: a failed re-check downloads it as known (from "error" too).
+	const clicked = updateState;
 	try {
 		let pulled = false;
 		const nothingOffered = () => { pulled = true; };
@@ -691,7 +710,10 @@ async function downloadUpdateNow() {
 			setUpdateState(updateMachine.reduceOnNoUpdate(updateState, nowIso()));
 			return;
 		}
-		if (!updateMachine.hasDownloadableOffer(updateState)) return;
+		if (!updateMachine.hasDownloadableOffer(updateState)) {
+			if (updateState.status !== "checking") return;
+			setUpdateState({ ...clicked });
+		}
 		setUpdateState(updateMachine.reduceOnDownloadStart(updateState));
 		try {
 			await autoUpdater.downloadUpdate();
@@ -756,13 +778,15 @@ function quitAndInstallNow() {
 	} catch (err) {
 		log(`could not save the release notes for What's new: ${err?.message ?? err}`);
 	}
-	// Kill the server BEFORE the quit-and-install (see block comment).
-	serverStoppedForInstall = !!serverProcess;
+	// Kill the server BEFORE the quit-and-install (see block comment); a recovery waits for its stop.
+	const hadServer = !!serverProcess;
+	let stopped = Promise.resolve();
 	try {
-		killServer();
+		stopped = killServer();
 	} catch {
 		/* already dead */
 	}
+	serverStoppedForInstall = hadServer ? stopped : null;
 	// The next launch compares this with its own version: still the old one means it didn't apply (T3).
 	if (updateState.downloadedVersion) writeInstallRecord(updateState.downloadedVersion);
 	let quitting = false;
@@ -781,6 +805,8 @@ function quitAndInstallNow() {
 		}, INSTALL_QUIT_GRACE_MS),
 	};
 	quitRequested = true;
+	// From here an updater error is the install's (T3's install action, which owns its recovery).
+	activeAction = "install";
 	try {
 		// Silent, and run the new version after (T3's quitAndInstall, DesktopUpdates.ts:930-933):
 		// NSIS shows no installer window and always relaunches.
@@ -799,7 +825,8 @@ let updateEverything = null;
 const updateActions = createUpdateActions({
 	updater: () => autoUpdater,
 	state: () => updateState,
-	report: (status) => { if (status === "error") setUpdateState(updateMachine.reduceOnCheckFailure(updateState, CHECK_FAILED, nowIso())); },
+	// The menu's failed check, never over a download or an install under way.
+	report: (status) => { if (status === "error" && updateState.status !== "downloading" && !installing) setUpdateState(updateMachine.reduceOnCheckFailure(updateState, CHECK_FAILED, nowIso())); },
 	// A pinned download names its version from the start: electron-updater drops an older staged
 	// download once it starts another, so the state no longer claims it.
 	downloadStarted: (version) => {
@@ -907,8 +934,9 @@ function setupAutoUpdater() {
 		error: (m) => log(`updater error: ${m}`),
 	};
 	// An offered, downloading or downloaded update stays on screen while a later check runs
-	// (T3: "An offer stays on screen while re-checking", DesktopUpdates.ts:594-597).
-	const offering = () => updateMachine.isOffered(updateState) || updateState.status === "downloading";
+	// (T3: "An offer stays on screen while re-checking", DesktopUpdates.ts:594-597), and so does a
+	// failed download being retried from "error" (its Download re-checks first).
+	const offering = () => updateMachine.isOffered(updateState) || updateState.status === "downloading" || updateMachine.hasDownloadableOffer(updateState);
 	autoUpdater.on("checking-for-update", () => { if (!offering()) setUpdateState(updateMachine.reduceOnCheckStart(updateState, nowIso())); });
 	autoUpdater.on("update-available", (info) => {
 		// A later check must not hide a staged or downloading update (Install re-checks for newer itself).
@@ -933,7 +961,8 @@ function setupAutoUpdater() {
 		// An install's error (electron-updater reports a failed installer here): T3's recovery, with no
 		// generic error on top. A check or download of ours reports through its own promise, and a
 		// later error must not hide an update already staged (as T3's check failure keeps it).
-		if (installing) { if (quitRequested) recoverFailedInstall(); return; }
+		if (activeAction === "install") { recoverFailedInstall(); return; }
+		if (installing) return;
 		if (activeAction || updateState.downloadedVersion) return;
 		setUpdateState(updateMachine.reduceOnUpdaterError(updateState, UPDATE_FAILED, nowIso()));
 	});

@@ -93,6 +93,8 @@ function createUpdateActions(deps) {
 	/** T3's native dialogs for the app menu's check (DesktopApplicationMenu.ts:71-165 at 3ce2145). */
 	async function checkNatively() {
 		const show = deps.show;
+		// An install is under way: its own updater errors must not meet a check's.
+		if (deps.installing()) return;
 		if (deps.running()) {
 			// The run already pinned, downloaded and owns the restart.
 			await show({ type: "info", title: "Update in progress", message: "Update everything is running.", detail: "LearnHarness restarts by itself when the server is back.", buttons: ["OK"] });
