@@ -1,0 +1,44 @@
+{
+	"id": "chat_zzopenshort",
+	"title": "Short session (made up)",
+	"createdAt": "2026-11-19T09:00:00.000Z",
+	"updatedAt": "2026-11-19T09:00:40.000Z",
+	"messages": [
+		{
+			"role": "user",
+			"content": "What is a derivative?",
+			"id": "u_short",
+			"timestamp": 1795078820000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "The derivative of $f$ at $x$ is the limit\n\n$$\nf'(x) = \\lim_{h \\to 0} \\frac{f(x + h) - f(x)}{h}\n$$\n\nFor $f(x) = x^2$ it is $2x$."
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "stop",
+			"id": "a_short",
+			"timestamp": 1795078840000
+		}
+	],
+	"version": 2
+}

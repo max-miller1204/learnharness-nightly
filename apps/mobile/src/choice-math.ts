@@ -16,6 +16,7 @@ import type { LiteText } from "mathjax-full/js/adaptors/lite/Text.js";
 import { readContentSpans } from "../../../src/core/content-reader.ts";
 import { indented, repairMathForDisplay } from "../../../src/core/math-delims.ts";
 import { resolveTheme, shiftHex } from "../../../src/core/themes.ts";
+import { flattenSvg, safeMarkup, type SvgNode } from "./svg-flatten";
 
 /** AI-written math is untrusted. `html` makes links, styles and ids; `bussproofs` needs
  * an output that measures boxes; `action` adds event handlers, which the drawing can't
@@ -203,6 +204,9 @@ const withoutColors = (svg: string) => svg
 /** Data attributes and classes do nothing in the drawing, so none reaches it. */
 const stripData = (svg: string) => svg.replace(/ (?:data-[a-z-]+|class)="[^"]*"/g, "");
 
+/** Whether drawings are flattened (svg-flatten.ts); off only to compare with MathJax's own, in tests. */
+export const flattening = { on: true };
+
 /** Draws TeX, or returns undefined when it doesn't parse, throws, or isn't safe to show. */
 export function drawTex(tex: string, display: boolean): DrawnMath | undefined {
   const registered = new Set(tagClasses.keys());
@@ -222,12 +226,16 @@ export function drawTex(tex: string, display: boolean): DrawnMath | undefined {
     const svg = adaptor.firstChild(item.typesetRoot) as LiteElement;
     const [, minY = 0, width = 0, height = 0] = (adaptor.getAttribute(svg, "viewBox") ?? "").split(" ").map(Number);
     for (const name of ["width", "height", "style"]) adaptor.removeAttribute(svg, name);
-    const markup = adaptor.outerHTML(svg);
-    if (/data-mml-node="merror"|data-mjx-error/.test(markup) || /\s(?:style|id)=/.test(markup)) return;
+    const original = adaptor.outerHTML(svg);
+    if (/data-mml-node="merror"|data-mjx-error/.test(original) || /\s(?:style|id)=/.test(original)) return;
+    // The same picture without its groups draws far faster (svg-flatten.ts).
+    const markup = (flattening.on && flattenSvg(svg as unknown as SvgNode)) || original;
     if (!(width > 0 && height > 0)) return;
     const found = inks(root, undefined, undefined, []);
     const plain = stripData(withoutColors(markup));
     const colored = stripData(markup);
+    // What is drawn is only drawing: nothing that loads, links or runs.
+    if (!safeMarkup(plain) || !safeMarkup(colored)) return;
     return {
       svg: { dark: readable(found, "dark") ? colored : plain, light: readable(found, "light") ? colored : plain },
       width: width / 1000,

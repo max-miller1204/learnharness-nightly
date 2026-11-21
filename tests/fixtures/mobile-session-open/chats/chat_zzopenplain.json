@@ -1,0 +1,289 @@
+{
+	"id": "chat_zzopenplain",
+	"title": "Session without math (made up)",
+	"createdAt": "2026-11-19T09:00:00.000Z",
+	"updatedAt": "2026-11-19T09:05:20.000Z",
+	"messages": [
+		{
+			"role": "user",
+			"content": "Teach me how to read a research paper.",
+			"id": "u_plain0",
+			"timestamp": 1795078820000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "**Step 1.** Start with the title and abstract. They tell you the question the paper asks and the answer it claims.\n\nStart with the title and abstract. They tell you the question the paper asks and the answer it claims. Take your time with this part, and come back to it when a later section surprises you."
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "stop",
+			"id": "a_plain0",
+			"timestamp": 1795078840000
+		},
+		{
+			"role": "user",
+			"content": "Okay.",
+			"id": "u_plain1",
+			"timestamp": 1795078860000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "**Step 2.** Read the introduction next. It says why the question matters and what earlier work missed.\n\nRead the introduction next. It says why the question matters and what earlier work missed. Take your time with this part, and come back to it when a later section surprises you."
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "stop",
+			"id": "a_plain1",
+			"timestamp": 1795078880000
+		},
+		{
+			"role": "user",
+			"content": "Makes sense.",
+			"id": "u_plain2",
+			"timestamp": 1795078900000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "**Step 3.** Skim the figures before the methods. A good figure carries the main result on its own.\n\nSkim the figures before the methods. A good figure carries the main result on its own. Take your time with this part, and come back to it when a later section surprises you."
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "stop",
+			"id": "a_plain2",
+			"timestamp": 1795078920000
+		},
+		{
+			"role": "user",
+			"content": "Go on.",
+			"id": "u_plain3",
+			"timestamp": 1795078940000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "**Step 4.** Now read the methods slowly. Ask what each choice rules out and what it leaves open.\n\nNow read the methods slowly. Ask what each choice rules out and what it leaves open. Take your time with this part, and come back to it when a later section surprises you."
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "stop",
+			"id": "a_plain3",
+			"timestamp": 1795078960000
+		},
+		{
+			"role": "user",
+			"content": "And then?",
+			"id": "u_plain4",
+			"timestamp": 1795078980000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "**Step 5.** Check the results against the claims in the abstract. Note anything the abstract overstates.\n\nCheck the results against the claims in the abstract. Note anything the abstract overstates. Take your time with this part, and come back to it when a later section surprises you."
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "stop",
+			"id": "a_plain4",
+			"timestamp": 1795079000000
+		},
+		{
+			"role": "user",
+			"content": "Okay.",
+			"id": "u_plain5",
+			"timestamp": 1795079020000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "**Step 6.** Read the discussion last. Look for the limits the authors admit and the ones they don't.\n\nRead the discussion last. Look for the limits the authors admit and the ones they don't. Take your time with this part, and come back to it when a later section surprises you."
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "stop",
+			"id": "a_plain5",
+			"timestamp": 1795079040000
+		},
+		{
+			"role": "user",
+			"content": "Makes sense.",
+			"id": "u_plain6",
+			"timestamp": 1795079060000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "**Step 7.** Write a three-sentence summary in your own words. If you can't, reread the part you skipped.\n\nWrite a three-sentence summary in your own words. If you can't, reread the part you skipped. Take your time with this part, and come back to it when a later section surprises you."
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "stop",
+			"id": "a_plain6",
+			"timestamp": 1795079080000
+		},
+		{
+			"role": "user",
+			"content": "Go on.",
+			"id": "u_plain7",
+			"timestamp": 1795079100000
+		},
+		{
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "**Step 8.** Finally, list two questions the paper leaves open. That is where your own work can start.\n\nFinally, list two questions the paper leaves open. That is where your own work can start. Take your time with this part, and come back to it when a later section surprises you."
+				}
+			],
+			"api": "openai-completions",
+			"provider": "custom",
+			"model": "prove-strong",
+			"usage": {
+				"input": 1200,
+				"output": 300,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 1500,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "stop",
+			"id": "a_plain7",
+			"timestamp": 1795079120000
+		}
+	],
+	"version": 2
+}

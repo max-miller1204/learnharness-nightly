@@ -24,7 +24,7 @@ const hidden = (node: ReactTestInstance) =>
 /** Text and drawings a screen reader could reach on their own, outside any hidden subtree. */
 function reachable(node: ReactTestInstance, found: ReactTestInstance[] = []): ReactTestInstance[] {
   if (typeof node.type === "string" && hidden(node)) return found;
-  if (is(node, "Text") || is(node, "SvgXml")) found.push(node);
+  if (is(node, "Text") || is(node, "SvgAst")) found.push(node);
   for (const child of node.children) if (typeof child !== "string") reachable(child, found);
   return found;
 }
@@ -37,7 +37,7 @@ test("a math choice row draws its math with no web view, as one radio stop", () 
   const tree = row("No, $P\\to Q$ is blocked.");
   const types = hosts(tree).map((node) => String(node.type));
   assert.ok(!types.some((type) => /web/i.test(type)), `no web view: ${types.join(" ")}`);
-  assert.equal(types.filter((type) => type === "SvgXml").length, 1);
+  assert.equal(types.filter((type) => type === "SvgAst").length, 1);
   const [stop, ...others] = tree.root.findAll((node) => is(node, "Pressable"));
   assert.equal(others.length, 0);
   assert.equal(stop?.props.accessibilityRole, "radio");
@@ -55,7 +55,7 @@ test("a multi-select row is a checked checkbox; a plain row keeps its text", () 
   assert.equal(stop.props.accessibilityLabel, "x superscript 2");
   act(() => multi.unmount());
   const plain = row("Other", { math: false });
-  assert.equal(plain.root.findAll((node) => is(node, "SvgXml")).length, 0);
+  assert.equal(plain.root.findAll((node) => is(node, "SvgAst")).length, 0);
   assert.equal(plain.root.find((node) => is(node, "Pressable")).props.accessibilityLabel, "Other");
   assert.deepEqual(reachable(plain.root), []);
   act(() => plain.unmount());

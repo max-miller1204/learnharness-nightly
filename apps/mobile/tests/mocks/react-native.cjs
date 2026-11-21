@@ -15,5 +15,12 @@ module.exports = {
   // Tests set globalThis.fontScale to try the system font scale.
   useWindowDimensions: () => ({ width: 400, height: 800, scale: 2, fontScale: globalThis.fontScale ?? 1 }),
   Platform: { OS: "android", select: (choices) => choices.android ?? choices.default },
-  AccessibilityInfo: { announceForAccessibility: () => {} },
+  // Tests set globalThis.screenReader and globalThis.reduceMotion to try those settings.
+  AccessibilityInfo: {
+    announceForAccessibility: () => {},
+    isScreenReaderEnabled: () => Promise.resolve(globalThis.screenReader ?? false),
+    isReduceMotionEnabled: () => Promise.resolve(globalThis.reduceMotion ?? false),
+    addEventListener: () => ({ remove: () => {} }),
+  },
+  PixelRatio: { get: () => 2.625, roundToNearestPixel: (size) => Math.round(size * 2.625) / 2.625 },
 };
