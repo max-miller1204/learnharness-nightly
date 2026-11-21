@@ -12,6 +12,8 @@
  *   check()              main's check (checkForUpdates), the sidebar's: resolves { checked }
  *   activate()           show and focus the app's window (starting to reopen one), before the
  *                        check; the window to parent the dialog on, or null
+ *   appWindow()          the app window when it is alive and shown, else null: the parent of the
+ *                        dialogs shown before activation
  *   downloadStarted(version)  "downloading" `version` at 0%, as the Download button does
  *   downloadFailed(version)   the download failed: offer `version` again with T3's retry
  *   installing()         an install is already under way
@@ -110,12 +112,12 @@ function createUpdateActions(deps) {
 		const show = deps.show;
 		if (deps.installing()) return;
 		if (deps.running()) {
-			await show({ type: "info", title: "Update in progress", message: "Update everything is running.", detail: "LearnHarness restarts by itself when the server is back.", buttons: ["OK"] });
+			await show({ type: "info", title: "Update in progress", message: "Update everything is running.", detail: "LearnHarness restarts by itself when the server is back.", buttons: ["OK"] }, deps.appWindow?.() ?? null);
 			return;
 		}
-		// T3's "Updates unavailable" (:155-166), before any window opens.
+		// T3's "Updates unavailable" (:155-166), before any window opens: on the app window if one is shown.
 		if (!deps.updater()) {
-			await show({ type: "info", title: "Updates unavailable", message: "Automatic updates are not available right now.", detail: "Automatic updates are not available in this build.", buttons: ["OK"] });
+			await show({ type: "info", title: "Updates unavailable", message: "Automatic updates are not available right now.", detail: "Automatic updates are not available in this build.", buttons: ["OK"] }, deps.appWindow?.() ?? null);
 			return;
 		}
 		// T3 activates the window first (:168-170); a failure there never stops the check.

@@ -915,6 +915,9 @@ const updateActions = createUpdateActions({
 	// The menu's check is main's own (the sidebar's): its failure handling, and its { checked }.
 	check: () => checkForUpdates(),
 	activate: () => activateWindow(),
+	// The dialogs shown before any activation (Update in progress, Updates unavailable) sit on the
+	// app window too while it is alive and shown, without restoring it.
+	appWindow: () => dialogParent(appWindow()),
 	// A pinned download names its version from the start: electron-updater drops an older staged
 	// download once it starts another, so the state no longer claims it.
 	downloadStarted: (version) => {
@@ -934,7 +937,10 @@ const updateActions = createUpdateActions({
 	compareVersions: releaseNotes.compareVersions,
 	// `parent`: the app window the menu activated (focus arrives late on Linux and Windows). With
 	// none, no parent at all: the focused window may be the Switch server… panel.
-	show: (options, parent) => (parent && !parent.isDestroyed() ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options)),
+	show: (options, parent) => {
+		const owner = dialogParent(parent);
+		return owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options);
+	},
 	// The menu's Download and Restart name the version their dialog showed: never another one.
 	download: (version) => downloadUpdateNow({ expect: version }),
 	install: (version) => installUpdateNow({ expect: version }),
@@ -1066,6 +1072,12 @@ function appWindow() {
 	return [...trustedAppWindows].find((win) => !win.isDestroyed()) ?? null;
 }
 
+/** A window a menu dialog may sit on: alive and shown. A replacement window that exists but isn't
+ *  shown yet (its first paint is pending) is still opening: no parent then. */
+function dialogParent(win) {
+	return win && !win.isDestroyed() && win.isVisible() ? win : null;
+}
+
 /** The menu's check shows its dialog over the app's window: restore and focus it, or start
  *  reopening it when it is gone, without waiting for a reconnect (T3's desktopWindow.activate,
  *  DesktopWindow.ts:1169-1189 at df09ced7, reveals its splash and returns). The window to
@@ -1084,7 +1096,7 @@ function activateWindow() {
 	}
 	if (win.isMinimized()) win.restore();
 	win.focus();
-	return win;
+	return dialogParent(win);
 }
 
 function zoomStep(win, dir) {

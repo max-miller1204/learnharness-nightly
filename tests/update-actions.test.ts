@@ -30,7 +30,7 @@ function fixture({ state = { status: "available", version: V72 } as State, offer
 	const flags = {
 		running, installing: false, checkFails: false, downloadFails: false, inFlight: null as string | null, offered, pinnedFeed: null as string | null, activateFails: false,
 		/** Whether the menu's own check ran ({ checked }), and what happens while a dialog is open. */
-		checked: true, whileOpen: null as (() => void) | null,
+		checked: true, whileOpen: null as (() => void) | null, appWindowShown: true,
 		/** What main's Download or Restart does when pressed: by default it takes it. */
 		onAction: null as (() => unknown) | null,
 	};
@@ -63,6 +63,7 @@ function fixture({ state = { status: "available", version: V72 } as State, offer
 			return { checked: flags.checked };
 		},
 		activate: () => { log.push("activate"); if (flags.activateFails) throw new Error("no window"); return appWindow; },
+		appWindow: () => (flags.appWindowShown ? appWindow : null),
 		downloadStarted: (version: string) => { started.push(version); },
 		installing: () => flags.installing,
 		startInstall: () => log.push(`quit and install ${current.version}`),
@@ -322,6 +323,20 @@ for (const [status, action] of [["downloaded", "menu install"], ["available", "m
 		assert.equal(f.dialogs.length, 1);
 	});
 }
+
+test("Update in progress and Updates unavailable sit on the shown app window without activating it, else no parent", async () => {
+	const busy = fixture({ running: true });
+	await busy.actions.checkNatively();
+	assert.deepEqual([busy.dialogs[0]!.title, busy.parents[0] === busy.appWindow, busy.log], ["Update in progress", true, []]);
+	const off = fixture();
+	off.remove();
+	await off.actions.checkNatively();
+	assert.deepEqual([off.dialogs[0]!.title, off.parents[0] === off.appWindow, off.log], ["Updates unavailable", true, []]);
+	const hidden = fixture({ running: true });
+	hidden.flags.appWindowShown = false;
+	await hidden.actions.checkNatively();
+	assert.equal(hidden.parents[0], null);
+});
 
 test("the menu while an install is under way shows nothing and checks nothing", async () => {
 	const f = fixture({ state: { status: "downloaded", version: V72 } });

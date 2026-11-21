@@ -84,14 +84,18 @@ function fixture({ packaged = true, updaterMissing = false, installRecord = null
 		webContents = new FakeWebContents();
 		minimized = false;
 		focused = false;
-		constructor() { super(); windows.push(this); }
-		loadURL() { this.webContents.loading = true; }
+		/** `show: false` windows stay hidden until shown (main shows them on ready-to-show). */
+		visible: boolean;
+		constructor(options?: { show?: boolean }) { super(); this.visible = options?.show !== false; windows.push(this); }
+		// The first paint (ready-to-show) comes after the current task, as in Electron.
+		loadURL() { this.webContents.loading = true; setImmediate(() => this.emit("ready-to-show")); }
+		isVisible() { return this.visible; }
 		isMinimized() { return this.minimized; }
 		isDestroyed() { return !windows.includes(this); }
 		restore() { this.minimized = false; }
 		// Focus arrives a moment later, as on Linux and Windows.
 		focus() { setImmediate(() => { for (const other of windows) other.focused = other === this; }); }
-		show() {}
+		show() { this.visible = true; }
 		close() {
 			windows.splice(windows.indexOf(this), 1);
 			this.emit("closed");
@@ -819,14 +823,14 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 	});
 
 	it("the menu restores and focuses the window first, then shows T3's dialog over it, and never opens Settings", async () => {
-		const f = fixture(); await f.run("main()");
+		const f = fixture(); await f.run("main()"); await settleMenu();
 		const win = f.windows[0]!; win.minimized = true;
 		await f.menuCheck();
 		await settleMenu();
 		assert.deepEqual([win.minimized, win.focused], [false, true]);
 		assert.equal(f.updater.checks, 1, "main's own check");
 		assert.deepEqual(f.dialogs.map((d) => [d.options.title, d.options.message, d.options.buttons]), [["You're up to date!", "LearnHarness 0.3.7 is currently the newest version available.", ["OK"]]]);
-		assert.equal(f.dialogs[0]!.parent, win, "over the app's window");
+		assert.ok(f.dialogs[0]!.parent === win, "over the app's window");
 		assert.deepEqual(win.webContents.messages.filter((message) => !message.channel.startsWith("lh:update")), [], "no Settings page: the dialog is the answer");
 		assert.equal(f.state().status, "up-to-date", "the sidebar and Settings follow the same state");
 	});
@@ -837,12 +841,13 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 		first.close();
 		const panel = f.untrustedWindow(); // opened first, like the Switch server… panel
 		f.run("createWindow(process.env.LH_DEV_URL)");
+		await settleMenu(); // painted
 		const app = f.windows.find((win) => win !== panel)!;
 		app.minimized = true;
 		await f.menuCheck();
 		await settleMenu();
 		assert.equal(app.minimized, false, "the app window is restored");
-		assert.equal(f.dialogs[0]!.parent, app, "and the dialog sits on it");
+		assert.ok(f.dialogs[0]!.parent === app, "and the dialog sits on it");
 		assert.equal(f.windows.length, 2, "no second app window opened");
 		// Only the panel open: the app window is reopened for the dialog.
 		const g = fixture(); await g.run("main()");
@@ -851,7 +856,7 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 		await g.menuCheck();
 		await settleMenu();
 		assert.equal(g.windows.length, 2, "an app window reopened beside the panel");
-		assert.notEqual(g.dialogs[0]!.parent, other);
+		assert.ok(g.dialogs[0]!.parent === null, "no parent: never the panel, nor the replacement before its first paint");
 	});
 
 	it("with no window the menu starts reopening one and checks at once, never waiting for a reconnect", async () => {
@@ -987,6 +992,44 @@ describe("startup, timer, trusted IPC and menu wiring", () => {
 		await clicked; await settleMenu();
 		assert.equal(f.updater.downloads, 0, "never the 0.3.9 its dialog didn't name");
 		assert.deepEqual(f.dialogs.map((d) => d.options.message), ["LearnHarness 0.3.9 is available."], "then the dialog for it");
+	});
+
+	it("a replacement window that exists but isn't shown yet is no parent, locally and onto a server", async () => {
+		const f = fixture(); await f.run("main()"); await settleMenu();
+		f.windows[0]!.close();
+		await f.menuCheck(); // the dev shell reopens synchronously, hidden until its first paint
+		await settleMenu();
+		const replacement = f.windows[0]!;
+		assert.equal(replacement.visible, true, "it shows once painted");
+		assert.ok(f.dialogs[0]!.parent === null, "the dialog came first, so no parent");
+		// Onto a server: the server list's content window exists but isn't shown yet.
+		const g = fixture(); await g.run("main()"); await settleMenu();
+		g.run("var fixtureHidden = new BrowserWindow({ show: false }); serverList = { appWindow: () => fixtureHidden, show() {}, current: () => null }");
+		await g.menuCheck();
+		await settleMenu();
+		assert.ok(g.dialogs[0]!.parent === null, "a hidden server window is no parent");
+		assert.equal(g.run("fixtureHidden").visible, false, "nor is it shown by the menu");
+	});
+
+	it("Update in progress sits on the app window while it is alive and shown, without restoring it or checking", async () => {
+		const f = fixture(); await f.run("main()"); await settleMenu();
+		const win = f.windows[0]!;
+		f.run("updateEverything = { running: () => true, server: () => null }");
+		await f.menuCheck();
+		await settleMenu();
+		assert.equal(f.dialogs[0]!.options.title, "Update in progress");
+		assert.ok(f.dialogs[0]!.parent === win, "on the visible app window");
+		assert.equal(f.updater.checks, 0);
+		win.visible = false;
+		await f.menuCheck();
+		await settleMenu();
+		assert.ok(f.dialogs[1]!.parent === null, "a hidden one is no parent");
+		// Updates unavailable, also before activation: the same rule.
+		const g = fixture({ packaged: false }); await g.run("main()"); await settleMenu();
+		await g.menuCheck();
+		await settleMenu();
+		assert.equal(g.dialogs[0]!.options.title, "Updates unavailable");
+		assert.ok(g.dialogs[0]!.parent === g.windows[0], "on the shown app window");
 	});
 
 	it("the menu reopens a window when none is open, then shows its dialog", async () => {
