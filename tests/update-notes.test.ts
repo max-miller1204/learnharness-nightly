@@ -11,12 +11,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { capReleaseNoteGroups, MAX_RELEASE_NOTE_ITEM_LENGTH } from "../src/core/release-notes.ts";
-import { groupsBetween, mergeNotesCache, readNotesCache, readUpdateRecord, whatsNew, writeUpdateRecord } from "../src/server/update-records.ts";
-import { buildSummaryInput, fallbackItems, formatItems, parseHighlights, trimPullRequestBody } from "../scripts/generate-release-notes.ts";
+import { feedNotesToGroups, groupsBetween, mergeNotesCache, readNotesCache, readUpdateRecord, whatsNew, writeUpdateRecord } from "../src/server/update-records.ts";
+import { buildSummaryInput, countContributors, fallbackItems, formatSummary, parseHighlights, releaseStats, trimPullRequestBody, type PullRequest } from "../scripts/generate-release-notes.ts";
 
 const require = createRequire(import.meta.url);
 const electronNotes = require("../electron/release-notes.cjs") as {
-	releaseNoteGroups(info: unknown): Array<{ version: string; releasedAt?: string; items: string[] }>;
+	releaseNoteGroups(info: unknown): Array<{ version: string; releasedAt?: string; items: string[]; totalItems: number; intro?: string; stats?: string; footer?: string }>;
+	summaryBody(note: unknown): string;
+	FULL_CHANGELOG_MARKER: string;
 	capGroups(groups: unknown[]): { releaseNotes: unknown[]; omittedReleaseCount: number };
 	mergeNotesCache(dir: string, groups: unknown[]): void;
 };
@@ -37,6 +39,15 @@ describe("notes limits", () => {
 		assert.equal(releaseNotes[0]!.items.length, 8);
 		assert.equal(releaseNotes[0]!.items[0]!.length, MAX_RELEASE_NOTE_ITEM_LENGTH);
 		assert.ok(releaseNotes[0]!.items[0]!.endsWith("..."));
+		assert.equal(releaseNotes[0]!.totalItems, 10, "the whole count survives the cut (N more changes on GitHub)");
+		assert.equal(capReleaseNoteGroups([{ version: V(1), items: [], intro: "3 bug fixes." }]).releaseNotes[0]!.totalItems, 1, "an intro counts as one");
+	});
+
+	it("the server keeps a feed note's summary fields", () => {
+		assert.deepEqual(feedNotesToGroups([{ version: V(12), publishedAt: "2026-11-12T08:00:00Z", items: ["a"], stats: "4 changes from 2 contributors", footer: "Plus 1 more bug fix." }, { version: V(11), publishedAt: "", items: [], intro: "2 bug fixes." }]), [
+			{ version: V(12), releasedAt: "2026-11-12T08:00:00Z", items: ["a"], stats: "4 changes from 2 contributors", footer: "Plus 1 more bug fix." },
+			{ version: V(11), items: [], intro: "2 bug fixes." },
+		]);
 	});
 
 	it("selects the versions after one and up to another, newest first", () => {
@@ -96,15 +107,35 @@ describe("data folder records", () => {
 describe("generate-release-notes", () => {
 	const subjects = ["feat: add flashcards (#3)", "fix: crash on empty deck (#4)", "docs: readme", "perf: faster graph", "fix: typo"];
 
-	it("formats highlights T3's way and counts the uncovered fixes", () => {
-		const items = formatItems(subjects, [{ label: "Flashcards.", detail: "Practice with cards.", commits: [1, 2] }]);
-		assert.deepEqual(items, ["**Flashcards.** Practice with cards.", "Plus 2 more bug fixes and performance improvements."]);
-		assert.deepEqual(formatItems(["fix: a"], []), ["1 bug fix."]);
-		assert.deepEqual(formatItems(["docs: a", "ci: b"], []), [], "zero highlights and no fixes: no items");
+	it("formats highlights T3's way; the uncovered fixes are the footer, or the intro with no highlights", () => {
+		assert.deepEqual(formatSummary(subjects, [{ label: "Flashcards.", detail: "Practice with cards.", commits: [1, 2] }]), {
+			items: ["**Flashcards.** Practice with cards."],
+			footer: "Plus 2 more bug fixes and performance improvements.",
+		});
+		assert.deepEqual(formatSummary(["fix: a"], []), { items: [], intro: "1 bug fix." });
+		assert.deepEqual(formatSummary(["perf: a", "perf: b"], []), { items: [], intro: "2 performance improvements." });
+		assert.deepEqual(formatSummary(["docs: a", "ci: b"], []), { items: [] }, "zero highlights and no fixes: nothing");
+	});
+
+	it("counts contributors T3's way and writes its stats line", () => {
+		const commits = [
+			{ subject: "feat: a (#1)", authorName: "Max Miller" },
+			{ subject: "fix: b (#2)", authorName: "dependabot[bot]" },
+			{ subject: "fix: c", authorName: "Max Miller" },
+			{ subject: "docs: d", authorName: "Sam" },
+		];
+		const pullRequests = new Map<number, PullRequest>([
+			[1, { body: "", author: { __typename: "User", login: "max-miller1204", name: "Max" } }],
+			[2, { body: "", author: { __typename: "Bot", login: "dependabot" } }],
+		]);
+		assert.equal(countContributors(commits, pullRequests), 2, "a PR author once (their git name too), bots never, plus direct pushers");
+		assert.equal(countContributors(commits, new Map()), 2, "without PR authors: the git names, bots aside");
+		assert.equal(releaseStats(4, 2), "4 changes from 2 contributors");
+		assert.equal(releaseStats(1, 1), "1 change from 1 contributor");
 	});
 
 	it("rejects a highlight that names a commit outside the input", () => {
-		assert.equal(formatItems(subjects, [{ label: "X", detail: "Y", commits: [9] }]), null);
+		assert.equal(formatSummary(subjects, [{ label: "X", detail: "Y", commits: [9] }]), null);
 	});
 
 	it("parses only the promised JSON", () => {
@@ -120,7 +151,7 @@ describe("generate-release-notes", () => {
 		assert.equal(parseHighlights('{"highlights":[{"label":"A","detail":"B","commits":["eight"]}]}'), null);
 		assert.equal(parseHighlights('{"highlights":[{"label":"A","detail":"B","commits":[1.5]}]}'), null);
 		const parsed = parseHighlights('{"highlights":[{"label":"A","detail":"B","commits":["[9]"]}]}')!;
-		assert.equal(formatItems(subjects, parsed), null, "a string number outside the input is still rejected");
+		assert.equal(formatSummary(subjects, parsed), null, "a string number outside the input is still rejected");
 	});
 
 	it("feeds numbered subjects and trimmed PR prose to the model", () => {
@@ -141,7 +172,41 @@ describe("electron release notes (T3 port)", () => {
 
 	it("cuts a generated body at <details> and keeps the bold labels", () => {
 		const groups = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: generated, releaseDate: "2026-11-12T00:00:00Z" });
-		assert.deepEqual(groups, [{ version: V(12), releasedAt: "2026-11-12T00:00:00Z", items: ["**Flashcards.** Practice with cards.", "Plus 2 more bug fixes."] }]);
+		assert.deepEqual(groups, [{ version: V(12), releasedAt: "2026-11-12T00:00:00Z", items: ["**Flashcards.** Practice with cards.", "Plus 2 more bug fixes."], totalItems: 2 }]);
+	});
+
+	it("reads T3's generated body: the stats header, the items, the footer, or an intro paragraph", () => {
+		const body = `**v${V(12)}** · 12 changes from 2 contributors\n\n- **Cards.** Practice with cards. (#5)\n- Faster graph\n\n### Plus 3 more bug fixes.\n\n<details>\n<summary>Full changelog</summary>\n\n- fix: x\n</details>`;
+		assert.deepEqual(electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: body })[0], {
+			version: V(12), items: ["**Cards.** Practice with cards.", "Faster graph"], totalItems: 2,
+			stats: "12 changes from 2 contributors", footer: "Plus 3 more bug fixes.", releasedAt: "2026-11-12",
+		});
+		const fixesOnly = `**v${V(12)}** · 3 changes from 1 contributor\n\n**3 bug fixes.**\n\n<details>\n<summary>Full changelog</summary>\n</details>`;
+		assert.deepEqual(electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: fixesOnly })[0], {
+			version: V(12), items: [], totalItems: 1, intro: "3 bug fixes.", stats: "3 changes from 1 contributor", releasedAt: "2026-11-12",
+		});
+	});
+
+	it("summaryBody writes the body the parser reads back (one format for the release page and the desktop)", () => {
+		const note = { version: V(12), publishedAt: "", items: ["**Cards.** Practice with cards."], stats: "4 changes from 2 contributors", footer: "Plus 1 more bug fix." };
+		const body = electronNotes.summaryBody(note);
+		assert.equal(body, `**v${V(12)}** · 4 changes from 2 contributors\n\n- **Cards.** Practice with cards.\n\n### Plus 1 more bug fix.`);
+		const [read] = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: `${body}\n\n${electronNotes.FULL_CHANGELOG_MARKER}` });
+		assert.deepEqual([read!.items, read!.stats, read!.footer], [note.items, note.stats, note.footer]);
+		assert.equal(electronNotes.summaryBody({ version: V(12), items: [], intro: "2 bug fixes." }), "**2 bug fixes.**");
+		assert.equal(electronNotes.summaryBody({ version: V(12), items: [] }), "", "nothing to say: no summary");
+	});
+
+	it("a plain list keeps its newest 8, newest first, with the whole count (GitHub lists oldest first)", () => {
+		const note = Array.from({ length: 10 }, (_, i) => `- change ${i + 1}`).join("\n");
+		const [read] = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: note });
+		assert.deepEqual(read!.items, ["change 10", "change 9", "change 8", "change 7", "change 6", "change 5", "change 4", "change 3"]);
+		assert.equal(read!.totalItems, 10);
+	});
+
+	it("untagged notes named for another release are not this one's (T3's releaseNotesOfOfferedVersion)", () => {
+		assert.deepEqual(electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: "- a", releaseName: `LearnHarness Nightly ${V(13)}` }), []);
+		assert.equal(electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: "- a", releaseName: `LearnHarness Nightly ${V(12)} (abc)` }).length, 1);
 	});
 
 	it("keeps the feed's release date only when it is a bounded ISO date; the nightly's build day stands in otherwise", () => {
@@ -152,7 +217,7 @@ describe("electron release notes (T3 port)", () => {
 		for (const junk of ["yesterday", `2026-11-12T00:00:00Z${"x".repeat(5000)}`, "2026-13-45", 12]) assert.equal(dated(junk), buildDay, String(junk).slice(0, 30));
 	});
 
-	it("reads the per-version array (fullChangelog), stripping HTML and PR numbers", () => {
+	it("reads the per-version array (fullChangelog), stripping HTML", () => {
 		const groups = electronNotes.releaseNoteGroups({
 			version: V(12),
 			releaseNotes: [
@@ -162,7 +227,7 @@ describe("electron release notes (T3 port)", () => {
 			],
 		});
 		assert.deepEqual(groups.map((g) => g.version), [V(12), V(10)]);
-		assert.deepEqual(groups[0]!.items, ["**New** thing"]);
+		assert.deepEqual(groups[0]!.items, ["New thing (#5)"], "a plain list keeps no bold and its PR numbers, as T3's does");
 		assert.equal(groups[1]!.releasedAt, "2026-11-10", "build day from the version");
 		assert.equal(electronNotes.capGroups(groups).omittedReleaseCount, 0);
 	});

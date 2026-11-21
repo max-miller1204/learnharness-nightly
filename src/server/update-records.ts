@@ -16,7 +16,7 @@ import path from "node:path";
 import { PATHS } from "../../config.ts";
 import { writeFileAtomicSync } from "../store/atomic-write.ts";
 import { capReleaseNoteGroups, type ReleaseNoteGroup } from "../core/release-notes.ts";
-import { compareVersions, FEED_NOTES_KEEP, isExactVersion, type FeedNote } from "../../selfhost/src/release.ts";
+import { compareVersions, FEED_NOTE_LIMITS, FEED_NOTES_KEEP, isExactVersion, type FeedNote } from "../../selfhost/src/release.ts";
 
 export interface UpdateRecord {
 	lastSeenVersion?: string;
@@ -40,6 +40,9 @@ function readJson(file: string): unknown {
 	try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return undefined; }
 }
 
+const summaryText = (key: keyof typeof FEED_NOTE_LIMITS, value: unknown) =>
+	typeof value === "string" && value.trim() && value.length <= FEED_NOTE_LIMITS[key] ? { [key]: value.trim() } : {};
+
 function parseGroups(value: unknown): ReleaseNoteGroup[] {
 	if (!Array.isArray(value)) return [];
 	const groups: ReleaseNoteGroup[] = [];
@@ -47,17 +50,23 @@ function parseGroups(value: unknown): ReleaseNoteGroup[] {
 	for (const entry of value) {
 		if (!isRecord(entry) || typeof entry.version !== "string" || !isExactVersion(entry.version) || seen.has(entry.version) || !Array.isArray(entry.items)) continue;
 		seen.add(entry.version);
+		const items = entry.items.filter((item): item is string => typeof item === "string" && item.trim() !== "");
 		groups.push({
 			version: entry.version,
 			...(typeof entry.releasedAt === "string" && entry.releasedAt ? { releasedAt: entry.releasedAt } : {}),
-			items: entry.items.filter((item): item is string => typeof item === "string" && item.trim() !== ""),
+			items,
+			// T3's summary extras, when the feed (or an older cache) has them.
+			...(Number.isInteger(entry.totalItems) && (entry.totalItems as number) >= items.length ? { totalItems: entry.totalItems as number } : {}),
+			...summaryText("intro", entry.intro),
+			...summaryText("stats", entry.stats),
+			...summaryText("footer", entry.footer),
 		});
 	}
 	return groups.sort((a, b) => compareVersions(b.version, a.version));
 }
 
 export function feedNotesToGroups(notes: readonly FeedNote[]): ReleaseNoteGroup[] {
-	return parseGroups(notes.map((note) => ({ version: note.version, releasedAt: note.publishedAt, items: note.items })));
+	return parseGroups(notes.map((note) => ({ version: note.version, releasedAt: note.publishedAt, items: note.items, intro: note.intro, stats: note.stats, footer: note.footer })));
 }
 
 /** Newest first, versions after `after` (exclusive, when given) up to `upTo` (inclusive), capped for the UI. */

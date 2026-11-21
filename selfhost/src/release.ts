@@ -50,6 +50,21 @@ export interface FeedNote {
 	publishedAt: string;
 	/** Plain sentences; `**Label.** detail` renders the label bold. */
 	items: string[];
+	/** The generated summary's counts, "12 changes from 2 contributors" (T3's release header). Optional: older feeds have none. */
+	stats?: string;
+	/** A summary paragraph, in place of items ("3 bug fixes." when no change got a highlight). */
+	intro?: string;
+	/** The summary's last line, "Plus 3 more bug fixes.". */
+	footer?: string;
+}
+
+/** Bounds for the optional summary fields: longer ones are dropped. */
+export const FEED_NOTE_LIMITS = { stats: 120, intro: 600, footer: 220 } as const;
+
+function summaryField(value: unknown, limit: number): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const text = value.trim().replace(/\s+/g, " ");
+	return text && text.length <= limit ? text : undefined;
 }
 
 /** latest.json keeps the notes of this many newest nightlies (the same 30 nightly.yml keeps). */
@@ -112,10 +127,16 @@ export function parseFeedNotes(value: unknown): FeedNote[] {
 		if (!isRecord(entry) || typeof entry.version !== "string" || !isExactVersion(entry.version) || seen.has(entry.version)) continue;
 		if (!Array.isArray(entry.items)) continue;
 		seen.add(entry.version);
+		const stats = summaryField(entry.stats, FEED_NOTE_LIMITS.stats);
+		const intro = summaryField(entry.intro, FEED_NOTE_LIMITS.intro);
+		const footer = summaryField(entry.footer, FEED_NOTE_LIMITS.footer);
 		notes.push({
 			version: entry.version,
 			publishedAt: typeof entry.publishedAt === "string" ? entry.publishedAt : "",
 			items: entry.items.filter((item): item is string => typeof item === "string" && item.trim() !== ""),
+			...(stats ? { stats } : {}),
+			...(intro ? { intro } : {}),
+			...(footer ? { footer } : {}),
 		});
 	}
 	return notes;

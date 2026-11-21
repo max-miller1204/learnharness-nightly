@@ -61,6 +61,18 @@ describe("versions and feed", () => {
 		assert.deepEqual(parseFeed({ ...good, notes: "nope" }).notes, []);
 	});
 
+	it("keeps T3's optional summary fields (stats, intro, footer), trimmed, dropping any too long or not text", () => {
+		const good = { version: V("20261116", 1), tag: "v1", sha: "abc", publishedAt: "now", launcherProtocol: 1, minLauncherProtocol: 1, assets: {} };
+		const feed = parseFeed({ ...good, notes: [
+			{ version: V("20261116", 1), publishedAt: "t", items: ["a"], stats: " 4 changes   from 2 contributors ", footer: "Plus 1 more bug fix.", intro: 7 },
+			{ version: V("20261115", 1), publishedAt: "s", items: [], intro: "2 bug fixes.", stats: "x".repeat(121), footer: "" },
+		] });
+		assert.deepEqual(feed.notes, [
+			{ version: V("20261116", 1), publishedAt: "t", items: ["a"], stats: "4 changes from 2 contributors", footer: "Plus 1 more bug fix." },
+			{ version: V("20261115", 1), publishedAt: "s", items: [], intro: "2 bug fixes." },
+		]);
+	});
+
 	it("merges this release's notes over the previous feed's, newest first, newest 30 kept", () => {
 		const previous = Array.from({ length: 35 }, (_, i) => ({ version: V("20261101", i + 1), publishedAt: "", items: [`old ${i + 1}`] }));
 		const merged = mergeFeedNotes({ version: V("20261117", 1), publishedAt: "", items: ["new"] }, [{ version: V("20261117", 1), publishedAt: "", items: ["stale"] }, ...previous]);

@@ -300,7 +300,7 @@ test("a launcher rejection, a rollback and the 32-minute limit fail the server s
 });
 
 test("status passes the offered version's release notes through to the remote page, and reads a state without them as none", () => {
-	const notes = [{ version: V72, items: ["**Cards.** Practice with cards."] }, { version: V71, items: ["Older"] }];
+	const notes = [{ version: V72, items: ["**Cards.** Practice with cards."], totalItems: 1, stats: "3 changes from 1 contributor", footer: "Plus 2 more bug fixes." }, { version: V71, items: ["Older"], totalItems: 1 }];
 	let appState: Record<string, unknown> = { status: "available", version: V72, releaseNotes: notes, omittedReleaseCount: 3 };
 	const ue = createUpdateEverything({ appVersion: V71, updater: { state: () => appState } });
 	assert.deepEqual(ue.status(), { version: V71, target: V72, phase: "available", error: null, downloadPercent: null, releaseNotes: notes, omittedReleaseCount: 3 });
@@ -315,7 +315,7 @@ test("status passes the offered version's release notes through to the remote pa
 });
 
 test("a run sends no notes, also in its download step and the app-only retry's, which the page can't tell from a plain download", async () => {
-	const appNotes = [{ version: V72, items: ["App change"] }];
+	const appNotes = [{ version: V72, items: ["App change"], totalItems: 1 }];
 	const seen: Array<{ phase: string; releaseNotes: unknown[] }> = [];
 	let ue: ReturnType<typeof fixture>["ue"] | null = null;
 	const f = fixture({ appNotes, duringDownload: () => { const { phase, releaseNotes } = ue!.status(); seen.push({ phase, releaseNotes }); } });
@@ -339,8 +339,8 @@ test("a run sends no notes, also in its download step and the app-only retry's, 
 test("status forwards only the notes' rendered fields, each validated and bounded", () => {
 	const long = "x".repeat(5000);
 	const groups = [
-		{ version: V73, releasedAt: "2026-11-18T09:37:13.265Z", items: [`  ${long}  `, "", 7, "**Cards.** Practice   with cards."], extra: long, totalItems: 99 },
-		{ version: V72, releasedAt: long, items: ["a"] },
+		{ version: V73, releasedAt: "2026-11-18T09:37:13.265Z", items: [`  ${long}  `, "", 7, "**Cards.** Practice   with cards."], extra: long, totalItems: 99, stats: "12 changes from 2 contributors", footer: "Plus 3 more bug fixes.", intro: long },
+		{ version: V72, releasedAt: long, items: ["a"], stats: long, footer: 7, totalItems: 1e9, intro: "  A short   paragraph. " },
 		{ version: V71, releasedAt: "yesterday", items: Array.from({ length: 20 }, (_, i) => `item ${i}`) },
 		{ version: `${V71}${"9".repeat(100)}`, items: ["too long a version"] },
 		{ version: "not a version", items: ["x"] },
@@ -348,9 +348,13 @@ test("status forwards only the notes' rendered fields, each validated and bounde
 		...Array.from({ length: 10 }, (_, i) => ({ version: `0.6.1-nightly.20261117.${i + 1}`, items: ["older"] })),
 	];
 	const ue = createUpdateEverything({ appVersion: V71, updater: { state: () => ({ status: "available", version: V73, releaseNotes: groups, omittedReleaseCount: 1e9 }) } });
-	const { releaseNotes, omittedReleaseCount } = ue.status() as { releaseNotes: Array<{ version: string; releasedAt?: string; items: string[] }>; omittedReleaseCount: number };
+	const { releaseNotes, omittedReleaseCount } = ue.status() as { releaseNotes: Array<{ version: string; releasedAt?: string; items: string[]; totalItems: number }>; omittedReleaseCount: number };
 	assert.equal(releaseNotes.length, 6, "at most 6 groups");
-	assert.deepEqual(Object.keys(releaseNotes[0]!), ["version", "releasedAt", "items"], "only what the page renders");
+	assert.deepEqual(Object.keys(releaseNotes[0]!), ["version", "releasedAt", "items", "totalItems", "stats", "footer"], "only what the page renders");
+	assert.deepEqual([releaseNotes[0]!.totalItems, (releaseNotes[0] as { stats?: string }).stats, (releaseNotes[0] as { footer?: string }).footer], [99, "12 changes from 2 contributors", "Plus 3 more bug fixes."]);
+	assert.equal((releaseNotes[0] as { intro?: string }).intro, undefined, "an unbounded intro is dropped");
+	const second = releaseNotes[1] as { stats?: string; footer?: string; intro?: string; totalItems: number };
+	assert.deepEqual([second.stats, second.footer, second.intro, second.totalItems], [undefined, undefined, "A short paragraph.", 10000], "bad summary fields go, the count is bounded");
 	assert.equal(releaseNotes[0]!.releasedAt, "2026-11-18T09:37:13.265Z");
 	assert.equal(releaseNotes[0]!.items.length, 2);
 	assert.ok(releaseNotes[0]!.items[0]!.length <= 220 && releaseNotes[0]!.items[0]!.endsWith("..."), "items are cut at 220 characters");

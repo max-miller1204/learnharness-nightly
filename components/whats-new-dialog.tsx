@@ -48,13 +48,13 @@ export function WhatsNewBody({ whatsNew, homepage, onDone, doneRef }: {
 			<h2 className="text-sm font-semibold text-card-foreground" data-testid="whats-new-title">{`What's new in ${whatsNew.version}`}</h2>
 			<div className="mt-3 min-h-0 overflow-y-auto pr-1">
 				{whatsNew.releaseNotes.length > 0 ? (
-					<ReleaseNoteSections groups={whatsNew.releaseNotes} omittedReleaseCount={whatsNew.omittedReleaseCount} homepage={homepage} />
+					<ReleaseNoteSections groups={whatsNew.releaseNotes} omittedReleaseCount={whatsNew.omittedReleaseCount} homepage={homepage} offeredVersion={whatsNew.version} />
 				) : (
 					<div data-testid="whats-new-empty">
 						<p className="text-xs text-popover-foreground/90">{`Updated to version ${whatsNew.version}.`}</p>
 						{link && (
 							<a href={link} target="_blank" rel="noopener noreferrer" className="mt-1 inline-block text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
-								Read more
+								View release on GitHub
 							</a>
 						)}
 					</div>

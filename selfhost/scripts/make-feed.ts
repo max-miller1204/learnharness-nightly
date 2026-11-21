@@ -10,6 +10,7 @@
  * against the exact files of that release.
  *
  * Notes: --notes is this release's entry ({ version, publishedAt, items },
+ * plus T3's optional summary fields stats, intro and footer,
  * from scripts/generate-release-notes.ts or the commit-list fallback);
  * --previous is the `nightly` release's latest.json before this publish.
  * The feed's `notes` is this entry, then the previous feed's entries, newest
