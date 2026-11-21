@@ -503,6 +503,15 @@ export interface AnswerRequest {
 export const CONFIDENCE_STOPS: readonly number[] = [0, 30, 50, 70, 90, 100];
 export const DEFAULT_CONFIDENCE_INDEX = 2;
 
+/** The confidence an answered card shows: a quiz answer's own, when it is a probability from
+ * 0 to 100. A skipped quiz, "I don't know", other kinds and records from before the slider
+ * have none, and a value outside that range was never sent, so it shows nothing either. */
+export function shownConfidence(answer: Partial<Pick<QuestionAnswerData, "kind" | "dismissed" | "confidence">>): number | undefined {
+	const value = answer.confidence;
+	if (answer.kind !== "quiz" || answer.dismissed || typeof value !== "number" || !Number.isFinite(value)) return;
+	return value >= 0 && value <= 100 ? value : undefined;
+}
+
 // ─── dock selection (the client state machine, pure for tests) ─────────────
 
 /** The question dock's selection state (0-based indices in display order). */

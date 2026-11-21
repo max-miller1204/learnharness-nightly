@@ -6,7 +6,7 @@ import { PROTOCOL_ROUTES, type AttachmentReference, type ImageSnapshot, type Job
 import type { PlanBlockData } from "../../../src/core/contracts/chat.ts";
 import { blockLayout, GRAPH_PAD, TEXT_CAP_SCALE } from "../../../src/core/plan-layout.ts";
 import { projectView, type LhViewMessage, type LhViewPart } from "../../../src/core/view.ts";
-import type { QuestionAnswerData } from "../../../src/core/question-core.ts";
+import { shownConfidence, type QuestionAnswerData } from "../../../src/core/question-core.ts";
 import type { MobileApi } from "./protocol";
 import { helperCard, isSubagentSteer, teachSeam } from "./lesson";
 import { CompactionCut, CompactionNote, DispatchCard, GraphContextCard, ReasoningRow, SeamDivider, SteerCard, ThinkingRow } from "./LessonParts";
@@ -260,6 +260,7 @@ function Part({ part, context, blocks }: { part: LhViewPart; context: PartContex
     const answer = part.output as Partial<QuestionAnswerData> | undefined;
     if (answer?.questionText && (answer.kind === "quiz" || answer.kind === "ask" || answer.kind === "explain")) {
       const thinking = answer.thinking ?? answer.note;
+      const confidence = shownConfidence(answer);
       return (
         <View style={{ gap: space.sm }}>
           {/* The thinking while reading came first, so it sits above the card (answered-card.tsx). */}
@@ -267,7 +268,7 @@ function Part({ part, context, blocks }: { part: LhViewPart; context: PartContex
           <View style={s.card}>
             <Markdown text={answer.questionText} />
             <AnswerLine answer={answer} />
-            {answer.kind === "quiz" && typeof answer.confidence === "number" && <ConfidenceRecord value={answer.confidence} />}
+            {confidence !== undefined && <ConfidenceRecord value={confidence} />}
             {typeof answer.correct === "boolean" && !answer.dismissed && !answer.dontKnow &&
               <Text style={[s.label, { color: answer.correct ? c.success : c.error }]}>{answer.correct ? "Correct" : "Incorrect"}</Text>}
             {!!answer.explanation && <Markdown text={answer.explanation} />}

@@ -9,11 +9,11 @@ import {
 } from "../../../src/core/question-core.ts";
 import { parseQuestionInput } from "../../../src/core/tool-parts.ts";
 import type { ChatInput } from "../../../src/client-protocol/index.ts";
-import { RailPaint } from "./ConfidenceRail";
+import { confidenceColor, Percent, RailPaint } from "./ConfidenceRail";
 import { Markdown } from "./Markdown";
 import { ChoiceRow } from "./ChoiceRow";
 import { Button, Field, Label } from "./ui";
-import { alpha, confidenceColors, fonts, radius, space, useTheme } from "./theme";
+import { alpha, fonts, radius, space, useTheme } from "./theme";
 
 /** The web dock's confidence slider: a thin rail with tick marks and a round
  *  handle that snaps to the six stops. Tap or drag anywhere on the rail. */
@@ -21,7 +21,7 @@ function ConfidenceRail({ value, disabled, onChange }: { value: number; disabled
   const { s } = useTheme();
   const width = useRef(0);
   const index = Math.max(0, CONFIDENCE_STOPS.indexOf(value));
-  const color = confidenceColors[index] ?? confidenceColors[2];
+  const color = confidenceColor(value);
   function pick(x: number) {
     // The rail spans the handle-center range: 8px in from each side.
     const percent = ((x - 8) / Math.max(1, width.current - 16)) * 100;
@@ -48,7 +48,7 @@ function ConfidenceRail({ value, disabled, onChange }: { value: number; disabled
           <View style={{ position: "absolute", left: `${value}%`, marginLeft: -8, width: 16, height: 16, borderRadius: 8, backgroundColor: color }} />
         </View>
       </View>
-      <Text style={[s.ui, { width: 40, textAlign: "right", fontVariant: ["tabular-nums"] }]}>{`${value}%`}</Text>
+      <Percent value={value} width={40} style={s.ui} />
     </View>
   );
 }
