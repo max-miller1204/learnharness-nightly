@@ -3,7 +3,7 @@ import { Text, View, useWindowDimensions, type HostInstance, type LayoutChangeEv
 import { drawingsOf, equationOf } from "./message-math";
 import { useLivePictures } from "./math-window";
 import type { LabelPiece } from "./choice-math";
-import { fit, inlineLift, lineHeightFor, MathPicture, MATH_SCALE, MAX_LINES, useScreenReader, useSpeech, type Size } from "./MathLabel";
+import { fit, inlineLift, lineHeightFor, MathPicture, MATH_SCALE, MAX_LINES, useScreenReader, useSpeech, type Size, type TextRun } from "./MathLabel";
 import { spokenLabel, spokenMath } from "./math-speech";
 import { httpsLink, type MarkdownToken } from "./render-markdown";
 import { fonts, radius, space, useTheme } from "./theme";
@@ -35,7 +35,7 @@ function Live({ pictures, children }: {
 interface InlineMath {
   sizes: Map<MarkdownToken, Size>;
   live: boolean;
-  /** inlineLift for the line, in unscaled points. */
+  /** inlineLift for the line, in points at the font scale. */
   lift: number;
 }
 
@@ -98,17 +98,29 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
     return found;
   }
 
+  /** The fonts of a line's text: the line's own, and the code face for inline code. None
+   * when the line is only drawn math. */
+  function textRuns(nodes: Node[], sizes: Map<MarkdownToken, Size>, fontSize: number, found: TextRun[] = []): TextRun[] {
+    for (const { token, children } of nodes) {
+      if (token.type === "code_inline") found.push({ fontSize: 14, mono: true });
+      else if (children.length) textRuns(children, sizes, fontSize, found);
+      else if (token.type === "softbreak" || token.type === "hardbreak" || (token.type === "math_inline" ? !sizes.has(token) : token.content)) found.push({ fontSize });
+    }
+    return found;
+  }
+
   /** A line of text whose line height leaves room for the inline math in it. Inline math
    * wider than `width` scales down. */
   function line(key: number, nodes: Node[], style: { fontSize: number; lineHeight: number }, extra?: object, role?: "header", width = maxWidth) {
     const sizes = mathSizes(nodes, style.fontSize, style.lineHeight, width);
-    const lineHeight = sizes.size ? lineHeightFor([...sizes.values()], style.fontSize, style.lineHeight, fontScale) : style.lineHeight;
+    const runs = textRuns(nodes, sizes, style.fontSize);
+    const lineHeight = sizes.size ? lineHeightFor([...sizes.values()], style.fontSize, style.lineHeight, fontScale, runs) : style.lineHeight;
     return (
       <Live key={key} pictures={sizes.size}>
         {(live, ref, onLayout) => (
           <Text ref={ref} onLayout={onLayout} accessibilityRole={role} selectable style={[s.prose, style, extra, { lineHeight }]}
             accessibilityLabel={sizes.size ? spokenLabel(pieces(nodes, sizes), speech && live) : undefined}>
-            {inline(nodes, { sizes, live, lift: inlineLift(lineHeight, style.fontSize) })}
+            {inline(nodes, { sizes, live, lift: inlineLift(lineHeight, runs, fontScale) })}
           </Text>
         )}
       </Live>
