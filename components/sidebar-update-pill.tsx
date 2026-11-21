@@ -121,7 +121,8 @@ export function resolveUpdateControl(state: UpdateState | null, { showCheckIcon 
 		return desktop.phase === "downloaded" ? "app-install" : "app-download";
 	}
 	if (state.status === "downloading") return "downloading";
-	if (state.status === "downloaded") return installing ? "restarting" : "install";
+	// A failed install (T3's recovery: still downloaded, with the install context) leaves Restarting.
+	if (state.status === "downloaded") return installing && state.errorContext !== "install" ? "restarting" : "install";
 	if (state.status === "available") return "download";
 	// T3's retry actions (resolveDesktopUpdateButtonAction, desktopUpdate.logic.ts:49-69 at df09ced7):
 	// an error that kept a download installs it, a failed download downloads again.
@@ -227,7 +228,8 @@ export function shownReleaseNotes(state: UpdateState | null, kind: UpdateControl
 		releaseNotes,
 		omittedReleaseCount: source?.omittedReleaseCount ?? 0,
 		offeredVersion: appOwned ? desktop?.target ?? null : state?.version ?? null,
-		available: appOwned ? desktop?.phase === "available" : state?.status === "available",
+		// A retry or did-not-apply state heads the notes with its own line (the control's hover text).
+		available: appOwned ? desktop?.phase === "available" : state?.status === "available" && !!state && retryTooltip(state) === null,
 	};
 }
 

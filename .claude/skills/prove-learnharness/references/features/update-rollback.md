@@ -11,7 +11,7 @@ A self-hosted user gets new nightlies offered automatically: the server checks t
 - `manual-rollback`: `lh rollback` returns to the previous version.
 - `status`: `lh status` reports versions, service, health and the last update.
 - `pill`: the sidebar update pill (`data-testid="update-pill"`, `data-action` install / dismiss-notice) and its release notes popover on hover (`update-pill-notes`).
-- `confirm`: the Install confirm dialog (`install-update-dialog`, `install-update-cancel`, `install-update-confirm`) with the "Running now:" list from `GET /api/updates/running`.
+- `confirm`: the Install confirm dialog (`install-update-dialog`, `install-update-cancel`, `install-update-confirm`) with T3's text and no list of the running work (owner, 2026-11-20; docs/specs/t3-style-updates.md revision PR 3).
 - `install-recheck`: Install re-checks the feed and takes a newer version published after the download.
 - `whats-new`: the one-time popup after a switch (`whats-new-dialog`, `whats-new-done`), remembered per server in `data/updates.json`.
 - `rollback-notice`: after a failed trial the pill turns into a warning; clicking it dismisses it for every browser (`dismissedNotice` in `data/updates.json`).

@@ -17,6 +17,7 @@
  */
 
 const { compareVersions, bridgeNotes } = require("./release-notes.cjs");
+const { hasDownloadableOffer } = require("./update-machine.cjs");
 
 const EXACT = /^\d+\.\d+\.\d+(?:-[a-z]+\.\d{8}\.\d+)?$/;
 const isNewerVersion = (a, b) => typeof a === "string" && typeof b === "string" && EXACT.test(a) && EXACT.test(b) && compareVersions(a, b) > 0;
@@ -99,8 +100,9 @@ function createUpdateEverything(deps) {
 		// A run shows no notes, also in its download step, which the page can't tell from a
 		// plain download (T3's `!isRunningEverything`, SidebarUpdatePill.tsx:279-280).
 		if (run) return { version: deps.appVersion, target: run.target, phase: run.step === "downloading" ? "downloading" : "updating", error: null, downloadPercent, releaseNotes: [], omittedReleaseCount: 0 };
-		// The offered version's notes (main keeps them only while available, downloading or
-		// downloaded), bounded: the sidebar's hover shows them for this app's states, as T3's does.
+		// The offered version's notes (the reducers keep them until a new check or "no update"
+		// clears them, electron/update-machine.cjs), bounded: the sidebar's hover shows them for this
+		// app's states, as T3's does.
 		const notes = bridgeNotes(state.releaseNotes, state.omittedReleaseCount);
 		return {
 			version: deps.appVersion,
@@ -331,7 +333,8 @@ function createUpdateEverything(deps) {
 			if (!run) deps.updater.check();
 		},
 		download() {
-			if (!run && deps.updater.state().status === "available") deps.updater.download();
+			// Also a retry of a failed download (T3's download retry), never a dead click.
+			if (!run && hasDownloadableOffer(deps.updater.state())) deps.updater.download();
 		},
 		/** The page's install(): resolves once the confirmation is answered. */
 		async install() {

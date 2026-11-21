@@ -257,6 +257,7 @@ describe("status observation never controls the updater", () => {
 		f.updater.emit("update-available", { version: "0.3.8" });
 		assert.equal(f.state().downloadPercent, null, "not downloading");
 		f.updater.downloadUpdate = () => new Promise<never[]>(() => {});
+		f.updater.offer = { version: "0.3.8" };
 		void f.run("downloadUpdateNow()");
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.equal(f.state().status, "downloading");
@@ -423,21 +424,101 @@ describe("status observation never controls the updater", () => {
 		assert.equal(g.updater.downloads, 1);
 	});
 
-	it("an installer error after quitAndInstall reads Install failed (T3's retry state) until the relaunch; a re-check error during Install doesn't", async () => {
+	it("an installer error after quitAndInstall recovers as T3's does: still downloaded, Install works again, the server restarts", async () => {
 		const f = fixture(); f.run("setupAutoUpdater()");
+		f.run("var fixtureRestarts = 0; restartLocalAfterFailedInstall = async () => { fixtureRestarts++; }");
 		f.updater.emit("update-downloaded", { version: "0.3.8" });
 		f.updater.failure = new Error("offline");
 		await f.run("serverProcess = fixtureChild; installUpdateNow()");
-		f.updater.emit("error", new Error("re-check noise"));
-		assert.deepEqual([f.state().status, f.state().errorContext], ["error", "install"], "once quitAndInstall ran, the error is the install's");
-		assert.deepEqual([f.state().downloadedVersion, f.state().canRetry], ["0.3.8", true]);
+		assert.ok(f.record.text, "the install record was written");
+		f.updater.emit("error", new Error("installer refused"));
+		const failed = f.state();
+		assert.deepEqual([failed.status, failed.errorContext, failed.canRetry, failed.downloadedVersion, failed.message], ["downloaded", "install", true, "0.3.8", "Couldn’t install the update."], "T3's install failure, with no generic error on top");
+		assert.equal(f.record.text, null, "never applied: the record goes");
+		assert.equal(f.run("installing"), false, "the install flags reset");
+		assert.equal(f.run("fixtureRestarts"), 1, "the bundled server stopped for the install starts again");
+		f.updater.emit("error", new Error("a later background error"));
+		assert.equal(f.state().status, "downloaded", "a later error doesn't hide it");
+		// Install again works, and the failure no longer applies.
+		f.updater.failure = null;
+		await f.run("serverProcess = fixtureChild; installUpdateNow()");
+		assert.deepEqual(f.installArgs, [[true, true], [true, true]]);
+		assert.equal(f.state().errorContext, null);
+		// An error from Install's own re-check is not an install failure.
 		const g = fixture(); g.run("setupAutoUpdater()");
 		g.updater.emit("update-downloaded", { version: "0.3.8" });
 		g.updater.checkForUpdates = function () { this.checks++; this.emit("error", new Error("feed down")); return Promise.reject(new Error("feed down")); };
-		g.updater.quitAndInstall = function (...args: unknown[]) { g.installArgs.push(args); g.order.push("install"); };
 		await g.run("serverProcess = fixtureChild; installUpdateNow()");
 		assert.deepEqual([g.state().status, g.state().errorContext], ["downloaded", null], "the re-check's error is not an install failure");
 		assert.deepEqual(g.installArgs, [[true, true]]);
+	});
+
+	it("a Download click during a running check waits for it, then downloads (T3's admitAfterCheck)", async () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.updater.emit("update-available", { version: "0.3.8" });
+		let finish!: () => void;
+		const original = f.updater.checkForUpdates.bind(f.updater);
+		f.updater.checkForUpdates = function () { this.checks++; this.emit("checking-for-update"); return new Promise((resolve) => { finish = () => resolve({ updateInfo: { version: "0.3.8" } }); }); };
+		f.run("checkForUpdates({ manual: true })");
+		const clicked = f.run("downloadUpdateNow()") as Promise<void>;
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(f.updater.downloads, 0, "waits while the check runs");
+		f.updater.checkForUpdates = original;
+		f.updater.offer = { version: "0.3.8" };
+		finish();
+		await clicked;
+		assert.equal(f.updater.downloads, 1, "then downloads, not dropped");
+	});
+
+	it("Download's re-check acts on its own result: a release pulled from the feed clears the offer and downloads nothing", async () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.updater.emit("update-available", { version: "0.3.8" });
+		f.updater.offer = null;
+		await f.run("downloadUpdateNow()");
+		assert.equal(f.updater.downloads, 0);
+		assert.deepEqual([f.state().status, f.state().availableVersion], ["up-to-date", null], "T3's no-update state");
+	});
+
+	it("a failed download that an updater error moved to error still retries from the button (never a dead click)", async () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.updater.emit("update-available", { version: "0.3.8" });
+		f.updater.offer = { version: "0.3.8" }; f.updater.downloadFails = true;
+		await f.run("downloadUpdateNow()");
+		f.updater.emit("error", new Error("background"));
+		assert.deepEqual([f.state().status, f.state().errorContext, f.state().availableVersion], ["error", "download", "0.3.8"]);
+		f.updater.downloadFails = false;
+		await f.run("downloadUpdateNow()");
+		assert.equal(f.state().status, "downloaded", "the retry downloads");
+	});
+
+	it("a failed background check doesn't replace a download under way", async () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.updater.emit("update-available", { version: "0.3.8" });
+		f.run("setUpdateState(updateMachine.reduceOnDownloadStart(updateState))");
+		f.updater.failure = new Error("offline"); await f.check(true);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(f.state().status, "downloading");
+	});
+
+	it("a pinned download (Update everything) over a staged older one names its version, and its failure leaves nothing stuck", async () => {
+		const f = fixture(); f.run("setupAutoUpdater()");
+		f.updater.emit("update-downloaded", { version: "0.3.8" });
+		f.updater.offer = { version: "0.3.9" }; f.updater.downloadFails = true;
+		const pinned = f.run(`updateActions.downloadPinned("0.3.9")`) as Promise<void>;
+		assert.deepEqual([f.state().status, f.state().version, f.state().downloadedVersion], ["downloading", "0.3.9", null], "the ring and the menu name 0.3.9");
+		await assert.rejects(pinned);
+		assert.deepEqual([f.state().status, f.state().availableVersion, f.state().errorContext], ["available", "0.3.9", "download"], "offered again with T3's retry");
+		f.updater.downloadFails = false;
+		await f.run("downloadUpdateNow()");
+		assert.deepEqual([f.state().status, f.state().downloadedVersion], ["downloaded", "0.3.9"], "and Download works");
+	});
+
+	it("a downgrade below the record's starting version clears it, so it never revives did not apply", () => {
+		const f = fixture({ installRecord: JSON.stringify({ fromVersion: "0.3.8", targetVersion: "0.3.9" }) });
+		f.run("setupAutoUpdater()");
+		f.updater.emit("update-available", { version: "0.3.9" });
+		assert.equal(f.state().notAppliedVersion, undefined);
+		assert.equal(f.record.removed, true);
 	});
 
 	it("Install is a trusted IPC call that answers whether main took it", async () => {
@@ -462,6 +543,7 @@ describe("status observation never controls the updater", () => {
 		assert.equal(f.updater.downloads, 0, "nothing offered yet");
 		f.updater.emit("update-available", { version: "0.3.8" });
 		assert.throws(() => download({ sender: {}, senderFrame: sender.mainFrame }), /Untrusted/);
+		f.updater.offer = { version: "0.3.8" };
 		await download({ sender, senderFrame: sender.mainFrame });
 		assert.equal(f.updater.downloads, 1);
 	});

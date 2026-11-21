@@ -699,6 +699,31 @@ describe("General update rows", () => {
 		assert.equal(updateControlTooltip(state({ status: "downloaded", version: "0.3.8" }), "install"), "Update 0.3.8 downloaded. Click to restart and install.");
 	});
 
+	it("an install that fails before the quit (T3's recovery) leaves Restarting for Install, and Settings offers Install", async () => {
+		const b = bridge(state({ status: "downloaded", version: "0.3.8", revision: 1, availableVersion: "0.3.8", downloadedVersion: "0.3.8" }));
+		const host = await mount(<><SidebarUpdatePill /><UpdateSettings {...props} /></>);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		await click(q(host, "update-pill"));
+		await click(q(document, "install-update-confirm"));
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "restarting");
+		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 2, availableVersion: "0.3.8", downloadedVersion: "0.3.8", errorContext: "install", canRetry: true, message: "Couldn’t install the update." }));
+		assert.equal(q(host, "update-pill")!.getAttribute("data-action"), "install", "not stuck on Restarting");
+		assert.equal(q(host, "update-pill")!.getAttribute("aria-label"), "Update 0.3.8 downloaded. Click to restart and install.", "T3's line for that state");
+		assert.ok(q(host, "update-install"), "Settings shows Install");
+	});
+
+	it("the notes popover heads a retry with its own line, not Update ready to download", async () => {
+		const notes = [{ version: "0.3.8", items: ["A change"] }];
+		bridge(state({ status: "available", version: "0.3.8", revision: 1, availableVersion: "0.3.8", errorContext: "download", canRetry: true, releaseNotes: notes }));
+		const host = await mount(<SidebarUpdatePill />);
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		await hover(q(host, "update-pill")!);
+		assert.equal(q(document, "update-notes-header")?.textContent, "Download failed for 0.3.8. Click to retry.");
+		assert.equal(shownReleaseNotes(state({ status: "available", version: "0.3.8", availableVersion: "0.3.8", notAppliedVersion: "0.3.8", releaseNotes: notes }), "download")?.available, false, "did not apply too");
+		assert.equal(shownReleaseNotes(state({ status: "available", version: "0.3.8", availableVersion: "0.3.8", releaseNotes: notes }), "download")?.available, true);
+	});
+
 	it("a failed install's button opens the install confirm again", async () => {
 		const b = bridge(state({ status: "error", version: "0.3.8", revision: 1, availableVersion: "0.3.8", downloadedVersion: "0.3.8", errorContext: "install", canRetry: true }));
 		const host = await mount(<SidebarUpdatePill />);

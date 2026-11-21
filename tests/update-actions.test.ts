@@ -46,7 +46,7 @@ function fixture({ state = { status: "available", version: V72 } as State, offer
 	const actions = createUpdateActions({
 		updater: () => present,
 		state: () => current,
-		offerAgain: (version: string) => { log.push(`offer ${version}`); Object.assign(current, { status: "available", version }); },
+		downloadFailed: (version: string) => { log.push(`offer ${version}`); Object.assign(current, { status: "available", version }); },
 		report: (status: string) => { log.push(`report ${status}`); current.status = status; },
 		downloadStarted: (version: string) => { started.push(version); },
 		installing: () => false,
@@ -106,14 +106,15 @@ test("an older download already under way finishes first, then the pinned one do
 	assert.equal(f.updater.listenerCount("update-downloaded"), 0);
 });
 
-test("a failed pinned download over an older ready one offers the pinned version again, not the deleted download", async () => {
+test("a failed pinned download offers the pinned version again, over an older ready one too, so nothing stays at 0%", async () => {
 	const f = fixture({ state: { status: "downloaded", version: V72 }, offered: V73 });
 	f.flags.downloadFails = true;
 	await assert.rejects(f.actions.downloadPinned(V73), /checksum/);
+	assert.deepEqual(f.started, [V73], "the download names the pinned version from its start");
 	assert.deepEqual(f.current, { status: "available", version: V73 }, "electron-updater emptied its cache when it started V73");
 	assert.equal(f.updater.listenerCount("update-downloaded"), 0, "the listener goes on failure too");
 	await assert.rejects(f.actions.downloadPinned(V73));
-	assert.equal(f.log.filter((line) => line.startsWith("offer")).length, 1, "a plain failure (nothing older ready) changes nothing");
+	assert.equal(f.log.filter((line) => line.startsWith("offer")).length, 2, "every failure offers it again, to retry");
 });
 
 test("downloadExact pins the feed to the version for the retry, then unpins it", async () => {

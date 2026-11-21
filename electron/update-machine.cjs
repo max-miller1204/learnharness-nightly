@@ -171,7 +171,13 @@ function resolveNotAppliedInstallVersion(record, appVersion) {
 const hasInstallableDownload = (state) =>
 	state.downloadedVersion !== null && (state.status === "downloaded" || (state.status === "error" && (state.errorContext === null || state.errorContext === "install")));
 
+/** An offer the Download button may fetch: offered, or a failed download of it that an updater
+ *  error moved to "error" (T3's download retry, desktopUpdate.logic.ts:63-66). */
+const hasDownloadableOffer = (state) =>
+	state.status === "available" || (state.status === "error" && state.errorContext === "download" && state.availableVersion !== null);
+
 module.exports = {
+	hasDownloadableOffer,
 	INSTALL_RECORD_FILE,
 	createInitialUpdateState,
 	isOffered,
