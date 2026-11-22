@@ -7,7 +7,7 @@ import { MenuShell } from "@/components/menu-shell";
 import { DeleteFolderDialog, DeleteSessionDialog, folderDeleteCopy, type DeleteDialogCopy } from "@/components/delete-session-dialog";
 import { leaveDeletedSession } from "@/components/session-deletion";
 import type { ChatDeleteMode, ThemeMode } from "@/src/core";
-import { DumbbellIcon, FolderPlusIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, PlusIcon, SearchIcon, SettingsIcon } from "lucide-react";
+import { DumbbellIcon, FolderPlusIcon, PanelLeftCloseIcon, PlusIcon, SearchIcon, SettingsIcon } from "lucide-react";
 import { ActivitySection } from "@/components/activity-dock";
 import { CoverageMenuBlock } from "@/components/extraction-coverage";
 import { LhMark } from "@/components/lh-mark";
@@ -19,12 +19,14 @@ import WhatsNewDialog from "@/components/whats-new-dialog";
 import { Toaster } from "@/components/ui/toast";
 import { UpdateLaunchNotice } from "@/components/update-toasts";
 import { Hint } from "@/components/ui/hint";
+import { SidebarContext, SidebarToggle, useSidebar } from "@/components/sidebar-toggle";
+import { timeAgo } from "@/components/time-ago";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { buildSessionTree, flattenSessionTree, folderDeletionScope, placementOf, type FolderDeletionScope, type SessionTreeNode } from "@/src/core";
 import { useSourceDirectory } from "@/components/source-directory";
-import { NewFolderRow, SidebarFolderRow, SidebarFolderRule, SIDEBAR_COMPACT_ROW, sidebarNameFont, sidebarRail, sidebarRowBox, useOpenFolders, useSidebarDrop } from "@/components/sidebar-folders";
+import { NewFolderRow, SidebarFolderRow, SidebarFolderRule, SidebarRootDrop, SIDEBAR_COMPACT_ROW, sidebarNameFont, sidebarRail, sidebarRowBox, useOpenFolders, useSidebarDrop } from "@/components/sidebar-folders";
 import { useAppearance } from "@/components/settings/appearance";
 import { SourceDragRow } from "@/components/source-folder-tree";
 import { OverlayScrollArea } from "@/components/overlay-scroll";
@@ -130,14 +132,7 @@ declare global {
 	}
 }
 
-const SidebarContext = createContext<{ open: boolean; toggle: () => void }>({
-	open: false,
-	toggle: () => {},
-});
-
-export function useSidebar() {
-	return useContext(SidebarContext);
-}
+export { SidebarToggle, timeAgo, useSidebar };
 
 export function SidebarProvider({ children }: { children: React.ReactNode }) {
 	useEffect(() => {
@@ -245,47 +240,6 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 	);
 }
 
-/** Hamburger for page headers — only visible when the sidebar is closed.
- *
- *  Owner, round 6c: the toggle is ALWAYS MOUNTED, owning a slot whose
- *  width+margin animate in LOCKSTEP with the sidebar's own width
- *  transition (same duration-200, same easing, both gated on mount) —
- *  before, it mounted/unmounted in one frame, so its 48px footprint
- *  (button + gap) popped and dragged the title and chips sideways while
- *  the sidebar was still mid-slide. When open the slot is exactly zero
- *  (w-0 -mr-3: width 0, the negative margin cancels the header's gap-3),
- *  so resting layouts are pixel-identical to the old conditional render.
- *  The icon fades with the slot and is clipped by it as it collapses —
- *  no popping in either direction. */
-export function SidebarToggle() {
-	const { open, toggle } = useSidebar();
-	return (
-		<span
-			className={cn(
-				"sidebar-motion lh-no-drag lh-closed-toggle relative flex h-9 shrink-0 overflow-hidden duration-200",
-				"w-0 -mr-3 sidebar-closed:w-9 sidebar-closed:mr-0",
-			)}
-		>
-			<Hint label="Open sidebar" action="toggle-sidebar">
-			<Button
-				variant="ghost"
-				size="icon"
-				aria-label="Open sidebar"
-				aria-hidden={open}
-				tabIndex={open ? -1 : 0}
-				onClick={toggle}
-				className="sidebar-motion duration-200 pointer-events-none opacity-0 sidebar-closed:pointer-events-auto sidebar-closed:opacity-100"
-			>
-				{/* Owner, round 6: size-4, SAME as the close glyph — the toggle
-				    must not grow when the sidebar is closed (it did: size-5 here).
-				    The small look is the standard, both directions. */}
-				<PanelLeftOpenIcon className="size-4" />
-			</Button>
-			</Hint>
-		</span>
-	);
-}
-
 /**
  * The row's status indicator (owner, minimal-color round): the braille
  * spinner, ONLY while a teach turn is in flight — monochrome motion, the
@@ -300,28 +254,6 @@ export function SidebarToggle() {
 function SessionStatus({ busy }: { busy: boolean }) {
 	if (!busy) return null;
 	return <BrailleSpinner />;
-}
-
-/** Compact "how long ago": "just now", "5m ago", "3h ago", "2d ago",
- *  then a plain date. How long a session has been WAITING matters more
- *  than an absolute timestamp. Beyond a week the date renders ISO
- *  (YYYY-MM-DD, zero-padded) — the international standard: unambiguous
- *  in any locale and it sorts (owner, typography round 5; the old
- *  M/D/YYYY was the US convention. A user-locale setting can come later
- *  — trivial, a format function swap). Pure — exported for tests. */
-export function timeAgo(iso: string, now = new Date()): string {
-	const ms = now.getTime() - new Date(iso).getTime();
-	if (ms < 60_000) return "just now";
-	const min = Math.floor(ms / 60_000);
-	if (min < 60) return `${min}m ago`;
-	const h = Math.floor(min / 60);
-	if (h < 24) return `${h}h ago`;
-	const d = Math.floor(h / 24);
-	if (d < 7) return `${d}d ago`;
-	const date = new Date(iso);
-	const mm = String(date.getMonth() + 1).padStart(2, "0");
-	const dd = String(date.getDate()).padStart(2, "0");
-	return `${date.getFullYear()}-${mm}-${dd}`;
 }
 
 /** The row's second line: the state when a state exists (waiting/working),
@@ -1074,9 +1006,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 					)}
 					{/* Empty space below the list: drop here to move out of all folders. */}
 					{organization && (
-						<div data-testid="sidebar-root-drop" aria-label="Move outside folders" data-drop-active={folderDrop.dropTarget === null}
-							className={cn("min-h-16 flex-1 transition-colors", folderDrop.dropTarget === null && "bg-accent/30")}
-							{...folderDrop.dropProps(null)} />
+						<SidebarRootDrop active={folderDrop.dropTarget === null} dropProps={folderDrop.dropProps(null)} />
 					)}
 				</OverlayScrollArea>
 

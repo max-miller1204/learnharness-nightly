@@ -7,7 +7,7 @@ import { INTERACTION_LAYER_Z_BASE } from "@/components/host-dialog";
 import { useSettingsSaved } from "@/components/settings-signal";
 import { formatTokens } from "@/components/usage-format";
 import { Hint } from "@/components/ui/hint";
-import { timeAgo } from "@/components/sidebar";
+import { timeAgo } from "@/components/time-ago";
 import { resolveSettings } from "@/src/core";
 import { sessionReadHold } from "@/components/session-deletion";
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { NewFolderRow, SidebarFolderRow, SidebarFolderRule, sidebarFolderBox, sidebarRail, sidebarRowBox, sidebarRuleInset } from "../components/sidebar-folders.tsx";
+import { NewFolderRow, SidebarFolderRow, SidebarFolderRule, SidebarRootDrop, sidebarFolderBox, sidebarRail, sidebarRowBox, sidebarRuleInset } from "../components/sidebar-folders.tsx";
 
 const folder = { id: "f1", name: "Physics", parentId: null, createdAt: "2026-10-01T00:00:00.000Z" };
 const row = (depth: number, open: boolean, compact = false) => renderToStaticMarkup(
@@ -51,4 +51,14 @@ it("the folder Delete reuses the session dialog's surface with plural wording", 
 	const one = folderDeleteCopy({ sessions: 1, subfolders: 0, notes: 1, parentName: "Top" });
 	assert.match(one.body, /the 1 session inside/);
 	assert.match(one.body, /1 imported notes file inside moves to “Top”\./);
+});
+
+it("the drop space below the list has no accessible name: ARIA prohibits one on a plain div (axe: serious)", () => {
+	for (const active of [false, true]) {
+		const html = renderToStaticMarkup(<SidebarRootDrop active={active} dropProps={{}} />);
+		assert.match(html, /^<div data-testid="sidebar-root-drop"/);
+		assert.match(html, new RegExp(`data-drop-active="${active}"`));
+		assert.doesNotMatch(html, /\brole=/, "a generic element");
+		assert.doesNotMatch(html, /aria-label|aria-labelledby/, "so it can't be named");
+	}
 });

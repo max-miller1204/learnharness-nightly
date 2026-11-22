@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useState, type DragEvent, type HTMLAttributes, type MouseEvent as ReactMouseEvent } from "react";
 import { ChevronRightIcon, FolderIcon, FolderOpenIcon } from "lucide-react";
 import { canMoveFolder, type OrganizationAction, type SourceFolder, type SourceOrganization } from "@/src/core";
 import { EditableSourceName, SOURCE_DRAG_TYPE, SourceDragRow } from "@/components/source-folder-tree";
@@ -60,6 +60,18 @@ export function useOpenFolders() {
 		});
 	}, []);
 	return { openFolders, setOpen };
+}
+
+/** The empty space below the session list: drop a session or folder there
+ *  to move it out of all folders. A pointer-only drop target with no role,
+ *  so it takes no aria-label: ARIA prohibits naming a plain div, and axe
+ *  reports one as a serious violation. */
+export function SidebarRootDrop({ active, dropProps }: { active: boolean; dropProps: HTMLAttributes<HTMLDivElement> }) {
+	return (
+		<div data-testid="sidebar-root-drop" data-drop-active={active}
+			className={cn("min-h-16 flex-1 transition-colors", active && "bg-accent/30")}
+			{...dropProps} />
+	);
 }
 
 /** Drop targets for sessions and folders: a folder, a row inside a folder

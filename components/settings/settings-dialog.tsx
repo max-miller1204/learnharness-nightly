@@ -62,6 +62,7 @@ import { PluginSettingsPage } from "./plugin-settings-page.tsx";
 import { usePlugins } from "@/components/plugins";
 import { ChatGPTUIProvider } from "./chatgpt-connection.tsx";
 import { NativeSubscriptionUIProvider } from "./subscription-connections.tsx";
+import { SettingsDialogContext, useSettingsDialog } from "./settings-dialog-context.ts";
 
 /** Owner (2026-09-20): hints earn their place — mechanics-explaining
  *  prose is out; only the keyboard note stays (storage location is a
@@ -77,12 +78,6 @@ const SECTIONS = [
 ] as const;
 type SectionId = (typeof SECTIONS)[number]["id"] | "plugins" | "core-plugins" | `plugin:${string}`;
 
-/** `open(section?, row?)` — the optional ROW deep-links into the Keys
- *  section with that row unfolded (zero-keys wave: the dictation error's
- *  click lands on the Deepgram row). `row` is the KEY ID (the env-var
- *  name, e.g. DEEPGRAM_API_KEY — KeysSection's openRow state), not the
- *  row's testid. */
-const DialogContext = createContext<{ open: (section?: string, row?: string) => void }>({ open: () => {} });
 // Authority belongs to the persistent Settings host, not a particular field or
 // open/close lifetime: a delayed response must not roll back a newer ACK.
 interface SettingsWriteOrder {
@@ -138,18 +133,16 @@ export function SettingsDialogProvider({
 		return () => window.removeEventListener("lh:open-plugin-settings", onPluginSettings);
 	}, [open]);
 	return (
-		<ChatGPTUIProvider><NativeSubscriptionUIProvider><WriteOrderContext.Provider value={writeOrder}><DialogContext.Provider value={{ open }}>
+		<ChatGPTUIProvider><NativeSubscriptionUIProvider><WriteOrderContext.Provider value={writeOrder}><SettingsDialogContext.Provider value={{ open }}>
 			{children}
 			{show && (
 				<SettingsDialog onClose={close} initialSection={landOn} initialRow={landOnRow} navigationRequest={navigationRequest} layerId={layerId} />
 			)}
-		</DialogContext.Provider></WriteOrderContext.Provider></NativeSubscriptionUIProvider></ChatGPTUIProvider>
+		</SettingsDialogContext.Provider></WriteOrderContext.Provider></NativeSubscriptionUIProvider></ChatGPTUIProvider>
 	);
 }
 
-export function useSettingsDialog() {
-	return useContext(DialogContext);
-}
+export { useSettingsDialog };
 
 function SettingsDialog({
 	onClose,
@@ -162,7 +155,7 @@ function SettingsDialog({
 	initialSection: SectionId;
 	navigationRequest: number;
 	layerId: string;
-	/** The keys-section row to unfold (see DialogContext above). */
+	/** The keys-section row to unfold (see SettingsDialogContext). */
 	initialRow: string | null;
 }) {
 	// Keep the original visual frame and plain dim backdrop. The shared
