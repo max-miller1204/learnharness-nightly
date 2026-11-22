@@ -4,7 +4,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Resvg } from "@resvg/resvg-js";
-import { drawTex, nestedOffsets } from "../src/choice-math.ts";
+import { liteAdaptor } from "mathjax-full/js/adaptors/liteAdaptor.js";
+import type { LiteElement } from "mathjax-full/js/adaptors/lite/Element.js";
+import { drawTex, nestedOffsets, offsetsAsGroups } from "../src/choice-math.ts";
 
 const OWNER = String.raw`\text{output size} = \underbrace{\left\lfloor \frac{i+2p-k}{s} \right\rfloor}_{\text{moves that fit}} + \underbrace{1}_{\text{first window}}.`;
 const STRETCHED = [String.raw`\underbrace{abc}_{x}`, String.raw`\overbrace{abcdef}^{x}`, String.raw`\xrightarrow{\text{long label}}`,
@@ -64,4 +66,17 @@ test("parentheses, floors, roots, hats and big delimiters are unchanged", () => 
     assert.equal(phone, mathjax, tex);
     assert.deepEqual(nested(phone), [], tex);
   }
+});
+
+test("a nested svg at 0,0 still gets a group of its own, so its clip can't reach the glyph after it", () => {
+  // react-native-svg 15 leaves a nested Svg's clip (and on Android its viewBox) on the canvas.
+  const adaptor = liteAdaptor();
+  const page = adaptor.parse(`<svg viewBox="0 0 40 10"><g><svg width="10" height="10" x="0" y="0" viewBox="0 0 10 10"><path d="M0 0H10V10H0Z"></path></svg><path d="M20 0H30V10H20Z"></path></g></svg>`, "text/html");
+  const svg = adaptor.firstChild(adaptor.body(page)) as LiteElement;
+  assert.ok(offsetsAsGroups(adaptor, svg));
+  assert.equal(adaptor.outerHTML(svg),
+    `<svg viewBox="0 0 40 10"><g><g><svg width="10" height="10" viewBox="0 0 10 10"><path d="M0 0H10V10H0Z"></path></svg></g><path d="M20 0H30V10H20Z"></path></g></svg>`);
+  // An offset that isn't one plain number fails the picture.
+  const bad = adaptor.firstChild(adaptor.body(adaptor.parse(`<svg viewBox="0 0 1 1"><svg x="1 2" y="0"></svg></svg>`, "text/html"))) as LiteElement;
+  assert.equal(offsetsAsGroups(adaptor, bad), false);
 });

@@ -20,6 +20,8 @@ type Transform = [sx: number, sy: number, tx: number, ty: number];
 
 const IDENTITY: Transform = [1, 1, 0, 0];
 const NUMBER = String.raw`-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?`;
+/** One SVG number and nothing else (around it, only spaces): a value to parse, never to copy. */
+export const SVG_NUMBER = new RegExp(`^\\s*${NUMBER}\\s*$`);
 const STEP = new RegExp(String.raw`\s*(translate|scale)\(\s*(${NUMBER})(?:[\s,]+(${NUMBER}))?\s*\)`, "g");
 const TOKEN = new RegExp(`[A-Za-z]|${NUMBER}`, "g");
 

@@ -16,7 +16,7 @@ import type { LiteText } from "mathjax-full/js/adaptors/lite/Text.js";
 import { readContentSpans } from "../../../src/core/content-reader.ts";
 import { indented, repairMathForDisplay } from "../../../src/core/math-delims.ts";
 import { resolveTheme, shiftHex } from "../../../src/core/themes.ts";
-import { flattenSvg, safeMarkup, type SvgNode } from "./svg-flatten";
+import { flattenSvg, safeMarkup, SVG_NUMBER, type SvgNode } from "./svg-flatten";
 
 /** AI-written math is untrusted. `html` makes links, styles and ids; `bussproofs` needs
  * an output that measures boxes; `action` adds event handlers, which the drawing can't
@@ -203,15 +203,14 @@ function rulesAsInk(adaptor: LiteAdaptor, node: LiteElement) {
   }
 }
 
-/** One SVG number, nothing else: a value to parse, never to copy. */
-const SVG_NUMBER = /^\s*-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?\s*$/i;
-
 /** MathJax places the stretched middle of a brace, arrow or bar in a nested svg with an x and
- * y offset. react-native-svg draws a nested Svg at its parent's origin, keeping only its size,
- * clip and viewBox (RNSVGGroup.mm: CGRectMake(0, 0, width, height); Android's SvgView:
- * RectF(0, 0, width, height)), so the offset moves to a group around it, which every renderer
- * draws the same. False when an offset isn't a plain number, so the picture isn't drawn. */
-function offsetsAsGroups(adaptor: LiteAdaptor, node: LiteElement): boolean {
+ * y offset. react-native-svg 15 draws a nested Svg at its parent's origin, keeping only its
+ * size, clip and viewBox (RNSVGGroup.mm: CGRectMake(0, 0, width, height); Android's SvgView:
+ * RectF(0, 0, width, height)), and leaves that clip, and on Android its viewBox, on the canvas
+ * for what is drawn after it. So every nested svg gets a group of its own, which holds both in,
+ * and its offset moves onto that group, which every renderer draws the same. False when an
+ * offset isn't a plain number, so the picture isn't drawn. */
+export function offsetsAsGroups(adaptor: LiteAdaptor, node: LiteElement): boolean {
   for (const child of [...adaptor.childNodes(node)]) {
     if (adaptor.kind(child) === "#text") continue;
     const element = child as LiteElement;
@@ -225,8 +224,7 @@ function offsetsAsGroups(adaptor: LiteAdaptor, node: LiteElement): boolean {
     if (!nestedOffsets.moved) continue;
     adaptor.removeAttribute(element, "x");
     adaptor.removeAttribute(element, "y");
-    if (x === 0 && y === 0) continue;
-    const group = adaptor.node("g", { transform: `translate(${String(x)},${String(y)})` }) as LiteElement;
+    const group = adaptor.node("g", x === 0 && y === 0 ? {} : { transform: `translate(${String(x)},${String(y)})` }) as LiteElement;
     adaptor.insert(group, element);
     adaptor.append(group, element);
   }
