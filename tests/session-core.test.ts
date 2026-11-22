@@ -469,10 +469,10 @@ describe("send (one input event, verbatim consumption)", () => {
 			}
 			throw new Error(`unexpected fetch: ${String(input)}`);
 		}) as typeof globalThis.fetch;
+		const m = model({ initialMessages: [newUserMessage("hi"), quizCall] });
 		Object.defineProperty(globalThis.crypto, "randomUUID", { value: undefined, configurable: true });
 		try {
 			assert.equal(typeof globalThis.crypto.randomUUID, "undefined");
-			const m = model({ initialMessages: [newUserMessage("hi"), quizCall] });
 			await m.submitAnswer("quiz", "call-1", { correct: true } as never);
 			assert.deepEqual(JSON.parse(postBody), { chatId: "chat_x", input: { type: "answer", toolCallId: "call-1", answer: { correct: true } } });
 		} finally {
