@@ -203,6 +203,36 @@ function rulesAsInk(adaptor: LiteAdaptor, node: LiteElement) {
   }
 }
 
+/** One SVG number, nothing else: a value to parse, never to copy. */
+const SVG_NUMBER = /^\s*-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?\s*$/i;
+
+/** MathJax places the stretched middle of a brace, arrow or bar in a nested svg with an x and
+ * y offset. react-native-svg draws a nested Svg at its parent's origin, keeping only its size,
+ * clip and viewBox (RNSVGGroup.mm: CGRectMake(0, 0, width, height); Android's SvgView:
+ * RectF(0, 0, width, height)), so the offset moves to a group around it, which every renderer
+ * draws the same. False when an offset isn't a plain number, so the picture isn't drawn. */
+function offsetsAsGroups(adaptor: LiteAdaptor, node: LiteElement): boolean {
+  for (const child of [...adaptor.childNodes(node)]) {
+    if (adaptor.kind(child) === "#text") continue;
+    const element = child as LiteElement;
+    if (!offsetsAsGroups(adaptor, element)) return false;
+    if (adaptor.kind(element) !== "svg") continue;
+    const [x, y] = ["x", "y"].map((name) => {
+      const value = adaptor.getAttribute(element, name);
+      return value === null || value === undefined ? 0 : SVG_NUMBER.test(String(value)) ? Number(value) : NaN;
+    }) as [number, number];
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    if (!nestedOffsets.moved) continue;
+    adaptor.removeAttribute(element, "x");
+    adaptor.removeAttribute(element, "y");
+    if (x === 0 && y === 0) continue;
+    const group = adaptor.node("g", { transform: `translate(${String(x)},${String(y)})` }) as LiteElement;
+    adaptor.insert(group, element);
+    adaptor.append(group, element);
+  }
+  return true;
+}
+
 /** The color of each visible glyph or rule and the box drawn behind it, if any. */
 function inks(node: MmlNode, color: string | undefined, behind: string | undefined, found: { color?: string; behind?: string }[]) {
   if (node.isKind("mphantom")) return found;
@@ -245,6 +275,9 @@ const stripData = (svg: string) => svg.replace(/ (?:data-[a-z-]+|class)="[^"]*"/
 
 /** Whether drawings are flattened (svg-flatten.ts); off only to compare with MathJax's own, in tests. */
 export const flattening = { on: true };
+/** Whether nested svgs' offsets move onto groups (offsetsAsGroups); off only to compare with
+ * MathJax's own placement, in tests. */
+export const nestedOffsets = { moved: true };
 
 /** Draws TeX, or returns undefined when it doesn't parse, throws, or isn't safe to show. */
 export function drawTex(tex: string, display: boolean): DrawnMath | undefined {
@@ -267,6 +300,7 @@ export function drawTex(tex: string, display: boolean): DrawnMath | undefined {
     const [, minY = 0, width = 0, height = 0] = (adaptor.getAttribute(svg, "viewBox") ?? "").split(" ").map(Number);
     for (const name of ["width", "height", "style"]) adaptor.removeAttribute(svg, name);
     rulesAsInk(adaptor, svg);
+    if (!offsetsAsGroups(adaptor, svg)) return;
     const original = adaptor.outerHTML(svg);
     if (/data-mml-node="merror"|data-mjx-error/.test(original) || /\s(?:style|id)=/.test(original)) return;
     // The same picture without its groups draws far faster (svg-flatten.ts).
