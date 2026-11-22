@@ -92,13 +92,15 @@ test("a confidence from 0 to 100 shows, off the stops too; anything else, or a s
     const shown = await records(withFirst(details));
     assert.deepEqual(shown.map(({ label }) => label), ["Confidence 50%"], JSON.stringify(details));
   }
-  const ask = quiz().messages.map((message) => message.role === "toolResult"
+  // Only the probe questions' results become ask answers; other tools' results stay as saved.
+  const ask = quiz().messages.map((message) => message.role === "toolResult" && message.toolName === "probe"
     ? { ...message, details: { ...(message as { details: object }).details, kind: "ask" } } as LhMessage : message);
   assert.deepEqual(await records(ask), []);
 });
 
 test("the dock's slider keeps room for 100% at any text size, so its rail never changes width", async () => {
-  const call = (quiz().messages[5] as { content: { type: string; name?: string; arguments?: unknown; id?: string }[] }).content.find(({ type }) => type === "toolCall");
+  const pending = quiz().messages.find((message) => message.id === "a_q3");
+  const call = (pending as { content: { type: string; name?: string; arguments?: unknown; id?: string }[] } | undefined)?.content.find(({ type }) => type === "toolCall");
   assert.ok(call);
   const question = { tool: call.name, input: call.arguments, toolCallId: call.id, messageId: "m", contentIndex: 0, key: "k" } as unknown as PendingQuestion;
   let tree: ReactTestRenderer | undefined;

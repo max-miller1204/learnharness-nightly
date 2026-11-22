@@ -4,7 +4,7 @@ import { DownloadIcon, MaximizeIcon } from "lucide-react";
 import { useSessionMermaid } from "@/components/session-overlay";
 import { downloadFile } from "@/components/artifacts/download";
 import { ToolCallCard } from "@/components/artifacts/tool-call-card";
-import type { ArtifactPartProps, ImageSnapshot, ShowImageDetails } from "@/src/core";
+import { isShowImageDetails, type ArtifactPartProps, type ImageSnapshot, type ShowImageDetails } from "@/src/core";
 import { useImageSnapshot } from "./use-image-snapshot";
 
 /**
@@ -14,18 +14,6 @@ import { useImageSnapshot } from "./use-image-snapshot";
  * switch (owner decision: a photo inverts to a negative). A failed or
  * still-running call keeps the quiet tool-call card.
  */
-
-function isShowImageDetails(value: unknown): value is ShowImageDetails {
-	const v = value as Partial<ShowImageDetails> | null | undefined;
-	return (
-		typeof v?.snapshotId === "string" &&
-		/^[a-f0-9]{64}$/.test(v.snapshotId) &&
-		(v.mimeType === "image/png" || v.mimeType === "image/jpeg") &&
-		typeof v.path === "string" &&
-		typeof v.width === "number" &&
-		typeof v.height === "number"
-	);
-}
 
 /** The learner's file name, without its directory. Pure. */
 function baseName(path: string): string {
