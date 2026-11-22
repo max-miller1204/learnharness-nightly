@@ -9,7 +9,7 @@ import type { PluginTaskError, PluginTaskOutcome, PluginTaskRecord, PluginTaskSn
 import { validatePluginInferenceOptions, validatePluginSchema } from "../core/plugin-validation.ts";
 import { accumulateJobUsage } from "../core/contracts/jobs.ts";
 import type { PiEngine } from "./models.ts";
-import { captureJobUsageStep } from "./pricing.ts";
+import { captureJobUsageStep, dispatchedModelOf } from "./pricing.ts";
 import { usageWasAdmitted } from "./subscription-request-cycle.ts";
 import { runSubagent } from "./subagents/pi-run.ts";
 
@@ -213,7 +213,7 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 						const usage = m.stopReason !== "aborted" && usageWasAdmitted(m.usage);
 						const modelId = `${m.provider}:${m.model}`;
 						commit(t, { ...t.record, messages: [...t.record.messages, m], turns: t.record.turns + 1,
-							...(usage ? { usage: accumulateJobUsage(t.record.usage, modelId, captureJobUsageStep(m.usage, modelId)) } : {}) });
+							...(usage ? { usage: accumulateJobUsage(t.record.usage, modelId, captureJobUsageStep(m.usage, dispatchedModelOf(m.usage) ?? engine.model)) } : {}) });
 						if (usage) {
 							try { deps.onUsage?.(clone(t.record.model), clone(m.usage)); }
 							catch (error) { // Accounting writes are also host persistence, never a model-correctable error.

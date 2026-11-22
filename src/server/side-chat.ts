@@ -214,7 +214,7 @@ export function createSideChatService(deps: SideChatDeps): SideChatService {
 				}));
 				if (result.usage && usageWasAdmitted(result.usage) && engine.sideUsageAdmitted?.() !== false) {
 					try {
-						deps.chatStore.appendTurnUsage(chatId, { id: run.answerId, messageId: answer.id, at, model: run.model, steps: [captureCallUsage(result.usage, run.model)] });
+						deps.chatStore.appendTurnUsage(chatId, { id: run.answerId, messageId: answer.id, at, model: run.model, steps: [captureCallUsage(result.usage, engine.model)] });
 					} catch { /* deleted session has no usage destination */ }
 				}
 			} catch (error) {

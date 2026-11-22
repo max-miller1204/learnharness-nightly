@@ -1,7 +1,7 @@
-/** Per-call API-dollar calculation against Pi's live catalog (bundled plus
- *  any pi.dev refresh overlay). Used when recording a call so history keeps
- *  the price that was active when the call ran, and shared with
- *  src/server/pricing.ts for read-time fallback on older records.
+/** Per-call API-dollar calculation. Record-time capture prices each call from
+ *  the dispatched model's own rates (never re-reading the live catalog) and
+ *  skips $0 placeholder models that are not known to be free. Read-time
+ *  fallback (src/server/pricing.ts) shares computeCallCost and liveCatalogModel.
  *  Never mutate saved native messages: calculateCost mutates its usage.cost. */
 import { calculateCost, type Api, type Model, type Usage } from "@earendil-works/pi-ai";
 import { piModels } from "./models.ts";
@@ -12,6 +12,26 @@ import { piUsageToStep, type UsageStepLike } from "../core/contracts/jobs.ts";
 import { isSubscriptionModel } from "../core/prices.ts";
 
 export type PricedModel = { cost: Model<Api>["cost"] };
+
+/** The dispatched model metadata available when a call completes. */
+export type DispatchedModel = {
+	provider: string;
+	id: string;
+	name?: string;
+	cost?: Model<Api>["cost"];
+};
+
+const dispatchedModels = new WeakMap<Usage, DispatchedModel>();
+
+/** Associate a finalized Pi Usage with the exact Model dispatched for that call. */
+export function recordDispatchedModel(usage: Usage, model: DispatchedModel): void {
+	dispatchedModels.set(usage, model);
+}
+
+/** Look up the exact Model recorded for a finalized Pi Usage, if any. */
+export function dispatchedModelOf(usage: Usage): DispatchedModel | undefined {
+	return dispatchedModels.get(usage);
+}
 
 export function isUnpricedModelId(id: string): boolean {
 	const colon = id.indexOf(":");
@@ -24,6 +44,25 @@ export function liveCatalogModel(id: string): PricedModel | undefined {
 	if (isUnpricedModelId(id)) return undefined;
 	const colon = id.indexOf(":");
 	return piModels().getModel(id.slice(0, colon), id.slice(colon + 1));
+}
+
+function hasNonZeroRate(cost: Model<Api>["cost"]): boolean {
+	return [cost, ...(cost.tiers ?? [])].some(
+		(rate) => rate.input > 0 || rate.output > 0 || rate.cacheRead > 0 || rate.cacheWrite > 0,
+	);
+}
+
+function isKnownFreeModel(model: Pick<DispatchedModel, "id" | "name">): boolean {
+	return /(?:^|[:/-])free$/i.test(model.id) || (typeof model.name === "string" && /\bfree\b/i.test(model.name));
+}
+
+function dispatchedCost(call: Partial<CallUsage>, model: DispatchedModel): number | null {
+	const modelId = `${model.provider}:${model.id}`;
+	if (isUnpricedModelId(modelId) || !model.cost) return null;
+	// Do not freeze $0 placeholder rates unless the model is explicitly free;
+	// leaving costUsd absent lets later catalog updates price it at read time.
+	if (!hasNonZeroRate(model.cost) && !isKnownFreeModel(model)) return null;
+	return computeCallCost(call, { cost: model.cost });
 }
 
 export function computeCallCost(call: Partial<CallUsage>, model: PricedModel | undefined): number | null {
@@ -47,8 +86,8 @@ export function computeCallCost(call: Partial<CallUsage>, model: PricedModel | u
 	return Number.isFinite(total) && total >= 0 ? total : null;
 }
 
-/** Capture one completed Pi model call's tokens and its live catalog cost. */
-export function captureCallUsage(usage: Usage, modelId: string): CallUsage {
+/** Capture one completed Pi model call's tokens and cost from the dispatched model. */
+export function captureCallUsage(usage: Usage, model: DispatchedModel): CallUsage {
 	const call: CallUsage = {
 		inputTokens: usage.input,
 		outputTokens: usage.output,
@@ -58,26 +97,25 @@ export function captureCallUsage(usage: Usage, modelId: string): CallUsage {
 		// Optional in pi's Usage; persisted as 0, never dropped.
 		reasoningTokens: usage.reasoning ?? 0,
 	};
-	const costUsd = computeCallCost(call, liveCatalogModel(modelId));
+	const costUsd = dispatchedCost(call, model);
 	return costUsd !== null ? { ...call, costUsd } : call;
 }
 
-/** Convert a Pi Usage into a JobUsage step carrying its live catalog cost. */
-export function captureJobUsageStep(usage: Usage, modelId: string): UsageStepLike {
-	const step = piUsageToStep(usage);
-	return priceJobUsageStep(step, modelId);
+/** Convert a Pi Usage into a JobUsage step carrying its dispatched model cost. */
+export function captureJobUsageStep(usage: Usage, model: DispatchedModel): UsageStepLike {
+	return priceJobUsageStep(piUsageToStep(usage), model);
 }
 
-/** Attach the live catalog cost to a job usage step when not already set. */
-export function priceJobUsageStep(step: UsageStepLike, modelId: string): UsageStepLike {
+/** Attach the dispatched model cost to a job usage step when not already set. */
+export function priceJobUsageStep(step: UsageStepLike, model: DispatchedModel): UsageStepLike {
 	if (step.costUsd !== undefined) return step;
-	const costUsd = computeCallCost({
+	const costUsd = dispatchedCost({
 		inputTokens: step.inputTokens,
 		outputTokens: step.outputTokens,
 		cacheReadTokens: step.inputTokenDetails?.cacheReadTokens,
 		cacheWriteTokens: step.inputTokenDetails?.cacheWriteTokens,
 		cacheWrite1hTokens: step.inputTokenDetails?.cacheWrite1hTokens,
 		reasoningTokens: step.outputTokenDetails?.reasoningTokens,
-	}, liveCatalogModel(modelId));
+	}, model);
 	return costUsd !== null ? { ...step, costUsd } : step;
 }

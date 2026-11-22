@@ -701,7 +701,7 @@ export async function handleChatInput(
 	const turnUsageId = crypto.randomUUID();
 	const steps: CallUsage[] = [];
 	const collectUsage = (usage: Usage) => {
-		steps.push(captureCallUsage(usage, modelId));
+		steps.push(captureCallUsage(usage, engine.model));
 	};
 
 	// AGENT CONSTRUCTION BRANCH: the transcript

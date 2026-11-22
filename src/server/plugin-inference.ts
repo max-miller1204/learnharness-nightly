@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { normalizeContext, type AssistantMessage, type AssistantMessageEvent, type SimpleStreamOptions, type Usage } from "@earendil-works/pi-ai";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { PiEngine } from "../agent/models.ts";
+import { isUnpricedModelId, recordDispatchedModel } from "../agent/pricing.ts";
 import { CLAUDE_CODE_PROVIDER } from "../agent/claude-code/constants.ts";
 import { markUnadmittedUsage, usageWasAdmitted, type SubscriptionDispatchLifecycle } from "../agent/subscription-request-cycle.ts";
 import type { PluginCallPurpose, PluginModelSpec } from "../core/plugin-agents.ts";
@@ -113,11 +114,12 @@ export function createPluginInference(
 	const onUsage = (model: PluginModelSpec, usage: Usage) => {
 		if (signal.aborted || !usageWasAdmitted(usage)) return;
 		const spec = modelSpec(model);
+		const unpriced = isUnpricedModelId(`${spec.provider}:${spec.id}`);
 		// Explicit projection: never serialize transport models, request content,
 		// account leases, arbitrary caller properties, or credentials.
 		const row = { timestamp: new Date().toISOString(), model: spec, usage: {
 			input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, totalTokens: usage.totalTokens,
-			cost: { input: usage.cost.input, output: usage.cost.output, cacheRead: usage.cost.cacheRead, cacheWrite: usage.cost.cacheWrite, total: usage.cost.total },
+			...(unpriced ? {} : { cost: { input: usage.cost.input, output: usage.cost.output, cacheRead: usage.cost.cacheRead, cacheWrite: usage.cost.cacheWrite, total: usage.cost.total } }),
 		} };
 		fs.mkdirSync(directory, { recursive: true });
 		fs.appendFileSync(path.join(/* turbopackIgnore: true */ directory, "usage.jsonl"), `${JSON.stringify(row)}\n`, { mode: 0o600 });
@@ -139,6 +141,7 @@ export function createPluginInference(
 				let partial: AssistantMessage | undefined;
 				let terminal = false;
 				let finalMessage: AssistantMessage | undefined;
+				let dispatchedModel = base.model;
 				const stopSource = () => { source?.end(finalMessage ?? failure(base, partial, true)); };
 				let admitted = !subscription(spec.provider);
 				const lifecycle: SubscriptionDispatchLifecycle = {
@@ -147,6 +150,7 @@ export function createPluginInference(
 					noDispatch: () => { /* No admission is not a billed provider call. */ },
 				};
 				const finalize = (message: AssistantMessage) => {
+					recordDispatchedModel(message.usage, dispatchedModel);
 					if (!admitted) markUnadmittedUsage(message.usage);
 					terminal = true; finalMessage = message; finish(message);
 				};
@@ -163,6 +167,7 @@ export function createPluginInference(
 					const current = await available(spec, combined);
 					const engine = await bounded(current.engineForSpec(spec, classified === "background", lifecycle), combined);
 					if (engine.model.provider !== spec.provider || engine.model.id !== spec.id) throw new Error("Inference engine changed the explicitly selected model");
+					dispatchedModel = engine.model;
 					const providerOptions: SimpleStreamOptions = { ...safe, signal: combined, reasoning: engine.level === "off" ? undefined : engine.level, ...(typeof sessionId === "string" && sessionId.length > 0 ? { sessionId } : {}) };
 					source = engine.streamFn(engine.model, context, providerOptions);
 					combined.addEventListener("abort", stopSource, { once: true });

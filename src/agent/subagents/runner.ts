@@ -157,7 +157,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			abortSignal: controller.signal,
 			chatId,
 			onUsage: (step) => {
-				const next = accumulateJobUsage(usageTotals.get(jobId), model, priceJobUsageStep(step, model));
+				const next = accumulateJobUsage(usageTotals.get(jobId), model, priceJobUsageStep(step, engine.model));
 				usageTotals.set(jobId, next);
 				jobStore.updateJob(jobId, { usage: next }); // merge patch, status untouched
 			},

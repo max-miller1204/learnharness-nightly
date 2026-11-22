@@ -518,3 +518,20 @@ test("a model the catalog dropped is refused as model_unavailable before the pro
 		error.code === "model_unavailable" && error.message === `The model ${spec.provider}/retired is no longer available. Pick another model in Settings.`);
 	await assert.rejects(gone.engineFor(spec, "background"), /key/i, "a model that still exists keeps the key refusal");
 });
+
+test("plugin inference usage ledger omits cost for custom, subscription and CLI models while keeping it for priced models", async (t) => {
+	for (const pin of [
+		{ provider: "custom", id: "local-endpoint", thinkingLevel: "medium" } as const,
+		{ provider: "chatgpt", id: "gpt-5", thinkingLevel: "medium" } as const,
+		{ provider: "github-copilot-subscription", id: "gpt-5", thinkingLevel: "medium" } as const,
+		{ provider: CLAUDE_CODE_PROVIDER, id: "sonnet", thinkingLevel: "medium" } as const,
+	]) {
+		const f = fixture(t, { model: pin });
+		await f.adapter.inference.complete({ ...request(pin), purpose: "user" });
+		const rows = ledger(f.directory);
+		assert.equal(rows.length, 1, `${pin.provider}:${pin.id}`);
+		assert.equal(rows[0].usage.input, usage().input);
+		assert.equal(rows[0].usage.output, usage().output);
+		assert.equal("cost" in rows[0].usage, false, `${pin.provider}:${pin.id} must omit usage.cost`);
+	}
+});

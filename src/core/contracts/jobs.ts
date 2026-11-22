@@ -105,13 +105,12 @@ export function piUsageToStep(usage: {
 	cacheWrite: number;
 	cacheWrite1h?: number;
 	reasoning?: number;
-}, costUsd?: number | null): UsageStepLike {
+}): UsageStepLike {
 	return {
 		inputTokens: usage.input,
 		outputTokens: usage.output,
 		inputTokenDetails: { cacheReadTokens: usage.cacheRead, cacheWriteTokens: usage.cacheWrite, cacheWrite1hTokens: usage.cacheWrite1h ?? 0 },
 		outputTokenDetails: usage.reasoning !== undefined ? { reasoningTokens: usage.reasoning } : undefined,
-		...(typeof costUsd === "number" && Number.isFinite(costUsd) && costUsd >= 0 ? { costUsd } : {}),
 	};
 }
 

@@ -15,7 +15,7 @@ import {
 	type ModelSlotName,
 } from "../../core/settings.ts";
 import { catalogModelGone, ModelUnavailableError, type PiEngine } from "../models.ts";
-import { captureCallUsage } from "../pricing.ts";
+import { captureCallUsage, type DispatchedModel } from "../pricing.ts";
 import { runSubagent } from "./pi-run.ts";
 import { processImage } from "../image-processing/index.ts";
 import { workerRequestStream } from "../worker-request-admission.ts";
@@ -908,20 +908,10 @@ export interface ExtractionPipeline {
 }
 
 /** pi's per-step usage, flattened to the persisted CallUsage fields
- *  (the money channel's capture shape, contracts/chat.ts). When modelId is
- *  supplied, also captures its live catalog costUsd at record time. */
-export function callUsage(usage: Usage, modelId?: string): CallUsage {
-	if (modelId !== undefined) return captureCallUsage(usage, modelId);
-	return {
-		inputTokens: usage.input,
-		outputTokens: usage.output,
-		cacheReadTokens: usage.cacheRead,
-		cacheWriteTokens: usage.cacheWrite,
-		cacheWrite1hTokens: usage.cacheWrite1h ?? 0,
-		// Optional in pi's Usage (providers that never emit reasoning
-		// tokens leave it unset); persisted as 0, never dropped.
-		reasoningTokens: usage.reasoning ?? 0,
-	};
+ *  (the money channel's capture shape, contracts/chat.ts) with the
+ *  dispatched model's costUsd captured at record time. */
+export function callUsage(usage: Usage, model: DispatchedModel): CallUsage {
+	return captureCallUsage(usage, model);
 }
 
 export function createExtractionPipeline(deps: ExtractionPipelineDeps): ExtractionPipeline {
@@ -1109,15 +1099,16 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		);
 		const t0 = performance.now();
 
+		const engine = stageEngine("extractor", deps.extractor);
 		const findings = await runExtractor(
-			stageEngine("extractor", deps.extractor),
+			engine,
 			sourceId,
 			prompt,
 			new Set(graph.nodes.map((n) => n.id)),
 			batchIds,
 			signal,
 			(usage, model, step, finishReason, tools) => {
-				recordStep(jobKey, "extractor", callUsage(usage, model), model);
+				recordStep(jobKey, "extractor", callUsage(usage, engine!.model), model);
 				console.info(`[extraction] extractor step ${step}: ${finishReason}, tools: ${tools}`);
 			},
 		);
@@ -1142,8 +1133,9 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		// IDENTITY-only and never sees the passages, so anchors are useless
 		// to it — they add cognitive load, not signal.
 		const review = prepareAuditorReview({ chatStore, graphStore }, findings.propositions);
+		const engine = stageEngine("auditor", deps.auditor);
 		const auditResult = await runAuditor(
-			stageEngine("auditor", deps.auditor),
+			engine,
 			sourceId,
 			`Review these proposed findings against the supplied existing records. matches points from finding ids to candidateIds; candidates contains those records:\n\n` +
 				`${JSON.stringify(
@@ -1161,7 +1153,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 				)}`,
 			signal,
 			(usage, model, step, finishReason, tools) => {
-				recordStep(jobKey, "auditor", callUsage(usage, model), model);
+				recordStep(jobKey, "auditor", callUsage(usage, engine!.model), model);
 				console.info(`[extraction] auditor step ${step}: ${finishReason}, tools: ${tools}`);
 			},
 			review.tools,
@@ -1442,7 +1434,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		const t0 = performance.now();
 		const reply = await describeImageOnce(engine, IMAGE_READER_INSTRUCTIONS, filePath, processed, signal);
 		const imageModel = `${reply.provider}:${reply.model}`;
-		recordStep(jobKey, "imageReader", callUsage(reply.usage, imageModel), imageModel);
+		recordStep(jobKey, "imageReader", callUsage(reply.usage, engine.model), imageModel);
 		const text = reply.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join("").trim();
 		console.info(`[extraction ${jobKey}] image described in ${Math.round(performance.now() - t0)}ms (${text.length} chars)`);
 		if (!text) throw new Error("The vision model returned no description.");
@@ -1469,15 +1461,16 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 				`${digest === "" ? "" : `, digest ${digest.split("\n").length} lines`})`,
 		);
 		const t0 = performance.now();
+		const engine = stageEngine("extractor", deps.extractor);
 		const findings = await runNotesExtractor(
-			stageEngine("extractor", deps.extractor),
+			engine,
 			input.id,
 			input.code ? CODE_EXTRACTOR_INSTRUCTIONS : NOTES_EXTRACTOR_INSTRUCTIONS,
 			prompt,
 			new Set(graph.nodes.map((n) => n.id)),
 			signal,
 			(usage, model, step, finishReason, tools) => {
-				recordStep(jobKey, "extractor", callUsage(usage, model), model);
+				recordStep(jobKey, "extractor", callUsage(usage, engine!.model), model);
 				console.info(`[extraction] extractor step ${step}: ${finishReason}, tools: ${tools}`);
 			},
 		);

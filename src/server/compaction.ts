@@ -270,7 +270,7 @@ async function compact(deps: CompactionDeps, chatId: string): Promise<void> {
 			messageId: marker.id,
 			at: details.at,
 			model: deps.modelId,
-			steps: [captureCallUsage(usage, deps.modelId)],
+			steps: [captureCallUsage(usage, deps.engine.model)],
 		});
 		// Notify-then-fetch: the record gained the marker (the client's
 		// dividers appear) and the status event ends the send gate.
