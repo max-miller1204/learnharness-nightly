@@ -27,6 +27,7 @@
  *       "times": 1 }
  *   ],
  *   "fallback": { "text": "…" }
+ * A reply may also carry `delayMs` (hold the whole reply back) and `pauseBeforeDoneMs`.
  * }
  * Rules are tried in order; `times` limits how often a rule may fire.
  * `{{lastText}}` in a reply text is replaced with the first 200 characters
@@ -164,35 +165,42 @@ const server = http.createServer((req, res) => {
 				res.end(JSON.stringify({ id: `chatcmpl-prove-${requests}`, object: "chat.completion", created: Math.floor(Date.now() / 1000), model, choices: [{ index: 0, message, finish_reason: out.text !== undefined ? "stop" : "tool_calls" }], usage }));
 				return;
 			}
-			res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-			const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
-			send(chunk(model, { role: "assistant", content: "" }));
-			if (failMode === "broken-stream") {
-				res.write("data: {not json\n\n");
-				res.destroy();
-				return;
-			}
-			if (out.text !== undefined) {
-				for (const piece of out.text.match(/.{1,40}/gs) ?? [""]) send(chunk(model, { content: piece }));
+			const stream = () => {
+				res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+				const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+				send(chunk(model, { role: "assistant", content: "" }));
+				if (failMode === "broken-stream") {
+					res.write("data: {not json\n\n");
+					res.destroy();
+					return;
+				}
+				if (out.text !== undefined) {
+					for (const piece of out.text.match(/.{1,40}/gs) ?? [""]) send(chunk(model, { content: piece }));
 
-			} else {
-				out.toolCalls.forEach((call, index) => {
-					send(chunk(model, { tool_calls: [{ index, id: call.id, type: "function", function: { name: call.function.name, arguments: "" } }] }));
-					send(chunk(model, { tool_calls: [{ index, function: { arguments: call.function.arguments } }] }));
-				});
+				} else {
+					out.toolCalls.forEach((call, index) => {
+						send(chunk(model, { tool_calls: [{ index, id: call.id, type: "function", function: { name: call.function.name, arguments: "" } }] }));
+						send(chunk(model, { tool_calls: [{ index, function: { arguments: call.function.arguments } }] }));
+					});
 
-			}
-			const finish = () => {
-				if (res.destroyed) return;
-				send(chunk(model, {}, out.text !== undefined ? "stop" : "tool_calls"));
-				send({ ...chunk(model, {}), choices: [], usage });
-				res.write("data: [DONE]\n\n");
-				res.end();
+				}
+				const finish = () => {
+					if (res.destroyed) return;
+					send(chunk(model, {}, out.text !== undefined ? "stop" : "tool_calls"));
+					send({ ...chunk(model, {}), choices: [], usage });
+					res.write("data: [DONE]\n\n");
+					res.end();
+				};
+				if (Number.isSafeInteger(reply.pauseBeforeDoneMs) && reply.pauseBeforeDoneMs > 0) {
+					const pause = setTimeout(finish, reply.pauseBeforeDoneMs);
+					res.once("close", () => clearTimeout(pause));
+				} else finish();
 			};
-			if (Number.isSafeInteger(reply.pauseBeforeDoneMs) && reply.pauseBeforeDoneMs > 0) {
-				const pause = setTimeout(finish, reply.pauseBeforeDoneMs);
-				res.once("close", () => clearTimeout(pause));
-			} else finish();
+			// `delayMs` holds the reply back before it starts (a slow model).
+			if (Number.isSafeInteger(reply.delayMs) && reply.delayMs > 0) {
+				const delay = setTimeout(() => { if (!res.destroyed) stream(); }, reply.delayMs);
+				res.once("close", () => clearTimeout(delay));
+			} else stream();
 		});
 		return;
 	}

@@ -62,6 +62,13 @@ export interface LhViewPart extends Record<string, unknown> {
 	output?: unknown;
 	rawInput?: unknown;
 	errorText?: string;
+	/** The call's own result settled without an error (live: its execution's clean end;
+	 *  in the record: its paired toolResult). A practice problem or conclusion without it
+	 *  draws no card: its verdict and solution belong to a call that completed. */
+	settled?: boolean;
+	/** A practice call with no clean result in a turn that is no longer running: the
+	 *  learner stopped it. */
+	stopped?: boolean;
 	/** Native result retained for public plugin renderers and readable fallbacks. */
 	result?: Pick<ToolResultMessage, "content" | "details" | "isError">;
 	data?: unknown;
@@ -218,7 +225,9 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 		}
 
 		if (role === "toolResult") {
-			applyResultTo(findToolPart(m as LhMessage & ToolResultMessage), m as ToolResultMessage);
+			const paired = findToolPart(m as LhMessage & ToolResultMessage);
+			applyResultTo(paired, m as ToolResultMessage);
+			if (paired?.type === `tool-${PRACTICE_CONCLUDE_TOOL}` && !(m as ToolResultMessage).isError) joinConcludeReveal(paired, messages);
 			continue;
 		}
 
@@ -284,10 +293,14 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 					}
 					// The conclusion's reveal join (owner round, 2026-10-05): the
 					// hero of a conclude card is the modelSolution committed at POSE
-					// time — a record fold, enriched here so the card renders pure.
+					// time, a record fold enriched here so the card renders pure. Only
+					// a conclusion whose own result settled without an error reveals
+					// it: a stopped, still-running or failed one leaves the problem
+					// open. Live, that is its execution's clean end; in the record,
+					// its paired result (the toolResult branch above).
 					if (block.name === PRACTICE_CONCLUDE_TOOL) {
-						part.reveal = modelSolutionForConclude(messages, block.id);
-						part.problemInput = problemInputForConclude(messages, block.id);
+						const exec = live?.executions.get(block.id);
+						if (exec && !exec.isError) joinConcludeReveal(part, messages);
 					}
 					rest.push(part);
 				}
@@ -319,6 +332,12 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 		}
 	}
 
+	// A practice call that never got a clean result, in a turn that is over, was stopped.
+	if (!live?.inFlight) {
+		for (const message of out) for (const part of message.parts) {
+			if ((part.type === "tool-problem" || part.type === `tool-${PRACTICE_CONCLUDE_TOOL}`) && !part.settled && part.state !== "output-error" && part.state !== "input-streaming") part.stopped = true;
+		}
+	}
 	return out;
 }
 
@@ -361,11 +380,13 @@ function toolPartOf(
 			part.rawInput = block.arguments;
 			part.errorText = exec.errorText ?? "The tool call failed.";
 		} else if (isQuestion) {
+			part.settled = true;
 			// Fork 2: the clean "Question posed" placeholder is IGNORED —
 			// question tools are client-owned; the dock mounts on the clean
 			// end, the answer arrives as a real toolResult.
 			part.state = "input-available";
 		} else {
+			part.settled = true;
 			part.state = "output-available";
 			part.output = exec.output;
 		}
@@ -379,8 +400,16 @@ function toolPartOf(
 	return part;
 }
 
+/** Join a settled conclusion's reveal and the pose-side fold onto its part. */
+function joinConcludeReveal(part: LhViewPart, messages: readonly LhMessage[]): void {
+	if (!part.toolCallId) return;
+	part.reveal = modelSolutionForConclude(messages, part.toolCallId);
+	part.problemInput = problemInputForConclude(messages, part.toolCallId);
+}
+
 function applyResultTo(part: LhViewPart | undefined, result: ToolResultMessage): void {
 	if (part) {
+		if (!result.isError) part.settled = true;
 		// Fork 2 (owner, Wave D): the clean "Question posed" placeholder
 		// (details: null — tool-execute questionResult) is client-owned
 		// question territory. The dock mounts on the dangling call; the

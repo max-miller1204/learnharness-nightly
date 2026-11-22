@@ -13,7 +13,7 @@ import { usePageSurfaceBoundary, SurfaceRegion } from "./plugin-surfaces";
 import { findSurfaceBoundary } from "./plugin-surface-targets";
 import { scheduleOpeningSubmission } from "./plugin-submission-opening";
 import { activeProblemOccurrenceOf, buildAnswer, toClientQuestion, type PluginSubmission, type PluginSubmissionTarget, type QuestionData } from "@/src/core";
-import { validatePluginBuiltinSubmissionAnswer } from "@/src/core";
+import { failedCallShowsItsError, isAbortedCall, validatePluginBuiltinSubmissionAnswer, type LhViewPart } from "@/src/core";
 import { SessionNotFoundError, visibleQueuedSteers } from "@/components/session-core";
 import { SetupDialog } from "@/components/setup-dialog";
 import { Hint } from "@/components/ui/hint";
@@ -1959,23 +1959,35 @@ export function Chat({
 													phases[mi] === "teach" &&
 													phases[mi - 1] !== "teach" &&
 													teachStepIndex(m.parts) === pi;
-												// A tool call that errored BACK TO THE AGENT (validation
-												// failure, malformed args) is invisible work — the agent
-												// reads the error and retries. Owner ruling 2026-09-26:
-												// surface the retry loop as one quiet line, any tool,
-												// instead of silence (question tools used to render null,
-												// so a flailing quiz loop read as a stall). Aborts are
-												// terminal — nothing retries — so they stay silent.
-												if (
-													part.state === "output-error" &&
-													part.type.startsWith("tool-") &&
-													part.errorText !== "Operation aborted"
-												) {
-													return (
-														<SystemLine key={`retry-${pi}`} testId="tool-retry">
-															Retrying…
-														</SystemLine>
-													);
+												// A failed tool call. A stopped one (the learner stopped the turn) shows a
+												// quiet "Stopped" line, once per run of stopped calls, never red and never
+												// "Retrying…": nothing retries it. A tool step whose call ran and failed (a
+												// missing file) falls through to its card with the Error section. A call
+												// that errored BACK TO THE AGENT (a question, a practice problem, a plugin
+												// problem, a job dispatch, any call rejected before it ran: validation
+												// failure, malformed args) is invisible work: the agent reads the error and
+												// retries, and its card would hold hidden answers or draw nothing. Owner
+												// ruling 2026-09-26: surface that retry loop as one quiet line.
+												// A practice problem or conclusion with no clean result never draws a card, so
+												// no verdict and no solution: stopped, it is a stopped call; still running, nothing.
+												const stoppedPart = (p: LhViewPart | undefined) => Boolean(p && p.type.startsWith("tool-") && ((p.state === "output-error" && isAbortedCall(p.errorText)) || p.stopped === true));
+												if ((part.type === "tool-problem" || part.type === "tool-conclude") && !part.pluginProblem && !part.settled && part.state !== "input-streaming" && part.state !== "output-error" && !part.stopped) return null;
+												if (stoppedPart(part) || (part.state === "output-error" && part.type.startsWith("tool-"))) {
+													if (stoppedPart(part)) {
+														if (stoppedPart(m.parts[pi - 1])) return null;
+														return (
+															<SystemLine key={`stopped-${pi}`} testId="tool-stopped">
+																Stopped
+															</SystemLine>
+														);
+													}
+													if (!failedCallShowsItsError(part.type.slice("tool-".length), part.errorText)) {
+														return (
+															<SystemLine key={`retry-${pi}`} testId="tool-retry">
+																Retrying…
+															</SystemLine>
+														);
+													}
 												}
 												switch (part.type) {
 													case "text": {

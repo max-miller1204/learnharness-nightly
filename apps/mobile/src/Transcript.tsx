@@ -94,7 +94,7 @@ function planWidth(data: PlanBlockData) {
 function partTexts(part: LhViewPart): (string | undefined)[] {
   if (part.type === "text") return [part.text];
   if (part.pluginQuestion?.status === "posed") return [part.pluginQuestion.snapshot.input.question];
-  if (part.pluginProblem || (part.type === "tool-problem" && part.state === "input-available")) return [(part.input as { statement?: string } | undefined)?.statement];
+  if (part.pluginProblem || (part.type === "tool-problem" && part.state === "input-available" && part.settled === true)) return [(part.input as { statement?: string } | undefined)?.statement];
   if (part.type === "tool-conclude" && part.state === "output-available") {
     const input = part.input as { outcome?: string; verdict?: string; solutionReveal?: string } | undefined;
     return [input?.verdict, typeof part.reveal === "string" ? part.reveal : input?.solutionReveal];
@@ -230,7 +230,7 @@ function Part({ part, context, blocks }: { part: LhViewPart; context: PartContex
   if (part.pluginQuestion?.status === "posed") {
     return <Markdown text={part.pluginQuestion.snapshot.input.question} />;
   }
-  if (part.pluginProblem || (part.type === "tool-problem" && part.state === "input-available")) {
+  if (part.pluginProblem || (part.type === "tool-problem" && part.state === "input-available" && part.settled === true)) {
     const problem = part.input as { statement?: string } | undefined;
     if (problem?.statement) return <View style={s.card}><Label>Problem</Label><Markdown text={problem.statement} /></View>;
   }

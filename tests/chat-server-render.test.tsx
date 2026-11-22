@@ -75,4 +75,105 @@ describe("the chat view's server render", () => {
 			if (session.shows) assert.ok(html.includes(session.shows), `the page shows ${JSON.stringify(session.shows)}`);
 		});
 	}
+
+	// Issue #335: a failed call that shows its own card (the tool steps and a shared
+	// image) shows that card's Error, not "Retrying…". A call that errored back to
+	// the agent (questions, practice, plugin problems, dispatches, send_to_user) gets
+	// the quiet retry line: its card would draw nothing, a success, or the hidden
+	// answer in its arguments. An aborted call is silent for every tool.
+	const failure = (id: string, toolCallId: string, toolName: string, text: string) => ({ id, role: "toolResult", toolCallId, toolName, content: [{ type: "text", text }], isError: true, timestamp: 2 });
+	const renderCalls = (kind: "teach" | "practice", calls: { id: string; name: string; args: unknown; error?: string }[]) => renderToString(<Shell pathname="/chat/chat_failed"><Chat chatId="chat_failed" title="Failed call" kind={kind} initialMessages={[user, assistant("m_fail", calls.map(c => call(c.id, c.name, c.args))), ...calls.filter(c => c.error !== undefined).map(c => failure(`r_${c.id}`, c.id, c.name, c.error!))] as never} /></Shell>);
+	const renderFailed = (name: string, args: unknown, text: string, kind: "teach" | "practice" = "teach") => renderCalls(kind, [{ id: "call_fail", name, args, error: text }]);
+	const SECRET = "HIDDEN-MODEL-SOLUTION-7731";
+	const hidden = { statement: "Compute 1 + 1.", mode: "recall", modelSolution: SECRET, payload: { tests: [SECRET] } };
+	for (const [tool, args] of [["read", { path: "missing.md" }], ["grep", { pattern: "x" }], ["ls", {}], ["find", { pattern: "x" }], ["list_sessions", {}], ["list_propositions", { session: "x" }], ["show_image", { path: "missing.png" }]] as const) {
+		it(`shows a failed ${tool} call's card and its error, not Retrying`, () => {
+			const html = renderFailed(tool, args, "ENOENT: no such file or directory, open 'missing.md'");
+			assert.ok(html.includes('data-testid="tool-call-card"'), "the card renders");
+			assert.ok(html.includes("ENOENT: no such file or directory"), "the error text shows");
+			assert.ok(html.includes("text-error"), "the failed call is red");
+			assert.ok(!html.includes("Retrying"), "no retry is pending");
+			assert.ok(!html.includes('data-testid="tool-retry"'));
+		});
+	}
+	const quiz1 = { type: "check", nodeId: "addition", question: "What is 1 + 1?", options: [{ value: "a", label: "2" }], explanation: "x", correctAnswer: "a" };
+	for (const [tool, args, kind] of [
+		["quiz", quiz1, "teach"], ["probe", quiz1, "teach"], ["ask_user_question", {}, "teach"], ["explain", {}, "teach"], ["recall", {}, "teach"],
+		["problem", hidden, "practice"], ["conclude", { outcome: "solved", verdict: "Done." }, "practice"], ["probe_done", { assessment: "x" }, "teach"], ["plan_init", {}, "teach"],
+		["research", { question: "q" }, "teach"], ["pdf", { path: "missing.pdf" }, "teach"], ["demo", { title: "t", html: "<p>x</p>" }, "teach"], ["visual", { title: "t", code: "x" }, "teach"],
+		["send_to_user", { message: "" }, "teach"], ["coding_problem", hidden, "practice"],
+	] as const) {
+		it(`shows the quiet retry line for a failed ${tool} call, never its card or its arguments`, () => {
+			const html = renderFailed(tool, args, "The call was rejected.", kind);
+			assert.ok(html.includes('data-testid="tool-retry"'), "the retry line shows");
+			assert.ok(html.includes("Retrying"));
+			assert.ok(!html.includes('data-testid="tool-call-card"'), "no raw tool card");
+			assert.ok(!html.includes('data-testid="problem-card"'), "no problem card");
+			assert.ok(!html.includes(SECRET), "the hidden solution never reaches the page");
+		});
+	}
+	it("shows a quiet Stopped line, no card, no retry and no error text, for a stopped call of any tool", () => {
+		for (const text of ["Operation aborted", "The operation was aborted", "This operation was aborted"]) {
+			for (const [tool, args] of [["read", { path: "missing.md" }], ["show_image", { path: "x.png" }], ["visual", { title: "t", code: "x" }], ["quiz", quiz1], ["pdf", { path: "x.pdf" }], ["coding_problem", hidden]] as const) {
+				const html = renderFailed(tool, args, text);
+				assert.ok(html.includes('data-testid="tool-stopped"'), `${tool} (${text}): Stopped shows`);
+				assert.ok(!html.includes('data-testid="tool-call-card"'), `${tool}: no card`);
+				assert.ok(!html.includes('data-testid="tool-retry"'), `${tool}: no retry line`);
+				assert.ok(!html.includes(text), `${tool}: no error text`);
+				assert.ok(!html.includes(SECRET), `${tool}: no hidden solution`);
+			}
+		}
+	});
+	it("shows one Stopped line for several stopped calls in a row", () => {
+		const html = renderCalls("teach", [{ id: "a", name: "read", args: { path: "a" }, error: "Operation aborted" }, { id: "b", name: "read", args: { path: "b" }, error: "Operation aborted" }]);
+		assert.equal(html.split('data-testid="tool-stopped"').length - 1, 1);
+	});
+	it("shows the retry line, never the call's arguments, for a tool step rejected before it ran", () => {
+		const rejected = `Validation failed for tool "read":\n  - path: required\n\nReceived arguments:\n{"modelSolution":"${SECRET}"}`;
+		for (const [tool, args] of [["read", { modelSolution: SECRET }], ["grep", { modelSolution: SECRET }], ["show_image", { modelSolution: SECRET }]] as const) {
+			const html = renderFailed(tool, args, rejected);
+			assert.ok(html.includes('data-testid="tool-retry"'), `${tool}: the retry line shows`);
+			assert.ok(!html.includes('data-testid="tool-call-card"'), `${tool}: no card`);
+			assert.ok(!html.includes(SECRET), `${tool}: the arguments never reach the page`);
+		}
+	});
+	it("shows only the declared input fields on a failed tool step's card", () => {
+		const html = renderFailed("read", { path: "missing.md", modelSolution: SECRET, payload: { tests: [SECRET] } }, "ENOENT: no such file or directory, open 'missing.md'");
+		assert.ok(html.includes('data-testid="tool-call-card"'));
+		assert.ok(html.includes("missing.md"), "the path shows");
+		assert.ok(!html.includes(SECRET), "an extra argument never shows");
+	});
+	it("does not reveal the active problem's solution when its conclusion failed", () => {
+		const html = renderToString(<Shell pathname="/chat/chat_failed"><Chat chatId="chat_failed" title="Failed call" kind="practice" initialMessages={[user, assistant("m_pose", [call("call_pose", "problem", hidden)]), result("m_pose_result", "call_pose", "problem"), assistant("m_end", [call("call_end", "conclude", { outcome: "solved", verdict: "Done." })]), failure("r_end", "call_end", "conclude", "No active problem.")] as never} /></Shell>);
+		assert.ok(html.includes("Compute 1 + 1."), "the posed problem still shows");
+		assert.ok(html.includes('data-testid="tool-retry"'));
+		assert.ok(!html.includes(SECRET), "the model solution stays hidden");
+	});
+	// A conclusion the learner stopped has no result: it never claims a verdict or shows a
+	// solution, including a legacy record whose conclude call carries its own solutionReveal.
+	const LEGACY = "LEGACY-SOLUTION-5521";
+	const posed = [assistant("m_pose", [call("call_pose", "problem", hidden)]), result("m_pose_result", "call_pose", "problem")];
+	const renderPractice = (messages: unknown[]) => renderToString(<Shell pathname="/chat/chat_stopped"><Chat chatId="chat_stopped" title="Stopped conclude" kind="practice" initialMessages={[user, ...messages] as never} /></Shell>);
+	it("shows Stopped, no verdict card and no solution, for a conclude with no result", () => {
+		for (const input of [{ outcome: "solved", verdict: "Done." }, { outcome: "solved", verdict: "Done.", solutionReveal: LEGACY }]) {
+			const html = renderPractice([...posed, assistant("m_end", [call("call_end", "conclude", input)])]);
+			assert.ok(html.includes("Compute 1 + 1."), "the posed problem still shows");
+			assert.ok(html.includes('data-testid="tool-stopped"'), "Stopped shows");
+			assert.ok(!html.includes('data-testid="conclude-card"'), "no verdict card");
+			assert.ok(!html.includes(SECRET) && !html.includes(LEGACY) && !html.includes("Done."), "no solution and no verdict");
+		}
+	});
+	it("shows Stopped and no Problem card for a pose with no ack", () => {
+		const html = renderPractice([assistant("m_pose", [call("call_pose", "problem", hidden)])]);
+		assert.ok(html.includes('data-testid="tool-stopped"'));
+		assert.ok(!html.includes('data-testid="problem-card"'));
+		assert.ok(!html.includes(SECRET));
+	});
+	it("still shows a legacy conclude's own solution when its result settled", () => {
+		// A legacy pose committed no solution of its own; the conclude call carried it.
+		const legacyPose = [assistant("m_pose", [call("call_pose", "problem", { statement: "Compute 1 + 1.", mode: "recall" })]), result("m_pose_result", "call_pose", "problem")];
+		const html = renderPractice([...legacyPose, assistant("m_end", [call("call_end", "conclude", { outcome: "solved", verdict: "Done.", solutionReveal: LEGACY })]), result("m_end_result", "call_end", "conclude")]);
+		assert.ok(html.includes('data-testid="conclude-card"'));
+		assert.ok(html.includes(LEGACY));
+	});
 });

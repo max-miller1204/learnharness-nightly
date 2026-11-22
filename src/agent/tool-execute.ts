@@ -102,7 +102,10 @@ function runWithAbortGuard<T>(
 			.then(() => run(controller.signal))
 			.then(
 				(v) => settle(() => resolve(v)),
-				(e) => settle(() => reject(e)),
+				// A tool that rejects because the run's signal fired says so in its own
+				// words ("The operation was aborted", a DOMException from fetch or fs):
+				// the call is stopped, whatever the tool called it, and says pi's words.
+				(e) => settle(() => reject(parent?.aborted ? Object.assign(new Error("Operation aborted"), { name: "AbortError" }) : e)),
 			);
 	})
 		.finally(cleanup);

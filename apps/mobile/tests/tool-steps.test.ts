@@ -96,6 +96,10 @@ test("tool steps are the web's tools, and a show_image that hasn't shown its pic
   for (const tool of TOOL_STEPS) assert.ok(isToolStep({ type: `tool-${tool}`, state: "output-available" }), tool);
   assert.ok(isToolStep({ type: "tool-show_image", state: "output-error" }));
   assert.ok(!isToolStep({ type: "tool-show_image", state: "output-available" }));
+  // A call rejected before it ran echoes the model's arguments in its error: no row (#335).
+  const rejected = 'Validation failed for tool "read":\n  - path: required\n\nReceived arguments:\n{"modelSolution":"SECRET"}';
+  assert.ok(!isToolStep({ type: "tool-read", state: "output-error", errorText: rejected }));
+  assert.ok(isToolStep({ type: "tool-read", state: "output-error", errorText: "ENOENT: no such file or directory" }));
   for (const type of ["tool-probe", "tool-research", "tool-plan_init", "text"]) assert.ok(!isToolStep({ type, state: "output-available" }), type);
 });
 

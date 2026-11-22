@@ -154,3 +154,30 @@ describe("serverExecute: cooperative settle, mapping parity, question bypass", (
 		assert.equal(imgNoDetails.details, null, "image reads keep the record part output-less (null details)");
 	});
 });
+
+describe("a tool's own abort wording", () => {
+	it("is normalised to pi's wording when the run's signal fired (#335)", async () => {
+		const schema = Type.Object({});
+		for (const wording of ["The operation was aborted", "This operation was aborted"]) {
+			const ac = new AbortController();
+			const pi = {
+				name: "own-words",
+				label: "own-words",
+				description: "test",
+				parameters: schema,
+				// Rejects in its own words as soon as the run's signal fires.
+				execute: serverExecute("own-words", schema, (_input: unknown, ctx: ToolExecuteContext) =>
+					new Promise<string>((_resolve, reject) => ctx.signal!.addEventListener("abort", () => reject(new DOMException(wording, "AbortError")), { once: true }))),
+			};
+			const pending = pi.execute("c5", {}, ac.signal).catch((e: Error) => e.message);
+			ac.abort();
+			assert.equal(await pending, "Operation aborted", wording);
+		}
+	});
+
+	it("leaves a failure alone when the run was not aborted", async () => {
+		const schema = Type.Object({});
+		const pi = { name: "fails", label: "fails", description: "test", parameters: schema, execute: serverExecute("fails", schema, () => { throw new Error("ENOENT: no such file"); }) };
+		await assert.rejects(pi.execute("c6", {}, new AbortController().signal), /ENOENT: no such file/);
+	});
+});

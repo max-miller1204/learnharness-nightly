@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronRight } from "lucide-react";
-import { capToolText, plainToolText, toolStepHeadline, toolStepOutput, type ArtifactPartProps } from "@/src/core";
+import { capToolText, plainToolText, toolStepHeadline, toolStepInput, toolStepOutput, type ArtifactPartProps } from "@/src/core";
 
 /**
  * The generic tool-call card (sources v1, 2026-09-19): a quiet, collapsed
@@ -40,6 +40,7 @@ export function ToolCallCard({ part }: ArtifactPartProps) {
 	const p = part as ToolCallPart;
 	const tool = p.type.replace(/^tool-/, "");
 	const arg = toolStepHeadline(tool, p.input);
+	const input = toolStepInput(tool, p.input);
 	const out = toolStepOutput(p.output);
 	const failed = p.state === "output-error" || typeof p.errorText === "string";
 	return (
@@ -56,12 +57,12 @@ export function ToolCallCard({ part }: ArtifactPartProps) {
 				<ChevronRight className="size-3 shrink-0 opacity-50 transition-transform group-open:rotate-90" />
 			</summary>
 			<div className="mt-2 space-y-2 rounded-xl border bg-card p-3 text-xs">
-				{p.input != null && (
+				{input != null && (
 					<div>
 						<div className="mb-1 font-medium uppercase tracking-wide text-muted-foreground">
 							Input
 						</div>
-						<Capped text={JSON.stringify(p.input, null, 2)} className="max-h-32 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed" />
+						<Capped text={JSON.stringify(input, null, 2)} className="max-h-32 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed" />
 					</div>
 				)}
 				{typeof p.errorText === "string" ? (

@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { Animated, Easing, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { toolActivityLabel } from "../../../src/core/pending.ts";
-import { capToolText, plainToolText, TOOL_STEPS, toolStepHeadline, toolStepOutput } from "../../../src/core/tool-steps.ts";
+import { capToolText, isRejectedCall, plainToolText, TOOL_STEPS, toolStepHeadline, toolStepInput, toolStepOutput } from "../../../src/core/tool-steps.ts";
 import type { LhViewPart } from "../../../src/core/view.ts";
 import { fonts, radius, space, useTheme } from "./theme";
 import { useReduceMotion } from "./ui";
@@ -17,6 +17,9 @@ export const OpenSteps = createContext<{ open: ReadonlySet<string>; toggle: (too
  *  call that hasn't shown its picture (still running, or failed), as on the web. */
 export function isToolStep(part: LhViewPart): boolean {
   if (!part.type.startsWith("tool-")) return false;
+  // A call rejected before it ran goes back to the agent, and its error text echoes the
+  // arguments the model sent: the web shows a retry line, the phone shows nothing.
+  if (part.state === "output-error" && isRejectedCall(part.errorText)) return false;
   const tool = part.type.slice("tool-".length);
   return TOOL_STEPS.includes(tool) || (tool === "show_image" && part.state !== "output-available");
 }
@@ -79,6 +82,7 @@ export function ToolStep({ part, running = false }: { part: LhViewPart; running?
   const toggle = () => { if (shared && id) shared.toggle(id); else setOwnOpen((value) => !value); };
   const tool = part.type.slice("tool-".length);
   const headline = toolStepHeadline(tool, part.input);
+  const input = toolStepInput(tool, part.input);
   const failed = part.state === "output-error" || typeof part.errorText === "string";
   const output = toolStepOutput(part.output);
   const spoken = toolStepHeadline(tool, part.input, SPOKEN_HEADLINE);
@@ -97,7 +101,7 @@ export function ToolStep({ part, running = false }: { part: LhViewPart; running?
       </Pressable>
       {open && (
         <View style={[s.card, { padding: space.md, gap: space.sm, marginTop: space.xs }]}>
-          {part.input != null && <Section heading="Input" text={JSON.stringify(part.input, null, 2)} maxHeight={128} />}
+          {input != null && <Section heading="Input" text={JSON.stringify(input, null, 2)} maxHeight={128} />}
           {typeof part.errorText === "string" ? <Section heading="Error" text={part.errorText} maxHeight={256} error />
             : output != null ? <Section heading="Output" text={output} maxHeight={256} />
               : part.state !== "output-available" && <Text style={[s.meta, { fontStyle: "italic" }]}>running…</Text>}

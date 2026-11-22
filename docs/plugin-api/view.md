@@ -83,6 +83,8 @@ export interface LhViewPart extends Record<string, unknown> {
     output?: unknown;
     rawInput?: unknown;
     errorText?: string;
+    settled?: boolean;
+    stopped?: boolean;
     result?: Pick<ToolResultMessage, "content" | "details" | "isError">;
     data?: unknown;
 }
@@ -105,6 +107,8 @@ export interface LhViewPart extends Record<string, unknown> {
 - [output](#lhviewpart-output)
 - [rawInput](#lhviewpart-rawinput)
 - [errorText](#lhviewpart-errortext)
+- [settled](#lhviewpart-settled)
+- [stopped](#lhviewpart-stopped)
 - [result](#lhviewpart-result)
 - [data](#lhviewpart-data)
 
@@ -190,6 +194,25 @@ rawInput?: unknown;
 
 ```ts
 errorText?: string;
+```
+
+### LhViewPart settled
+
+The call's own result settled without an error (live: its execution's clean end;
+in the record: its paired toolResult). A practice problem or conclusion without it
+draws no card: its verdict and solution belong to a call that completed.
+
+```ts
+settled?: boolean;
+```
+
+### LhViewPart stopped
+
+A practice call with no clean result in a turn that is no longer running: the
+learner stopped it.
+
+```ts
+stopped?: boolean;
 ```
 
 ### LhViewPart result
