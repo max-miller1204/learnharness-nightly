@@ -14,16 +14,22 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { parseHTML } from "linkedom";
+import { readFileSync } from "node:fs";
 import { DraftAttachmentChips, useAttachmentDraft, type AttachmentDraft } from "../components/attachment-draft.tsx";
 import { beginSessionDelete } from "../components/session-deletion.ts";
 import { ATTACHMENT_DRAFT_KEY_PREFIX, dropStoredAttachments, forgetStoredAttachments, readStoredAttachments, storeAttachment } from "../lib/attachment-drafts.ts";
 
 const values = new Map<string, string>();
+/** Most characters the fake storage holds. */
+let quota = Infinity;
 const storage = {
 	get length() { return values.size; },
 	key: (i: number) => [...values.keys()][i] ?? null,
 	getItem: (key: string) => values.get(key) ?? null,
-	setItem: (key: string, value: string) => { values.set(key, value); },
+	setItem: (key: string, value: string) => {
+		if ([...values].reduce((sum, [name, text]) => sum + (name === key ? 0 : text.length), value.length) > quota) throw new Error("QuotaExceededError");
+		values.set(key, value);
+	},
 	removeItem: (key: string) => { values.delete(key); },
 };
 const keyOf = (id: string) => ATTACHMENT_DRAFT_KEY_PREFIX + id;
@@ -40,6 +46,14 @@ let grants = 0;
 let statusFailure = false;
 /** While set, the server's answer to a status check waits for it. */
 let holdStatus: Promise<void> | null = null;
+/** Status checks for these ids wait for their promise. */
+let holdIds = new Map<string, Promise<void>>();
+/** While set, the server-info answer waits for it; infoFailure makes it fail. */
+let holdInfo: Promise<void> | null = null;
+let infoFailure = false;
+/** Answers to the next DELETEs, in order (204 after they run out). */
+let deleteAnswers: number[] = [];
+let statusSignals: (AbortSignal | undefined)[] = [];
 
 class Scripted {
 	upload = {} as { onprogress?: unknown };
@@ -63,7 +77,7 @@ let doc!: Document;
 const saved: Record<string, PropertyDescriptor | undefined> = {};
 
 beforeEach(async () => {
-	values.clear(); calls = []; transfers = []; statusOf = new Map(); grants = 0; statusFailure = false; holdStatus = null;
+	values.clear(); calls = []; transfers = []; statusOf = new Map(); grants = 0; statusFailure = false; holdStatus = null; holdIds = new Map(); holdInfo = null; infoFailure = false; deleteAnswers = []; statusSignals = []; quota = Infinity;
 	capabilities = ["attachment-uploads-v1", "attachment-status-v1"];
 	const { window: win, document } = parseHTML("<html><body><div id='root'></div></body></html>");
 	doc = document;
@@ -75,18 +89,29 @@ beforeEach(async () => {
 			const method = init?.method ?? "GET";
 			const url = String(input);
 			calls.push({ method, url });
-			if (url === "/.well-known/learnharness/server") return Response.json({ capabilities });
+			if (url === "/.well-known/learnharness/server") {
+				await holdInfo;
+				if (infoFailure) throw new TypeError("offline");
+				return Response.json({ capabilities });
+			}
 			if (method === "POST" && url === "/api/attachments") {
 				const id = randomUUID();
 				statusOf.set(id, 204);
 				grants++;
 				return Response.json({ id, uploadUrl: `/upload/${id}`, expiresAt: Date.now() + 600_000 }, { status: 201 });
 			}
-			if (method === "DELETE") { statusOf.delete(url.split("/").pop()!); return new Response(null, { status: 204 }); }
+			if (method === "DELETE") {
+				const answer = deleteAnswers.shift() ?? 204;
+				if (answer === 204) statusOf.delete(url.split("/").pop()!);
+				return new Response(null, { status: answer });
+			}
 			if (method === "GET" && url.startsWith("/api/attachments/")) {
+				statusSignals.push(init?.signal ?? undefined);
+				const id = decodeURIComponent(url.slice("/api/attachments/".length).split("?")[0]!);
 				await holdStatus;
+				await holdIds.get(id);
 				if (statusFailure) throw new TypeError("offline");
-				return new Response(null, { status: statusOf.get(decodeURIComponent(url.slice("/api/attachments/".length).split("?")[0]!)) ?? 404 });
+				return new Response(null, { status: statusOf.get(id) ?? 404 });
 			}
 			assert.fail(`Unexpected fixture request: ${method} ${url}`);
 		},
@@ -273,11 +298,143 @@ describe("an unsent attachment survives leaving the session and pressing Back (#
 });
 
 it("deleting the session clears its stored attachments for good", () => {
-	storeAttachment("a", { id: randomUUID(), name: "notes.pdf", at: Date.now(), mimeType: "application/pdf", size: 3 });
+	storeAttachment("doomed", { id: randomUUID(), name: "notes.pdf", at: Date.now(), mimeType: "application/pdf", size: 3 });
 	storeAttachment("b", { id: randomUUID(), name: "other.pdf", at: Date.now(), mimeType: "application/pdf", size: 3 });
-	beginSessionDelete("a")(true);
-	assert.deepEqual(stored("a"), []);
+	beginSessionDelete("doomed")(true);
+	assert.deepEqual(stored("doomed"), []);
 	assert.equal(stored("b").length, 1, "another session's stays");
+});
+
+const row = (name: string, extra: object = {}) => ({ id: randomUUID(), name, at: Date.now(), mimeType: "application/pdf", size: 9, ...extra });
+const keep = (chatId: string, ...rows: ReturnType<typeof row>[]) => { for (const each of rows) { storeAttachment(chatId, each); statusOf.set(each.id, 204); } };
+const waitMs = (ms: number) => act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); });
+
+describe("round 1 review of #410", () => {
+	it("Send waits until the saved attachments are loaded or ruled out, never going without them", async () => {
+		const saved = row("notes.pdf");
+		keep("late-info", saved);
+		let release!: () => void;
+		holdInfo = new Promise(resolve => { release = resolve; });
+		await render("late-info");
+		assert.equal(latest.restoring(), true, "server info is slow: the chip isn't there yet, and Send must wait");
+		assert.deepEqual(chips(), []);
+		let woke = false;
+		void latest.restored().then(() => { woke = true; });
+		await settle();
+		assert.equal(woke, false);
+		release();
+		await settle();
+		assert.equal(woke, true);
+		assert.equal(latest.restoring(), false);
+		assert.deepEqual(chips(), ["notes.pdf"]);
+		assert.deepEqual((await latest.prepare("x"))?.attachmentUploadIds, [saved.id]);
+	});
+
+	it("nothing saved means nothing to wait for; an unreachable server ends the wait and keeps the saved row", async () => {
+		await render("nothing-saved");
+		assert.equal(latest.restoring(), false);
+		const saved = row("kept.pdf");
+		keep("offline-info", saved);
+		infoFailure = true;
+		await render("offline-info");
+		await latest.restored();
+		assert.equal(latest.restoring(), false);
+		assert.deepEqual(chips(), []);
+		assert.deepEqual(stored("offline-info").map(each => each.id), [saved.id], "left for a visit that can check it");
+	});
+
+	it("a 404 that lands after Send was pressed stops the send, whatever is left", async () => {
+		for (const name of ["one chip", "two chips, one gone"]) {
+			const chatId = `send-404-${name.length}`;
+			const gone = row("gone.pdf");
+			const survivor = row("survivor.pdf");
+			keep(chatId, ...(name === "one chip" ? [gone] : [gone, survivor]));
+			let release!: () => void;
+			holdIds.set(gone.id, new Promise(resolve => { release = resolve; }));
+			await render(chatId);
+			const selected = latest.current(); // what the learner saw when pressing Send
+			assert.equal(selected.length, name === "one chip" ? 1 : 2, name);
+			statusOf.delete(gone.id); // the server no longer has it
+			let unavailable = 0;
+			const sending = latest.prepare("same draft", () => { unavailable++; }, selected);
+			release();
+			assert.equal(await sending, null, `${name}: the send stops instead of going with ${name === "one chip" ? "no files" : "only the survivor"}`);
+			assert.equal(unavailable, 1, name);
+		}
+	});
+
+	it("leaving mid-upload keeps asking the server to release the reservation while it answers 409", async () => {
+		await render("leaver");
+		await attach(pdf());
+		assert.equal(transfers.length, 1);
+		const id = latest.files[0]!.grant!.id;
+		deleteAnswers = [409, 409]; // the server still sees the aborted transfer as running
+		await render("elsewhere");
+		await waitMs(700);
+		const deletes = calls.filter(call => call.method === "DELETE" && call.url === `/api/attachments/${id}`);
+		assert.equal(deletes.length, 3, "two refusals, then released");
+		assert.equal(statusOf.has(id), false);
+	});
+
+	it("Remove aborts a running transfer and releases it", async () => {
+		await render("remover");
+		await attach(pdf());
+		assert.equal(transfers.length, 1);
+		const running = latest.files[0]!;
+		await act(async () => { latest.remove(running); });
+		await waitMs(20);
+		assert.equal(transfers.length, 0, "the transfer was aborted");
+		assert.ok(calls.some(call => call.method === "DELETE" && call.url === `/api/attachments/${running.grant!.id}`));
+	});
+
+	it("an upload that finishes after its session was deleted saves nothing and is released", async () => {
+		await render("deleted-late");
+		await attach(pdf());
+		const id = latest.files[0]!.grant!.id;
+		beginSessionDelete("deleted-late")(true); // confirmed; the view hasn't unmounted yet
+		await finishUploads();
+		assert.equal(values.has(keyOf("deleted-late")), false, "no key is written for a deleted session");
+		assert.deepEqual(readStoredAttachments("deleted-late"), []);
+		assert.deepEqual(chips(), []);
+		await waitMs(20);
+		assert.ok(calls.some(call => call.method === "DELETE" && call.url === `/api/attachments/${id}`), "the server's copy is released");
+		storeAttachment("deleted-late", row("again.pdf"));
+		assert.equal(values.has(keyOf("deleted-late")), false, "later writes are ignored too");
+	});
+
+	it("deleting a session removes its key whatever it holds, even a corrupt or expired value", () => {
+		values.set(keyOf("corrupt-doomed"), "{corrupt");
+		values.set(keyOf("expired-doomed"), JSON.stringify({ rows: [row("old.pdf", { at: Date.now() - 30 * 60 * 60_000 })] }));
+		beginSessionDelete("corrupt-doomed")(true);
+		beginSessionDelete("expired-doomed")(true);
+		assert.equal(values.has(keyOf("corrupt-doomed")), false);
+		assert.equal(values.has(keyOf("expired-doomed")), false);
+	});
+
+	it("expired keys are cleared before a write, so they cannot fill the quota that refuses it", () => {
+		values.set(keyOf("long-gone"), JSON.stringify({ rows: [row("old.pdf", { at: Date.now() - 30 * 60 * 60_000, name: "x".repeat(200) })] }));
+		quota = values.get(keyOf("long-gone"))!.length + 50; // room for the new key only once the old one is gone
+		const fresh = row("fresh.pdf");
+		storeAttachment("roomy", fresh);
+		assert.deepEqual(readStoredAttachments("roomy").map(each => each.id), [fresh.id]);
+	});
+
+	it("Chat sends what the learner saw, and not before the saved attachments are loaded (wiring; the hook tests cover the rules)", () => {
+		const source = readFileSync(new URL("../components/chat.tsx", import.meta.url), "utf8");
+		assert.match(source, /attachments\.restoring\(\)\) void attachments\.restored\(\)\.then\(\(\) => \{ if \(submissionMounted\.current && !submissionRunner\.occupied\) send\(\); \}\);/);
+		assert.match(source, /const attached = attachments\.current\(\); void prepareText\(undefined, undefined, undefined, attached\.length \? attached : undefined\)/);
+		assert.match(source, /attachments\.prepare\(JSON\.stringify\(input\), \(\) => attempt\.cancel\(\), attached\)/);
+	});
+
+	it("leaving the session aborts a status check still in flight", async () => {
+		keep("slow-check", row("notes.pdf"));
+		holdStatus = new Promise(() => {}); // never answers
+		await render("slow-check");
+		assert.equal(statusSignals.length, 1);
+		assert.equal(statusSignals[0]?.aborted, false);
+		await render("elsewhere");
+		assert.equal(statusSignals[0]?.aborted, true);
+	});
 });
 
 describe("stored attachment state reads tolerantly (AGENTS.md)", () => {
@@ -324,7 +481,7 @@ describe("stored attachment state reads tolerantly (AGENTS.md)", () => {
 			assert.deepEqual(readStoredAttachments("a"), []);
 			assert.doesNotThrow(() => storeAttachment("a", good()));
 			assert.doesNotThrow(() => dropStoredAttachments("a", ["x"]));
-			assert.doesNotThrow(() => forgetStoredAttachments("a"));
+			assert.doesNotThrow(() => forgetStoredAttachments("stuck"));
 		} finally { Object.defineProperty(window, "localStorage", real); }
 	});
 

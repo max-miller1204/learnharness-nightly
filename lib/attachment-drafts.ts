@@ -3,7 +3,7 @@
  * (lib/composer-drafts.ts, #347) after T3 Code's composer drafts
  * (pingdotgg/t3code, MIT, at f9b19a7f): apps/web/src/composerDraftStore.ts
  * saves a file attachment as metadata plus the id of its finished upload, not
- * its bytes (the persisted row, :314-324, written at :2443-2456 and read back
+ * its bytes (the persisted row, :303-324, written at :2443-2456 and read back
  * at :2741-2752), and reads a stored draft entry by entry, dropping any that
  * don't parse (:2155-2163).
  *
@@ -27,7 +27,8 @@
  * unparsable or other-shape value, one malformed row among good ones, or
  * storage that throws, reads as the good rows only. Writes change one
  * session's key and never throw. A deleted session's rows are cleared for
- * good.
+ * good, and later writes for it are ignored (as lib/composer-drafts.ts does,
+ * #347): an upload that finishes after the delete is confirmed saves nothing.
  */
 
 import { folderFilesAsAttachments, isAttachmentId } from "@/src/core";
@@ -88,32 +89,39 @@ function read(store: Storage, chatId: string, now = Date.now()): StoredAttachmen
 
 /** Remove the keys that hold no good row: a deleted session's, or one whose
  *  uploads all expired. Bounded by the server's own expiry. */
-function prune(store: Storage, now: number): void {
+function prune(store: Storage, now: number, except: string): void {
 	const keys: string[] = [];
 	for (let i = 0; i < store.length; i++) {
 		const key = store.key(i);
-		if (key?.startsWith(ATTACHMENT_DRAFT_KEY_PREFIX)) keys.push(key);
+		if (key?.startsWith(ATTACHMENT_DRAFT_KEY_PREFIX) && key !== except) keys.push(key);
 	}
 	for (const key of keys) if (!parseRows(store.getItem(key), now).length) store.removeItem(key);
 }
 
+/** Sessions this window deleted: never saved or read again (ids are never reused). */
+const forgotten = new Set<string>();
+
+/** Whether this window deleted the session. */
+export const isForgotten = (chatId: string): boolean => forgotten.has(chatId);
+
 function change(chatId: string, apply: (rows: StoredAttachment[]) => StoredAttachment[]): void {
 	const store = storage();
-	if (!store) return;
+	if (!store || forgotten.has(chatId)) return;
 	try {
 		const now = Date.now();
 		const rows = apply(read(store, chatId, now)).slice(0, MAX_ROWS);
 		const key = ATTACHMENT_DRAFT_KEY_PREFIX + chatId;
+		// Expired keys go first, so their space can hold this write.
+		prune(store, now, key);
 		if (rows.length) store.setItem(key, JSON.stringify({ rows }));
 		else store.removeItem(key);
-		prune(store, now);
 	} catch { /* blocked or full: the chip is simply not kept across a visit */ }
 }
 
 /** The session's stored rows that are still good; [] when none or unreadable. */
 export function readStoredAttachments(chatId: string): StoredAttachment[] {
 	const store = storage();
-	if (!store) return [];
+	if (!store || forgotten.has(chatId)) return [];
 	try { return read(store, chatId); } catch { return []; }
 }
 
@@ -137,10 +145,14 @@ export function onStoredAttachmentsDropped(listener: (chatId: string, ids: reado
 	return () => { dropListeners.delete(listener); };
 }
 
-/** Its session was deleted: its stored uploads go with it. */
+/** Its session was deleted: remove its key whatever it holds (also a corrupt
+ *  or expired value), ignore later writes, and tell a composer still showing
+ *  its chips. */
 export function forgetStoredAttachments(chatId: string): void {
-	const rows = readStoredAttachments(chatId);
-	if (rows.length) dropStoredAttachments(chatId, rows.map(({ id }) => id));
+	const ids = readStoredAttachments(chatId).map(({ id }) => id);
+	forgotten.add(chatId);
+	try { storage()?.removeItem(ATTACHMENT_DRAFT_KEY_PREFIX + chatId); } catch { /* blocked: nothing to clear */ }
+	for (const listener of [...dropListeners]) listener(chatId, ids);
 }
 
 /** What the message limits count for a stored row. */

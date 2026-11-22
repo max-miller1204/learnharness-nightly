@@ -5,8 +5,8 @@
  *
  *   node scripts/web-attachment-draft.mjs <instance.env>
  *
- * Needs the capability `attachment-status-v1`, so a base build from before it
- * has nothing to restore and the drive reports each step as it finds it.
+ * Requires the capability `attachment-status-v1`; a build without it fails the
+ * Back step and the drive reports each step as it finds it.
  * Everything it makes is named zz-prove-it. Writes <side>/web-attachment-draft/result.json
  * and screenshots, and exits 1 when a step fails.
  */
@@ -198,18 +198,18 @@ try {
 	const postsAtLeave = grantPosts();
 	await goToSession("b");
 	await throttle(-1);
-	await delay(1500);
+	await delay(3000); // the release is retried while the server still sees the aborted transfer
 	const pendingId = running?.url.split("id=")[1]?.split("&")[0];
 	const release = seen.findLast(item => item.method === "DELETE" && item.url.startsWith("/api/attachments/") && item.url.endsWith(pendingId ?? "?"));
 	step("3b. leaving aborted the transfer", running?.failed === true, JSON.stringify(running));
-	step("3c. leaving released the reservation (DELETE issued)", Boolean(release), JSON.stringify({ release, pendingId }));
+	step("3c. leaving released the reservation (the last DELETE answered 204)", release?.status === 204, JSON.stringify({ release, pendingId, deletes: seen.filter(item => item.method === "DELETE" && item.url.endsWith(pendingId ?? "?")).map(item => item.status) }));
 	step("3d. nothing half-kept: no stored row for the session", await stored("s3") === null);
 	await back("s3");
 	await delay(800);
 	step("3e. Back shows no chip and uploads nothing again", (await chips()).length === 0 && grantPosts() === postsAtLeave, `posts ${grantPosts()} vs ${postsAtLeave}`);
 	await shot("04-after-pending-back");
 	const pendingAfter = pendingFiles();
-	step("3f. the server holds no bytes for it", !pendingAfter.some(file => file.startsWith(pendingId ?? "-")) || (release?.status !== 204), JSON.stringify({ releaseStatus: release?.status, pendingAfter }));
+	step("3f. the server holds no bytes for it", !pendingAfter.some(file => file.startsWith(pendingId ?? "-")), JSON.stringify({ releaseStatus: release?.status, pendingAfter }));
 
 	await fresh("s4");
 	await open("s4");
@@ -259,6 +259,31 @@ try {
 	await page.evaluate(key => localStorage.setItem(key, JSON.stringify({ text: "an old text-only draft", at: Date.now() })), TEXT_KEY(ids.s6));
 	await reload();
 	step("6. an old text-only draft still restores its text, with no chip", (await page.$eval('[data-testid="composer"] [contenteditable="true"]', element => element.textContent)).includes("an old text-only draft") && (await chips()).length === 0);
+
+	// 7. Send pressed before the saved attachments have loaded (slow server info) still carries them.
+	await fresh("s7");
+	await open("s7");
+	await attach(small);
+	await waitChips(["zz-prove-it-notes.txt"]);
+	const slow = JSON.parse(await stored("s7")).rows[0];
+	await page.setRequestInterception(true);
+	const slowInfo = request => {
+		if (request.url().includes("/.well-known/learnharness/server")) setTimeout(() => request.continue().catch(() => {}), 2500);
+		else request.continue().catch(() => {});
+	};
+	page.on("request", slowInfo);
+	await page.goto(`${APP}/chat/${ids.s7}`, { waitUntil: "domcontentloaded" });
+	await page.waitForSelector('[data-testid="composer"] [contenteditable="true"]', { timeout: 30_000 });
+	const chipsBeforeInfo = await chips();
+	await sendText("zz-prove-it send before the chips loaded");
+	let early;
+	for (let i = 0; i < 100 && !early; i++) {
+		early = ((await record(ids.s7)).messages ?? []).find(message => message.role === "user" && JSON.stringify(message.content).includes("before the chips loaded"));
+		if (!early) await delay(200);
+	}
+	page.off("request", slowInfo);
+	await page.setRequestInterception(false);
+	step("7. a Send before the saved chip loaded waits for it and carries it", chipsBeforeInfo.length === 0 && early?.attachments?.[0]?.id === slow.id, JSON.stringify({ chipsBeforeInfo, attachments: early?.attachments }));
 
 	// Chrome logs each non-2xx fetch: the known 503 (/api/stt/token, no Deepgram key, budgets.json) and one 404 per status check the server answered 404 (the dropped chips).
 	const answered404 = seen.filter(item => item.method === "GET" && item.status === 404).length;

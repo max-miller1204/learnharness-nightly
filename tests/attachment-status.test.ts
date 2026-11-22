@@ -54,12 +54,14 @@ test("a pending file is sendable only once all its bytes arrived, and only in it
 	const ok = await status(grant.id, chat.id);
 	assert.equal(ok.status, 204);
 	assert.equal(await ok.text(), "");
+	assert.equal(ok.headers.get("cache-control"), "no-store", "a credentialed answer is never cached");
 	assert.equal((await status(grant.id, elsewhere.id)).status, 404, "another chat's");
 	assert.equal((await status(grant.id, chat.id, other.token)).status, 404, "another pairing's");
 	assert.equal((await status(grant.id, null)).status, 400, "the chat is required");
 	assert.equal((await status(grant.id, "../x")).status, 400);
 	assert.equal((await status(randomUUID(), chat.id)).status, 404, "unknown");
 	assert.equal((await status("not-an-id", chat.id)).status, 404, "malformed");
+	for (const long of ["a".repeat(300), "a".repeat(5000), "%2e%2e", "x/y"]) assert.equal((await status(long, chat.id)).status, 404, `a malformed id never reaches the filesystem: ${long.slice(0, 12)}`);
 	assert.equal((await attachmentStatusRequest(new Request(new URL(PROTOCOL_ROUTES.attachmentStatus(grant.id, chat.id), base), { headers: { "X-LearnHarness-Protocol": "1" } }), Promise.resolve({ id: grant.id }))).status, 401, "no pairing");
 	// Removed: gone.
 	assert.equal((await discardAttachmentRequest(request(`/api/attachments/${grant.id}`, "DELETE"), Promise.resolve({ id: grant.id }))).status, 204);
@@ -82,6 +84,23 @@ test("a sent file, and a file whose pending copy expired and was swept, are no l
 	sweepAttachments(Date.now() + day);
 	assert.equal((await status(aged.id, chat.id)).status, 404, "past the server's 24 hours");
 	chatStore.deleteChat(chat.id);
+});
+
+test("a deleted chat, and a file its transcript already holds, are no longer sendable", async () => {
+	const chat = chatStore.createChat("zz-prove-it deleted status chat");
+	const grant = await (await reserve({ chatId: chat.id, name: "late.txt", mimeType: "text/plain", size: 2 })).json();
+	assert.equal((await put(grant.uploadUrl, "hi")).status, 204);
+	assert.equal((await status(grant.id, chat.id)).status, 204);
+	chatStore.deleteChat(chat.id);
+	assert.equal((await status(grant.id, chat.id)).status, 404, "the owning chat is gone");
+
+	// A crash can leave a claimed copy and its pending files side by side.
+	const held = chatStore.createChat("zz-prove-it held status chat");
+	const again = await (await reserve({ chatId: held.id, name: "held.txt", mimeType: "text/plain", size: 2 })).json();
+	assert.equal((await put(again.uploadUrl, "hi")).status, 204);
+	chatStore.saveMessages(held.id, [{ ...newUserMessage("here"), attachments: [{ id: again.id, name: "held.txt" }] }]);
+	assert.equal((await status(again.id, held.id)).status, 404, "the transcript already references it");
+	chatStore.deleteChat(held.id);
 });
 
 test("a folder is sendable once every file arrived", async () => {

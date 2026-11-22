@@ -337,12 +337,13 @@ export function unavailableAttachmentIds(messages: readonly LhMessage[]): string
 	return missing.length ? missing : undefined;
 }
 
-/** A pending file whose bytes have all arrived, for this owner and target. */
+/** A pending file whose bytes have all arrived, for this owner and target.
+ *  The id is validated and the owner and target are checked before any stat. */
 function uploadedPending(id: string, owner: string, target: AttachmentTarget, folder?: string): PendingAttachment | undefined {
 	const upload = pending(id);
+	if (!upload || upload.owner !== owner || !sameTarget(upload.target, target) || upload.folder !== folder || uploads.has(id)) return;
 	const bytes = stat(pendingFile(id, ".body"));
-	if (!upload || upload.owner !== owner || !sameTarget(upload.target, target) || upload.folder !== folder ||
-		uploads.has(id) || !bytes || bytes.size !== upload.size || bytes.mtimeMs + PENDING_MS <= Date.now()) return;
+	if (!bytes || bytes.size !== upload.size || bytes.mtimeMs + PENDING_MS <= Date.now()) return;
 	return upload;
 }
 
@@ -357,6 +358,7 @@ function uploadedFolder(folder: PendingFolder, owner: string, target: Attachment
 /** Whether a send could claim this pending file or folder right now: a
  *  restored draft chip asks this before it keeps a stored upload. */
 export function attachmentSendable(id: string, owner: string, target: AttachmentTarget): boolean {
+	if (!isAttachmentId(id)) return false;
 	const folder = pendingFolder(id);
 	return folder ? uploadedFolder(folder, owner, target) : !!uploadedPending(id, owner, target);
 }

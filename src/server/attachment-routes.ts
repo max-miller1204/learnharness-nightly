@@ -3,9 +3,10 @@ import { isAttachmentId } from "../core/attachments.ts";
 import { titleFromPrompt } from "../core/contracts.ts";
 import { ChatInputError, parseChatInput } from "../core/input-events.ts";
 import { folderFileCountError, MAX_FOLDER_FILES } from "../core/attachment-folders.ts";
-import { AttachmentError, attachmentSendable, discardAttachment, receiveAttachment, renewAttachmentFolder, reserveAttachment, reserveAttachmentFolder } from "../store/attachments.ts";
+import { AttachmentError, attachmentReferences, attachmentSendable, discardAttachment, receiveAttachment, renewAttachmentFolder, reserveAttachment, reserveAttachmentFolder } from "../store/attachments.ts";
 import { newChatRecord } from "../store/chats.ts";
 import { assertAttachmentOwner, attachmentOperation, attachmentSubmission, openingAttachmentChatId } from "./attachment-submissions.ts";
+import { CREDENTIAL_HEADERS } from "./auth.ts";
 import { initialChatSettings, initialGraphContext } from "./chat-creation.ts";
 import { handleChatInput } from "./chat-handler.ts";
 import { stores } from "./stores.ts";
@@ -69,8 +70,13 @@ export function attachmentStatusRequest(request: Request, params: Promise<{ id: 
 		assertAttachmentOwner(request, owner);
 		const chatId = new URL(request.url).searchParams.get("chatId");
 		if (!chatId || !/^[\w-]+$/.test(chatId)) throw new AttachmentError(400, "Provide the chat ID.");
-		if (!attachmentSendable(id, owner, { chatId })) throw new AttachmentError(404, "Pending attachment not found.");
-		return new Response(null, { status: 204 });
+		// The chat must still exist and not already hold the file: a claimed
+		// file's pending copy may linger, but a send could no longer claim it.
+		const chat = stores.chatStore.getChat(chatId);
+		if (!chat || attachmentReferences(chat.messages).some(ref => ref.id === id) || !attachmentSendable(id, owner, { chatId })) {
+			throw new AttachmentError(404, "Pending attachment not found.");
+		}
+		return new Response(null, { status: 204, headers: CREDENTIAL_HEADERS });
 	});
 }
 

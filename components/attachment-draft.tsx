@@ -5,7 +5,7 @@ import { FolderIcon, PaperclipIcon } from "lucide-react";
 import { ATTACHMENT_FOLDERS, ATTACHMENT_STATUS, ATTACHMENT_UPLOADS, hasCapability, PROTOCOL_ROUTES, type AttachmentFolderGrantResponse, type AttachmentGrantResponse, type AttachmentSend, type AttachmentTarget, type ServerInfo } from "@/src/core";
 import { attachmentLimitError, ATTACHMENT_UNAVAILABLE, folderFilesAsAttachments, folderLimitError, folderPathError, randomUuid, skippedFolderNotice } from "@/src/core";
 import type { AttachmentReference } from "@/src/core";
-import { dropStoredAttachments, onStoredAttachmentsDropped, readStoredAttachments, storeAttachment, storedLimitInputs, type StoredAttachment } from "@/lib/attachment-drafts";
+import { dropStoredAttachments, isForgotten, onStoredAttachmentsDropped, readStoredAttachments, storeAttachment, storedLimitInputs, type StoredAttachment } from "@/lib/attachment-drafts";
 import { droppedAttachments, folderFromFiles, type FolderPick, type PickedFolder } from "./attachment-folder";
 
 /** Dispatched by the page drop zone on an uploading composer's chips. */
@@ -52,16 +52,33 @@ export async function attachmentResponseError(response: Response): Promise<strin
 
 async function deleteGrant(id: string): Promise<void> {
 	const response = await fetch(PROTOCOL_ROUTES.removeAttachment(id), { method: "DELETE" });
-	if (!response.ok && response.status !== 404) throw new Error(await attachmentResponseError(response));
+	if (!response.ok && response.status !== 404) throw new RequestError(response.status, await attachmentResponseError(response));
 }
 
+/** The server answers 409 while it still sees an aborted transfer as running. */
+const RELEASE_RETRY_MS = [100, 300, 1000];
+
 /** Wait for running puts to settle before asking the server to release the
- * reservation. A released folder starts no further files. */
+ * reservation, trying again while it answers 409. A released folder starts no
+ * further files. */
 function releaseGrant(row: DraftFile): void {
 	void (async () => {
 		await row.work;
-		if (row.grant) await deleteGrant(row.grant.id);
+		if (!row.grant) return;
+		for (const wait of [...RELEASE_RETRY_MS, undefined]) {
+			try { await deleteGrant(row.grant.id); return; }
+			catch (error) {
+				if (wait === undefined || !(error instanceof RequestError && error.status === 409)) throw error;
+				await new Promise(resolve => setTimeout(resolve, wait));
+			}
+		}
 	})().catch(() => { /* The server also expires abandoned grants. */ });
+}
+
+/** Stop a row's transfers and release its reservation. */
+function cancelRow(row: DraftFile): void {
+	for (const upload of row.uploads) upload.abort();
+	releaseGrant(row);
 }
 
 /** The number of files in a folder row; undefined for a single file. */
@@ -107,39 +124,48 @@ async function postGrant<T extends { expiresAt: number }>(url: string, body?: un
 	return { ...grant, deadline: localDeadline(grant.expiresAt, response.headers.get("date")) };
 }
 
+/** One composer per session: callers key it by the chat id (app/chat/[id]/page.tsx), so
+ * the hook lives for one `chatId`. */
 export function useAttachmentDraft(chatId?: string) {
-	const [enabled, setEnabled] = useState(false);
-	const [folders, setFolders] = useState(false);
-	const [statusChecks, setStatusChecks] = useState(false);
+	const [info, setInfo] = useState<ServerInfo>();
+	const [infoDone, setInfoDone] = useState(false);
+	const enabled = !!info && hasCapability(info, ATTACHMENT_UPLOADS);
+	const folders = !!info && hasCapability(info, ATTACHMENT_FOLDERS);
+	const statusChecks = !!info && hasCapability(info, ATTACHMENT_STATUS);
 	const [validation, setValidation] = useState<string>();
 	const [, redraw] = useState(0);
 	const files = useRef<DraftFile[]>([]);
 	const openingDraft = useRef<string>(null);
 	const lastSend = useRef<{ identity: string; id: string }>(null);
 	const changed = () => redraw(n => n + 1);
+	// Until the session's saved uploads are shown or ruled out, a Send waits
+	// (restored()), so it never goes without a file the learner can't see yet.
+	const restoreSettled = useRef(false);
+	const restoreWaiters = useRef<(() => void)[]>([]);
+	const wakeRestoreWaiters = () => { for (const wake of restoreWaiters.current.splice(0)) wake(); };
+	const settleRestore = () => { restoreSettled.current = true; wakeRestoreWaiters(); };
+	const restoring = () => !restoreSettled.current && !!chatId && readStoredAttachments(chatId).length > 0;
 	useEffect(() => {
-		if (window.lh?.getPathForFile) return;
+		let unmounted = false;
 		const controller = new AbortController();
-		void fetch(PROTOCOL_ROUTES.serverInfo, { signal: controller.signal })
-			.then(async response => response.ok ? response.json() as Promise<ServerInfo> : undefined)
-			.then(info => {
-				if (!info || !Array.isArray(info.capabilities)) return;
-				setEnabled(hasCapability(info, ATTACHMENT_UPLOADS));
-				setFolders(hasCapability(info, ATTACHMENT_FOLDERS));
-				setStatusChecks(hasCapability(info, ATTACHMENT_STATUS));
-			})
-			.catch(() => {});
+		if (window.lh?.getPathForFile) setInfoDone(true);
+		else {
+			void fetch(PROTOCOL_ROUTES.serverInfo, { signal: controller.signal })
+				.then(async response => response.ok ? response.json() as Promise<ServerInfo> : undefined)
+				.then(next => { if (next && Array.isArray(next.capabilities)) setInfo(next); })
+				.catch(() => {})
+				.finally(() => { if (!unmounted) setInfoDone(true); });
+		}
 		return () => {
+			unmounted = true;
 			controller.abort();
+			wakeRestoreWaiters(); // a waiting Send finds the composer gone and does nothing
 			// Leaving with an upload still running cancels it and releases its
 			// reservation: it is never half kept. Finished uploads stay with the
 			// session's draft (lib/attachment-drafts.ts), and Back restores them.
 			const leaving = files.current.filter(row => !row.ready);
 			files.current = files.current.filter(row => row.ready);
-			for (const row of leaving) {
-				for (const upload of row.uploads) upload.abort();
-				releaseGrant(row);
-			}
+			for (const row of leaving) cancelRow(row);
 		};
 	}, []);
 
@@ -148,6 +174,13 @@ export function useAttachmentDraft(chatId?: string) {
 	/** Keep a finished upload with the session's draft. */
 	const keep = (row: DraftFile) => {
 		if (!chatId || !row.grant) return;
+		if (isForgotten(chatId)) {
+			// The session was deleted while this uploaded: nothing is kept, and
+			// the server's copy is released.
+			files.current = files.current.filter(file => file !== row);
+			releaseGrant(row);
+			return;
+		}
 		const base = { id: row.grant.id, name: row.name, at: Date.now() };
 		storeAttachment(chatId, row.folder ? { ...base, files: folderManifest(row.folder) } : { ...base, mimeType: row.file!.type, size: row.file!.size });
 	};
@@ -269,12 +302,14 @@ export function useAttachmentDraft(chatId?: string) {
 	const remove = (row: DraftFile) => {
 		files.current = files.current.filter(file => file !== row);
 		if (chatId && row.grant) dropStoredAttachments(chatId, [row.grant.id]);
-		releaseGrant(row);
+		cancelRow(row);
 		setValidation(undefined);
 		changed();
 	};
-	const prepare = async (identity: string, onUnavailable?: () => void): Promise<AttachmentSend | null> => {
-		const selected = files.current;
+	/** `selected` is the draft as it was when Send was pressed: the send stops
+	 * (null) if any of it changed before delivery, so what goes is exactly what
+	 * the learner saw. */
+	const prepare = async (identity: string, onUnavailable?: () => void, selected: DraftFile[] = files.current): Promise<AttachmentSend | null> => {
 		await Promise.all(selected.map(row => row.work));
 		if (files.current !== selected || selected.some(row => !row.ready || !row.grant)) {
 			onUnavailable?.();
@@ -298,25 +333,28 @@ export function useAttachmentDraft(chatId?: string) {
 	// failure keeps the chip; the send checks it again.
 	const restorable = enabled && statusChecks;
 	useEffect(() => {
-		if (!chatId || !restorable) return;
+		if (!chatId || !infoDone) return;
+		if (!restorable) { settleRestore(); return; }
+		const controller = new AbortController();
 		const restored = readStoredAttachments(chatId)
 			.filter(stored => !files.current.some(row => row.grant?.id === stored.id))
 			.map((stored): DraftFile => ({ key: randomUuid(), name: stored.name, stored, grant: { id: stored.id, deadline: 0 }, uploads: new Set(), ready: true, progress: 100 }));
-		if (!restored.length) return;
 		files.current = [...files.current, ...restored];
 		for (const row of restored) {
 			row.work = (async () => {
 				try {
-					const response = await fetch(PROTOCOL_ROUTES.attachmentStatus(row.grant!.id, chatId));
+					const response = await fetch(PROTOCOL_ROUTES.attachmentStatus(row.grant!.id, chatId), { signal: controller.signal });
 					if (response.status !== 404 || !live(row)) return;
 					files.current = files.current.filter(file => file !== row);
 					dropStoredAttachments(chatId, [row.grant!.id]);
-				} catch { /* Offline: keep the chip. */ }
+				} catch { /* Offline or left: keep the chip. */ }
 				finally { row.work = undefined; changed(); }
 			})();
 		}
-		changed();
-	}, [chatId, restorable]);
+		if (restored.length) changed();
+		settleRestore();
+		return () => controller.abort();
+	}, [chatId, restorable, infoDone]);
 	// A send accepted after the learner left and came back dropped these.
 	useEffect(() => onStoredAttachmentsDropped((id, ids) => {
 		if (id !== chatId || !files.current.some(row => row.grant && ids.includes(row.grant.id))) return;
@@ -326,6 +364,12 @@ export function useAttachmentDraft(chatId?: string) {
 	return {
 		enabled, folders: enabled && folders, files: files.current, validation, getDraftId: () => openingDraft.current ??= randomUuid(),
 		select, selectFolder, drop, remove, retry: start, prepare, accept,
+		/** The draft's attachments right now (`files` is what the last render saw). */
+		current: () => files.current,
+		/** Whether the session's saved uploads are still being loaded. */
+		restoring,
+		/** Resolves once they are shown or ruled out, or the composer is gone. */
+		restored: (): Promise<void> => restoring() ? new Promise<void>(resolve => { restoreWaiters.current.push(resolve); }) : Promise.resolve(),
 	};
 }
 
