@@ -12,7 +12,7 @@
  *   - refused or failed: they run as normal, so nothing is lost.
  */
 
-import { clearComposerDraft } from "@/lib/composer-drafts";
+import { forgetComposerDraft } from "@/lib/composer-drafts";
 
 const inFlight = new Map<string, Promise<boolean>>(); // resolves true = deleted
 const deleted = new Set<string>(); // ids are never reused
@@ -33,7 +33,7 @@ export function beginSessionDelete(chatId: string): (wasDeleted: boolean) => voi
 		done = true;
 		if (wasDeleted) {
 			deleted.add(chatId);
-			clearComposerDraft(chatId); // its unsent draft goes with it (#347)
+			forgetComposerDraft(chatId); // its unsent draft goes with it, for good (#347)
 		}
 		if (inFlight.get(chatId) === pending) inFlight.delete(chatId); // never a newer delete's mark
 		settle(wasDeleted);
