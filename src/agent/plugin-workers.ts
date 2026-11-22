@@ -7,8 +7,9 @@ import type { PluginCallPurpose, PluginModelSpec } from "../core/plugin-agents.t
 import type { PluginInferenceOptions } from "../core/plugins.ts";
 import type { PluginTaskError, PluginTaskOutcome, PluginTaskRecord, PluginTaskSnapshot, PluginWorkerContext, PluginWorkerDefinition, PluginWorkerService, PluginWorkerStartOptions } from "../core/plugin-workers.ts";
 import { validatePluginInferenceOptions, validatePluginSchema } from "../core/plugin-validation.ts";
-import { accumulateJobUsage, piUsageToStep } from "../core/contracts/jobs.ts";
+import { accumulateJobUsage } from "../core/contracts/jobs.ts";
 import type { PiEngine } from "./models.ts";
+import { captureJobUsageStep } from "./pricing.ts";
 import { usageWasAdmitted } from "./subscription-request-cycle.ts";
 import { runSubagent } from "./subagents/pi-run.ts";
 
@@ -210,8 +211,9 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 						const m = event.message; t.partial = undefined; batchStart = t.record.messages.length;
 						const called = m.content.filter(c => c.type === "toolCall").map(c => c.id);
 						const usage = m.stopReason !== "aborted" && usageWasAdmitted(m.usage);
+						const modelId = `${m.provider}:${m.model}`;
 						commit(t, { ...t.record, messages: [...t.record.messages, m], turns: t.record.turns + 1,
-							...(usage ? { usage: accumulateJobUsage(t.record.usage, `${m.provider}:${m.model}`, piUsageToStep(m.usage)) } : {}) });
+							...(usage ? { usage: accumulateJobUsage(t.record.usage, modelId, captureJobUsageStep(m.usage, modelId)) } : {}) });
 						if (usage) {
 							try { deps.onUsage?.(clone(t.record.model), clone(m.usage)); }
 							catch (error) { // Accounting writes are also host persistence, never a model-correctable error.

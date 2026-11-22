@@ -15,6 +15,7 @@ import {
 	type ModelSlotName,
 } from "../../core/settings.ts";
 import { catalogModelGone, ModelUnavailableError, type PiEngine } from "../models.ts";
+import { captureCallUsage } from "../pricing.ts";
 import { runSubagent } from "./pi-run.ts";
 import { processImage } from "../image-processing/index.ts";
 import { workerRequestStream } from "../worker-request-admission.ts";
@@ -907,10 +908,10 @@ export interface ExtractionPipeline {
 }
 
 /** pi's per-step usage, flattened to the persisted CallUsage fields
- *  (the money channel's capture shape, contracts/chat.ts). Exported for
- *  the cluster namer — the same capture shape (2026-09 graph cost
- *  metrics wave). Module scope: no closure deps, pure projection. */
-export function callUsage(usage: Usage): CallUsage {
+ *  (the money channel's capture shape, contracts/chat.ts). When modelId is
+ *  supplied, also captures its live catalog costUsd at record time. */
+export function callUsage(usage: Usage, modelId?: string): CallUsage {
+	if (modelId !== undefined) return captureCallUsage(usage, modelId);
 	return {
 		inputTokens: usage.input,
 		outputTokens: usage.output,
@@ -918,7 +919,7 @@ export function callUsage(usage: Usage): CallUsage {
 		cacheWriteTokens: usage.cacheWrite,
 		cacheWrite1hTokens: usage.cacheWrite1h ?? 0,
 		// Optional in pi's Usage (providers that never emit reasoning
-		// tokens leave it unset) — persisted as 0, never dropped.
+		// tokens leave it unset); persisted as 0, never dropped.
 		reasoningTokens: usage.reasoning ?? 0,
 	};
 }
@@ -1116,7 +1117,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			batchIds,
 			signal,
 			(usage, model, step, finishReason, tools) => {
-				recordStep(jobKey, "extractor", callUsage(usage), model);
+				recordStep(jobKey, "extractor", callUsage(usage, model), model);
 				console.info(`[extraction] extractor step ${step}: ${finishReason}, tools: ${tools}`);
 			},
 		);
@@ -1160,7 +1161,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 				)}`,
 			signal,
 			(usage, model, step, finishReason, tools) => {
-				recordStep(jobKey, "auditor", callUsage(usage), model);
+				recordStep(jobKey, "auditor", callUsage(usage, model), model);
 				console.info(`[extraction] auditor step ${step}: ${finishReason}, tools: ${tools}`);
 			},
 			review.tools,
@@ -1440,7 +1441,8 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		if (!processed.ok) throw new Error(processed.message);
 		const t0 = performance.now();
 		const reply = await describeImageOnce(engine, IMAGE_READER_INSTRUCTIONS, filePath, processed, signal);
-		recordStep(jobKey, "imageReader", callUsage(reply.usage), `${reply.provider}:${reply.model}`);
+		const imageModel = `${reply.provider}:${reply.model}`;
+		recordStep(jobKey, "imageReader", callUsage(reply.usage, imageModel), imageModel);
 		const text = reply.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join("").trim();
 		console.info(`[extraction ${jobKey}] image described in ${Math.round(performance.now() - t0)}ms (${text.length} chars)`);
 		if (!text) throw new Error("The vision model returned no description.");
@@ -1475,7 +1477,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			new Set(graph.nodes.map((n) => n.id)),
 			signal,
 			(usage, model, step, finishReason, tools) => {
-				recordStep(jobKey, "extractor", callUsage(usage), model);
+				recordStep(jobKey, "extractor", callUsage(usage, model), model);
 				console.info(`[extraction] extractor step ${step}: ${finishReason}, tools: ${tools}`);
 			},
 		);

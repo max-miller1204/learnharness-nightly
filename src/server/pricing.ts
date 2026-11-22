@@ -1,45 +1,24 @@
-/** Read-time API-dollar estimates. Pi owns both rates and arithmetic.
- * Catalog resolution is key-independent; no provider dispatch/auth is needed.
- * Never mutate saved native messages: calculateCost mutates its usage.cost.
- */
-import { calculateCost, type Api, type Model, type Usage } from "@earendil-works/pi-ai";
-import { piModels } from "../agent/models.ts";
+/** API-dollar estimates. Recorded calls store their record-time costUsd; older
+ * records without it fall back to Pi's live catalog first, then the retired
+ * models table. Catalog resolution is key-independent. */
+import { computeCallCost, isUnpricedModelId, liveCatalogModel } from "../agent/pricing.ts";
 import { RETIRED_MODELS } from "./retired-models.ts";
-import { CUSTOM_PROVIDER } from "../core/auth-keys.ts";
-import { CLAUDE_CODE_PROVIDER } from "../core/contracts/claude-code.ts";
 import type { CallUsage, ChatRecord, JobRecord, TurnUsage } from "../core/contracts.ts";
-import { isSubscriptionModel, sessionCost as foldSessionCost, turnCost as foldTurnCost, jobCost as foldJobCost } from "../core/prices.ts";
+import { sessionCost as foldSessionCost, turnCost as foldTurnCost, jobCost as foldJobCost } from "../core/prices.ts";
 
 function catalogModel(id: string) {
-	const colon = id.indexOf(":");
-	// Native CLI routing determines billing. Adapter zero-rate placeholders
-	// must never become an apparent $0 estimate or subscription classification.
-	if (colon < 0 || isSubscriptionModel(id) || [CLAUDE_CODE_PROVIDER, CUSTOM_PROVIDER.id].includes(id.slice(0, colon))) return undefined;
+	if (isUnpricedModelId(id)) return undefined;
 	// History on a model no catalog has (Pi's bundled one or a pi.dev
 	// refresh) keeps the estimate it had when Pi dropped it.
-	return piModels().getModel(id.slice(0, colon), id.slice(colon + 1)) ?? (Object.hasOwn(RETIRED_MODELS, id) ? RETIRED_MODELS[id] : undefined);
+	return liveCatalogModel(id) ?? (Object.hasOwn(RETIRED_MODELS, id) ? RETIRED_MODELS[id] : undefined);
 }
 
 export function callCost(call: Partial<CallUsage>, modelId: string): number | null {
-	const model = catalogModel(modelId);
-	if (!model || call.inputTokens === undefined || call.outputTokens === undefined) return null;
-	const input = call.inputTokens;
-	const output = call.outputTokens;
-	const cacheRead = call.cacheReadTokens ?? 0;
-	const cacheWrite = call.cacheWriteTokens ?? 0;
-	const cacheWrite1h = call.cacheWrite1hTokens ?? 0;
-	if ([input, output, cacheRead, cacheWrite, cacheWrite1h].some((v) => !Number.isFinite(v) || v < 0) || cacheWrite1h > cacheWrite) return null;
-	// Old records discarded this split. Only price them if it cannot affect
-	// the result; do not invent short-retention precision from a missing field.
-	if (cacheWrite > 0 && call.cacheWrite1hTokens === undefined &&
-		[model.cost, ...(model.cost.tiers ?? [])].some((rate) => rate.cacheWrite !== 2 * rate.input)) return null;
-	const usage: Usage = {
-		input, output, cacheRead, cacheWrite, cacheWrite1h,
-		totalTokens: input + output + cacheRead + cacheWrite,
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-	};
-	const total = calculateCost({ cost: model.cost } as Model<Api>, usage).total;
-	return Number.isFinite(total) && total >= 0 ? total : null;
+	if (isUnpricedModelId(modelId)) return null;
+	if (call.costUsd !== undefined) {
+		return typeof call.costUsd === "number" && Number.isFinite(call.costUsd) && call.costUsd >= 0 ? call.costUsd : null;
+	}
+	return computeCallCost(call, catalogModel(modelId));
 }
 
 export function turnCost(turn: TurnUsage): number | null {

@@ -352,6 +352,11 @@ export type QuestionDismissResponse = { ok: true; parked?: true };
  * single-select options). A client without it shows the options unlettered. */
 export const QUESTION_OPTION_ORDER_V1 = "question-option-order-v1";
 
+/** Optional protocol 1 extension: CallUsage entries in turns, extractions and
+ * jobs may carry `costUsd`, the API-dollar estimate captured when each call
+ * ran. Older servers omit it and clients tolerate its absence. */
+export const CALL_USAGE_COST_V1 = "call-usage-cost-v1";
+
 /** Optional protocol 1 extension: rename, delete and export a session from
  * the session list (docs/specs/mobile-session-basics.md). The routes are the
  * web sidebar's own, unchanged. */

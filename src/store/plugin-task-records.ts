@@ -39,8 +39,9 @@ function validate(value: unknown, expected: string): PluginTaskRecord {
 	if (r.usage !== undefined) {
 		if (!object(r.usage) || typeof r.usage.model !== "string" || !Number.isSafeInteger(r.usage.steps) || (r.usage.steps as number) < 1) return invalid();
 		for (const key of ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens", "cacheWrite1hTokens"]) if (r.usage[key] !== undefined && !nonnegative(r.usage[key])) return invalid();
-		if (r.usage.calls !== undefined && (!Array.isArray(r.usage.calls) || !r.usage.calls.every(object))) return invalid();
-		if (r.usage.lastStep !== undefined && !object(r.usage.lastStep)) return invalid();
+		const validCall = (c: unknown) => object(c) && (c.costUsd === undefined || nonnegative(c.costUsd));
+		if (r.usage.calls !== undefined && (!Array.isArray(r.usage.calls) || !r.usage.calls.every(validCall))) return invalid();
+		if (r.usage.lastStep !== undefined && !validCall(r.usage.lastStep)) return invalid();
 	}
 	return r as unknown as PluginTaskRecord;
 }

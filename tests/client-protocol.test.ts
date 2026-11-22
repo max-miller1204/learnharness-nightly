@@ -34,9 +34,9 @@ import { GET as serverInfoRoute } from "../app/.well-known/learnharness/server/r
 const RECORDED = {
 	protocolVersion: 1,
 	fingerprint: {
-		"src/client-protocol/index.ts": "375f03fb8e188ef1",
+		"src/client-protocol/index.ts": "5e19e847de40c267",
 		"src/core/attachments.ts": "a2fda90879239dc8",
-		"src/core/contracts/chat.ts": "937c52917f863b25",
+		"src/core/contracts/chat.ts": "88cafb06c282121c",
 		"src/core/contracts/graph.ts": "b84d4803bd0c4acc",
 		"src/core/contracts/jobs.ts": "d5a740982ab0196d",
 		"src/core/contracts/plan.ts": "feebc7e5e0e6e8cf",
@@ -143,7 +143,7 @@ describe("server info", () => {
 		assert.equal(info.version, "0.6.1-nightly.1");
 		assert.equal(info.protocolVersion, 1);
 		assert.ok(info.name.length > 0);
-		assert.deepEqual(info.capabilities, ["attachment-uploads-v1", "attachment-folders-v1", "practice-controls-v1", "browser-handoff-v1", "lesson-view-v1", "session-basics-v1", "question-option-order-v1"]);
+		assert.deepEqual(info.capabilities, ["attachment-uploads-v1", "attachment-folders-v1", "practice-controls-v1", "browser-handoff-v1", "lesson-view-v1", "session-basics-v1", "question-option-order-v1", "call-usage-cost-v1"]);
 		assert.deepEqual(info.auth, {
 			required: true,
 			bootstrapMethods: ["one-time-token"],

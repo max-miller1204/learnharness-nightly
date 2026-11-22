@@ -8,10 +8,11 @@
  * dropped it; historical naming-runs.jsonl spend is simply not displayed,
  * the same ruling as wave 7's stages.embedding.)
  *
- * MONEY CHANNEL LAW: dollars are INFERRED here at read time via
- * an injected server-side Pi pricer — never stored anywhere. An unpriced model contributes
- * ZERO dollars but is counted in `unpricedRuns` so the UI can render
- * "— unpriced" honestly, never a silent zero. Tokens always sum.
+ * MONEY CHANNEL LAW: dollars come from each step's stored `costUsd` when
+ * present, falling back to an injected server-side Pi pricer for older
+ * records without it. An unpriced model contributes ZERO dollars but is
+ * counted in `unpricedRuns` so the UI can render unpriced honestly, never
+ * a silent zero. Tokens always sum.
  *
  * Client-safe: pure types + math, no node imports; exposed via the core
  * barrel so the pill/panel components carry no cost math.

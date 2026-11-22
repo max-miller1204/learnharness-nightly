@@ -73,8 +73,8 @@ export interface JobUsage {
 	cacheWriteTokens: number | undefined;
 	reasoningTokens: number | undefined;
 	cacheWrite1hTokens?: number;
-	/** Individual calls for current-catalog per-call tier pricing. Absent on
-	 * older jobs; never backfill them from cumulative totals. */
+	/** Individual calls for per-call pricing and stored record-time costUsd.
+	 * Absent on older jobs; never backfill them from cumulative totals. */
 	calls?: CallUsage[];
 	/** How many model calls the run has made (each bills separately). */
 	steps: number;
@@ -84,7 +84,7 @@ export interface JobUsage {
 	lastStep?: CallUsage;
 }
 
-/** The per-model-call usage shape we fold into JobUsage — the SDK's
+/** The per-model-call usage shape we fold into JobUsage: the SDK's
  * LanguageModelUsage narrowed structurally (no runtime "ai" import: any
  * object with these fields folds, including the real thing and test fakes). */
 export interface UsageStepLike {
@@ -92,10 +92,11 @@ export interface UsageStepLike {
 	inputTokenDetails?: { cacheReadTokens?: number; cacheWriteTokens?: number; cacheWrite1hTokens?: number } | undefined;
 	outputTokens?: number | undefined;
 	outputTokenDetails?: { reasoningTokens?: number } | undefined;
+	costUsd?: number | undefined;
 }
 
-/** pi-ai's Usage shape (input/output/cacheRead/cacheWrite/reasoning?) →
- * UsageStepLike. Structural — no pi import here; the engine band maps at
+/** pi-ai's Usage shape (input/output/cacheRead/cacheWrite/reasoning?) to
+ * UsageStepLike. Structural: no pi import here; the engine band maps at
  * its boundaries. */
 export function piUsageToStep(usage: {
 	input: number;
@@ -104,12 +105,13 @@ export function piUsageToStep(usage: {
 	cacheWrite: number;
 	cacheWrite1h?: number;
 	reasoning?: number;
-}): UsageStepLike {
+}, costUsd?: number | null): UsageStepLike {
 	return {
 		inputTokens: usage.input,
 		outputTokens: usage.output,
 		inputTokenDetails: { cacheReadTokens: usage.cacheRead, cacheWriteTokens: usage.cacheWrite, cacheWrite1hTokens: usage.cacheWrite1h ?? 0 },
 		outputTokenDetails: usage.reasoning !== undefined ? { reasoningTokens: usage.reasoning } : undefined,
+		...(typeof costUsd === "number" && Number.isFinite(costUsd) && costUsd >= 0 ? { costUsd } : {}),
 	};
 }
 
@@ -131,6 +133,7 @@ export function accumulateJobUsage(
 		cacheWriteTokens: step.inputTokenDetails?.cacheWriteTokens,
 		cacheWrite1hTokens: step.inputTokenDetails?.cacheWrite1hTokens,
 		reasoningTokens: step.outputTokenDetails?.reasoningTokens,
+		...(typeof step.costUsd === "number" && Number.isFinite(step.costUsd) && step.costUsd >= 0 ? { costUsd: step.costUsd } : {}),
 	};
 	return {
 		model,

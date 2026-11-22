@@ -29,6 +29,7 @@
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Usage } from "@earendil-works/pi-ai";
+import { captureCallUsage } from "../agent/pricing.ts";
 import {
 	activeCompactionOf,
 	buildCompactionPrompt,
@@ -269,16 +270,7 @@ async function compact(deps: CompactionDeps, chatId: string): Promise<void> {
 			messageId: marker.id,
 			at: details.at,
 			model: deps.modelId,
-			steps: [
-				{
-					inputTokens: usage.input,
-					outputTokens: usage.output,
-					cacheReadTokens: usage.cacheRead,
-					cacheWriteTokens: usage.cacheWrite,
-					cacheWrite1hTokens: usage.cacheWrite1h ?? 0,
-					reasoningTokens: usage.reasoning ?? 0,
-				},
-			],
+			steps: [captureCallUsage(usage, deps.modelId)],
 		});
 		// Notify-then-fetch: the record gained the marker (the client's
 		// dividers appear) and the status event ends the send gate.

@@ -82,6 +82,7 @@ import {
 } from "../core/input-events.ts";
 import { steerDelivered } from "../core/contracts.ts";
 import type { CallUsage, ChatRecord } from "../core/contracts.ts";
+import { captureCallUsage } from "../agent/pricing.ts";
 import type { SendResponse } from "../client-protocol/index.ts";
 
 /**
@@ -693,36 +694,23 @@ export async function handleChatInput(
 
 	// MONEY CHANNEL (wave 4): one collector per request, fed by the agent's
 	// message_end events. Every model call's usage lands in the chat record's
-	// append-only turns log at onFinish — idempotent per turn id.
+	// append-only turns log at onFinish, idempotent per turn id.
+	const engine = conversationEngine;
+	// Provider-qualified stamp: matches the catalog's provider:id keys.
+	const modelId = `${engine.model.provider}:${engine.model.id}`;
 	const turnUsageId = crypto.randomUUID();
 	const steps: CallUsage[] = [];
 	const collectUsage = (usage: Usage) => {
-		steps.push({
-			inputTokens: usage.input,
-			outputTokens: usage.output,
-			cacheReadTokens: usage.cacheRead,
-			cacheWriteTokens: usage.cacheWrite,
-			cacheWrite1hTokens: usage.cacheWrite1h ?? 0,
-			// Optional in pi's Usage — persisted as 0, never dropped.
-			reasoningTokens: usage.reasoning ?? 0,
-		});
+		steps.push(captureCallUsage(usage, modelId));
 	};
 
 	// AGENT CONSTRUCTION BRANCH: the transcript
-	// is the seam — a probe_done call in the record means the probe is
+	// is the seam: a probe_done call in the record means the probe is
 	// concluded: build the TEACHER (planning + the full toolset). Otherwise
 	// the session is still probing: build the PROBER (quiz/ask + probe_done).
 	// Both share this whole composition (write-ahead persist, liveness,
-	// steers, usage, extraction) — only the agent differs.
+	// steers, usage, extraction); only the agent differs.
 	const teaching = hasProbeDone(agentMessages);
-	// BYOK (owner, 2026-09-22): the conversation chain was resolved by the
-	// turn gate above (chat.model override → strong slot → refused) — the
-	// engine build is pure from here; thinking levels clamp natively.
-	// (Built once above the compaction gate; reused verbatim.)
-	const engine = conversationEngine;
-	// Provider-qualified stamp (model slots wave): matches the price table's
-	// provider:id keys.
-	const modelId = `${engine.model.provider}:${engine.model.id}`;
 	// Tests inject a factory: the agent is stateless per turn, so each
 	// request builds a fresh one off the record — the factory mirrors that
 	// seam exactly. Wave B: the record IS the agent state (native messages;

@@ -178,12 +178,17 @@ export interface CallUsage {
 	cacheWrite1hTokens?: number;
 	/** The reasoning portion of the output tokens. */
 	reasoningTokens: number | undefined;
+	/** API-dollar cost computed from the active model catalog when this call
+	 * ran. Absent on older records, unpriced models, subscriptions, CLI and
+	 * custom endpoints. */
+	costUsd?: number;
 }
 
 /** Usage for one native conversation-handler invocation, including user and
  * wake turns. A tool-using turn may span several separately billed model calls.
- * Accounting is captured when the turn persists; cost is estimated from the
- * recorded calls and model catalog at read time. */
+ * Accounting is captured when the turn persists, including each call's costUsd
+ * when priced; older calls without costUsd fall back to catalog lookup at read
+ * time. */
 export interface TurnUsage {
 	/** Request identity for one handler invocation and the append-only log's
 	 * idempotency key. Distinct from the transcript association in messageId. */
