@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState, type DragEvent, type HTMLAttributes, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useState, type DragEvent, type HTMLAttributes, type SyntheticEvent } from "react";
 import { ChevronRightIcon, FolderIcon, FolderOpenIcon } from "lucide-react";
 import { canMoveFolder, type OrganizationAction, type SourceFolder, type SourceOrganization } from "@/src/core";
 import { EditableSourceName, SOURCE_DRAG_TYPE, SourceDragRow } from "@/components/source-folder-tree";
 import { cn } from "@/lib/utils";
+import { isMenuKey, sidebarStopProps, swallowNextContextMenu } from "@/components/sidebar-keyboard";
 
 /**
  * Session-sidebar folders (approved plan): the shared source organization
@@ -119,7 +120,8 @@ export function useSidebarDrop(organization: SourceOrganization | undefined, cha
 export function SidebarFolderRow({ folder, depth, open, dropActive, renaming, onToggle, onContextMenu, onRename, onRenameDone, draggable, compact = false }: {
 	folder: SourceFolder; depth: number; open: boolean; dropActive: boolean; renaming: boolean; draggable: boolean; compact?: boolean;
 	onToggle: () => void;
-	onContextMenu: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+	/** Right-click, the Menu key or Shift+F10 (#302). */
+	onContextMenu: (event: SyntheticEvent<HTMLButtonElement>) => void;
 	onRename: (name: string) => Promise<unknown>;
 	onRenameDone: () => void;
 }) {
@@ -139,7 +141,9 @@ export function SidebarFolderRow({ folder, depth, open, dropActive, renaming, on
 				<button type="button" data-testid={`sidebar-folder-${folder.id}`} aria-expanded={open}
 					aria-label={`${open ? "Collapse" : "Expand"} folder ${folder.name}`}
 					onClick={onToggle} onContextMenu={onContextMenu}
-					className={cn("flex w-full items-center gap-1 pr-3 text-left hover:bg-accent", compact ? SIDEBAR_COMPACT_ROW : "py-1.5")}
+					onKeyDown={(e) => { if (isMenuKey(e)) { e.preventDefault(); swallowNextContextMenu(); onContextMenu(e); } }}
+					{...sidebarStopProps}
+					className={cn("flex w-full items-center gap-1 pr-3 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", compact ? SIDEBAR_COMPACT_ROW : "py-1.5")}
 					style={{ paddingLeft: sidebarFolderBox(depth).paddingLeft }}>
 					<ChevronRightIcon aria-hidden="true" className={cn("size-3.5 shrink-0 text-muted-foreground/70", open && "rotate-90")} />
 					<Icon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />

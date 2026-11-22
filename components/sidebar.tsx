@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { MenuShell } from "@/components/menu-shell";
+import { closeMenuToRow, createNeighborHandoff, createRowFocusKeeper, focusWhenLost, isMenuKey, keepRowKeys, releaseRowAfterPointerClose, sidebarStopProps, swallowNextContextMenu, tabIntoList, tabThroughList, trackInputModality } from "@/components/sidebar-keyboard";
 import { DeleteFolderDialog, DeleteSessionDialog, folderDeleteCopy, type DeleteDialogCopy } from "@/components/delete-session-dialog";
 import { leaveDeletedSession, SESSIONS_DELETED_EVENT } from "@/components/session-deletion";
 import type { ChatDeleteMode, ThemeMode } from "@/src/core";
@@ -294,18 +295,28 @@ export function SessionRow({
 	/** Keyboard-cycle highlight (shortcut wave A: Alt+↑/↓ + Alt+Enter) —
 	 *  visually distinct from the active session, which stays filled. */
 	kbdSelected?: boolean;
-	/** Right-click opens the context menu (wave 6: Rename / Delete). */
-	onContextMenu?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+	/** Right-click, the Menu key or Shift+F10 opens the context menu (wave 6:
+	 *  Rename / Delete; the keys after T3's sidebar rows, #302). */
+	onContextMenu?: (e: React.SyntheticEvent<HTMLButtonElement>) => void;
 }) {
 	return (
 		<button
 			type="button"
 			onClick={onOpen}
 			onContextMenu={onContextMenu}
+			onKeyDown={(e) => {
+				if (!onContextMenu || !isMenuKey(e)) return;
+				// Prevented here (Linux and macOS send no contextmenu then); Windows
+				// sends its contextmenu on the key's keyup, which the next line cancels.
+				e.preventDefault();
+				swallowNextContextMenu();
+				onContextMenu(e);
+			}}
+			{...sidebarStopProps}
 			data-testid={kbdSelected ? "session-row-kbd" : "session-row"}
 			data-session-id={chat.id}
 			className={cn(
-				"relative flex w-full items-center gap-2 pr-3 text-left hover:bg-accent",
+				"relative flex w-full items-center gap-2 pr-3 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
 				compact ? SIDEBAR_COMPACT_ROW : "py-2",
 				active && "bg-accent",
 				kbdSelected && !active && "bg-accent/60 ring-1 ring-inset ring-border",
@@ -568,8 +579,22 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 	const ctxAnchorRef = useRef<HTMLElement | null>(null);
 	const [renamingId, setRenamingId] = useState<string | null>(null);
 	const [deleting, setDeleting] = useState<ChatListItem | null>(null);
+	// The row a Delete dialog was opened from: the dialog's opener (#302).
+	const deleteOpenerRef = useRef<HTMLElement | null>(null);
+	/** Every way the session menu closes goes through here, so focus returns
+	 *  to the row when it closes from the keyboard (#302). */
+	const closeSessionMenu = (then?: () => void) =>
+		closeMenuToRow("session-context-menu", ctxAnchorRef.current, () => { setCtxChatId(null); then?.(); });
+	// Keyboard focus stays in the list when a live update removes or moves the
+	// focused row, and passes to a deleted row's neighbour.
+	const getRows = () => listRef.current?.querySelector('[data-testid="session-rows"]') ?? null;
+	const [focusKeeper] = useState(() => createRowFocusKeeper(getRows));
+	const [deleteHandoff] = useState(() => createNeighborHandoff(getRows));
+	useEffect(() => trackInputModality(), []);
+	useEffect(() => focusKeeper.attach(), [focusKeeper]);
+	useLayoutEffect(() => { deleteHandoff.afterRender(); focusKeeper.afterRender(searchRef.current); });
 
-	const openContext = (e: React.MouseEvent<HTMLButtonElement>, chat: ChatListItem) => {
+	const openContext = (e: React.SyntheticEvent<HTMLButtonElement>, chat: ChatListItem) => {
 		e.preventDefault(); // suppress the native menu
 		ctxAnchorRef.current = e.currentTarget;
 		setCtxFolderId(null);
@@ -587,7 +612,8 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 			const target = e.target as Node;
 			if (target instanceof Element && target.closest("[data-lh-menu]")) return;
 			if (ctxAnchorRef.current?.contains(target)) return;
-			setCtxChatId(null);
+			// A pointer close: focus stays where the pointer put it.
+			closeMenuToRow("session-context-menu", ctxAnchorRef.current, () => setCtxChatId(null));
 		};
 		document.addEventListener("pointerdown", onPointerDown);
 		return () => document.removeEventListener("pointerdown", onPointerDown);
@@ -600,6 +626,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 	// it too). Esc discards; empty commit discards (the header's rules).
 	const commitRename = useCallback(async (id: string, next: string) => {
 		setRenamingId(null);
+		focusWhenLost(`[data-testid="session-rows"] [data-session-id="${id}"]`); // the new row, not the menu's anchor (#302)
 		const t = next.trim();
 		if (t === "") return;
 		try {
@@ -642,6 +669,8 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 	}, [dropDeletedChats, router]);
 	const onDeleted = useCallback(
 		(id: string, _mode: ChatDeleteMode, graphRevision: number) => {
+			// Confirmed from the keyboard, its neighbour takes focus (deleteHandoff, #302).
+			releaseRowAfterPointerClose(deleteOpenerRef.current);
 			setDeleting(null);
 			dropDeletedChats([id]);
 			window.dispatchEvent(new CustomEvent("lh:graph-revision", { detail: { revision: graphRevision } }));
@@ -683,7 +712,10 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 	const [ctxFolderId, setCtxFolderId] = useState<string | null>(null);
 	const [deletingFolder, setDeletingFolder] = useState<{ id: string; name: string; copy: DeleteDialogCopy; scope: FolderDeletionScope } | null>(null);
 	const folderAnchorRef = useRef<HTMLElement | null>(null);
-	const openFolderContext = (e: React.MouseEvent<HTMLButtonElement>, id: string) => {
+	const folderDeleteOpenerRef = useRef<HTMLElement | null>(null);
+	const closeFolderMenu = (then?: () => void) =>
+		closeMenuToRow("folder-context-menu", folderAnchorRef.current, () => { setCtxFolderId(null); then?.(); });
+	const openFolderContext = (e: React.SyntheticEvent<HTMLButtonElement>, id: string) => {
 		e.preventDefault();
 		folderAnchorRef.current = e.currentTarget;
 		setCtxChatId(null);
@@ -696,7 +728,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 			const target = e.target as Node;
 			if (target instanceof Element && target.closest("[data-lh-menu]")) return;
 			if (folderAnchorRef.current?.contains(target)) return;
-			setCtxFolderId(null);
+			closeMenuToRow("folder-context-menu", folderAnchorRef.current, () => setCtxFolderId(null));
 		};
 		document.addEventListener("pointerdown", onPointerDown);
 		return () => document.removeEventListener("pointerdown", onPointerDown);
@@ -705,6 +737,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 	// that went (list patch, home if the open one died, router cache drop,
 	// graph refetch).
 	const onFolderDeleted = useCallback(({ deletedChatIds, graphRevision }: { deletedChatIds: string[]; graphRevision: number }) => {
+		releaseRowAfterPointerClose(folderDeleteOpenerRef.current);
 		setDeletingFolder(null);
 		dropDeletedChats(deletedChatIds);
 		window.dispatchEvent(new CustomEvent("lh:graph-revision", { detail: { revision: graphRevision } }));
@@ -719,9 +752,21 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 		const folder = organization.folders.find((f) => f.id === id);
 		const scope = folderDeletionScope(directory, id);
 		if (!folder || !scope) return;
-		setCtxFolderId(null);
+		const row = folderAnchorRef.current;
+		const dialog = scope.chatIds.length > 0;
+		// The folder row is focused first, so the Delete dialog takes it as its
+		// opener: a keyboard close gives focus back to it, a pointer close lets
+		// it go, and a delete confirmed from the keyboard hands focus to the next
+		// row still there. An empty folder goes at once: closed from the keyboard,
+		// the menu gives the row focus, and its disappearing is the focus keeper's case.
+		closeFolderMenu(() => {
+			if (!dialog || !row) return;
+			row.focus({ preventScroll: true });
+			deleteHandoff.arm(row);
+			folderDeleteOpenerRef.current = row;
+		});
 		clearFolderFailure();
-		if (scope.chatIds.length === 0) {
+		if (!dialog) {
 			void fetch(`/api/graph/sources/folders/${encodeURIComponent(id)}?mode=preserve-graph`, {
 				method: "DELETE",
 				headers: { "Content-Type": "application/json" },
@@ -753,7 +798,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 							depth={depth}
 							compact={compactSessionList}
 							onCommit={(next) => void commitRename(c.id, next)}
-							onCancel={() => setRenamingId(null)}
+							onCancel={() => { setRenamingId(null); focusWhenLost(`[data-testid="session-rows"] [data-session-id="${c.id}"]`); }}
 						/>
 					) : (
 						<SessionRow
@@ -797,10 +842,10 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 					onToggle={() => toggleFolder(folder.id)}
 					onContextMenu={(e) => openFolderContext(e, folder.id)}
 					onRename={(name) => changeFolders({ action: "rename-folder", id: folder.id, name })}
-					onRenameDone={() => setRenamingFolderId(null)}
+					onRenameDone={() => { setRenamingFolderId(null); focusWhenLost(`button[data-testid="sidebar-folder-${folder.id}"]`); }}
 				/>
 				{folderOpen && creatingHere && (
-					<NewFolderRow depth={depth + 1} compact={compactSessionList} onDone={() => setCreatingFolder(null)}
+					<NewFolderRow depth={depth + 1} compact={compactSessionList} onDone={() => { setCreatingFolder(null); focusWhenLost(`button[data-testid="sidebar-folder-${folder.id}"]`); }}
 						onCreate={(name) => changeFolders({ action: "create-folder", name, parentId: folder.id })} />
 				)}
 				{folderOpen && renderTree(node.children, depth + 1)}
@@ -907,6 +952,10 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 							// key so the window Esc chain (dictation / abort)
 							// doesn't also fire.
 							onKeyDown={(e) => {
+								// Tab enters the session list's first row (#302).
+								// Tab enters the row the ↑/↓ walk is on, else the first.
+								const walked = kbdId === null ? null : listRef.current?.querySelector<HTMLElement>(`[data-testid="session-rows"] [data-session-id="${kbdId}"]`) ?? null;
+								if (tabIntoList(e, listRef.current, walked)) { setKbdIndex(null); return; }
 								if (e.key === "Escape") {
 									if (!interactions.isElementEligible(e.currentTarget)) return;
 									interactions.claimEscape(e);
@@ -997,7 +1046,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 				    highlights run to the edge; it shows while scrolling/hovering. */}
 				<OverlayScrollArea scrollRef={listRef} data-testid="session-list" className="flex flex-col" {...folderDrop.containerProps}>
 					{(creatingFolder?.parentId === null || (rows !== null && rows.length > 0)) && (
-						<div data-testid="session-rows">
+						<div data-testid="session-rows" onKeyDown={(e) => { if (!tabThroughList(e, e.currentTarget, searchRef.current)) keepRowKeys(e); }}>
 							{creatingFolder?.parentId === null && (
 								<NewFolderRow depth={0} compact={compactSessionList} onDone={() => setCreatingFolder(null)}
 									onCreate={(name) => changeFolders({ action: "create-folder", name, parentId: null })} />
@@ -1051,7 +1100,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 				    (owner ruling — no more). MenuShell owns placement/focus/arrow
 				    cycling; the dismissal effect above owns the contract. */}
 				{ctxChatId !== null && (
-					<MenuShell onClose={() => { setCtxChatId(null); return "closed"; }}
+					<MenuShell onClose={() => { closeMenuToRow("session-context-menu", ctxAnchorRef.current, () => setCtxChatId(null)); return "closed"; }}
 						anchorRef={ctxAnchorRef}
 						testid="session-context-menu"
 						preferredSide="down"
@@ -1067,8 +1116,8 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 							type="button"
 							data-testid="ctx-rename"
 							onClick={() => {
-								setRenamingId(ctxChatId);
-								setCtxChatId(null);
+								const id = ctxChatId;
+								closeSessionMenu(() => setRenamingId(id)); // Rename's field takes focus
 							}}
 							className="flex items-center rounded-lg px-2.5 py-1.5 text-left text-foreground transition-colors hover:bg-accent"
 						>
@@ -1084,7 +1133,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 							data-testid="ctx-export-md"
 							onClick={() => {
 								const chatId = ctxChatId;
-								setCtxChatId(null);
+								closeSessionMenu();
 								const a = document.createElement("a");
 								a.href = `/api/chats/${chatId}/markdown`;
 								a.download = ""; // the route's filename wins
@@ -1101,8 +1150,15 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 							data-testid="ctx-delete"
 							onClick={() => {
 								const target = chats?.find((c) => c.id === ctxChatId);
-								if (target) setDeleting(target);
-								setCtxChatId(null);
+								const row = ctxAnchorRef.current;
+								// The row is focused first, so the dialog takes it as its opener: a
+								// keyboard close gives focus back to it, a pointer close lets it go,
+								// and a delete confirmed from the keyboard hands focus to its neighbour.
+								closeSessionMenu(() => {
+									if (row) { row.focus({ preventScroll: true }); deleteHandoff.arm(row); }
+									deleteOpenerRef.current = row;
+									if (target) setDeleting(target);
+								});
 							}}
 							className="flex items-center rounded-lg px-2.5 py-1.5 text-left text-muted-foreground/80 transition-colors hover:bg-accent hover:text-foreground"
 						>
@@ -1117,7 +1173,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 				    Delete only removes folders that are empty everywhere and
 				    otherwise explains why, keeping the menu open. */}
 				{ctxFolderId !== null && (
-					<MenuShell onClose={() => { setCtxFolderId(null); return "closed"; }}
+					<MenuShell onClose={() => { closeMenuToRow("folder-context-menu", folderAnchorRef.current, () => setCtxFolderId(null)); return "closed"; }}
 						anchorRef={folderAnchorRef}
 						testid="folder-context-menu"
 						preferredSide="down"
@@ -1126,7 +1182,10 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 						<button
 							type="button"
 							data-testid="folder-ctx-rename"
-							onClick={() => { setRenamingFolderId(ctxFolderId); setCtxFolderId(null); }}
+							onClick={() => {
+								const id = ctxFolderId;
+								closeFolderMenu(() => setRenamingFolderId(id));
+							}}
 							className="flex items-center rounded-lg px-2.5 py-1.5 text-left text-foreground transition-colors hover:bg-accent"
 						>
 							Rename
@@ -1136,7 +1195,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 							data-testid="folder-ctx-new-subfolder"
 							onClick={() => {
 								const id = ctxFolderId;
-								setCtxFolderId(null);
+								closeFolderMenu(); // the new folder's field takes focus
 								if (searching) setSearchFolds((previous) => ({ query, ids: new Set([...(previous.query === query ? previous.ids : [])].filter((f) => f !== id)) }));
 								else setFolderOpen(id, true);
 								setCreatingFolder({ parentId: id });
@@ -1160,13 +1219,15 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 				    by the component itself, lives here for state locality. */}
 				<DeleteSessionDialog
 					chat={deleting}
-					onClose={() => setDeleting(null)}
+					onClose={() => { deleteHandoff.cancel(); releaseRowAfterPointerClose(deleteOpenerRef.current); setDeleting(null); }}
 					onDeleted={onDeleted}
 				/>
 				<DeleteFolderDialog
 					folder={deletingFolder}
-					onClose={() => setDeletingFolder(null)}
+					onClose={() => { deleteHandoff.cancel(); releaseRowAfterPointerClose(folderDeleteOpenerRef.current); setDeletingFolder(null); }}
 					onStale={(message) => {
+						deleteHandoff.cancel();
+						releaseRowAfterPointerClose(folderDeleteOpenerRef.current);
 						setDeletingFolder(null);
 						reportFolderFailure(message);
 					}}

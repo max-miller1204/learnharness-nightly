@@ -50,9 +50,11 @@ handling; this is not a guarantee for every OS/IME or layout-specific key.
   pages it cycles the live text fields forward, wrapping to the first. In a
   session the order is reading-thinking → active dock fields → composer,
   including only fields currently mounted. From elsewhere it enters the first
-  field. The expanded select-question dock has its own rows↔thinking cycle below.
+  field. The expanded select-question dock has its own rows↔thinking cycle below,
+  and the sidebar's sessions list walks its rows with Tab (Search and menus).
 - **Shift+Tab** cycles the model's thinking level, including while typing; it is
-  not backward focus traversal. Connection dialogs can own their own Tab trap.
+  not backward focus traversal, except in the sidebar's sessions list (Search
+  and menus). Connection dialogs can own their own Tab trap.
 - **Esc** acts on the active field or topmost surfaced layer first: for example,
   leave a field, dismiss a menu/dialog, or close Find. Handlers claim the event
   so one Esc does not also act on lower layers. With no layer claiming it, the
@@ -130,6 +132,24 @@ submission conventions above.
   search field. **↑/↓** walk the filtered sessions with wrap; **Enter** opens the
   walked row, or the first match if none was walked, then leaves the field.
   **Esc** leaves the field without clearing the query.
+- **Sessions list:** **Tab** from the sessions search focuses the row the
+  **↑/↓** walk is on, else the list's first row; with no rows shown, Tab goes on
+  to the app's own Tab. In the list, **Tab** and **Shift+Tab** move through
+  folder and session rows in order (Shift+Tab here moves back rather than
+  cycling the thinking level); Shift+Tab on the first row returns to the search,
+  and Tab on the last row goes on to the app's own Tab. A focused row shows a
+  focus ring. **Enter** or **Space** opens a session, or expands or collapses a
+  folder. The **Menu** key or **Shift+F10** opens the row's menu, as
+  right-clicking does: Rename, Export as Markdown…, Delete… and the extraction
+  block for a session; Rename, New subfolder and Delete for a folder. A menu
+  closed from the keyboard gives focus back to its row: **Esc** closes it onto
+  the row, and so do its actions when they finish from the keyboard (Rename's
+  field, New subfolder's field and the Delete dialog). Closed with the pointer,
+  focus stays where the pointer put it, however the menu was opened. A row
+  deleted from the keyboard hands focus to the next row still shown, else the
+  previous one, and so does a focused row that disappears. **Shift+Enter** and
+  **Shift+Space** press the row as Enter and Space do; Ctrl, Alt and Meta chords,
+  and Shift with the arrows, go on to the app's shortcuts.
 - **Model search menus:** focus stays in search. **↑/↓** walk filtered results
   without wrap; the first ↓ starts at the first result, the first ↑ at the last.
   **Enter** picks the walked result or the first result. Editing the query resets
