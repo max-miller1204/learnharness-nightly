@@ -255,8 +255,9 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 	const agent = new Agent({
 		identity: APP_IDENTITY,
 		// The session id also turns on Pi's Anthropic message threads on
-		// api.anthropic.com (owner's choice to keep): later requests continue
-		// the server-side thread and send only the new messages.
+		// api.anthropic.com (owner's choice to keep): later requests with the
+		// same key continue the server-side thread and send only the new
+		// messages; a changed key starts a new thread (models.ts).
 		sessionId: opts.chatId,
 		initialState: {
 			systemPrompt,

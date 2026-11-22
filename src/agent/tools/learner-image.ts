@@ -83,12 +83,18 @@ export async function loadLearnerImage(rawPath: string, signal?: AbortSignal, lo
 		if (file.source === file.filename || signal?.aborted) throw error;
 		throw new Error(learnerFileErrorMessage(error, file));
 	}
+	return learnerImageFromBytes(bytes, file.source, signal);
+}
+
+/** Store image bytes from any source (a file, a rendered PDF page) the same
+ *  way; sourcePath is provenance only. */
+export async function learnerImageFromBytes(bytes: Uint8Array, sourcePath: string, signal?: AbortSignal): Promise<LearnerImage> {
 	const mime = detectSupportedImageMimeType(bytes);
-	if (!mime) throw new Error(`Not a supported image: ${file.source}`);
+	if (!mime) throw new Error(`Not a supported image: ${sourcePath}`);
 	checkImageDimensions(bytes, mime);
 	const stored = await normalize(bytes, signal);
 	signal?.throwIfAborted();
 	if (stored.mimeType !== "image/png" && stored.mimeType !== "image/jpeg") throw new Error("Unexpected stored image format");
 	const snapshotId = createHash("sha256").update(Buffer.from(stored.data, "base64")).digest("hex");
-	return { path: file.source, snapshotId, mimeType: stored.mimeType, data: stored.data, width: stored.width, height: stored.height };
+	return { path: sourcePath, snapshotId, mimeType: stored.mimeType, data: stored.data, width: stored.width, height: stored.height };
 }

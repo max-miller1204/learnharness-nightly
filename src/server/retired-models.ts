@@ -1,10 +1,11 @@
 // Generated once from @earendil-works/pi-ai 1.4.0's catalog: every chat model id it had that 1.5.2 does not.
 import type { Model, Api } from "@earendil-works/pi-ai";
 
-/** Price and context window of a model Pi's catalog no longer has, keyed
- *  provider:id. Read only when the current catalog has no entry, so usage
- *  recorded on a retired model keeps its estimate and context limit. Never
- *  used to run a model. */
+/** Price and context window of a model Pi's bundled catalog no longer has,
+ *  keyed provider:id. Read only when no catalog (bundled or a pi.dev refresh)
+ *  has an entry, so usage recorded on a retired model keeps its estimate and
+ *  context limit. It never makes a model runnable: only a catalog entry does,
+ *  and a refresh that lists the id again serves it at the feed's price. */
 export const RETIRED_MODELS: Readonly<Record<string, { cost: Model<Api>["cost"]; contextWindow: number }>> = {
 	"azure:gpt-realtime-2.1": { cost: {"input":4,"output":24,"cacheRead":0.4,"cacheWrite":0}, contextWindow: 128000 },
 	"fireworks:accounts/fireworks/models/gpt-oss-120b": { cost: {"input":0.15,"output":0.6,"cacheRead":0.015,"cacheWrite":0}, contextWindow: 131072 },
