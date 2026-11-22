@@ -16,7 +16,8 @@ import type { LiteText } from "mathjax-full/js/adaptors/lite/Text.js";
 import { readContentSpans } from "../../../src/core/content-reader.ts";
 import { indented, repairMathForDisplay } from "../../../src/core/math-delims.ts";
 import { resolveTheme, shiftHex } from "../../../src/core/themes.ts";
-import { COLOR, flattenSvg, frameBorder, safeMarkup, SVG_NUMBER, type SvgNode } from "./svg-flatten";
+import { parseColor } from "./math-colors";
+import { flattenSvg, frameBorder, safeMarkup, SVG_NUMBER, type SvgNode } from "./svg-flatten";
 
 /** AI-written math is untrusted. `html` makes links, styles and ids; `bussproofs` needs
  * an output that measures boxes; `action` adds event handlers, which the drawing can't
@@ -57,11 +58,11 @@ export const tagClassCount = () => tagClasses.size;
 let adaptor: LiteAdaptor | undefined;
 let mathml: SerializedMmlVisitor | undefined;
 
-/** A fresh TeX input and document for every equation, so nothing one label defines
- * (\newcommand, \definecolor, \label, tags) reaches another. Set up on first use. */
 /** \fcolorbox's border width: the web's KaTeX draws it at \fboxrule, 0.04em. */
 const FBOX_RULE = "0.04em";
 
+/** A fresh TeX input and document for every equation, so nothing one label defines
+ * (\newcommand, \definecolor, \label, tags) reaches another. Set up on first use. */
 function freshDocument() {
   if (!adaptor) {
     adaptor = liteAdaptor();
@@ -147,19 +148,10 @@ export function readAloud(node: MmlNode | null): string {
   }
 }
 
-const NAMED_COLORS: Record<string, string> = {
-  black: "#000000", white: "#ffffff", red: "#ff0000", green: "#008000", blue: "#0000ff", yellow: "#ffff00",
-  cyan: "#00ffff", aqua: "#00ffff", magenta: "#ff00ff", fuchsia: "#ff00ff", gray: "#808080", grey: "#808080",
-  silver: "#c0c0c0", maroon: "#800000", olive: "#808000", lime: "#00ff00", teal: "#008080", navy: "#000080",
-  purple: "#800080", orange: "#ffa500", brown: "#a52a2a", pink: "#ffc0cb", violet: "#ee82ee", gold: "#ffd700",
-  indigo: "#4b0082", darkgreen: "#006400", darkblue: "#00008b", darkred: "#8b0000", lightgray: "#d3d3d3", lightgrey: "#d3d3d3",
-};
 
 function luminance(color: string): number | undefined {
-  const named = NAMED_COLORS[color.toLowerCase()] ?? color;
-  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(named)?.[1];
-  if (!hex) return;
-  const full = hex.length === 3 ? [...hex].map((digit) => digit + digit).join("") : hex;
+  const full = parseColor(color)?.hex.slice(1);
+  if (!full) return;
   const [r, g, b] = [0, 2, 4].map((at) => {
     const channel = parseInt(full.slice(at, at + 2), 16) / 255;
     return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
@@ -250,7 +242,7 @@ function framesNormalized(node: MmlNode) {
  *  the style it came from. Each polygon becomes a path from its parsed points and color, and
  *  the style goes, so the picture holds only drawing. False when a frame's points or color
  *  don't parse, so the picture isn't drawn. */
-function framesAsPaths(adaptor: LiteAdaptor, node: LiteElement): boolean {
+export function framesAsPaths(adaptor: LiteAdaptor, node: LiteElement): boolean {
   for (const child of [...adaptor.childNodes(node)]) {
     if (adaptor.kind(child) === "#text") continue;
     const element = child as LiteElement;
@@ -263,12 +255,12 @@ function framesAsPaths(adaptor: LiteAdaptor, node: LiteElement): boolean {
     for (const side of [...adaptor.childNodes(element)]) {
       if (adaptor.kind(side) !== "polygon") continue;
       const polygon = side as LiteElement;
-      const values = String(adaptor.getAttribute(polygon, "points") ?? "").trim().split(/[\s,]+/);
-      const fill = String(adaptor.getAttribute(polygon, "fill") ?? "");
-      if (values.length < 6 || values.length % 2 || !values.every((value) => SVG_NUMBER.test(value)) || !COLOR.test(fill)) return false;
-      const points = values.map((value) => String(Number(value)));
-      const pairs = points.flatMap((value, at) => at % 2 ? [] : [`${value} ${points[at + 1]}`]);
-      const path = adaptor.node("path", { d: `M${pairs.join("L")}Z`, fill, stroke: "none" }) as LiteElement;
+      // Points are "x,y" pairs apart by spaces; an empty or extra value fails the picture.
+      const points = String(adaptor.getAttribute(polygon, "points") ?? "").trim().split(/\s+/).map((point) => point.split(","));
+      const fill = parseColor(String(adaptor.getAttribute(polygon, "fill") ?? ""));
+      if (points.length < 3 || !fill || !points.every((point) => point.length === 2 && point.every((value) => SVG_NUMBER.test(value)))) return false;
+      const pairs = points.map((point) => point.map((value) => String(Number(value))).join(" "));
+      const path = adaptor.node("path", { d: `M${pairs.join("L")}Z`, fill: fill.css, stroke: "none" }) as LiteElement;
       adaptor.insert(path, polygon);
       adaptor.remove(polygon);
     }
