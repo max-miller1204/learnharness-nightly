@@ -14,7 +14,7 @@ import { describe, it } from "node:test";
 import { NextRequest } from "next/server";
 import { proxy } from "../proxy.ts";
 import { listClients, sessionState } from "../src/server/auth-routes.ts";
-import { CROSS_SITE_REFUSED, REFERER_REQUIRED, cookieOriginAllowed } from "../src/server/auth.ts";
+import { CROSS_SITE_REFUSED, REFERER_REQUIRED, cookieOriginAllowed, cookieRefusalReason } from "../src/server/auth.ts";
 import { cookieName, mintToken } from "./helpers/auth-data-dir.ts";
 
 const lan = "http://192.168.1.5:3774";
@@ -71,6 +71,22 @@ describe("cookieOriginAllowed: paths and Referer hosts, table-driven", () => {
 	}
 });
 
+describe("cookieRefusalReason: the message comes from the branch that refused", () => {
+	const reason = (headers: Record<string, string>, pathname: string | null = "/api/chats", method = "GET") =>
+		cookieRefusalReason(new Headers({ host, ...headers }), method, pathname);
+	it("names a missing Referer, a foreign one, a foreign Origin and cross-site metadata apart", () => {
+		assert.equal(reason({}), "needs-referer");
+		assert.equal(reason({ "sec-fetch-site": "" }), "needs-referer", "an empty Sec-Fetch-Site is no Fetch Metadata, as the rule reads it");
+		assert.equal(reason({ referer: `${sibling}/` }), "cross-site", "a Referer from another port");
+		assert.equal(reason({ referer: "not a url" }), "cross-site");
+		assert.equal(reason({ origin: sibling }, "/api/chats", "POST"), "cross-site");
+		assert.equal(reason({ "sec-fetch-site": "cross-site" }), "cross-site");
+		assert.equal(reason({ referer: `${lan}/x` }), null);
+		assert.equal(reason({}, "/chat/abc"), null, "a page");
+		assert.equal(reason({}, null), "needs-referer", "a URL that didn't parse");
+	});
+});
+
 describe("the login gate on a plain-HTTP LAN address", () => {
 	it("refuses a sibling origin's originless subresource to the API, for any method, and keeps the app working", async () => {
 		const cookie = `${cookieName()}=${mintToken()}`;
@@ -108,7 +124,10 @@ describe("the login gate on a plain-HTTP LAN address", () => {
 		assert.equal((await sessionState(get("/api/auth/session", { referer: `${lan}/pair` })).json() as { authenticated: boolean }).authenticated, true);
 		const refused = listClients(get("/api/auth/clients", { referer: `${sibling}/` }));
 		assert.equal(refused.status, 403);
-		assert.deepEqual(await refused.json(), { error: REFERER_REQUIRED });
+		assert.deepEqual(await refused.json(), { error: CROSS_SITE_REFUSED }, "a Referer naming another host is cross-site");
+		const missing = listClients(get("/api/auth/clients"));
+		assert.equal(missing.status, 403);
+		assert.deepEqual(await missing.json(), { error: REFERER_REQUIRED }, "no Referer at all: the Referer message");
 		assert.equal(listClients(get("/api/auth/clients", { referer: `${lan}/settings` })).status, 200);
 	});
 });
