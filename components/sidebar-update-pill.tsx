@@ -52,8 +52,7 @@ import { useOptionalInteractionLayers } from "@/components/interaction-layers";
 import { hasLegacyInteractionForeground } from "@/components/plugin-input-focus";
 import { InstallUpdateDialog } from "@/components/install-update-dialog";
 import { SidebarUpdateCapsule } from "@/components/sidebar-update-capsule";
-import { UpdateEverythingDialog } from "@/components/update-everything-dialog";
-import type { UpdateEverythingPlan, UpdateRunLocalState } from "@/components/update-everything-logic";
+import type { UpdateRunLocalState } from "@/components/update-everything-logic";
 import { UpdateReleaseNotes } from "@/components/release-notes-view";
 import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateDownloadedToast, showUpdateErrorToast, showUpdateEverythingResult, UNEXPECTED_ERROR } from "@/components/update-toasts";
 import { APP_VERSION, HOMEPAGE, desktopOffer, useDesktopAppUpdate, useUpdateState, type DesktopAppStatus, type UpdateState } from "@/components/settings/update-settings";
@@ -404,18 +403,22 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	const [pending, setPending] = useState(false);
 	// Confirmed Install in this page: "restarting" until the page reloads, or the state moves on (a failure).
 	const [installing, setInstalling] = useState(false);
-	// Update everything in the page (revision PR 7): the dialog's plan from the app, and its Update in flight.
-	const [plan, setPlan] = useState<UpdateEverythingPlan | null>(null);
-	const [starting, setStarting] = useState(false);
+	// Update everything in the page (revision PR 7): the app shows its own dialog; the page shows the capsule.
 	const everything = desktop?.everything ?? null;
-	// The run's result toast, once, also after the restart that finished it (T3's saved result).
-	const takingResult = useRef(false);
-	const hasResult = desktopStatus?.result === true;
+	// The run's result toast, once each (main numbers them), also after the restart that finished
+	// the run (T3's saved result). "This app" counts by the app's own version, not this page's.
+	const resultId = desktopStatus?.result ?? null;
+	const appVersion = desktopStatus?.version ?? null;
+	const takenResult = useRef<number | null>(null);
 	useEffect(() => {
-		if (!hasResult || !everything || takingResult.current) return;
-		takingResult.current = true;
-		void everything.takeResult().then((result) => { if (result) showUpdateEverythingResult(result); }).finally(() => { takingResult.current = false; });
-	}, [hasResult, everything]);
+		if (resultId === null || !everything || takenResult.current === resultId) return;
+		takenResult.current = resultId;
+		void everything.takeResult().then((result) => { if (result) showUpdateEverythingResult(result, appVersion ?? undefined); });
+	}, [resultId, everything, appVersion]);
+	// The app waits for the capsule to show this (the countdown starts only then): say so once
+	// each time it starts waiting.
+	const awaitingPage = desktopStatus?.run?.awaitingPage === true;
+	useEffect(() => { if (awaitingPage && everything) everything.ready(); }, [awaitingPage, everything]);
 	const [open, setOpen] = useState(false);
 	// The plain tooltip's open state, controlled all the time: switching Radix between controlled and
 	// uncontrolled lost a close made while the notes applied, and the old state came back after.
@@ -498,23 +501,6 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	}, [notesOpen, layers]);
 	const onIteration = useCallback(() => setLatched(continuesCheckSpin(isChecking, reducedMotion)), [isChecking, reducedMotion]);
 
-	const everythingDialog = (
-		<UpdateEverythingDialog
-			plan={plan}
-			busy={starting}
-			onClose={() => setPlan(null)}
-			onConfirm={() => {
-				if (!plan || !everything) return;
-				setStarting(true);
-				// Called within the click: the app starts a run only from a real click (electron/remote-preload.cjs).
-				void everything.start(plan.planId).then((started) => {
-					setStarting(false);
-					setPlan(null);
-					if (!started) showUpdateErrorToast("Couldn’t update everything.", "Try again.");
-				});
-			}}
-		/>
-	);
 	// While the app runs Update everything, or keeps a run that failed, the capsule stands in for the control.
 	const run = everything ? desktopStatus?.run ?? null : null;
 	if (run && everything) {
@@ -522,9 +508,14 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 			: desktopStatus?.phase === "downloading" ? { status: "downloading", percent: desktopStatus.downloadPercent ?? null }
 			: { status: "waiting" };
 		return (
-			<div className="ml-auto flex min-w-0 shrink justify-end">
-				<SidebarUpdateCapsule run={run} local={local} icon={<CircleArrowUpIcon className="size-4" aria-hidden />} actions={{ later: everything.later, retry: everything.retry, dismiss: everything.dismiss }} />
-				{everythingDialog}
+			// T3's sidebar row for it (SidebarUpdatePill.tsx: @container/sidebar-update): the capsule's width follows it.
+			<div className="@container/sidebar-update ml-auto flex min-w-8 flex-1 justify-end">
+				<SidebarUpdateCapsule run={run} local={local} icon={<CircleArrowUpIcon className="size-4" aria-hidden />} actions={{
+					later: everything.later,
+					// The app asks again in its own dialog before it retries anything.
+					retry: () => { void everything.retry().then((error) => { if (error) showUpdateErrorToast(error.title, error.detail); }); },
+					dismiss: everything.dismiss,
+				}} />
 			</div>
 		);
 	}
@@ -598,12 +589,9 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 			if (hasUnsentMessage()) setConfirmingReload(true);
 			else reload();
 		} else if (everything && kind === "everything") {
-			// The page's own dialog (revision PR 7), with the rows the app plans.
+			// The app's own Update everything dialog (revision PR 7): it plans, asks and starts.
 			setPending(true);
-			void everything.plan().then((answer) => {
-				if ("plan" in answer) setPlan(answer.plan);
-				else showUpdateErrorToast(answer.error.title, answer.error.detail);
-			}).finally(() => setPending(false));
+			void everything.open().then((error) => { if (error) showUpdateErrorToast(error.title, error.detail); }).finally(() => setPending(false));
 		} else if (desktop && (kind === "everything" || kind === "app-install")) {
 			// An older app asks first in its own native dialog (electron/update-everything.cjs).
 			setPending(true);
@@ -746,7 +734,6 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 					void install().then((sent) => { if (!sent) setInstalling(false); });
 				}}
 			/>
-			{everythingDialog}
 			<ReloadConfirmDialog
 				open={confirmingReload}
 				onClose={() => setConfirmingReload(false)}

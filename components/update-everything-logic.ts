@@ -30,7 +30,16 @@ export type UpdateEverythingRun = {
 	localVersion: string | null;
 	restartAt: number | null;
 	machines: UpdateRunMachine[];
+	/** Main waits for the page to say the capsule shows this (window.lh.desktopUpdate.ready()). */
+	awaitingPage: boolean;
 };
+
+/** A run that moves (a machine working, the countdown, the restart, or main waiting on the
+ *  page), as opposed to one kept only for Retry and Dismiss. */
+export function runIsLive(run: UpdateEverythingRun | null): boolean {
+	if (!run) return false;
+	return run.awaitingPage || run.phase !== "servers" || run.localVersion !== null || run.machines.some(({ status }) => status !== "done" && status !== "failed");
+}
 
 export type UpdateRunLocalState = { status: "downloading"; percent: number | null } | { status: "waiting" } | null;
 
@@ -158,6 +167,7 @@ export function readUpdateEverythingRun(value: unknown): UpdateEverythingRun | n
 		localVersion: typeof run.localVersion === "string" && run.localVersion.length <= 64 ? run.localVersion : null,
 		restartAt: finite(run.restartAt) ? run.restartAt : null,
 		machines,
+		awaitingPage: run.awaitingPage === true,
 	};
 }
 
@@ -174,49 +184,13 @@ export function readUpdateEverythingResult(value: unknown): UpdateEverythingResu
 	};
 }
 
-/** One row of the dialog's table, as main plans it (T3's UpdateEverythingRow, :733-739). */
-export type UpdateEverythingRow = { label: string; app: "server" | "this-app"; running: number };
-
-/** The dialog's content from main's plan(): T3's describeUpdateEverything (:851-920) already
- *  applied by main, which knows the server. */
-export type UpdateEverythingPlan = {
-	planId: string;
-	version: string;
-	rows: UpdateEverythingRow[];
-	skipped: { label: string; reason: string }[];
-	running: number;
-	disabledReason: string | null;
-};
-
-export type UpdateEverythingPlanResult = { plan: UpdateEverythingPlan } | { error: { title: string; detail: string } };
-
-const PLAN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const count = (value: unknown) => (Number.isInteger(value) && (value as number) >= 0 ? Math.min(value as number, 10_000) : 0);
 const text = (value: unknown, max: number) => (typeof value === "string" && value.trim() ? value.trim().slice(0, max) : null);
 
-/** Tolerant read of main's plan(): a malformed plan reads as an error, never a broken dialog. */
-export function readUpdateEverythingPlan(value: unknown): UpdateEverythingPlanResult {
-	const broken = { error: { title: "Couldn’t update everything.", detail: "The app sent an unexpected answer. Try again." } };
-	if (typeof value !== "object" || value === null) return broken;
-	const raw = value as Record<string, unknown>;
-	if (typeof raw.error === "object" && raw.error !== null) {
-		const error = raw.error as Record<string, unknown>;
-		return { error: { title: text(error.title, 200) ?? broken.error.title, detail: text(error.detail, 600) ?? "" } };
-	}
-	if (typeof raw.planId !== "string" || !PLAN_ID.test(raw.planId) || typeof raw.version !== "string" || raw.version.length > 64 || !Array.isArray(raw.rows)) return broken;
-	const rows: UpdateEverythingRow[] = [];
-	for (const item of raw.rows as unknown[]) {
-		const row = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
-		const label = text(row.label, MAX_LABEL);
-		if (!label || (row.app !== "server" && row.app !== "this-app")) return broken;
-		rows.push({ label, app: row.app, running: count(row.running) });
-	}
-	if (rows.length === 0 || rows.length > 8) return broken;
-	const skipped = (Array.isArray(raw.skipped) ? raw.skipped : []).flatMap((item: unknown) => {
-		const row = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
-		const label = text(row.label, MAX_LABEL);
-		const reason = text(row.reason, 200);
-		return label && reason ? [{ label, reason }] : [];
-	}).slice(0, 8);
-	return { plan: { planId: raw.planId, version: raw.version, rows, skipped, running: count(raw.running), disabledReason: text(raw.disabledReason, 300) } };
+/** What the app's everything() or retry() asks the page to tell, or null (its dialog closed). */
+export function readBridgeError(value: unknown): { title: string; detail: string } | null {
+	if (typeof value !== "object" || value === null) return null;
+	const error = (value as Record<string, unknown>).error;
+	if (typeof error !== "object" || error === null) return null;
+	const fields = error as Record<string, unknown>;
+	return { title: text(fields.title, 200) ?? "Couldn’t update everything.", detail: text(fields.detail, 600) ?? "" };
 }

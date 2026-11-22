@@ -1,7 +1,8 @@
 /**
  * Update everything in the window onto a server (docs/specs/t3-style-updates.md, revision
- * PR 7): the ported capsule and toast logic, the dialog and the capsule. No Electron: the
- * run is main's (tests/update-everything.test.ts); these get its reports as data.
+ * PR 7): the ported capsule and toast logic, and the capsule. No Electron: the run is main's
+ * (tests/update-everything.test.ts) and so is its dialog (tests/update-everything-dialog.test.ts);
+ * these get its reports as data.
  */
 import React, { act } from "react";
 (globalThis as Record<string, unknown>).React = React;
@@ -14,10 +15,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { installModalDom } from "./modal-dom.ts";
 import { InteractionLayersProvider } from "../components/interaction-layers.tsx";
 import {
-	describeUpdateCapsule, formatUpdateElapsed, getUpdateEverythingToastView, readUpdateEverythingPlan, readUpdateEverythingResult,
-	readUpdateEverythingRun, UPDATE_SLOW_AFTER_MS, type UpdateEverythingPlan, type UpdateEverythingRun,
+	describeUpdateCapsule, formatUpdateElapsed, getUpdateEverythingToastView, readBridgeError, readUpdateEverythingResult,
+	readUpdateEverythingRun, runIsLive, UPDATE_SLOW_AFTER_MS, type UpdateEverythingRun,
 } from "../components/update-everything-logic.ts";
-import { UpdateEverythingDialog } from "../components/update-everything-dialog.tsx";
 import { SidebarUpdateCapsule } from "../components/sidebar-update-capsule.tsx";
 
 const dom = parseHTML("<html><body></body></html>");
@@ -52,7 +52,7 @@ const click = async (target: HTMLElement | null) => {
 const V72 = "0.6.1-nightly.20261118.72";
 const NOW = 1_800_000_000_000;
 const run = (over: Partial<UpdateEverythingRun> = {}): UpdateEverythingRun => ({
-	phase: "servers", localVersion: V72, restartAt: null,
+	phase: "servers", localVersion: V72, restartAt: null, awaitingPage: false,
 	machines: [{ label: "max-desktop", status: "downloading", startedAt: NOW - 30_000, failure: null }],
 	...over,
 });
@@ -101,55 +101,18 @@ describe("the capsule's words (T3's describeUpdateCapsule, updateEverything.logi
 		assert.equal(readUpdateEverythingRun({ ...run(), machines: [{ ...machine({}), failure: "y".repeat(1000) }] })!.machines[0]!.failure!.length, 400);
 		assert.equal(readUpdateEverythingResult({ localVersion: null, updatedServers: -1, failures: [] }), null);
 		assert.deepEqual(readUpdateEverythingResult({ localVersion: 5, updatedServers: 1, failures: ["a", 3] }), { localVersion: null, updatedServers: 1, failures: ["a"] });
-		const broken = { error: { title: "Couldn’t update everything.", detail: "The app sent an unexpected answer. Try again." } };
-		assert.deepEqual(readUpdateEverythingPlan({ planId: "not-a-uuid", version: V72, rows: [] }), broken);
-		assert.deepEqual(readUpdateEverythingPlan({ planId: "123e4567-e89b-42d3-a456-426614174000", version: V72, rows: [{ label: "x", app: "evil" }] }), broken);
-		assert.deepEqual(readUpdateEverythingPlan(null), broken);
-		assert.deepEqual(readUpdateEverythingPlan({ error: { title: "LearnHarness is up to date.", detail: "No newer version of this app was found." } }), { error: { title: "LearnHarness is up to date.", detail: "No newer version of this app was found." } });
+		assert.equal(readUpdateEverythingRun({ ...run(), awaitingPage: "yes" })!.awaitingPage, false);
+		assert.equal(readBridgeError({ started: false }), null, "the dialog closed: nothing to tell");
+		assert.equal(readBridgeError(null), null);
+		assert.deepEqual(readBridgeError({ error: { title: "LearnHarness is up to date.", detail: "No newer version of this app was found." } }), { title: "LearnHarness is up to date.", detail: "No newer version of this app was found." });
+		assert.deepEqual(readBridgeError({ error: { title: 5, detail: "x".repeat(700) } }), { title: "Couldn’t update everything.", detail: "x".repeat(600) });
 	});
-});
-
-const PLAN: UpdateEverythingPlan = {
-	planId: "123e4567-e89b-42d3-a456-426614174000", version: V72, running: 2, disabledReason: null,
-	rows: [{ label: "max-desktop", app: "server", running: 2 }, { label: "This app", app: "this-app", running: 0 }],
-	skipped: [],
-};
-
-describe("the Update everything dialog (T3's UpdateEverythingDialog.tsx at df09ced7)", () => {
-	it("Update 2 machines?: the server, then This app last; the running work; Cancel focused, and it changes nothing", async () => {
-		const calls: string[] = [];
-		await mount(<UpdateEverythingDialog plan={PLAN} onClose={() => calls.push("close")} onConfirm={() => calls.push("confirm")} />);
-		assert.equal(q("update-everything-title")!.textContent, "Update 2 machines?");
-		assert.equal(q("update-everything-version")!.textContent, `LearnHarness ${V72}`);
-		const rows = [...q("update-everything-table")!.querySelectorAll("[role=row]")].slice(1);
-		assert.deepEqual(rows.map((row) => row.getAttribute("data-testid")), ["update-everything-row-server", "update-everything-row-this-app"], "This app is last");
-		assert.deepEqual([...rows[1]!.querySelectorAll("[role=cell]")].slice(0, 2).map((cell) => cell.textContent), ["This app", "This apprestarts last"]);
-		assert.match(rows[0]!.textContent ?? "", /2 running/);
-		assert.deepEqual([...q("update-everything-table")!.querySelectorAll("[role=columnheader]")].map((cell) => cell.textContent), ["Machine", "LearnHarness", "Providers", "Running"]);
-		assert.equal(q("update-everything-warning")!.textContent, "2 running tasks will be interrupted.");
-		assert.equal(document.activeElement, q("update-everything-cancel"), "Cancel is focused first");
-		await click(q("update-everything-cancel"));
-		assert.deepEqual(calls, ["close"]);
-	});
-	it("an app-only update shows no running work; Update confirms", async () => {
-		const calls: string[] = [];
-		await mount(<UpdateEverythingDialog plan={{ ...PLAN, running: 0, rows: [{ label: "This app", app: "this-app", running: 0 }] }} onClose={() => calls.push("close")} onConfirm={() => calls.push("confirm")} />);
-		assert.equal(q("update-everything-title")!.textContent, "Update 1 machine?");
-		assert.equal(q("update-everything-warning"), null);
-		await click(q("update-everything-confirm"));
-		assert.deepEqual(calls, ["confirm"]);
-	});
-	it("the skipped list opens from the keyboard and shows why; a disabled reason blocks Update", async () => {
-		await mount(<UpdateEverythingDialog plan={{ ...PLAN, rows: [{ label: "This app", app: "this-app", running: 0 }], skipped: [{ label: "max-desktop", reason: "Installed with Docker: update the image." }], disabledReason: "Update max-desktop from its own Settings first." }} onClose={() => {}} onConfirm={() => assert.fail("disabled")} />);
-		const toggle = q("update-everything-skipped-toggle")!;
-		assert.equal(toggle.textContent, "1 skipped");
-		assert.equal(toggle.getAttribute("aria-expanded"), "false");
-		assert.equal(q("update-everything-skipped"), null);
-		await click(toggle);
-		assert.equal(toggle.getAttribute("aria-expanded"), "true");
-		assert.match(q("update-everything-skipped")!.textContent ?? "", /max-desktopInstalled with Docker: update the image\./);
-		assert.equal(q("update-everything-warning")!.textContent, "Update max-desktop from its own Settings first.");
-		assert.equal((q("update-everything-confirm") as HTMLButtonElement).disabled, true);
+	it("only a run that moves keeps the page polling fast: a failure kept for Retry doesn't", () => {
+		assert.equal(runIsLive(null), false);
+		assert.equal(runIsLive(run()), true, "a server updating");
+		assert.equal(runIsLive(run({ phase: "countdown", restartAt: NOW })), true);
+		assert.equal(runIsLive(run({ localVersion: null, machines: [machine({ status: "failed" })] })), false, "kept for Retry");
+		assert.equal(runIsLive(run({ localVersion: null, machines: [machine({ status: "failed" })], awaitingPage: true })), true, "main waits on the page");
 	});
 });
 
@@ -186,15 +149,33 @@ describe("the capsule (T3's SidebarUpdateCapsule.tsx at df09ced7)", () => {
 		capsule.focus();
 		await press(capsule, "Enter");
 		assert.equal(capsule.getAttribute("aria-expanded"), "true");
-		assert.equal(document.activeElement, q("update-capsule-details-action"), "focus is on Retry");
+		assert.equal(document.activeElement === q("update-capsule-details-action"), true, "focus is on Retry");
 		await press(document.activeElement, "Tab");
-		assert.equal(document.activeElement, q("update-capsule-dismiss"));
+		assert.equal(document.activeElement === q("update-capsule-dismiss"), true);
 		await press(document.activeElement, "Tab", { shiftKey: true });
-		assert.equal(document.activeElement, q("update-capsule-details-action"));
+		assert.equal(document.activeElement === q("update-capsule-details-action"), true);
 		await press(document.activeElement, "Escape");
 		assert.equal(q("update-capsule-details"), null);
-		assert.equal(document.activeElement, capsule);
+		assert.equal(document.activeElement === capsule, true);
 		assert.deepEqual(calls, [], "keys alone did nothing to the run");
+	});
+	it("T3's narrow-sidebar fits: it grows from the icon, its label from 5rem, the countdown's only from 12rem, the icon kept", async () => {
+		const classes = (id: string) => q(id)?.getAttribute("class") ?? "";
+		await mount(<SidebarUpdateCapsule run={run({ localVersion: null, machines: [machine({ status: "failed" })] })} local={null} icon={null} actions={actions().actions} clock={() => NOW} />);
+		assert.match(classes("update-capsule"), /\bw-8\b/, "a circle by default (dea657a0)");
+		assert.match(classes("update-capsule"), /@min-\[5rem\]\/sidebar-update:w-full/, "full width from 5rem (5aae5578)");
+		assert.match(classes("update-capsule"), /transition-\[width\] duration-200/, "a short grow-in (dea657a0)");
+		assert.match(classes("update-capsule"), /justify-end/, "the icon stays at the end while it shrinks (4be39cf0)");
+		assert.match(classes("update-capsule-label"), /\bhidden\b.*@min-\[5rem\]\/sidebar-update:block/, "the label from 5rem (5aae5578)");
+		assert.match(classes("update-capsule-action"), /@min-\[5rem\]\/sidebar-update:block/);
+		assert.match(classes("update-capsule-icon"), /@min-\[5rem\]\/sidebar-update:hidden/, "the icon gives way to the action only where it fits");
+		for (const { root, host } of roots.splice(0)) { await act(async () => { root.unmount(); }); host.remove(); }
+		await mount(<SidebarUpdateCapsule run={run({ phase: "countdown", restartAt: NOW + 5_000, machines: [machine({ status: "done" })] })} local={null} icon={null} actions={actions().actions} clock={() => NOW} />);
+		assert.match(classes("update-capsule"), /@min-\[12rem\]\/sidebar-update:w-full/, "the countdown expands only from 12rem (1425613b)");
+		assert.match(classes("update-capsule-label"), /@min-\[12rem\]\/sidebar-update:block/);
+		assert.match(classes("update-capsule-icon"), /@min-\[12rem\]\/sidebar-update:hidden/);
+		assert.equal(q("update-capsule-icon")!.textContent, "5s", "narrower, its seconds stay visible");
+		assert.doesNotMatch(classes("update-capsule"), /amber/);
 	});
 	it("the slow warning, Downloading NN% and Restarting… with no action", async () => {
 		await mount(<SidebarUpdateCapsule run={run({ machines: [machine({ status: "restarting", startedAt: NOW - 4 * 60_000 })] })} local={{ status: "waiting" }} icon={null} actions={actions().actions} clock={() => NOW} />);

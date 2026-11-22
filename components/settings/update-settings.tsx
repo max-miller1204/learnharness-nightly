@@ -8,7 +8,7 @@ import { InstallUpdateDialog } from "@/components/install-update-dialog";
 import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateErrorToast, UNEXPECTED_ERROR } from "@/components/update-toasts";
 import { updateButtonTooltip } from "@/components/update-tooltips";
 import { capReleaseNoteGroups, type ReleaseNoteGroup } from "@/src/core";
-import { readUpdateEverythingPlan, readUpdateEverythingResult, readUpdateEverythingRun, type UpdateEverythingPlanResult, type UpdateEverythingResult, type UpdateEverythingRun } from "@/components/update-everything-logic";
+import { readBridgeError, readUpdateEverythingResult, readUpdateEverythingRun, runIsLive, type UpdateEverythingResult, type UpdateEverythingRun } from "@/components/update-everything-logic";
 import { SettingsRow } from "./controls.tsx";
 import { isNewerVersion } from "@/selfhost/src/version-order.ts";
 
@@ -83,8 +83,8 @@ export type DesktopAppStatus = {
 	omittedReleaseCount?: number;
 	/** Update everything's run for the page's capsule (revision PR 7), or null. Older apps omit it. */
 	run?: UpdateEverythingRun | null;
-	/** A result toast waits for this page (takeResult). Older apps omit it. */
-	result?: boolean;
+	/** A result toast waits for this page (takeResult): its number, new for each result. Older apps omit it. */
+	result?: number | null;
 };
 
 export type DesktopUpdateBridge = {
@@ -96,13 +96,14 @@ export type DesktopUpdateBridge = {
 	/** Settings' This app Install: only this app, after T3's confirm in the app's own native
 	 *  dialog. Apps from before it lack it. */
 	installApp?: () => Promise<void>;
-	/** Revision PR 7, all missing from older apps: the page's own Update everything dialog gets
-	 *  its rows from plan(), and its Update hands back exactly that plan's id to install(). The
-	 *  capsule's later(), retry() and dismiss() act on the run, and takeResult() reads its result
-	 *  toast once. */
-	plan?: () => Promise<unknown>;
+	/** Revision PR 7, all missing from older apps. everything() and retry() make the app show its
+	 *  own Update everything dialog over this window (the page can't start a run itself) and
+	 *  resolve { started } or { error }. ready() says the capsule shows what the app waits on;
+	 *  later() and dismiss() act on the run; takeResult() reads its result toast once. */
+	everything?: () => Promise<unknown>;
+	ready?: () => Promise<void>;
 	later?: () => Promise<void>;
-	retry?: () => Promise<void>;
+	retry?: () => Promise<unknown>;
 	dismiss?: () => Promise<void>;
 	takeResult?: () => Promise<unknown>;
 };
@@ -274,7 +275,8 @@ export function readDesktopAppStatus(value: unknown): DesktopAppStatus | null {
 	const omitted = value.omittedReleaseCount;
 	return {
 		...value, releaseNotes, omittedReleaseCount: typeof omitted === "number" && Number.isInteger(omitted) && omitted > 0 ? Math.min(omitted, MAX_OMITTED_RELEASE_COUNT) : 0,
-		run: readUpdateEverythingRun(value.run), result: value.result === true,
+		run: readUpdateEverythingRun(value.run),
+		result: typeof value.result === "number" && Number.isInteger(value.result) && value.result > 0 ? value.result : null,
 	};
 }
 
@@ -295,7 +297,8 @@ export function useDesktopAppUpdate() {
 			if (next) setStatus(next);
 		} catch { /* keep the last status */ }
 	}, [bridge]);
-	const running = !!status?.run;
+	// Fast only while a run moves: a failure kept for Retry waits like the rest.
+	const running = runIsLive(status?.run ?? null);
 	useEffect(() => {
 		if (!bridge) return;
 		void refresh();
@@ -311,20 +314,18 @@ export function useDesktopAppUpdate() {
 	}, [bridge, refresh]);
 	// Update everything in the page (revision PR 7), when the app has it.
 	const everything = useMemo(() => {
-		if (!bridge || typeof bridge.plan !== "function") return null;
-		const act = (method: "later" | "retry" | "dismiss") => () => { void bridge[method]?.().catch(() => {}).finally(() => void refresh()); };
+		if (!bridge || typeof bridge.everything !== "function") return null;
+		/** The app's own dialog: null once it closed (whatever was chosen), else what to tell. */
+		const ask = (method: "everything" | "retry") => async (): Promise<{ title: string; detail: string } | null> => {
+			try { return readBridgeError(await bridge[method]?.()); } catch { return null; } finally { void refresh(); }
+		};
+		const act = (method: "later" | "dismiss") => () => { void bridge[method]?.().catch(() => {}).finally(() => void refresh()); };
 		return {
-			plan: async (): Promise<UpdateEverythingPlanResult> => {
-				try { return readUpdateEverythingPlan(await bridge.plan!()); } catch { return readUpdateEverythingPlan(null); }
-			},
-			/** The dialog's Update: true once main started exactly that plan. */
-			start: async (planId: string): Promise<boolean> => {
-				try {
-					const answer: unknown = await (bridge.install as (choice: { planId: string }) => Promise<unknown>)({ planId });
-					return typeof answer === "object" && answer !== null && (answer as { started?: unknown }).started === true;
-				} catch { return false; } finally { void refresh(); }
-			},
-			later: act("later"), retry: act("retry"), dismiss: act("dismiss"),
+			open: ask("everything"),
+			retry: ask("retry"),
+			later: act("later"), dismiss: act("dismiss"),
+			// No refresh after it: the next poll shows what the app did.
+			ready: () => { void bridge.ready?.().catch(() => {}); },
 			takeResult: async (): Promise<UpdateEverythingResult | null> => {
 				try { return readUpdateEverythingResult(await bridge.takeResult?.()); } catch { return null; }
 			},

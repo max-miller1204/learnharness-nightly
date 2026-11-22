@@ -14,7 +14,12 @@
  * window.lh.desktopUpdate. LearnHarness has no Popover primitive, so the details
  * open from the capsule as a disclosure anchored with Radix's Popper (as the
  * update control's notes are), and close on Escape (one Esc, one action) or a
- * pointer press outside.
+ * pointer press outside. With T3's later fixes to how the capsule fits a narrow
+ * sidebar (its container is the sidebar row's @container/sidebar-update):
+ * 5aae5578 (the label shows from 5rem, not 12rem), dea657a0 (a short grow-in at
+ * the default sidebar width), 4be39cf0 (the icon stays in place while the capsule
+ * shrinks) and 1425613b (the countdown keeps its seconds visible: it expands only
+ * from 12rem). Warnings use the theme's warning token, as T3's do.
  */
 
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
@@ -70,6 +75,9 @@ export function SidebarUpdateCapsule({ run, local, icon, actions, clock = Date.n
 		else actions.dismiss();
 	};
 	const label = view.slow ? `${view.label} ${view.slow.status} ${view.slow.elapsed}` : view.label;
+	// T3 1425613b: during the countdown the capsule expands only where there is room for its
+	// label and Later; narrower, its seconds stay visible in place of the icon.
+	const expandedControlClassName = restartSeconds === null ? "@min-[5rem]/sidebar-update:block" : "@min-[12rem]/sidebar-update:block";
 
 	// One Esc, one action: the details close and nothing else sees it (the pill's notes do the same).
 	const layers = useOptionalInteractionLayers();
@@ -124,8 +132,10 @@ export function SidebarUpdateCapsule({ run, local, icon, actions, clock = Date.n
 					data-testid="update-capsule"
 					data-tone={view.tone}
 					className={cn(
-						"relative ml-auto flex h-8 min-w-8 max-w-48 shrink-0 items-center rounded-full bg-accent text-foreground",
-						view.tone === "slow" && "ring-1 ring-inset ring-amber-500/40",
+						// T3 dea657a0 and 4be39cf0: it grows in from the icon's circle, with the icon held at the end.
+						"relative ml-auto flex h-8 w-8 shrink-0 items-center justify-end rounded-full bg-accent text-foreground transition-[width] duration-200 ease-out motion-reduce:transition-none",
+						restartSeconds === null ? "@min-[5rem]/sidebar-update:w-full" : "@min-[12rem]/sidebar-update:w-full",
+						view.tone === "slow" && "ring-1 ring-inset ring-warning/40",
 						view.tone === "failed" && "ring-1 ring-inset ring-destructive/40",
 					)}
 				>
@@ -145,29 +155,39 @@ export function SidebarUpdateCapsule({ run, local, icon, actions, clock = Date.n
 						}}
 						className="absolute inset-0 cursor-pointer rounded-full outline-hidden ring-ring hover:bg-accent/70 focus-visible:ring-2 focus-visible:ring-inset"
 					/>
-					<span data-testid="update-capsule-label" className="pointer-events-none relative min-w-0 flex-1 truncate pl-3 text-xs">
+					<span
+						data-testid="update-capsule-label"
+						className={cn(
+							"pointer-events-none relative hidden min-w-0 flex-1 truncate pl-3 text-xs transition-opacity duration-200 ease-out starting:opacity-0 motion-reduce:transition-none",
+							expandedControlClassName,
+						)}
+					>
 						<span className={cn(view.tone === "failed" && "text-destructive")}>{view.label}</span>
-						{view.slow ? <span className="tabular-nums text-amber-600 dark:text-amber-400"> {view.slow.elapsed}</span> : null}
+						{view.slow ? <span className="tabular-nums text-warning"> {view.slow.elapsed}</span> : null}
 					</span>
 					{view.action !== null ? (
 						<button
 							type="button"
 							data-testid="update-capsule-action"
 							onClick={runAction}
-							className="relative shrink-0 cursor-pointer pl-1.5 pr-3 text-xs underline decoration-muted-foreground/60 underline-offset-3 outline-hidden hover:decoration-current focus-visible:ring-2 focus-visible:ring-ring"
+							className={cn(
+								"relative hidden shrink-0 cursor-pointer pl-1.5 pr-3 text-xs underline decoration-muted-foreground/60 underline-offset-3 outline-hidden hover:decoration-current focus-visible:ring-2 focus-visible:ring-ring transition-opacity duration-200 ease-out starting:opacity-0 motion-reduce:transition-none",
+								expandedControlClassName,
+							)}
 						>
 							{actionLabel}
 						</button>
-					) : (
-						<span
-							className={cn(
-								"pointer-events-none relative grid size-8 shrink-0 place-items-center",
-								restartSeconds !== null && "rounded-full text-xs font-medium tabular-nums ring-1 ring-inset ring-current/20",
-							)}
-						>
-							{restartSeconds !== null ? `${restartSeconds}s` : icon}
-						</span>
-					)}
+					) : null}
+					<span
+						data-testid="update-capsule-icon"
+						className={cn(
+							"pointer-events-none relative grid size-8 shrink-0 place-items-center",
+							view.action !== null && (restartSeconds === null ? "@min-[5rem]/sidebar-update:hidden" : "@min-[12rem]/sidebar-update:hidden"),
+							restartSeconds !== null && "rounded-full text-xs font-medium tabular-nums ring-1 ring-inset ring-current/20",
+						)}
+					>
+						{restartSeconds !== null ? `${restartSeconds}s` : icon}
+					</span>
 				</div>
 			</Popper.Anchor>
 			{open && typeof document !== "undefined" ? createPortal(

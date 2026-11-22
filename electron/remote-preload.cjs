@@ -2,14 +2,15 @@
  * The ONLY bridges the desktop app's window onto a self-hosted server gets
  * (docs/specs/desktop-server-list.md), each answered only for this window's
  * main frame at the selected origin:
- * - desktopUpdate: this app's own update. The page can't name a version, URL or
- *   file (electron/update-everything-ipc.cjs checks every argument). install()
- *   with no choice and installApp() (Settings' This app Install, only this app)
- *   make main ask in its own native dialog first. plan() gives the page's own
- *   Update everything dialog its rows, and install({ planId }) starts exactly that
- *   plan, once; it and the capsule's retry() go out only during a real click or
- *   key press (the page's script can't fake one). later(), dismiss() and
- *   takeResult() take nothing.
+ * - desktopUpdate: this app's own update, every method with no argument. The
+ *   page can't name a version, URL or file (electron/update-everything-ipc.cjs
+ *   refuses any argument), and it can't start a run: install() (an older page)
+ *   and installApp() (Settings' This app Install) make main ask in its own
+ *   native dialog, and everything() and retry() make main show its own Update
+ *   everything dialog (electron/update-everything-dialog.cjs), a surface over
+ *   this window that the page can't script. Only that dialog's Update starts a
+ *   run. ready() tells main the capsule shows what it waits on; later(),
+ *   dismiss() and takeResult() act on the run and its result toast.
  * - chatgptSignIn: start() runs this desktop's verified ChatGPT sign-in for this
  *   window's server and resolves { ok: true } or { error }; its one optional
  *   argument is a saved-account id the server issued. cancel() ends it
@@ -21,10 +22,6 @@ const { contextBridge, ipcRenderer } = require("electron");
 const CHANNEL = "lh:desktop-update";
 const SIGN_IN = "lh:chatgpt-sign-in";
 
-// A user's click or key press within the last few seconds, as the browser tracks it.
-const userActed = () => globalThis.navigator?.userActivation?.isActive === true;
-const needsClick = () => Promise.reject(new Error("Update everything starts only from a click."));
-
 // The ghost dashboard paints in this window's own page first (file:). It gets nothing.
 if (location.protocol === "https:") {
 	contextBridge.exposeInMainWorld("lh", Object.freeze({
@@ -32,17 +29,12 @@ if (location.protocol === "https:") {
 			getStatus: () => ipcRenderer.invoke(CHANNEL, "status"),
 			check: () => ipcRenderer.invoke(CHANNEL, "check"),
 			download: () => ipcRenderer.invoke(CHANNEL, "download"),
-			install: (choice) => {
-				if (choice === undefined) return ipcRenderer.invoke(CHANNEL, "install");
-				if (!userActed()) return needsClick();
-				// Only the id goes on, as a string, never the page's own object.
-				const planId = typeof choice === "object" && choice !== null && typeof choice.planId === "string" ? choice.planId : "";
-				return ipcRenderer.invoke(CHANNEL, "install", { planId });
-			},
+			install: () => ipcRenderer.invoke(CHANNEL, "install"),
 			installApp: () => ipcRenderer.invoke(CHANNEL, "install-app"),
-			plan: () => ipcRenderer.invoke(CHANNEL, "plan"),
+			everything: () => ipcRenderer.invoke(CHANNEL, "everything"),
+			ready: () => ipcRenderer.invoke(CHANNEL, "ready"),
 			later: () => ipcRenderer.invoke(CHANNEL, "later"),
-			retry: () => (userActed() ? ipcRenderer.invoke(CHANNEL, "retry") : needsClick()),
+			retry: () => ipcRenderer.invoke(CHANNEL, "retry"),
 			dismiss: () => ipcRenderer.invoke(CHANNEL, "dismiss"),
 			takeResult: () => ipcRenderer.invoke(CHANNEL, "take-result"),
 		}),
