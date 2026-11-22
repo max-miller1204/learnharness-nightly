@@ -1,3 +1,14 @@
+// A random RFC 4122 version 4 UUID. crypto.randomUUID exists only in a secure context, and a
+// self-hosted server at http://<LAN address> isn't one; crypto.getRandomValues works everywhere.
+function requestId() {
+	if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+	const bytes = crypto.getRandomValues(new Uint8Array(16));
+	bytes[6] = (bytes[6] & 0x0f) | 0x40;
+	bytes[8] = (bytes[8] & 0x3f) | 0x80;
+	const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export function activate(ctx) {
 	ctx.registerView({ id: "workbench", name: "Agent example", mount(container, signal) {
 		let alive = !signal.aborted, selected = null, refreshing = false, refreshAgain = false;
@@ -69,7 +80,7 @@ export function activate(ctx) {
 					event.preventDefault();
 					void guarded(async () => {
 						submit.disabled = true;
-						try { show(await ctx.call("answer", { id: selected, toolCallId: call.toolCallId, answer: answer.value, requestId: crypto.randomUUID() })); }
+						try { show(await ctx.call("answer", { id: selected, toolCallId: call.toolCallId, answer: answer.value, requestId: requestId() })); }
 						finally { if (alive) submit.disabled = false; }
 					})();
 				};
@@ -110,7 +121,7 @@ export function activate(ctx) {
 			const id = selected, text = draft;
 			sending = true; syncComposer();
 			try {
-				const snapshot = await ctx.call("send", { id, text, purpose, requestId: crypto.randomUUID() });
+				const snapshot = await ctx.call("send", { id, text, purpose, requestId: requestId() });
 				if (alive && selected === id) { if (draft === text) draft = ""; show(snapshot); }
 			} finally { sending = false; syncComposer(); }
 		});

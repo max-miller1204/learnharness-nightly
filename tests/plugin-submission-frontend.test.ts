@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { PluginSubmissionRunner, type SubmissionAttempt, type SubmissionInterceptorRegistration } from "../components/plugin-submission-runner.ts";
 import { SessionModel } from "../components/session-core.ts";
 import type { PluginSubmission, PluginSubmissionTarget, PluginSurfaceTarget, LhMessage } from "../src/core/index.ts";
@@ -62,7 +63,10 @@ test("no-hook finalization still rejects stale targets and disposal and releases
 
 test("real hooks receive one complete detached frozen history before the first hook and share its original timing", async () => {
 	const gate = deferred<void>(), entered = deferred<void>(); let reads = 0, calls = 0;
-	const live = [{ type: "text", text: "before" }, { type: "image", mimeType: "image/png", data: "synthetic-original" }];
+	// Typed, not inferred: TypeScript caches the `text?: undefined` it adds to the image part of an
+	// inferred union under the name `text` for the whole program, and if another file's `as const`
+	// made it first, `text` reads as read-only here (TS2540) depending on which files are checked first.
+	const live: [TextContent, ImageContent] = [{ type: "text", text: "before" }, { type: "image", mimeType: "image/png", data: "synthetic-original" }];
 	const history = [{ id: "u", role: "user", timestamp: 0, get content() { reads++; return live; } }] as unknown as LhMessage[];
 	let firstHistory: unknown;
 	const first = owner(async (_value, context) => {

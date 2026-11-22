@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { FolderIcon, PaperclipIcon } from "lucide-react";
 import { ATTACHMENT_FOLDERS, ATTACHMENT_UPLOADS, hasCapability, PROTOCOL_ROUTES, type AttachmentFolderGrantResponse, type AttachmentGrantResponse, type AttachmentSend, type AttachmentTarget, type ServerInfo } from "@/src/core";
-import { attachmentLimitError, ATTACHMENT_UNAVAILABLE, folderFilesAsAttachments, folderLimitError, folderPathError, skippedFolderNotice } from "@/src/core";
+import { attachmentLimitError, ATTACHMENT_UNAVAILABLE, folderFilesAsAttachments, folderLimitError, folderPathError, randomUuid, skippedFolderNotice } from "@/src/core";
 import type { AttachmentReference } from "@/src/core";
 import { droppedAttachments, folderFromFiles, type FolderPick, type PickedFolder } from "./attachment-folder";
 
@@ -35,15 +35,6 @@ function limitInputs(rows: readonly DraftFile[]) {
 	return rows.flatMap(row => row.folder
 		? folderFilesAsAttachments(folderManifest(row.folder))
 		: [{ name: row.file!.name, mimeType: row.file!.type, size: row.file!.size }]);
-}
-
-function uuid(): string {
-	// getRandomValues also works on paired HTTP origins without randomUUID().
-	const bytes = crypto.getRandomValues(new Uint8Array(16));
-	bytes[6] = (bytes[6]! & 15) | 64;
-	bytes[8] = (bytes[8]! & 63) | 128;
-	const hex = [...bytes].map(value => value.toString(16).padStart(2, "0")).join("");
-	return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join("-");
 }
 
 export async function attachmentResponseError(response: Response): Promise<string> {
@@ -126,7 +117,7 @@ export function useAttachmentDraft(chatId?: string) {
 		};
 	}, []);
 
-	const target = (): AttachmentTarget => chatId ? { chatId } : { draftId: openingDraft.current ??= uuid() };
+	const target = (): AttachmentTarget => chatId ? { chatId } : { draftId: openingDraft.current ??= randomUuid() };
 	const live = (row: DraftFile) => files.current.includes(row);
 	const uploadFile = async (row: DraftFile) => {
 		if (!row.grant?.uploadUrl || row.grant.deadline <= Date.now()) {
@@ -217,7 +208,7 @@ export function useAttachmentDraft(chatId?: string) {
 	/** Add the files, or return the limit they exceed. */
 	const addFiles = (selected: File[]): string | undefined => {
 		const error = attachmentLimitError([...limitInputs(files.current), ...selected.map(file => ({ name: file.name, mimeType: file.type, size: file.size }))]);
-		if (!error) add(selected.map(file => ({ key: uuid(), name: file.name, file, uploads: new Set(), ready: false, progress: 0 })));
+		if (!error) add(selected.map(file => ({ key: randomUuid(), name: file.name, file, uploads: new Set(), ready: false, progress: 0 })));
 		return error;
 	};
 	/** Reject the whole folder before any bytes upload; keep the rest of the draft. */
@@ -226,7 +217,7 @@ export function useAttachmentDraft(chatId?: string) {
 		const manifest = folderManifest(pick);
 		const error = folderPathError(pick.name, manifest) ?? folderLimitError(pick.name, manifest) ??
 			attachmentLimitError([...limitInputs(files.current), ...folderFilesAsAttachments(manifest)]);
-		if (!error) add([{ key: uuid(), name: pick.name, folder: pick, uploads: new Set(), ready: false, progress: 0 }]);
+		if (!error) add([{ key: randomUuid(), name: pick.name, folder: pick, uploads: new Set(), ready: false, progress: 0 }]);
 		return error;
 	};
 	const select = (selected: File[]) => { setValidation(addFiles(selected)); };
@@ -260,7 +251,7 @@ export function useAttachmentDraft(chatId?: string) {
 		}
 		const attachmentUploadIds = selected.map(row => row.grant!.id);
 		const key = JSON.stringify([identity, attachmentUploadIds]);
-		if (lastSend.current?.identity !== key) lastSend.current = { identity: key, id: uuid() };
+		if (lastSend.current?.identity !== key) lastSend.current = { identity: key, id: randomUuid() };
 		return { attachmentUploadIds, sendId: lastSend.current.id };
 	};
 	const accept = (send: AttachmentSend) => {
@@ -269,7 +260,7 @@ export function useAttachmentDraft(chatId?: string) {
 		changed();
 	};
 	return {
-		enabled, folders: enabled && folders, files: files.current, validation, getDraftId: () => openingDraft.current ??= uuid(),
+		enabled, folders: enabled && folders, files: files.current, validation, getDraftId: () => openingDraft.current ??= randomUuid(),
 		select, selectFolder, drop, remove, retry: start, prepare, accept,
 	};
 }
