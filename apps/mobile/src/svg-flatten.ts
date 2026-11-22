@@ -48,7 +48,11 @@ const COLOR = new RegExp(String.raw`^(?:[a-zA-Z]{1,30}|#[0-9a-fA-F]{3,8}|rgba?\(
  *  px, em or ex and one color (parseColor), solid. Undefined for anything else. The parts are
  *  parsed, so what is written back is only ever a number, a unit and a normalized color. */
 export function frameBorder(style: string): { width: string; color: string } | undefined {
-  const parts = new RegExp(String.raw`^\s*border:\s*(${NUMBER})(px|em|ex)\s+solid\s+([^;]+?)\s*;?\s*$`).exec(style);
+  // Longer than any border MathJax writes; capped so a crafted style can't make matching slow.
+  if (style.length > 200) return;
+  // The color starts and ends on neither a space nor a semicolon, so it never trades either with
+  // what is around it.
+  const parts = new RegExp(String.raw`^\s*border:\s*(${NUMBER})(px|em|ex)\s+solid\s+([^;\s](?:[^;]*[^;\s])?)\s*;?\s*$`).exec(style);
   if (!parts) return;
   const [, size, unit, text] = parts as unknown as [string, string, string, string];
   const width = Number(size);

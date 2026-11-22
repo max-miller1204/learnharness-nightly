@@ -148,7 +148,6 @@ export function readAloud(node: MmlNode | null): string {
   }
 }
 
-
 function luminance(color: string): number | undefined {
   const full = parseColor(color)?.hex.slice(1);
   if (!full) return;
@@ -258,7 +257,7 @@ export function framesAsPaths(adaptor: LiteAdaptor, node: LiteElement): boolean 
       // Points are "x,y" pairs apart by spaces; an empty or extra value fails the picture.
       const points = String(adaptor.getAttribute(polygon, "points") ?? "").trim().split(/\s+/).map((point) => point.split(","));
       const fill = parseColor(String(adaptor.getAttribute(polygon, "fill") ?? ""));
-      if (points.length < 3 || !fill || !points.every((point) => point.length === 2 && point.every((value) => SVG_NUMBER.test(value)))) return false;
+      if (points.length < 3 || !fill || !points.every((point) => point.length === 2 && point.every((value) => SVG_NUMBER.test(value) && Number.isFinite(Number(value))))) return false;
       const pairs = points.map((point) => point.map((value) => String(Number(value))).join(" "));
       const path = adaptor.node("path", { d: `M${pairs.join("L")}Z`, fill: fill.css, stroke: "none" }) as LiteElement;
       adaptor.insert(path, polygon);
@@ -266,6 +265,25 @@ export function framesAsPaths(adaptor: LiteAdaptor, node: LiteElement): boolean 
     }
   }
   return true;
+}
+
+/** Each fill and stroke color MathJax wrote as parseColor writes it (a trimmed, lowercase name,
+ *  lowercase hex or rgb(r,g,b)), the form the contrast check measured: React Native's color
+ *  parser rejects " navy " or "RED" and would leave the shape unfilled. A color parseColor
+ *  doesn't know is only trimmed; it is dropped wherever the contrast check can't measure it. */
+function colorsNormalized(adaptor: LiteAdaptor, node: LiteElement) {
+  for (const child of adaptor.childNodes(node)) {
+    if (adaptor.kind(child) === "#text") continue;
+    const element = child as LiteElement;
+    for (const name of ["fill", "stroke"]) {
+      const value = adaptor.getAttribute(element, name);
+      if (value === null || value === undefined) continue;
+      const text = String(value).trim();
+      if (/^(?:currentColor|none)$/.test(text)) continue;
+      adaptor.setAttribute(element, name, parseColor(text)?.css ?? text);
+    }
+    colorsNormalized(adaptor, element);
+  }
 }
 
 /** The color of each visible glyph or rule and the box drawn behind it, if any. */
@@ -341,6 +359,7 @@ export function drawTex(tex: string, display: boolean): DrawnMath | undefined {
     rulesAsInk(adaptor, svg);
     if (!offsetsAsGroups(adaptor, svg)) return;
     if (!framesAsPaths(adaptor, svg)) return;
+    colorsNormalized(adaptor, svg);
     const original = adaptor.outerHTML(svg);
     if (/data-mml-node="merror"|data-mjx-error/.test(original) || /\s(?:style|id)=/.test(original)) return;
     // The same picture without its groups draws far faster (svg-flatten.ts).

@@ -13,8 +13,9 @@ export const NAMED_COLORS: Record<string, string> = {
  *  above, such as none, transparent, currentColor, rgba(), 4- or 5-digit hex, or an unknown name. */
 export function parseColor(text: string): { css: string; hex: string } | undefined {
   const color = text.trim();
-  const name = NAMED_COLORS[color.toLowerCase()];
-  if (/^[a-z]+$/i.test(color) && name) return { css: color.toLowerCase(), hex: name };
+  // Only the list's own names: constructor, toString and __proto__ aren't colors.
+  const lower = color.toLowerCase();
+  if (/^[a-z]+$/.test(lower) && Object.hasOwn(NAMED_COLORS, lower)) return { css: lower, hex: NAMED_COLORS[lower] as string };
   const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color)?.[1]?.toLowerCase();
   if (hex) {
     const full = hex.length === 3 ? [...hex].map((digit) => digit + digit).join("") : hex;

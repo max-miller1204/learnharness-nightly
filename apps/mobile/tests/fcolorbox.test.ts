@@ -103,7 +103,7 @@ test("a frame's points must each be one x,y pair, or the picture isn't drawn", (
   assert.ok(framesAsPaths(adaptor, good));
   assert.match(adaptor.outerHTML(good), /<path d="M0 0L1 0L1 1L0 1Z" fill="red" stroke="none"><\/path>/);
   assert.doesNotMatch(adaptor.outerHTML(good), /style=|polygon/);
-  for (const points of ["0,,0 1,0 1,1 0,1", "0,0 1,0 1,1 0,1,", "0,0 1,0 1", "0,0 1,0", "0,0 1,0 1,1 x,1"]) assert.equal(framesAsPaths(adaptor, frame(points)), false, points);
+  for (const points of ["0,,0 1,0 1,1 0,1", "0,0 1,0 1,1 0,1,", "0,0 1,0 1", "0,0 1,0", "0,0 1,0 1,1 x,1", "0,0 1e309,0 2,1"]) assert.equal(framesAsPaths(adaptor, frame(points)), false, points);
 });
 
 test("\\colorbox, \\fbox and \\boxed are unchanged", () => {
@@ -114,3 +114,42 @@ test("\\colorbox, \\fbox and \\boxed are unchanged", () => {
     assert.ok(same(pixels(drawn.svg.light, "light"), pixels(own, "light")), tex);
   }
 });
+
+test("a padded border fails fast, however long", () => {
+  // Without the cap and the non-space ends, 4000 spaces took about 15 s to fail.
+  const start = performance.now();
+  for (const spaces of [1000, 4000, 20000]) assert.equal(drawTex(String.raw`\fcolorbox{a${" ".repeat(spaces)}x;y}{white}{z}`, true), undefined);
+  for (let at = 0; at < 2000; at++) frameBorder(`border: 2px solid a${" ".repeat(170)}x;y`);
+  assert.ok(performance.now() - start < 5000, `took ${Math.round(performance.now() - start)} ms`);
+  assert.equal(frameBorder(`border: 2px solid ${"red ".repeat(60)}`), undefined, "longer than any real border");
+});
+
+test("every color drawn is written as parseColor writes it, so the phone can parse it", () => {
+  const colors = (svg: string) => [...svg.matchAll(/\b(?:fill|stroke)="([^"]*)"/g)].map(([, color]) => color as string);
+  for (const [tex, expected] of [
+    [String.raw`\color{red }{x}`, ["red"]], [String.raw`\colorbox{ navy }{\color{white}{x}}`, ["navy", "white"]],
+    [String.raw`\color{Navy}{x}`, ["navy"]], [String.raw`\color{RED}{x}`, ["red"]],
+  ] as const) {
+    const drawn = drawTex(tex, true);
+    assert.ok(drawn, tex);
+    const used = colors(drawn.svg.light);
+    for (const color of used) assert.ok(/^(?:currentColor|none)$/.test(color) || parseColor(color)?.css === color, `${tex}: "${color}" as parseColor writes it`);
+    for (const color of expected) assert.ok(used.includes(color), `${tex}: ${color} drawn`);
+  }
+});
+
+test("names that aren't colors, such as an object's own keys, are not colors", () => {
+  for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+    assert.equal(parseColor(name), undefined, name);
+    assert.equal(frameBorder(`border: 2px solid ${name}`), undefined, name);
+    // __proto__ isn't TeX (its _ is a subscript), so only the parsers see it.
+    if (name.includes("_")) continue;
+    assert.equal(drawTex(String.raw`\fcolorbox{${name}}{yellow}{x}`, true), undefined, name);
+    // As on main: an unknown color can't be measured, so the math draws in the text color.
+    for (const tex of [String.raw`\color{${name}}{x}`, String.raw`\colorbox{${name}}{x}`]) {
+      const drawn = drawTex(tex, true);
+      assert.ok(drawn && !drawn.svg.light.includes(name), tex);
+    }
+  }
+});
+
