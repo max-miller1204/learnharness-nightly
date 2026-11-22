@@ -345,8 +345,10 @@ export function claimPairingCode(dataDir: string, input: string, client: ClientI
 	const hash = hashCode(code);
 	return withLock(dataDir, () => {
 		const links = readPairingFile(dataDir).links;
-		// Read sessions first: a damaged sessions.json must not burn the code.
+		// Read sessions and the signing key first: a damaged sessions.json or
+		// an unreadable key must not burn the code.
 		const sessions = readSessionsFile(dataDir).sessions;
+		signingKey(dataDir);
 		const link = links.find((l) => l.codeHash.length === hash.length && crypto.timingSafeEqual(Buffer.from(l.codeHash), Buffer.from(hash)));
 		if (!link) return { ok: false, reason: "invalid" } as const;
 		if (link.consumedAt) return { ok: false, reason: "used" } as const;

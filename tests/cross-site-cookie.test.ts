@@ -261,28 +261,45 @@ describe("POST /api/auth/browser-session keeps a live session (the check-then-re
 		assert.equal((await post(createPairingLink(AUTH_TEST_DATA_DIR).code, { cookie: `${cookieName()}=forged.token` })).status, 200, "forged");
 	});
 
-	it("never takes a login store it can't read for signed out: 503, and the code stays unspent", async () => {
-		const live = mintToken("unreadable");
-		const code = createPairingLink(AUTH_TEST_DATA_DIR).code;
-		const sessions = path.join(authDir(AUTH_TEST_DATA_DIR), "sessions.json");
-		const aside = `${sessions}.aside`;
-		fs.renameSync(sessions, aside);
-		fs.mkdirSync(sessions);
-		let response: Response;
-		let state: string;
-		try {
-			state = tokenState(AUTH_TEST_DATA_DIR, live).state;
-			response = await post(code, { cookie: `${cookieName()}=${live}` });
-		} finally {
-			fs.rmdirSync(sessions);
-			fs.renameSync(aside, sessions);
+	/** Puts a directory where a store file was, so reading it throws. */
+	async function unreadable<T>(name: "sessions.json" | "signing-key", run: () => Promise<T>): Promise<T> {
+		const file = path.join(authDir(AUTH_TEST_DATA_DIR), name);
+		const aside = `${file}.aside`;
+		fs.renameSync(file, aside);
+		fs.mkdirSync(file);
+		try { return await run(); } finally {
+			fs.rmdirSync(file);
+			fs.renameSync(aside, file);
 		}
-		assert.equal(state, "unknown");
-		assert.equal(verifyToken(AUTH_TEST_DATA_DIR, "x.y"), undefined, "verifyToken keeps its meaning");
-		assert.equal(response.status, 503);
-		assert.equal(response.headers.get("set-cookie"), null);
-		assert.equal(tokenState(AUTH_TEST_DATA_DIR, live).state, "active", "readable again");
-		assert.equal(await unspent(code), true, "the code still works");
+	}
+
+	// Never taken for signed out: every path answers 503 store_unreadable with
+	// one body and spends nothing, whichever store file can't be read.
+	for (const file of ["sessions.json", "signing-key"] as const) {
+		for (const [label, withCookie, extra] of [
+			["a live cookie", true, {}],
+			["no cookie (signed out)", false, {}],
+			["a live cookie with replace: true", true, { replace: true }],
+			["no cookie with replace: true", false, { replace: true }],
+		] as const) {
+			it(`an unreadable ${file}, ${label}: 503 store_unreadable, code unspent`, async () => {
+				const live = mintToken("unreadable");
+				const code = createPairingLink(AUTH_TEST_DATA_DIR).code;
+				const headers: Record<string, string> = withCookie ? { cookie: `${cookieName()}=${live}` } : {};
+				const { response, state } = await unreadable(file, async () => ({ state: tokenState(AUTH_TEST_DATA_DIR, live).state, response: await post(code, headers, extra) }));
+				assert.equal(state, "unknown");
+				assert.equal(response.status, 503);
+				assert.equal(response.headers.get("retry-after"), "1");
+				assert.equal(response.headers.get("set-cookie"), null);
+				assert.deepEqual(await response.json(), { error: "The login store couldn't be read. Try again in a moment.", reason: "store_unreadable" });
+				assert.equal(tokenState(AUTH_TEST_DATA_DIR, live).state, "active", "readable again");
+				assert.equal(await unspent(code), true, "the code still works");
+			});
+		}
+	}
+
+	it("tokenState's unknown doesn't change verifyToken", () => {
+		assert.equal(verifyToken(AUTH_TEST_DATA_DIR, "x.y"), undefined);
 	});
 });
 

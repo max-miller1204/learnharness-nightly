@@ -65,6 +65,8 @@ export function sessionState(request: Request): Response {
 }
 
 export const ALREADY_SIGNED_IN = "already_signed_in";
+export const STORE_UNREADABLE = "store_unreadable";
+const storeUnreadable = () => json({ error: "The login store couldn't be read. Try again in a moment.", reason: STORE_UNREADABLE }, 503, { "Retry-After": "1" });
 
 /** POST /api/auth/browser-session (public): body { credential, replace? } ->
  * session cookie. The cookie rule applies before the code is read, so a
@@ -73,7 +75,8 @@ export const ALREADY_SIGNED_IN = "already_signed_in";
  * names a live session keeps it: 409 already_signed_in, code unspent,
  * unless the body says replace: true, which /pair sends only after the
  * person chooses "Sign in with this link" (components/pair-screen.tsx). A
- * store that can't be read is never taken for signed out: 503. */
+ * store that can't be read is never taken for signed out: every path (a
+ * cookie, none, replace) answers 503 store_unreadable and spends nothing. */
 export async function browserSession(request: Request): Promise<Response> {
 	if (!cookieRuleAllows(request)) return json({ error: CROSS_SITE_REFUSED }, 403);
 	if (request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json") return json({ error: "Expected JSON." }, 415);
@@ -83,9 +86,14 @@ export async function browserSession(request: Request): Promise<Response> {
 	if (held) {
 		const current = tokenState(authDataDir(), held);
 		if (current.state === "active") return json({ error: "This browser is already signed in.", reason: ALREADY_SIGNED_IN }, 409);
-		if (current.state === "unknown") return json({ error: "Couldn't check this browser's session. Try again in a moment." }, 503, { "Retry-After": "1" });
+		if (current.state === "unknown") return storeUnreadable();
 	}
-	const claimed = await unlocked((options) => claimPairingCode(authDataDir(), credential, clientInfo(request), options));
+	let claimed: ReturnType<typeof claimPairingCode> | typeof BUSY;
+	// claimPairingCode reads everything it needs (pairing links, sessions,
+	// the signing key) before it spends the code, so a read that throws has
+	// spent nothing. A write that fails after that is answered the same way.
+	try { claimed = await unlocked((options) => claimPairingCode(authDataDir(), credential, clientInfo(request), options)); }
+	catch { return storeUnreadable(); }
 	if (claimed === BUSY) return busy();
 	if (!claimed.ok) return json({ error: "That code is wrong, expired or already used. Make a new one.", reason: claimed.reason }, 401);
 	return json(
