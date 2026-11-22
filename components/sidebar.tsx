@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { MenuShell } from "@/components/menu-shell";
-import { closeMenuToRow, createNeighborHandoff, createRowFocusKeeper, focusWhenLost, footerStops, isMenuKey, keepFooterKeys, keepRowKeys, releaseRowAfterPointerClose, sidebarStopProps, swallowNextContextMenu, tabIntoList, tabThroughFooter, tabThroughList, trackInputModality, watchFooterFocus } from "@/components/sidebar-keyboard";
+import { CLOSE_UPDATE_POPOVERS, UPDATE_PORTALS, closeMenuToRow, createNeighborHandoff, createRowFocusKeeper, focusWhenLost, footerStops, isMenuKey, keepFooterKeys, keepRowKeys, releaseRowAfterPointerClose, sidebarStopProps, swallowNextContextMenu, tabIntoList, tabThroughFooter, tabThroughList, trackInputModality, watchFooterFocus } from "@/components/sidebar-keyboard";
 import { DeleteFolderDialog, DeleteSessionDialog, folderDeleteCopy, type DeleteDialogCopy } from "@/components/delete-session-dialog";
 import { leaveDeletedSession, SESSIONS_DELETED_EVENT } from "@/components/session-deletion";
 import type { ChatDeleteMode, ThemeMode } from "@/src/core";
@@ -571,10 +571,17 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 	useLayoutEffect(() => {
 		const aside = asideRef.current;
 		if (!aside) return;
-		if (!open && aside.contains(document.activeElement)) {
-			const target = document.querySelector<HTMLElement>('[data-testid="composer"] [contenteditable="true"], main [tabindex="-1"], .lh-closed-toggle button');
-			if (target) target.focus({ preventScroll: true });
-			else (document.activeElement as HTMLElement | null)?.blur();
+		if (!open) {
+			const active = document.activeElement as HTMLElement | null;
+			const needsFocus = !!active && (aside.contains(active) || !!active.closest(UPDATE_PORTALS));
+			window.dispatchEvent(new Event(CLOSE_UPDATE_POPOVERS));
+			if (needsFocus) {
+				const target = document.querySelector<HTMLElement>('[data-testid="composer"] [contenteditable="true"]')
+					?? document.querySelector<HTMLElement>('main [tabindex="-1"]')
+					?? document.querySelector<HTMLElement>('.lh-closed-toggle button');
+				if (target) target.focus({ preventScroll: true });
+				else (document.activeElement as HTMLElement | null)?.blur();
+			}
 		}
 		aside.inert = !open;
 	}, [open]);

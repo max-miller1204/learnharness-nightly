@@ -19,7 +19,7 @@
  * skips those too).
  */
 import { composingQuestionKey, pluginQuestionKeySuppressed } from "./plugin-question-keys.ts";
-import { buttonKeepsNativeEnter } from "./enter-submits";
+import { buttonKeepsNativeEnter, setPointerFocusedSidebarControl } from "./enter-submits";
 
 /** Marks a row the list's Tab walks: session rows and folder rows. */
 export const SIDEBAR_STOP = "data-sidebar-stop";
@@ -113,7 +113,7 @@ export function tabThroughFooter(event: TabEvent, footer: Element, list: Element
 export function keepFooterKeys(event: TabEvent): void {
 	if (notOurs(event) || event.altKey || event.ctrlKey || event.metaKey) return;
 	const target = event.target as HTMLElement | null;
-	if (!target || !buttonKeepsNativeEnter(target)) return;
+	if (!target || !footerKeepsNativeEnter(target)) return;
 	if (PRESS_KEYS.has(event.key) || (!event.shiftKey && ARROW_KEYS.has(event.key))) stopHere(event);
 }
 
@@ -167,18 +167,22 @@ export function swallowNextContextMenu(target: EventTarget = document, { afterKe
 
 const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta"]);
 let lastInput: "keyboard" | "pointer" | null = null;
+let pointerFocused: EventTarget | null = null;
 
 /** Remember whether the latest input was a key or a pointer, in the window's
  *  capture phase (before anything can stop it); returns the undo. A bare
  *  modifier doesn't count. */
 export function trackInputModality(target: EventTarget = window): () => void {
 	const onKey = (event: Event) => { if (!MODIFIER_KEYS.has((event as KeyboardEvent).key)) lastInput = "keyboard"; };
-	const onPointer = () => { lastInput = "pointer"; };
+	const onPointer = (event: Event) => { lastInput = "pointer"; pointerFocused = (event.target as Element | null)?.closest?.("button, a") ?? event.target; setPointerFocusedSidebarControl(pointerFocused); };
+	const onFocus = (event: Event) => { pointerFocused = lastInput === "pointer" ? event.target : null; setPointerFocusedSidebarControl(pointerFocused); };
 	target.addEventListener("keydown", onKey, true);
 	target.addEventListener("pointerdown", onPointer, true);
+	target.addEventListener("focusin", onFocus, true);
 	return () => {
 		target.removeEventListener("keydown", onKey, true);
 		target.removeEventListener("pointerdown", onPointer, true);
+		target.removeEventListener("focusin", onFocus, true);
 	};
 }
 
@@ -189,38 +193,53 @@ export function trackInputModality(target: EventTarget = window): () => void {
  *  Enter. */
 export const closedFromKeyboard = (): boolean => lastInput === "keyboard";
 
+/** A pointer-focused footer control keeps the app's Enter behavior. */
+export function footerKeepsNativeEnter(target: HTMLElement): boolean {
+	return target !== pointerFocused && buttonKeepsNativeEnter(target);
+}
+
+export const UPDATE_PORTALS = '[data-testid="update-capsule-details"], [data-testid="update-pill-notes"]';
+export const CLOSE_UPDATE_POPOVERS = "lh:close-sidebar-update-popovers";
+
 /** Restore keyboard focus when an update control is replaced or hidden. */
 export function watchFooterFocus(footer: HTMLElement, doc: Document = document): () => void {
 	let last: HTMLElement | null = null;
+	const belongs = (target: Element | null) => !!target && (footer.contains(target) || !!target.closest(UPDATE_PORTALS));
 	const onFocus = (event: Event) => {
 		const target = event.target as HTMLElement;
-		last = footer.contains(target) && lastInput !== "pointer" ? target : null;
+		last = belongs(target) && lastInput !== "pointer" ? target : null;
 	};
 	const onPointer = () => { last = null; };
-	const onKey = (event: Event) => {
-		const key = event as KeyboardEvent;
-		const target = key.target as HTMLElement | null;
-		if (!MODIFIER_KEYS.has(key.key) && target && footer.contains(target)) last = target;
+	const onFocusOut = (event: Event) => {
+		const focus = event as FocusEvent;
+		const leaving = last;
+		if (!leaving || focus.target !== leaving || belongs(focus.relatedTarget as Element | null)) return;
+		// Removing a focused control can fire focusout before React detaches it.
+		// An explicit blur leaves it connected, so only that ends the watch.
+		queueMicrotask(() => { if (last === leaving && leaving.isConnected) last = null; });
 	};
 	const reconcile = () => {
-		if (!last || lastInput === "pointer" || footer.closest('[inert], [aria-hidden="true"]')) return;
+		if (footer.closest('[inert], [aria-hidden="true"]')) { last = null; return; }
+		if (!last || lastInput === "pointer") return;
 		const active = doc.activeElement;
 		if (active && active !== doc.body && active !== last && active.isConnected) { last = null; return; }
-		if (footerStops(footer).includes(last)) return;
+		if (footerStops(footer).includes(last) || (last.isConnected && !!last.closest(UPDATE_PORTALS))) return;
 		const stops = footerStops(footer);
 		const replacement = stops.find((el) => el.matches('[data-testid="update-pill"], [data-testid="update-capsule-button"]')) ?? stops[0];
 		last = null;
 		replacement?.focus({ preventScroll: true });
 	};
 	const observer = new MutationObserver(reconcile);
-	observer.observe(footer, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "hidden", "aria-hidden", "style"] });
+	observer.observe(footer, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "hidden", "aria-hidden", "style", "disabled", "inert"] });
+	const aside = footer.closest("aside");
+	if (aside) observer.observe(aside, { attributes: true, attributeFilter: ["inert", "aria-hidden"] });
 	const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reconcile);
 	resize?.observe(footer);
 	doc.addEventListener("focusin", onFocus, true);
 	doc.addEventListener("pointerdown", onPointer, true);
-	doc.addEventListener("keydown", onKey, true);
-	window.addEventListener("resize", reconcile);
-	return () => { observer.disconnect(); resize?.disconnect(); doc.removeEventListener("focusin", onFocus, true); doc.removeEventListener("pointerdown", onPointer, true); doc.removeEventListener("keydown", onKey, true); window.removeEventListener("resize", reconcile); };
+	doc.addEventListener("focusout", onFocusOut, true);
+	doc.defaultView?.addEventListener("resize", reconcile);
+	return () => { observer.disconnect(); resize?.disconnect(); doc.removeEventListener("focusin", onFocus, true); doc.removeEventListener("pointerdown", onPointer, true); doc.removeEventListener("focusout", onFocusOut, true); doc.defaultView?.removeEventListener("resize", reconcile); };
 }
 
 /** A dialog whose opener is `row` (it gives focus back to its opener) has

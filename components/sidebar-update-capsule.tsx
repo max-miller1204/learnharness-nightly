@@ -28,7 +28,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent
 import { createPortal } from "react-dom";
 import * as Popper from "@radix-ui/react-popper";
 import { useOptionalInteractionLayers } from "@/components/interaction-layers";
-import { keepFooterKeys } from "@/components/sidebar-keyboard";
+import { CLOSE_UPDATE_POPOVERS, footerKeepsNativeEnter, keepFooterKeys } from "@/components/sidebar-keyboard";
 import { hasLegacyInteractionForeground } from "@/components/plugin-input-focus";
 import {
 	describeUpdateCapsule, formatUpdateElapsed, localStatusLabel, restartSecondsLeft, RUN_STATUS_LABELS,
@@ -97,6 +97,11 @@ export function SidebarUpdateCapsule({ run, local, icon, actions, clock = Date.n
 	const settled = !hasActiveMachine && run.localVersion === null;
 	const restartSeconds = restartSecondsLeft(run, now);
 	const [open, setOpen] = useState(false);
+	useEffect(() => {
+		const close = () => setOpen(false);
+		window.addEventListener(CLOSE_UPDATE_POPOVERS, close);
+		return () => window.removeEventListener(CLOSE_UPDATE_POPOVERS, close);
+	}, []);
 	// Opened from the keyboard: focus goes into the details, onto their first button.
 	const [focusDetails, setFocusDetails] = useState(false);
 	const buttonRef = useRef<HTMLButtonElement>(null);
@@ -203,6 +208,7 @@ export function SidebarUpdateCapsule({ run, local, icon, actions, clock = Date.n
 						onClick={() => setOpen((value) => !value)}
 						onKeyDown={(event) => {
 							if (event.key !== "Enter" && event.key !== " ") return;
+							if (event.key === "Enter" && !footerKeepsNativeEnter(event.currentTarget)) return;
 							event.preventDefault();
 							if (!open) setFocusDetails(true);
 							setOpen((value) => !value);

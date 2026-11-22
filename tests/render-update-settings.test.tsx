@@ -919,6 +919,13 @@ describe("General update rows", () => {
 			const links = [...q(document, "update-pill-notes")!.querySelectorAll("a")];
 			assert.equal(links.length, 2, "one release link per release");
 			assert.ok(document.activeElement === links[0], "Tab is on the first link");
+			let leaked = 0;
+			const onBody = () => { leaked++; };
+			document.body.addEventListener("keydown", onBody);
+			try {
+				for (const name of ["Enter", " ", "ArrowDown"]) await key(links[0]!, name);
+				assert.equal(leaked, 0, "notes keep their keys from later listeners on the portal root");
+			} finally { document.body.removeEventListener("keydown", onBody); }
 			await key(links[0], "Tab");
 			assert.ok(document.activeElement === links[1], "Tab moves to the next link");
 			await key(links[1], "Tab", { shiftKey: true });

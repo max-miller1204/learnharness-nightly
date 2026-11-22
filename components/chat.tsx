@@ -1167,7 +1167,7 @@ export function Chat({
 	 * self-guards on nextReady, so the listener is inert outside the
 	 * pause — the dock-mounted listeners are gone by then (docks unmount
 	 * when nothing is active; the two never overlap). */
-	useEnterSubmits(sendNext, sessionFindScopeRef);
+	useEnterSubmits(sendNext, sessionFindScopeRef, nextReady);
 
 	const syncFromServer = useCallback(async () => {
 		const record = await readRecord().catch(() => undefined);

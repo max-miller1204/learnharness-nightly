@@ -16,6 +16,7 @@ import { parseHTML } from "linkedom";
 import { SessionRow } from "../components/sidebar.tsx";
 import { SidebarFolderRow } from "../components/sidebar-folders.tsx";
 import { InteractionLayersProvider } from "../components/interaction-layers.tsx";
+import { buttonKeepsNativeEnter } from "../components/enter-submits.ts";
 import { MenuShell } from "../components/menu-shell.tsx";
 import { capturePluginQuestionKey, ownPluginQuestionKeys } from "../components/plugin-question-keys.ts";
 import { closeMenuToRow, createNeighborHandoff, createRowFocusKeeper, focusWhenLost, footerStops, isMenuKey, keepFooterKeys, keepRowKeys, releaseRowAfterPointerClose, sidebarStops, swallowNextContextMenu, tabIntoList, tabThroughFooter, tabThroughList, trackInputModality, watchFooterFocus } from "../components/sidebar-keyboard.ts";
@@ -126,6 +127,39 @@ describe("sidebar footer keyboard order", () => {
 		await act(async () => { root!.render(<FooterHarness missing />); }); await tick();
 		assert.equal(focusedName(), "settings-entry");
 	});
+	it("skips inert and invisible stops", async () => {
+		await render(<FooterHarness />);
+		const footer = byId("sidebar-footer"), pill = byId("update-pill");
+		pill.setAttribute("inert", "");
+		assert.deepEqual(footerStops(footer).map((el) => el.dataset.testid), ["settings-entry"]);
+		pill.removeAttribute("inert");
+		pill.checkVisibility = () => false;
+		assert.deepEqual(footerStops(footer).map((el) => el.dataset.testid), ["settings-entry"]);
+	});
+	it("does not recover deliberately blurred or hidden footer focus", async () => {
+		await render(<FooterHarness />); usingKeyboard(); const pill = byId("update-pill"); pill.focus();
+		const event = new dom.window.Event("focusout", { bubbles: true });
+		Object.defineProperty(event, "relatedTarget", { value: null });
+		pill.dispatchEvent(event); focused = undefined;
+		await act(async () => { root!.render(<FooterHarness capsule />); }); await tick();
+		assert.equal(focusedName(), null);
+		usingKeyboard(); byId("update-capsule-button").focus();
+		byId("sidebar-footer").setAttribute("inert", ""); await tick();
+		focused = undefined; byId("sidebar-footer").removeAttribute("inert");
+		await act(async () => { root!.render(<FooterHarness />); }); await tick();
+		assert.equal(focusedName(), null);
+	});
+	it("keeps pointer origin through Enter and Escape even if focus-visible matches", async () => {
+		await render(<FooterHarness />);
+		const pill = byId("update-pill");
+		const matches = pill.matches.bind(pill);
+		pill.matches = (selector) => selector === ":focus-visible" || matches(selector);
+		usingPointer(pill); pill.focus();
+		await press(pill, "Enter"); await press(pill, "Escape");
+		assert.equal(buttonKeepsNativeEnter(pill), false);
+		await act(async () => { root!.render(<FooterHarness capsule />); }); await tick();
+		assert.equal(focusedName(), null);
+	});
 	it("returns a removed action to the capsule, but never restores pointer focus", async () => {
 		await render(<FooterHarness capsule />); usingKeyboard(); byId("update-capsule-action").focus();
 		await act(async () => { root!.render(<FooterHarness capsule noAction />); }); await tick();
@@ -139,11 +173,15 @@ describe("sidebar footer keyboard order", () => {
 		const button = byId("settings-entry");
 		const matches = button.matches.bind(button);
 		button.matches = (selector) => selector === ":focus-visible" || matches(selector);
+		let leaked = 0;
+		const listener = () => { leaked++; };
+		host!.addEventListener("keydown", listener);
 		for (const key of ["Enter", " ", "ArrowDown"]) {
-			reachedWindow = 0; await press(button, key); assert.equal(reachedWindow, 0, key);
+			await press(button, key); assert.equal(leaked, 0, key);
 		}
 		button.matches = (selector) => selector === ":focus-visible" ? false : matches(selector);
-		reachedWindow = 0; await press(button, "Enter"); assert.equal(reachedWindow, 1);
+		await press(button, "Enter"); assert.equal(leaked, 1);
+		host!.removeEventListener("keydown", listener);
 	});
 	for (const capsule of [false, true]) it(capsule ? "walks capsule actions" : "walks the update pill", async () => {
 		await render(<FooterHarness capsule={capsule} />);

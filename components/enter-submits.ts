@@ -43,10 +43,16 @@ import { isTypingSurface } from "@/src/core";
 /** Overlay roots whose buttons keep native Enter (hand-rolled menus mark
  *  themselves data-lh-menu; Radix poppers/dialogs carry their own attrs). */
 const OVERLAY_ROOTS = '[data-lh-menu], [data-radix-popper-content-wrapper], [role="menu"], [role="dialog"]';
+let pointerFocusedSidebarControl: EventTarget | null = null;
+/** Preserve the origin of focus even after a subsequent keydown. */
+export function setPointerFocusedSidebarControl(target: EventTarget | null): void {
+	pointerFocusedSidebarControl = target;
+}
 
 /** Pure decision, exported for pins: does a focused BUTTON keep native
  *  Enter (true) or does Enter belong to submit (false)? */
 export function buttonKeepsNativeEnter(el: HTMLElement): boolean {
+	if (el === pointerFocusedSidebarControl && el.matches('[data-testid="settings-entry"], [data-testid="update-pill"], [data-testid="update-capsule-button"]')) return false;
 	// Keyboard-walked focus: the menu arrows landed here — Enter activates.
 	// (Guarded: a selector engine without the pseudo — linkedom in the
 	// test harness — degrades to "not keyboard focus", never throws on
@@ -62,11 +68,12 @@ export function buttonKeepsNativeEnter(el: HTMLElement): boolean {
 
 /** Mount-scoped: while the dock is mounted (a problem/question is active),
  *  plain Enter anywhere outside a typing surface or button submits it. */
-export function useEnterSubmits(submit: () => void, scopeRef?: RefObject<HTMLElement | null>): void {
+export function useEnterSubmits(submit: () => void, scopeRef?: RefObject<HTMLElement | null>, enabled = true): void {
 	const controller = useOptionalInteractionLayers();
 	const submitRef = useRef(submit);
 	submitRef.current = submit;
 	useEffect(() => {
+		if (!enabled) return;
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key !== "Enter" || e.defaultPrevented || pluginQuestionKeySuppressed(e) || composingQuestionKey(e)) return;
 			if (!isInteractionScopeEligible(scopeRef ? scopeRef.current : document.body, controller)) return;
@@ -79,5 +86,5 @@ export function useEnterSubmits(submit: () => void, scopeRef?: RefObject<HTMLEle
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
-	}, [controller, scopeRef]);
+	}, [controller, scopeRef, enabled]);
 }
