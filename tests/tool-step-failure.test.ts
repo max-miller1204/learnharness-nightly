@@ -88,4 +88,24 @@ describe("a conclusion's reveal", () => {
 		assert.equal(concludePart(projectView(record, live([["c1", { isError: true }]])))?.reveal, undefined);
 		assert.equal(concludePart(projectView(record, live([])))?.reveal, undefined);
 	});
+	it("marks a practice call with no clean result, in a turn that is over, as stopped", () => {
+		const part = concludePart(projectView([...pose("p1"), conclude("c1")] as never));
+		assert.equal(part?.settled, undefined);
+		assert.equal(part?.stopped, true);
+		const problem = projectView([assistant("m_pose_x", [call("p9", "problem", { statement: "S", mode: "recall", modelSolution: "SOLUTION-A" })])] as never).flatMap((m) => m.parts).find((p) => p.type === "tool-problem");
+		assert.equal(problem?.stopped, true, "a pose with no ack");
+	});
+	it("does not mark a settled or a still-running practice call as stopped", () => {
+		const done = concludePart(projectView([...pose("p1"), conclude("c1"), settled("r_c1", "c1", "conclude")] as never));
+		assert.equal(done?.settled, true);
+		assert.equal(done?.stopped, undefined);
+		const posed = projectView(pose("p1") as never).flatMap((m) => m.parts).find((p) => p.type === "tool-problem");
+		assert.equal(posed?.settled, true, "a posed problem is settled by its ack");
+		assert.equal(posed?.stopped, undefined);
+		const running = concludePart(projectView([...pose("p1"), conclude("c1")] as never, live([])));
+		assert.equal(running?.stopped, undefined, "the turn still runs");
+		const streaming = concludePart(projectView([...pose("p1"), conclude("c1")] as never, { executions: new Map(), inFlight: true, streamingIds: new Set(["m_end_c1"]) }));
+		assert.equal(streaming?.state, "input-streaming");
+		assert.equal(streaming?.stopped, undefined);
+	});
 });

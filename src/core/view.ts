@@ -62,6 +62,13 @@ export interface LhViewPart extends Record<string, unknown> {
 	output?: unknown;
 	rawInput?: unknown;
 	errorText?: string;
+	/** The call's own result settled without an error (live: its execution's clean end;
+	 *  in the record: its paired toolResult). A practice problem or conclusion without it
+	 *  draws no card: its verdict and solution belong to a call that completed. */
+	settled?: boolean;
+	/** A practice call with no clean result in a turn that is no longer running: the
+	 *  learner stopped it. */
+	stopped?: boolean;
 	/** Native result retained for public plugin renderers and readable fallbacks. */
 	result?: Pick<ToolResultMessage, "content" | "details" | "isError">;
 	data?: unknown;
@@ -325,6 +332,12 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 		}
 	}
 
+	// A practice call that never got a clean result, in a turn that is over, was stopped.
+	if (!live?.inFlight) {
+		for (const message of out) for (const part of message.parts) {
+			if ((part.type === "tool-problem" || part.type === `tool-${PRACTICE_CONCLUDE_TOOL}`) && !part.settled && part.state !== "output-error" && part.state !== "input-streaming") part.stopped = true;
+		}
+	}
 	return out;
 }
 
@@ -367,11 +380,13 @@ function toolPartOf(
 			part.rawInput = block.arguments;
 			part.errorText = exec.errorText ?? "The tool call failed.";
 		} else if (isQuestion) {
+			part.settled = true;
 			// Fork 2: the clean "Question posed" placeholder is IGNORED —
 			// question tools are client-owned; the dock mounts on the clean
 			// end, the answer arrives as a real toolResult.
 			part.state = "input-available";
 		} else {
+			part.settled = true;
 			part.state = "output-available";
 			part.output = exec.output;
 		}
@@ -394,6 +409,7 @@ function joinConcludeReveal(part: LhViewPart, messages: readonly LhMessage[]): v
 
 function applyResultTo(part: LhViewPart | undefined, result: ToolResultMessage): void {
 	if (part) {
+		if (!result.isError) part.settled = true;
 		// Fork 2 (owner, Wave D): the clean "Question posed" placeholder
 		// (details: null — tool-execute questionResult) is client-owned
 		// question territory. The dock mounts on the dangling call; the

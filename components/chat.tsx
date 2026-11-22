@@ -13,7 +13,7 @@ import { usePageSurfaceBoundary, SurfaceRegion } from "./plugin-surfaces";
 import { findSurfaceBoundary } from "./plugin-surface-targets";
 import { scheduleOpeningSubmission } from "./plugin-submission-opening";
 import { activeProblemOccurrenceOf, buildAnswer, toClientQuestion, type PluginSubmission, type PluginSubmissionTarget, type QuestionData } from "@/src/core";
-import { failedCallShowsItsError, isAbortedCall, validatePluginBuiltinSubmissionAnswer } from "@/src/core";
+import { failedCallShowsItsError, isAbortedCall, validatePluginBuiltinSubmissionAnswer, type LhViewPart } from "@/src/core";
 import { SessionNotFoundError, visibleQueuedSteers } from "@/components/session-core";
 import { SetupDialog } from "@/components/setup-dialog";
 import { Hint } from "@/components/ui/hint";
@@ -1968,10 +1968,13 @@ export function Chat({
 												// failure, malformed args) is invisible work: the agent reads the error and
 												// retries, and its card would hold hidden answers or draw nothing. Owner
 												// ruling 2026-09-26: surface that retry loop as one quiet line.
-												if (part.state === "output-error" && part.type.startsWith("tool-")) {
-													if (isAbortedCall(part.errorText)) {
-														const before = m.parts[pi - 1];
-														if (before?.state === "output-error" && before.type.startsWith("tool-") && isAbortedCall(before.errorText)) return null;
+												// A practice problem or conclusion with no clean result never draws a card, so
+												// no verdict and no solution: stopped, it is a stopped call; still running, nothing.
+												const stoppedPart = (p: LhViewPart | undefined) => Boolean(p && p.type.startsWith("tool-") && ((p.state === "output-error" && isAbortedCall(p.errorText)) || p.stopped === true));
+												if ((part.type === "tool-problem" || part.type === "tool-conclude") && !part.pluginProblem && !part.settled && part.state !== "input-streaming" && part.state !== "output-error" && !part.stopped) return null;
+												if (stoppedPart(part) || (part.state === "output-error" && part.type.startsWith("tool-"))) {
+													if (stoppedPart(part)) {
+														if (stoppedPart(m.parts[pi - 1])) return null;
 														return (
 															<SystemLine key={`stopped-${pi}`} testId="tool-stopped">
 																Stopped

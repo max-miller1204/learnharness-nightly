@@ -149,4 +149,31 @@ describe("the chat view's server render", () => {
 		assert.ok(html.includes('data-testid="tool-retry"'));
 		assert.ok(!html.includes(SECRET), "the model solution stays hidden");
 	});
+	// A conclusion the learner stopped has no result: it never claims a verdict or shows a
+	// solution, including a legacy record whose conclude call carries its own solutionReveal.
+	const LEGACY = "LEGACY-SOLUTION-5521";
+	const posed = [assistant("m_pose", [call("call_pose", "problem", hidden)]), result("m_pose_result", "call_pose", "problem")];
+	const renderPractice = (messages: unknown[]) => renderToString(<Shell pathname="/chat/chat_stopped"><Chat chatId="chat_stopped" title="Stopped conclude" kind="practice" initialMessages={[user, ...messages] as never} /></Shell>);
+	it("shows Stopped, no verdict card and no solution, for a conclude with no result", () => {
+		for (const input of [{ outcome: "solved", verdict: "Done." }, { outcome: "solved", verdict: "Done.", solutionReveal: LEGACY }]) {
+			const html = renderPractice([...posed, assistant("m_end", [call("call_end", "conclude", input)])]);
+			assert.ok(html.includes("Compute 1 + 1."), "the posed problem still shows");
+			assert.ok(html.includes('data-testid="tool-stopped"'), "Stopped shows");
+			assert.ok(!html.includes('data-testid="conclude-card"'), "no verdict card");
+			assert.ok(!html.includes(SECRET) && !html.includes(LEGACY) && !html.includes("Done."), "no solution and no verdict");
+		}
+	});
+	it("shows Stopped and no Problem card for a pose with no ack", () => {
+		const html = renderPractice([assistant("m_pose", [call("call_pose", "problem", hidden)])]);
+		assert.ok(html.includes('data-testid="tool-stopped"'));
+		assert.ok(!html.includes('data-testid="problem-card"'));
+		assert.ok(!html.includes(SECRET));
+	});
+	it("still shows a legacy conclude's own solution when its result settled", () => {
+		// A legacy pose committed no solution of its own; the conclude call carried it.
+		const legacyPose = [assistant("m_pose", [call("call_pose", "problem", { statement: "Compute 1 + 1.", mode: "recall" })]), result("m_pose_result", "call_pose", "problem")];
+		const html = renderPractice([...legacyPose, assistant("m_end", [call("call_end", "conclude", { outcome: "solved", verdict: "Done.", solutionReveal: LEGACY })]), result("m_end_result", "call_end", "conclude")]);
+		assert.ok(html.includes('data-testid="conclude-card"'));
+		assert.ok(html.includes(LEGACY));
+	});
 });
