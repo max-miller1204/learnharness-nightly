@@ -13,7 +13,8 @@ import { findSurfaceBoundary } from "./plugin-surface-targets";
 import { scheduleOpeningSubmission } from "./plugin-submission-opening";
 import { activeProblemOccurrenceOf, buildAnswer, toClientQuestion, type PluginSubmission, type PluginSubmissionTarget, type QuestionData } from "@/src/core";
 import { validatePluginBuiltinSubmissionAnswer } from "@/src/core";
-import { visibleQueuedSteers } from "@/components/session-core";
+import { SessionNotFoundError, visibleQueuedSteers } from "@/components/session-core";
+import { markSessionDeleted } from "@/components/session-deletion";
 import { SetupDialog } from "@/components/setup-dialog";
 import { Hint } from "@/components/ui/hint";
 import { cn } from "@/lib/utils";
@@ -1310,6 +1311,7 @@ export function Chat({
 	// guess so the static paint has a sane tail. The first layout effect
 	// replaces it with the measured truth before paint.
 	const [dockReserve, setDockReserve] = useState(208);
+	const [sessionMissing, setSessionMissing] = useState(false);
 	const statsRequest = useRef<AbortController | null>(null);
 	const syncTurns = useCallback(async () => {
 		statsRequest.current?.abort();
@@ -1320,12 +1322,17 @@ export function Chat({
 			if (!stats || request.signal.aborted) return;
 			if (Array.isArray(stats.turns)) setTurns(stats.turns);
 			setPricing(stats.pricing);
-		} catch {
+		} catch (error) {
+			if (error instanceof SessionNotFoundError) {
+				markSessionDeleted(chatId);
+				setSessionMissing(true);
+				router.refresh();
+			}
 			// transient blip: stats stay on the last known figures
 		} finally {
 			if (statsRequest.current === request) statsRequest.current = null;
 		}
-	}, [readStats]);
+	}, [chatId, readStats, router]);
 	useEffect(() => {
 		void syncTurns();
 		return () => statsRequest.current?.abort();
@@ -1623,6 +1630,8 @@ export function Chat({
 	};
 
 	usePluginShortcutPage(`/chat/${encodeURIComponent(chatId)}`, captureActionContext);
+
+	if (sessionMissing) return null;
 
 	return (
 		<ChatActionsContext.Provider

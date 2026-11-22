@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { Chat } from "@/components/chat";
+import { SessionGate } from "@/components/session-gate";
 import { slotsConfigured } from "@/src/core";
 import { compactionInFlight, getChat, isTurnRunning, readSettingsRecord, turnFailure, unavailableAttachmentIds } from "@/src/server";
 
@@ -21,23 +22,24 @@ export default async function ChatPage({
 	// decides whether the pill rides.
 	const record = readSettingsRecord();
 	return (
-		<Chat
-			key={chat.id}
-			chatId={chat.id}
-			title={chat.title}
-			kind={chat.kind ?? "teach"}
-			// Wave D: the record IS native agent history — the client view is
+		<SessionGate key={chat.id} chatId={chat.id}>
+			<Chat
+				chatId={chat.id}
+				title={chat.title}
+				kind={chat.kind ?? "teach"}
+				// Wave D: the record IS native agent history - the client view is
 				// derived app-side (core/view.ts projectView; GET serves the same
 				// native messages).
 				initialMessages={chat.messages}
-			initialUnavailableAttachments={unavailableAttachmentIds(chat.messages)}
-			initialError={turnFailure(chat.id)}
-			initialConfigured={slotsConfigured(record?.models)}
-			initialPrompt={prompt}
-			// A teacher turn that outlived its client: the remounted view must
-			// attach (busy shimmer + poll), never resurrect the stale record.
-			initiallyInFlight={isTurnRunning(chat.id)}
-			initiallyCompacting={compactionInFlight(chat.id)}
-		/>
+				initialUnavailableAttachments={unavailableAttachmentIds(chat.messages)}
+				initialError={turnFailure(chat.id)}
+				initialConfigured={slotsConfigured(record?.models)}
+				initialPrompt={prompt}
+				// A teacher turn that outlived its client: the remounted view must
+				// attach (busy shimmer + poll), never resurrect the stale record.
+				initiallyInFlight={isTurnRunning(chat.id)}
+				initiallyCompacting={compactionInFlight(chat.id)}
+			/>
+		</SessionGate>
 	);
 }

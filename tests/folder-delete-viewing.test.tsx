@@ -88,15 +88,21 @@ describe("the folder Delete while a session in it is open", () => {
 		assert.equal(await readOf("chat_folder_left"), "now", "still there: its reads run");
 	});
 
-	it("leaves an open session that went with a replace, after dropping its view; any other page stays", () => {
+	it("leaves an open session that went with a replace, after dropping its view, and refreshes the router cache", () => {
 		const log: string[] = [];
 		const drop = (id: string) => log.push(`drop ${id}`);
 		const replace = (href: string) => log.push(`replace ${href}`);
-		leaveDeletedSession("/chat/chat_open", ["chat_other", "chat_open"], drop, replace);
-		assert.deepEqual(log, ["drop chat_open", "replace /"], "dropped first, then replaced, never pushed");
+		const refresh = () => log.push("refresh");
+		leaveDeletedSession("/chat/chat_open", ["chat_other", "chat_open"], drop, replace, refresh);
+		assert.deepEqual(log, ["drop chat_open", "replace /", "refresh"], "dropped first, then replaced, then router refreshed");
 		log.length = 0;
-		leaveDeletedSession("/chat/chat_open", ["chat_other"], drop, replace);
-		leaveDeletedSession("/graph", ["chat_open"], drop, replace);
-		assert.deepEqual(log, []);
+		leaveDeletedSession("/chat/chat_open", ["chat_other"], drop, replace, refresh);
+		assert.deepEqual(log, ["refresh"], "deleting a non-open session still refreshes the router cache without leaving");
+		log.length = 0;
+		leaveDeletedSession("/graph", ["chat_open"], drop, replace, refresh);
+		assert.deepEqual(log, ["refresh"], "deleting from another page refreshes the router cache without leaving");
+		log.length = 0;
+		leaveDeletedSession("/chat/chat_open", [], drop, replace, refresh);
+		assert.deepEqual(log, [], "empty delete list does nothing");
 	});
 });
