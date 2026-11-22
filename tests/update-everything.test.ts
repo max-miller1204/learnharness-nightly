@@ -1420,6 +1420,7 @@ test("main.cjs pushes the remote window's status after every updater state chang
 	const setState = source.slice(source.indexOf("function setUpdateState("), source.indexOf("/** Read the install record once at launch"));
 	assert.match(setState, /pushRemoteStatus\?\.\(\)/, "setUpdateState is the one place the snapshot moves");
 	assert.match(source, /pushRemoteStatus = createStatusPush\(\{ current: \(\) => serverList\.current\(\), updateEverything,/);
+	assert.match(source, /createServerList\(\{[^]*?selected: \(\) => pushRemoteStatus\?\.\(\),[^]*?\}\);/, "the server list is told when a server is selected (tests/desktop-server-list.test.ts holds the behaviour behind it)");
 });
 
 test("status carries the updater snapshot's revision, so the page can drop a read that a later push overtook", () => {

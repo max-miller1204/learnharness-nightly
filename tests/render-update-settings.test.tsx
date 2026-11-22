@@ -12,7 +12,7 @@ import { installModalDom } from "./modal-dom.ts";
 import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
 import { sameReleaseTrack } from "../selfhost/src/version-order.ts";
-import { aboutButton, desktopAppButton, UpdateSettings, readDesktopAppStatus, type DesktopAppStatus, type UpdateState } from "../components/settings/update-settings.tsx";
+import { aboutButton, desktopAppButton, UpdateSettings, readDesktopAppStatus, useDesktopAppUpdate, type DesktopAppStatus, type UpdateState } from "../components/settings/update-settings.tsx";
 import { updateButtonTooltip } from "../components/update-tooltips.ts";
 import { AUTO_RELOAD_KEY, AUTO_RELOAD_MEMORY, claimAutoReload, downloadingTooltip, downloadRingOffset, hasUnsentMessage, resolveUpdateControl, retryTooltip, shownReleaseNotes, SidebarUpdatePill, updateControlTooltip } from "../components/sidebar-update-pill.tsx";
 import { createRequire } from "node:module";
@@ -1934,41 +1934,75 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 			assert.equal(subscribers.size, 0, "unsubscribed when the page unmounts");
 		});
 
-		it("a read whose answer lands after a newer push never replaces it, on mount, on a poll and after a click", async () => {
-			const old = app({ revision: 5 }) as Status;
-			const r = everythingRemote(old, state({ status: "up-to-date", runningVersion: V71 }));
+		// The hook itself, with every read held until the test answers it (an IPC reply that is slow to land).
+		function heldReads(first: Status) {
+			const r = everythingRemote(first, state({ status: "up-to-date", runningVersion: V71 }));
 			const subscribers = new Set<(status: unknown) => void>();
-			const answers: Array<(status: unknown) => void> = [];
-			const desktop = window.lh!.desktopUpdate as unknown as { getStatus: () => Promise<unknown>; onStatus: (callback: (status: unknown) => void) => () => void; check: () => Promise<void> };
-			// Every read waits for the test to answer it, as an IPC reply that is slow to land.
-			desktop.getStatus = () => new Promise((resolve) => { answers.push(resolve); });
+			const reads: Array<(status: unknown) => void> = [];
+			const desktop = window.lh!.desktopUpdate as unknown as { getStatus: () => Promise<unknown>; onStatus: (callback: (status: unknown) => void) => () => void };
+			desktop.getStatus = () => new Promise((resolve) => { reads.push(resolve); });
 			desktop.onStatus = (callback) => { subscribers.add(callback); return () => { subscribers.delete(callback); }; };
+			const push = (status: unknown) => act(async () => { for (const subscriber of subscribers) subscriber(status); });
+			const answer = (status: unknown) => act(async () => { reads.shift()!(status); });
+			return { r, subscribers, reads, push, answer };
+		}
+		let hook: ReturnType<typeof useDesktopAppUpdate> = null;
+		function Probe() {
+			hook = useDesktopAppUpdate();
+			return <div data-testid="probe" data-phase={hook?.status?.phase} data-revision={hook?.status?.revision}>
+				<button data-testid="probe-check" onClick={() => void hook?.check()} />
+			</div>;
+		}
+		const seen = (host: HTMLElement) => `${q(host, "probe")!.getAttribute("data-phase")} ${q(host, "probe")!.getAttribute("data-revision")}`;
+
+		it("a mount's or a poll's read that main answered before a push, and that lands after it, never replaces it", async () => {
+			const v = heldReads(app({ revision: 5 }));
+			const host = await mount(<Probe />);
+			await settle();
+			assert.equal(v.reads.length, 1, "the mount's read is out");
+			await v.push(app({ version: V72, target: V73, phase: "available", revision: 6 }));
+			assert.equal(seen(host), "available 6");
+			await v.answer(app({ revision: 5 }));
+			await settle();
+			assert.equal(seen(host), "available 6", "the mount's older read is dropped");
+			// A visibility refresh is the same read: out first, overtaken, then answered.
+			await act(async () => { document.dispatchEvent(new dom.window.Event("visibilitychange")); });
+			assert.equal(v.reads.length, 1, "the refresh's read is out");
+			await v.push(app({ version: V72, target: V73, phase: "downloading", downloadPercent: 40, revision: 7 }));
+			assert.equal(seen(host), "downloading 7");
+			await v.answer(app({ version: V72, target: V73, phase: "available", revision: 6 }));
+			await settle();
+			assert.equal(seen(host), "downloading 7", "a revision 6 read never undoes revision 7");
+		});
+
+		it("the hook's own check(): its refresh afterwards can't undo what a push showed meanwhile", async () => {
+			const v = heldReads(app({ revision: 5 }));
+			const host = await mount(<Probe />);
+			await settle();
+			await v.answer(app({ revision: 5 }));
+			assert.equal(seen(host), "up-to-date 5");
+			await act(async () => { q(host, "probe-check")!.click(); });
+			await settle();
+			assert.equal(v.reads.length, 1, "check() resolved and its finally-refresh read is out, answered with the older status");
+			await v.push(app({ version: V72, target: V73, phase: "checking", revision: 6 }));
+			await v.push(app({ version: V72, target: V73, phase: "available", revision: 7 }));
+			assert.equal(seen(host), "available 7");
+			await v.answer(app({ phase: "up-to-date", revision: 5 }));
+			await settle();
+			assert.equal(seen(host), "available 7", "the refresh that check() started never replaces the push");
+		});
+
+		it("an equal revision applies (a run's steps and a progress read change without one), and the pill shows it", async () => {
+			const v = heldReads(app({ version: V72, target: V73, phase: "downloading", downloadPercent: 40, revision: 8 }));
 			const host = await mount(<SidebarUpdatePill pageVersion={V71} />);
 			await settle();
-			assert.equal(answers.length, 1, "the mount's read is out");
-			const pill = () => q(host, "update-pill")!;
-			const found = app({ version: V72, target: V73, phase: "available", revision: 6 });
-			await act(async () => { for (const push of subscribers) push(found); });
-			assert.equal(pill().getAttribute("aria-label"), "Update this app and 1 server");
-			// The mount's read was answered by main before the push (revision 5) and lands after it.
-			await act(async () => { answers.shift()!(old); });
-			await settle();
-			assert.equal(pill().getAttribute("aria-label"), "Update this app and 1 server", "the older read is dropped");
-			// The same for a read after a click on check: its finally-refresh races the change.
-			await act(async () => { await (window.lh!.desktopUpdate as unknown as { check: () => Promise<void> }).check(); });
-			await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-			const next = app({ version: V72, target: V73, phase: "downloading", revision: 8 });
-			await act(async () => { for (const push of subscribers) push(next); });
-			assert.equal(pill().getAttribute("data-action"), "downloading");
-			while (answers.length) await act(async () => { answers.shift()!(found); });
-			await settle();
-			assert.equal(pill().getAttribute("data-action"), "downloading", "a read of revision 6 never undoes revision 8");
-			// An equal revision applies (a run's and a result's steps change without it); a status from an app without one always does.
-			await act(async () => { for (const push of subscribers) push({ ...next, downloadPercent: 60 }); });
-			assert.ok(pill().querySelector("svg"));
-			await act(async () => { for (const push of subscribers) push(app({ version: V72, target: V73, phase: "available" })); });
-			assert.equal(pill().getAttribute("aria-label"), "Update this app and 1 server", "no revision: taken as it is");
-			void r;
+			await v.answer(app({ version: V72, target: V73, phase: "downloading", downloadPercent: 40, revision: 8 }));
+			const ring = () => q(host, "update-download-ring")!;
+			assert.equal(ring().getAttribute("data-percent"), "40");
+			await v.push(app({ version: V72, target: V73, phase: "downloading", downloadPercent: 60, revision: 8 }));
+			assert.equal(ring().getAttribute("data-percent"), "60", "the same revision with newer progress applies: a `<=` guard would keep 40");
+			await v.push(app({ version: V72, target: V73, phase: "downloading", downloadPercent: 80 }));
+			assert.equal(ring().getAttribute("data-percent"), "80", "no revision at all: taken as it is");
 		});
 
 		it("with only the server behind there are no release notes: the hover is the plain tooltip, even if the app kept old ones", async () => {
