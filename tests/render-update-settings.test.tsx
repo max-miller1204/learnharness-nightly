@@ -1612,7 +1612,7 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 	});
 
 	it("a key that closed the app's dialog with Update puts focus on the capsule that stands in for the control", async () => {
-		const r = everythingRemote({ version: V71, target: V72, phase: "available", error: null }, state({ status: "up-to-date", runningVersion: V71 }), { opened: { started: true, keyboard: true } });
+		const r = everythingRemote({ version: V71, target: V72, phase: "available", error: null }, state({ status: "up-to-date", runningVersion: V71 }), { opened: { started: true, keyboard: true, dialog: true } });
 		const host = await mount(<SidebarUpdatePill pageVersion={V71} />);
 		await settle();
 		q(host, "update-pill")!.focus();
@@ -1620,6 +1620,56 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		await click(q(host, "update-pill")); await settle(); await settle();
 		assert.equal(q(host, "update-pill") === null, true);
 		assert.equal(document.activeElement === q(host, "update-capsule-button"), true, "focus is on the capsule, not lost with the control");
+	});
+
+	it("a keyboard run: the page main reloads puts focus on the capsule, and What's new waits until the run ends", async () => {
+		const server = state({ status: "up-to-date", runningVersion: V72 });
+		const counting = { version: V71, target: V72, phase: "updating", error: null, run: { phase: "countdown", localVersion: V72, restartAt: null, awaitingPage: true, keyboard: true, machines: [{ label: "max-desktop", status: "done", startedAt: Date.now(), failure: null }] } };
+		const r = everythingRemote({ version: V71, target: V72, phase: "updating", error: null }, server);
+		globalThis.fetch = async (input) => String(input) === "/api/whats-new"
+			? Response.json({ version: V72, releaseNotes: [], omittedReleaseCount: 0 })
+			: Response.json(server);
+		// The reloaded page: focus starts in the composer.
+		const host = await mount(<><textarea data-testid="composer" /><SidebarUpdatePill pageVersion={V72} /><WhatsNewDialog pageVersion={V72} /></>);
+		q(host, "composer")!.focus();
+		await settle();
+		// Then the app's status for the run.
+		r.set(counting);
+		await refreshDesktop(); await settle();
+		assert.equal(r.calls.ready, 1);
+		assert.equal(document.activeElement === q(host, "update-capsule-button"), true, "on the capsule: Later is one Enter away");
+		assert.equal(q(document, "whats-new-dialog") === null, true, "no modal over the countdown");
+		// Later: the run ends, and What's new shows.
+		r.set({ version: V71, target: V72, phase: "downloaded", error: null, run: null });
+		await refreshDesktop(); await settle();
+		assert.equal(q(document, "whats-new-dialog") !== null, true, "held back, not lost");
+	});
+
+	it("a run started with a click moves no focus on the reloaded page", async () => {
+		const server = state({ status: "up-to-date", runningVersion: V72 });
+		const r = everythingRemote({ version: V71, target: V72, phase: "updating", error: null }, server);
+		const host = await mount(<><textarea data-testid="composer" /><SidebarUpdatePill pageVersion={V72} /></>);
+		q(host, "composer")!.focus();
+		await settle();
+		r.set({ version: V71, target: V72, phase: "updating", error: null, run: { phase: "countdown", localVersion: V72, restartAt: null, awaitingPage: true, keyboard: false, machines: [] } });
+		await refreshDesktop(); await settle();
+		assert.equal(r.calls.ready, 1);
+		assert.equal(document.activeElement === q(host, "composer"), true);
+	});
+
+	it("an ask main refuses (its cooldown) keeps focus on the control, to press Enter again", async () => {
+		toastManager.clear();
+		everythingRemote({ version: V71, target: V72, phase: "available", error: null }, state({ status: "up-to-date", runningVersion: V71 }), { opened: { error: { title: "Update everything", detail: "Try again in a moment." } } });
+		const host = await mount(<><SidebarUpdatePill pageVersion={V71} /><Toaster /></>);
+		await settle();
+		const pill = q(host, "update-pill")!;
+		let blurred = false;
+		pill.blur = () => { blurred = true; };
+		pill.focus();
+		await click(pill); await settle();
+		assert.deepEqual([...document.querySelectorAll("[data-testid='toast-description']")].map((node) => node.textContent), ["Try again in a moment."]);
+		assert.equal(blurred, false, "not let go of, as after a dialog's click");
+		assert.equal(document.activeElement === pill, true);
 	});
 
 	it("what the app can't do says why in a toast", async () => {

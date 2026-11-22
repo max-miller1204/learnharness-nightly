@@ -24,7 +24,7 @@
  * T3's `finalFocus` (UpdateEverythingDialog.tsx:78-82): see focusAfterDialog.
  */
 
-import { useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import * as Popper from "@radix-ui/react-popper";
 import { useOptionalInteractionLayers } from "@/components/interaction-layers";
@@ -35,15 +35,27 @@ import {
 } from "@/components/update-everything-logic";
 import { cn } from "@/lib/utils";
 
-/** T3's useNow (SidebarUpdateCapsule.tsx:27-35): a clock that ticks only while something counts. */
-function useNow(intervalMs: number | null, clock: () => number): number {
-	const step = intervalMs ?? 60_000;
-	const subscribe = (onChange: () => void) => {
-		if (intervalMs === null) return () => {};
-		const timer = setInterval(onChange, intervalMs);
-		return () => clearInterval(timer);
-	};
-	return useSyncExternalStore(subscribe, () => Math.floor(clock() / step) * step, () => Math.floor(clock() / step) * step);
+/** T3's useNow (SidebarUpdateCapsule.tsx:27-35): a clock that ticks only while something counts.
+ *  It reads the clock afresh, before paint, whenever what it counts changes (`deadline`), and
+ *  then ticks as each whole second to the deadline begins, so a countdown's first label is its
+ *  full count ("Restart in 5s"), never one more from a stale or rounded reading. */
+function useNow(intervalMs: number | null, clock: () => number, deadline: number | null): number {
+	const [now, setNow] = useState(clock);
+	useLayoutEffect(() => {
+		const read = clock();
+		setNow(read);
+		if (intervalMs === null) return;
+		const wait = (at: number) => (deadline === null ? intervalMs : (((deadline - at) % 1_000) + 1_000) % 1_000 || 1_000);
+		let timer: ReturnType<typeof setTimeout>;
+		const tick = () => {
+			const at = clock();
+			setNow(at);
+			timer = setTimeout(tick, wait(at));
+		};
+		timer = setTimeout(tick, wait(read));
+		return () => clearTimeout(timer);
+	}, [intervalMs, clock, deadline]);
+	return now;
 }
 
 /** Where focus goes once main's dialog has closed, as T3's `finalFocus={(closeType) => closeType ===
@@ -51,6 +63,9 @@ function useNow(intervalMs: number | null, clock: () => number): number {
  *  a pointer close leaves it (a refocused trigger would show its focus ring and open its tooltip).
  *  After a keyboard Update the trigger goes away with the run's start, so `started` takes focus. */
 export function focusAfterDialog(answer: BridgeAnswer, trigger: HTMLElement | null, started: () => void) {
+	// No dialog showed (main refused the ask, say during its cooldown): focus stays where it is,
+	// so a keyboard user can ask again from the same control.
+	if (!answer.dialog) return;
 	if (!answer.keyboard) {
 		if (trigger && document.activeElement === trigger) trigger.blur();
 		return;
@@ -62,19 +77,20 @@ export function focusAfterDialog(answer: BridgeAnswer, trigger: HTMLElement | nu
 
 export type CapsuleActions = { later: () => void; retry: () => Promise<BridgeAnswer> | void; dismiss: () => void };
 
-export function SidebarUpdateCapsule({ run, local, icon, actions, clock = Date.now, focusOnMount = false }: {
+export function SidebarUpdateCapsule({ run, local, icon, actions, clock = Date.now, focusRequest = 0 }: {
 	run: UpdateEverythingRun;
 	local: UpdateRunLocalState;
 	icon: ReactNode;
 	actions: CapsuleActions;
 	/** For tests: the time the capsule counts against. */
 	clock?: () => number;
-	/** It stands in for a control whose dialog a key closed with Update: focus starts on it. */
-	focusOnMount?: boolean;
+	/** Bumped when focus should go onto the capsule: a key closed main's dialog with Update, here
+	 *  or on the page before main's reload. */
+	focusRequest?: number;
 }) {
 	const machines = run.machines;
 	const hasActiveMachine = machines.some(({ status }) => status !== "done" && status !== "failed" && status !== "waiting");
-	const now = useNow(run.phase === "countdown" ? 1_000 : hasActiveMachine ? 30_000 : null, clock);
+	const now = useNow(run.phase === "countdown" ? 1_000 : hasActiveMachine ? 30_000 : null, clock, run.phase === "countdown" ? run.restartAt : null);
 	const view = describeUpdateCapsule(run, local, now);
 	const failed = machines.some(({ status }) => status === "failed");
 	const settled = !hasActiveMachine && run.localVersion === null;
@@ -96,9 +112,20 @@ export function SidebarUpdateCapsule({ run, local, icon, actions, clock = Date.n
 		} else actions.dismiss();
 	};
 	useEffect(() => {
-		if (focusOnMount) buttonRef.current?.focus({ preventScroll: true });
-	}, [focusOnMount]);
-	const label = view.slow ? `${view.label} ${view.slow.status} ${view.slow.elapsed}` : view.label;
+		if (focusRequest > 0) buttonRef.current?.focus({ preventScroll: true });
+	}, [focusRequest]);
+	// During the countdown the capsule's name stays put (a focused control whose name changes
+	// every second is read out every second); the announcement says the count once, as it starts.
+	const counting = restartSeconds !== null;
+	const label = counting ? "Restart countdown. Later is in the details."
+		: view.slow ? `${view.label} ${view.slow.status} ${view.slow.elapsed}` : view.label;
+	const [announcement, setAnnouncement] = useState("");
+	useEffect(() => {
+		// From a fresh reading, as useNow's: this runs before its first tick lands.
+		const seconds = counting ? restartSecondsLeft(run, clock()) : null;
+		setAnnouncement(seconds === null ? "" : `Restart in ${seconds}s.`);
+		// Only as the countdown starts or ends, never on each second's label.
+	}, [counting, run.restartAt]);
 	// T3 1425613b: during the countdown the capsule expands only where there is room for its
 	// label and Later; narrower, its seconds stay visible in place of the icon.
 	const expandedControlClassName = restartSeconds === null ? "@min-[5rem]/sidebar-update:block" : "@min-[12rem]/sidebar-update:block";
@@ -179,8 +206,10 @@ export function SidebarUpdateCapsule({ run, local, icon, actions, clock = Date.n
 						}}
 						className="absolute inset-0 cursor-pointer rounded-full outline-hidden ring-ring hover:bg-accent/70 focus-visible:ring-2 focus-visible:ring-inset"
 					/>
+					<span role="status" data-testid="update-capsule-announcement" className="sr-only">{announcement}</span>
 					<span
 						data-testid="update-capsule-label"
+						aria-hidden={counting || undefined}
 						className={cn(
 							"pointer-events-none relative hidden min-w-0 flex-1 truncate pl-3 text-xs transition-opacity duration-200 ease-out starting:opacity-0 motion-reduce:transition-none",
 							expandedControlClassName,

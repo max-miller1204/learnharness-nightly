@@ -32,6 +32,8 @@ export type UpdateEverythingRun = {
 	machines: UpdateRunMachine[];
 	/** Main waits for the page to say the capsule shows this (window.lh.desktopUpdate.ready()). */
 	awaitingPage: boolean;
+	/** A key closed main's dialog with Update: the page showing this puts focus on the capsule. */
+	keyboard: boolean;
 };
 
 /** A run that moves (a machine working, the countdown, the restart, or main waiting on the
@@ -168,6 +170,7 @@ export function readUpdateEverythingRun(value: unknown): UpdateEverythingRun | n
 		restartAt: finite(run.restartAt) ? run.restartAt : null,
 		machines,
 		awaitingPage: run.awaitingPage === true,
+		keyboard: run.keyboard === true,
 	};
 }
 
@@ -185,15 +188,16 @@ export function readUpdateEverythingResult(value: unknown): UpdateEverythingResu
 }
 
 /** What the app's everything() or retry() answered: what to tell (or null), whether a run
- *  started, and whether a key closed its dialog (for where focus goes after it). */
-export type BridgeAnswer = { error: { title: string; detail: string } | null; started: boolean; keyboard: boolean };
+ *  started, whether its dialog showed at all (`dialog`) and whether a key closed it (for where
+ *  focus goes after it). */
+export type BridgeAnswer = { error: { title: string; detail: string } | null; started: boolean; keyboard: boolean; dialog: boolean };
 
 /** A bridge call that failed (an older app, or no click behind it): still never a silent click. */
 export const BRIDGE_FAILED = { title: "Couldn’t update everything.", detail: "The app didn’t answer. Try again." };
 
 export function readBridgeAnswer(value: unknown): BridgeAnswer {
 	const fields = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
-	return { error: readBridgeError(value), started: fields.started === true, keyboard: fields.keyboard === true };
+	return { error: readBridgeError(value), started: fields.started === true, keyboard: fields.keyboard === true, dialog: fields.dialog === true };
 }
 
 const text = (value: unknown, max: number) => (typeof value === "string" && value.trim() ? value.trim().slice(0, max) : null);

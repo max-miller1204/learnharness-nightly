@@ -52,7 +52,7 @@ const click = async (target: HTMLElement | null) => {
 const V72 = "0.6.1-nightly.20261118.72";
 const NOW = 1_800_000_000_000;
 const run = (over: Partial<UpdateEverythingRun> = {}): UpdateEverythingRun => ({
-	phase: "servers", localVersion: V72, restartAt: null, awaitingPage: false,
+	phase: "servers", localVersion: V72, restartAt: null, awaitingPage: false, keyboard: false,
 	machines: [{ label: "max-desktop", status: "downloading", startedAt: NOW - 30_000, failure: null }],
 	...over,
 });
@@ -121,6 +121,28 @@ describe("the capsule (T3's SidebarUpdateCapsule.tsx at df09ced7)", () => {
 		const calls: string[] = [];
 		return { calls, actions: { later: () => { calls.push("later"); }, retry: () => { calls.push("retry"); }, dismiss: () => { calls.push("dismiss"); } } };
 	};
+	it("the countdown's first label is the full 5s, whatever the clock read before it started (a fake clock)", async () => {
+		// The capsule mounted 400 ms into a second, with no deadline yet; main then sets one 5 s on.
+		let t = NOW + 400;
+		const clock = () => t;
+		const waiting = run({ phase: "countdown", restartAt: null, awaitingPage: true, machines: [machine({ status: "done" })] });
+		const host = document.createElement("div");
+		document.body.append(host);
+		const root = createRoot(host);
+		roots.push({ root, host });
+		const draw = async (value: UpdateEverythingRun) => { await act(async () => { root.render(<InteractionLayersProvider><SidebarUpdateCapsule run={value} local={null} icon={null} actions={actions().actions} clock={clock} /></InteractionLayersProvider>); }); };
+		await draw(waiting);
+		t += 1_234;
+		const counting = { ...waiting, awaitingPage: false, restartAt: t + 5_000 };
+		await draw(counting);
+		assert.equal(q("update-capsule-label")!.textContent, "Restart in 5s", "not 6s from a rounded or stale reading");
+		assert.equal(q("update-capsule-icon")!.textContent, "5s");
+		// The next tick is due as the next whole second to the deadline begins (here 1 s on).
+		t = counting.restartAt - 4_000;
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_050)); });
+		assert.equal(q("update-capsule-label")!.textContent, "Restart in 4s", "the next second's label");
+		assert.equal(q("update-capsule-announcement")!.textContent, "Restart in 5s.", "the announcement isn't redone each second");
+	});
 	it("during the countdown in a sidebar narrower than 12rem, Later is still reachable from the keyboard, in the details", async () => {
 		const { calls, actions: a } = actions();
 		await mount(<SidebarUpdateCapsule run={run({ phase: "countdown", restartAt: NOW + 5_000, machines: [machine({ status: "done" })] })} local={{ status: "waiting" }} icon={null} actions={a} clock={() => NOW} />);
@@ -138,9 +160,11 @@ describe("the capsule (T3's SidebarUpdateCapsule.tsx at df09ced7)", () => {
 	it("after main's dialog: a keyboard Update focuses the capsule, a keyboard Cancel the Retry pressed, a click neither (T3's finalFocus)", async () => {
 		const failed = run({ localVersion: null, machines: [machine({ status: "failed", failure: "no" })] });
 		for (const [answer, expect] of [
-			[{ error: null, started: true, keyboard: true }, "capsule"],
-			[{ error: null, started: false, keyboard: true }, "retry"],
-			[{ error: null, started: false, keyboard: false }, "none"],
+			[{ error: null, started: true, keyboard: true, dialog: true }, "capsule"],
+			[{ error: null, started: false, keyboard: true, dialog: true }, "retry"],
+			[{ error: null, started: false, keyboard: false, dialog: true }, "none"],
+			// Refused before any dialog (main's cooldown): focus stays on Retry, to press it again.
+			[{ error: { title: "Update everything", detail: "Try again in a moment." }, started: false, keyboard: false, dialog: false }, "retry"],
 		] as const) {
 			let answered: (value: typeof answer) => void = () => {};
 			await mount(<SidebarUpdateCapsule run={failed} local={null} icon={null} clock={() => NOW} actions={{ later: () => {}, dismiss: () => {}, retry: () => new Promise((resolve) => { answered = resolve; }) }} />);
@@ -161,7 +185,9 @@ describe("the capsule (T3's SidebarUpdateCapsule.tsx at df09ced7)", () => {
 		const { calls, actions: a } = actions();
 		await mount(<SidebarUpdateCapsule run={run({ phase: "countdown", restartAt: NOW + 5_000, machines: [machine({ status: "done" })] })} local={{ status: "waiting" }} icon={null} actions={a} clock={() => NOW} />);
 		assert.equal(q("update-capsule-label")!.textContent, "Restart in 5s");
-		assert.equal(q("update-capsule-button")!.getAttribute("aria-label"), "Restart in 5s");
+		assert.equal(q("update-capsule-button")!.getAttribute("aria-label"), "Restart countdown. Later is in the details.", "a name that doesn't change every second");
+		assert.equal(q("update-capsule-announcement")!.getAttribute("role"), "status");
+		assert.equal(q("update-capsule-announcement")!.textContent, "Restart in 5s.", "said once, as it starts");
 		assert.equal(q("update-capsule-action")!.textContent, "Later");
 		await click(q("update-capsule-action"));
 		assert.deepEqual(calls, ["later"]);

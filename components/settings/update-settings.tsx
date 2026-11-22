@@ -318,7 +318,7 @@ export function useDesktopAppUpdate() {
 		/** The app's own dialog: how it closed, or what to tell when it didn't open. */
 		const ask = (method: "everything" | "retry") => async (): Promise<BridgeAnswer> => {
 			try { return readBridgeAnswer(await bridge[method]?.()); } catch {
-				return { error: BRIDGE_FAILED, started: false, keyboard: false };
+				return { error: BRIDGE_FAILED, started: false, keyboard: false, dialog: false };
 			} finally { void refresh(); }
 		};
 		const act = (method: "later" | "dismiss") => () => { void bridge[method]?.().catch(() => {}).finally(() => void refresh()); };

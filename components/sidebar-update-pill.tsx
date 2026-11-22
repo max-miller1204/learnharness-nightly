@@ -53,7 +53,8 @@ import { hasLegacyInteractionForeground } from "@/components/plugin-input-focus"
 import { InstallUpdateDialog } from "@/components/install-update-dialog";
 import { focusAfterDialog, SidebarUpdateCapsule } from "@/components/sidebar-update-capsule";
 import { SIDEBAR_CLOSED_ATTR } from "@/components/sidebar-boot";
-import type { BridgeAnswer, UpdateRunLocalState } from "@/components/update-everything-logic";
+import { runIsLive, type BridgeAnswer, type UpdateRunLocalState } from "@/components/update-everything-logic";
+import { holdWhatsNew } from "@/components/whats-new-hold";
 import { UpdateReleaseNotes } from "@/components/release-notes-view";
 import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateDownloadedToast, showUpdateErrorToast, showUpdateEverythingResult, UNEXPECTED_ERROR } from "@/components/update-toasts";
 import { APP_VERSION, HOMEPAGE, desktopOffer, useDesktopAppUpdate, useUpdateState, type DesktopAppStatus, type UpdateState } from "@/components/settings/update-settings";
@@ -430,10 +431,24 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	// each time it starts waiting, and only where it can be seen. In a closed sidebar the app's
 	// own countdown shows instead, once its wait is up.
 	const awaitingPage = desktopStatus?.run?.awaitingPage === true;
+	const keyboardRun = desktopStatus?.run?.keyboard === true;
 	const shown = useSyncExternalStore(subscribeSidebar, sidebarShown, () => true);
-	useEffect(() => { if (awaitingPage && shown && everything) everything.ready(); }, [awaitingPage, shown, everything]);
-	// A key closed the app's dialog with Update: focus goes onto the capsule that stands in for the control.
-	const [focusCapsule, setFocusCapsule] = useState(false);
+	// A key closed the app's dialog with Update: focus goes onto the capsule that stands in for the
+	// control, and again on the page main reloads after the server's cover (focus starts in the
+	// composer there), so the countdown's Later stays one Enter away.
+	const [focusCapsule, setFocusCapsule] = useState(0);
+	useEffect(() => {
+		if (!awaitingPage || !shown || !everything) return;
+		everything.ready();
+		if (keyboardRun) setFocusCapsule((count) => count + 1);
+	}, [awaitingPage, shown, everything, keyboardRun]);
+	// While the capsule shows a run, the What's new popup waits (components/whats-new-dialog.tsx):
+	// a modal over the countdown would keep Later from the keyboard.
+	const runShown = !!(everything && desktopStatus?.run && runIsLive(desktopStatus.run));
+	useEffect(() => {
+		holdWhatsNew(runShown);
+		return () => holdWhatsNew(false);
+	}, [runShown]);
 	const toastOf = (answer: BridgeAnswer) => {
 		if (answer.error) showUpdateErrorToast(answer.error.title, answer.error.detail);
 		return answer;
@@ -529,7 +544,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 		return (
 			// T3's sidebar row for it (SidebarUpdatePill.tsx: @container/sidebar-update): the capsule's width follows it.
 			<div className="@container/sidebar-update ml-auto flex min-w-8 flex-1 justify-end">
-				<SidebarUpdateCapsule run={run} local={local} icon={<CircleArrowUpIcon className="size-4" aria-hidden />} focusOnMount={focusCapsule} actions={{
+				<SidebarUpdateCapsule run={run} local={local} icon={<CircleArrowUpIcon className="size-4" aria-hidden />} focusRequest={focusCapsule} actions={{
 					later: everything.later,
 					// The app asks again in its own dialog before it retries anything.
 					retry: () => everything.retry().then(toastOf),
@@ -611,10 +626,9 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 			// The app's own Update everything dialog (revision PR 7): it plans, asks and starts.
 			setPending(true);
 			const trigger = buttonRef.current;
-			setFocusCapsule(false);
 			void everything.open().then((answer) => {
 				toastOf(answer);
-				focusAfterDialog(answer, trigger, () => setFocusCapsule(true));
+				focusAfterDialog(answer, trigger, () => setFocusCapsule((count) => count + 1));
 			}).finally(() => setPending(false));
 		} else if (desktop && (kind === "everything" || kind === "app-install")) {
 			// An older app asks first in its own native dialog (electron/update-everything.cjs).
