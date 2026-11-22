@@ -19,6 +19,7 @@ import {
 	readUpdateEverythingRun, runIsLive, UPDATE_SLOW_AFTER_MS, type UpdateEverythingRun,
 } from "../components/update-everything-logic.ts";
 import { SidebarUpdateCapsule } from "../components/sidebar-update-capsule.tsx";
+import { trackInputModality } from "../components/sidebar-keyboard.ts";
 
 const dom = parseHTML("<html><body></body></html>");
 Object.assign(globalThis, { window: dom.window, document: dom.document, Element: dom.window.Element, HTMLElement: dom.window.HTMLElement, CustomEvent: dom.window.CustomEvent });
@@ -40,6 +41,10 @@ async function mount(element: React.ReactElement) {
 const q = (id: string) => document.querySelector<HTMLElement>(`[data-testid='${id}']`);
 const press = async (target: Element | null, key: string, init: KeyboardEventInit = {}) => {
 	assert.ok(target, `missing key target for ${key}`);
+	if (target.getAttribute("data-testid") === "update-capsule-button") {
+		const matches = target.matches.bind(target);
+		target.matches = (selector) => selector === ":focus-visible" || matches(selector);
+	}
 	// linkedom has no KeyboardEvent: a plain event carrying the key fields the handlers read.
 	const event = Object.assign(new dom.window.Event("keydown", { bubbles: true, cancelable: true }), { key, shiftKey: false, metaKey: false, ctrlKey: false, altKey: false, isComposing: false, ...init });
 	await act(async () => { target.dispatchEvent(event); });
@@ -223,6 +228,32 @@ describe("the capsule (T3's SidebarUpdateCapsule.tsx at df09ced7)", () => {
 		assert.equal(q("update-capsule-details"), null);
 		assert.equal(document.activeElement === capsule, true);
 		assert.deepEqual(calls, [], "keys alone did nothing to the run");
+	});
+	it("details keep keyboard events from later document listeners and show focus rings", async () => {
+		await mount(<SidebarUpdateCapsule run={run({ localVersion: null, machines: [machine({ status: "failed" })] })} local={null} icon={null} actions={actions().actions} clock={() => NOW} />);
+		await press(q("update-capsule-button"), "Enter");
+		const action = q("update-capsule-details-action")!;
+		const dismiss = q("update-capsule-dismiss")!;
+		assert.match(action.className, /focus-visible:ring-2/);
+		assert.match(dismiss.className, /focus-visible:ring-2/);
+		let leaked = 0;
+		const listener = () => { leaked++; };
+		document.body.addEventListener("keydown", listener);
+		try {
+			for (const key of ["Enter", " ", "ArrowDown", "Tab"]) await press(action, key);
+			assert.equal(leaked, 0);
+		} finally { document.body.removeEventListener("keydown", listener); }
+	});
+	it("a pointer-focused capsule does not take Enter", async () => {
+		await mount(<SidebarUpdateCapsule run={run({ localVersion: null, machines: [machine({ status: "failed" })] })} local={null} icon={null} actions={actions().actions} clock={() => NOW} />);
+		const stop = trackInputModality(document);
+		try {
+			const capsule = q("update-capsule-button")!;
+			capsule.dispatchEvent(new dom.window.Event("pointerdown", { bubbles: true }));
+			capsule.focus();
+			await press(capsule, "Enter");
+			assert.equal(capsule.getAttribute("aria-expanded"), "false");
+		} finally { stop(); }
 	});
 	it("T3's narrow-sidebar fits: it grows from the icon, its label from 5rem, the countdown's only from 12rem, the icon kept", async () => {
 		const classes = (id: string) => q(id)?.getAttribute("class") ?? "";

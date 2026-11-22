@@ -12,13 +12,14 @@
  * (sidebar-update-pill.tsx): Tab from the sessions search enters the first
  * row (or the row the search's ↑/↓ walked to), Tab and Shift+Tab walk the
  * rows, Shift+Tab on the first row returns to the search, and Tab on the last
- * row hands Tab back to the app. The list's Tab and Shift+Tab, and plain
+ * row enters the footer. The list's Tab and Shift+Tab, and plain
  * Enter, Space and arrows on a row, don't reach the app's shortcuts or an
  * open question dock. A Tab an open plugin question dock already claimed, or
  * one typed during IME composition, stays the dock's (keyboard-shortcuts.tsx
  * skips those too).
  */
 import { composingQuestionKey, pluginQuestionKeySuppressed } from "./plugin-question-keys.ts";
+import { buttonKeepsNativeEnter, setPointerFocusedSidebarControl } from "./enter-submits";
 
 /** Marks a row the list's Tab walks: session rows and folder rows. */
 export const SIDEBAR_STOP = "data-sidebar-stop";
@@ -56,15 +57,15 @@ function stopHere(event: TabEvent): void {
 }
 
 const plainTab = (event: Keyish) => event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey;
+const PRESS_KEYS = new Set(["Enter", " "]);
+const ARROW_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
 
-/** Tab in the sessions search: enter the walked row if the search's ↑/↓
- *  walked to one, else the first row. False when it isn't ours (no rows,
- *  Shift+Tab, a modifier, a plugin dock's or an IME's key), so the app's own
- *  Tab goes on. */
-export function tabIntoList(event: TabEvent, list: Element | null, walked: HTMLElement | null = null): boolean {
+/** Tab in the sessions search enters the walked row, the first row, or the
+ *  footer when no rows are shown. Modified and claimed keys stay with the app. */
+export function tabIntoList(event: TabEvent, list: Element | null, walked: HTMLElement | null = null, footer: Element | null = null): boolean {
 	if (notOurs(event) || !plainTab(event) || event.shiftKey) return false;
 	const stops = sidebarStops(list);
-	const next = walked && stops.includes(walked) ? walked : stops[0];
+	const next = (walked && stops.includes(walked) ? walked : stops[0]) ?? footerStops(footer)[0];
 	if (!next) return false;
 	event.preventDefault();
 	stopHere(event);
@@ -73,13 +74,13 @@ export function tabIntoList(event: TabEvent, list: Element | null, walked: HTMLE
 }
 
 /** Tab or Shift+Tab on a row: the next or previous row; Shift+Tab on the
- *  first row returns to the search. Tab on the last row is not ours. */
-export function tabThroughList(event: TabEvent, list: Element | null, search: HTMLElement | null): boolean {
+ *  first row returns to the search. Tab on the last row enters the footer. */
+export function tabThroughList(event: TabEvent, list: Element | null, search: HTMLElement | null, footer: HTMLElement | null = null): boolean {
 	if (notOurs(event) || !plainTab(event)) return false;
 	const stops = sidebarStops(list);
 	const at = stops.indexOf(event.target as HTMLElement);
 	if (at < 0) return false; // a rename field or other control: its own keys
-	const next = event.shiftKey ? (at > 0 ? stops[at - 1] : search) : stops[at + 1];
+	const next = event.shiftKey ? (at > 0 ? stops[at - 1] : search) : stops[at + 1] ?? footer;
 	if (!next) return false;
 	event.preventDefault();
 	stopHere(event);
@@ -87,8 +88,34 @@ export function tabThroughList(event: TabEvent, list: Element | null, search: HT
 	return true;
 }
 
-const PRESS_KEYS = new Set(["Enter", " "]);
-const ARROW_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
+/** Footer order follows T3: Settings, then update.
+ * https://github.com/pingdotgg/t3code/blob/df09ced7688dec80a9c66c80181144cfb50f62ce/apps/web/src/components/sidebar/SidebarChrome.tsx#L270-L311 */
+export function footerStops(footer: Element | null): HTMLElement[] {
+	if (!footer) return [];
+	return Array.from(footer.querySelectorAll<HTMLElement>('[data-testid="settings-entry"], [data-testid="update-pill"], [data-testid="update-capsule-button"], [data-testid="update-capsule-action"]'))
+		.filter((el) => !el.closest('[hidden], [aria-hidden="true"], [inert]') && !(el as HTMLButtonElement).disabled && (typeof el.checkVisibility !== 'function' || el.checkVisibility()));
+}
+
+export function tabThroughFooter(event: TabEvent, footer: Element, list: Element | null, search: HTMLElement | null = null): boolean {
+	if (notOurs(event) || !plainTab(event)) return false;
+	const stops = footerStops(footer);
+	const at = stops.indexOf(event.target as HTMLElement);
+	if (at < 0) return false;
+	const next = event.shiftKey ? (at ? stops[at - 1] : sidebarStops(list).at(-1) ?? search) : stops[at + 1];
+	if (!next) return false;
+	event.preventDefault();
+	stopHere(event);
+	next.focus();
+	return true;
+}
+
+/** Footer buttons retain native activation and do not submit a question. */
+export function keepFooterKeys(event: TabEvent): void {
+	if (notOurs(event) || event.altKey || event.ctrlKey || event.metaKey) return;
+	const target = event.target as HTMLElement | null;
+	if (!target || !footerKeepsNativeEnter(target)) return;
+	if (PRESS_KEYS.has(event.key) || (!event.shiftKey && ARROW_KEYS.has(event.key))) stopHere(event);
+}
 
 /** Enter and Space (with or without Shift) and plain arrows on a focused row
  *  are the row's: the button's native press opens it, and an open question
@@ -140,18 +167,22 @@ export function swallowNextContextMenu(target: EventTarget = document, { afterKe
 
 const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta"]);
 let lastInput: "keyboard" | "pointer" | null = null;
+let pointerFocused: EventTarget | null = null;
 
 /** Remember whether the latest input was a key or a pointer, in the window's
  *  capture phase (before anything can stop it); returns the undo. A bare
  *  modifier doesn't count. */
 export function trackInputModality(target: EventTarget = window): () => void {
 	const onKey = (event: Event) => { if (!MODIFIER_KEYS.has((event as KeyboardEvent).key)) lastInput = "keyboard"; };
-	const onPointer = () => { lastInput = "pointer"; };
+	const onPointer = (event: Event) => { lastInput = "pointer"; pointerFocused = (event.target as Element | null)?.closest?.("button, a") ?? event.target; setPointerFocusedSidebarControl(pointerFocused); };
+	const onFocus = (event: Event) => { pointerFocused = lastInput === "pointer" ? event.target : null; setPointerFocusedSidebarControl(pointerFocused); };
 	target.addEventListener("keydown", onKey, true);
 	target.addEventListener("pointerdown", onPointer, true);
+	target.addEventListener("focusin", onFocus, true);
 	return () => {
 		target.removeEventListener("keydown", onKey, true);
 		target.removeEventListener("pointerdown", onPointer, true);
+		target.removeEventListener("focusin", onFocus, true);
 	};
 }
 
@@ -161,6 +192,55 @@ export function trackInputModality(target: EventTarget = window): () => void {
  *  so a click on the transcript never leaves a row focused for the next
  *  Enter. */
 export const closedFromKeyboard = (): boolean => lastInput === "keyboard";
+
+/** A pointer-focused footer control keeps the app's Enter behavior. */
+export function footerKeepsNativeEnter(target: HTMLElement): boolean {
+	return target !== pointerFocused && buttonKeepsNativeEnter(target);
+}
+
+export const UPDATE_PORTALS = '[data-testid="update-capsule-details"], [data-testid="update-pill-notes"]';
+export const CLOSE_UPDATE_POPOVERS = "lh:close-sidebar-update-popovers";
+
+/** Restore keyboard focus when an update control is replaced or hidden. */
+export function watchFooterFocus(footer: HTMLElement, doc: Document = document): () => void {
+	let last: HTMLElement | null = null;
+	const belongs = (target: Element | null) => !!target && (footer.contains(target) || !!target.closest(UPDATE_PORTALS));
+	const onFocus = (event: Event) => {
+		const target = event.target as HTMLElement;
+		last = belongs(target) && lastInput !== "pointer" ? target : null;
+	};
+	const onPointer = () => { last = null; };
+	const onFocusOut = (event: Event) => {
+		const focus = event as FocusEvent;
+		const leaving = last;
+		if (!leaving || focus.target !== leaving || belongs(focus.relatedTarget as Element | null)) return;
+		// Removing a focused control can fire focusout before React detaches it.
+		// An explicit blur leaves it connected, so only that ends the watch.
+		queueMicrotask(() => { if (last === leaving && leaving.isConnected) last = null; });
+	};
+	const reconcile = () => {
+		if (footer.closest('[inert], [aria-hidden="true"]')) { last = null; return; }
+		if (!last || lastInput === "pointer") return;
+		const active = doc.activeElement;
+		if (active && active !== doc.body && active !== last && active.isConnected) { last = null; return; }
+		if (footerStops(footer).includes(last) || (last.isConnected && !!last.closest(UPDATE_PORTALS))) return;
+		const stops = footerStops(footer);
+		const replacement = stops.find((el) => el.matches('[data-testid="update-pill"], [data-testid="update-capsule-button"]')) ?? stops[0];
+		last = null;
+		replacement?.focus({ preventScroll: true });
+	};
+	const observer = new MutationObserver(reconcile);
+	observer.observe(footer, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "hidden", "aria-hidden", "style", "disabled", "inert"] });
+	const aside = footer.closest("aside");
+	if (aside) observer.observe(aside, { attributes: true, attributeFilter: ["inert", "aria-hidden"] });
+	const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reconcile);
+	resize?.observe(footer);
+	doc.addEventListener("focusin", onFocus, true);
+	doc.addEventListener("pointerdown", onPointer, true);
+	doc.addEventListener("focusout", onFocusOut, true);
+	doc.defaultView?.addEventListener("resize", reconcile);
+	return () => { observer.disconnect(); resize?.disconnect(); doc.removeEventListener("focusin", onFocus, true); doc.removeEventListener("pointerdown", onPointer, true); doc.removeEventListener("focusout", onFocusOut, true); doc.defaultView?.removeEventListener("resize", reconcile); };
+}
 
 /** A dialog whose opener is `row` (it gives focus back to its opener) has
  *  closed. A pointer close leaves focus where the pointer put it: when the

@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { HostDialog } from "@/components/host-dialog";
+import { closedFromKeyboard } from "@/components/sidebar-keyboard";
 import { ReleaseNoteSections, releaseUrl } from "@/components/release-notes-view";
 import { useNotifyHub } from "@/components/server-events";
 import { useWhatsNewHeld } from "@/components/whats-new-hold";
@@ -108,6 +109,14 @@ export default function WhatsNewDialog({ pageVersion = APP_VERSION }: { pageVers
 	}, [whatsNew]);
 
 	const held = useWhatsNewHeld();
+	const wasHeld = useRef(held);
+	const returnToUpdate = useRef(false);
+	if (held) returnToUpdate.current = false;
+	else if (wasHeld.current) returnToUpdate.current = closedFromKeyboard();
+	wasHeld.current = held;
+	const fallback = useCallback(() => returnToUpdate.current
+		? document.querySelector<HTMLElement>('[data-testid="update-pill"], [data-testid="update-capsule-button"]')
+		: null, []);
 	// The server's running version is whatsNew.version: newer than this page's code means reload first.
 	if (!whatsNew || held || isNewerVersion(whatsNew.version, pageVersion)) return null;
 	return (
@@ -115,6 +124,8 @@ export default function WhatsNewDialog({ pageVersion = APP_VERSION }: { pageVers
 			open
 			aria-label={`What's new in ${whatsNew.version}`}
 			initialFocusRef={doneRef}
+			restoreFocusOnClose={closedFromKeyboard}
+			returnFocusFallback={fallback}
 			onClose={() => { done(); return "closed"; }}
 			backdropProps={{ className: "fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm", "data-testid": "whats-new-dialog" }}
 			frame={<div className="mx-4 flex max-h-[85vh] w-full max-w-md flex-col rounded-xl border bg-card p-5 shadow-lg" onClick={(event) => event.stopPropagation()} />}

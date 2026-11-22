@@ -50,6 +50,7 @@ import * as Popper from "@radix-ui/react-popper";
 import { CheckIcon, CircleArrowUpIcon, DownloadIcon, RefreshCwIcon, RotateCwIcon, TriangleAlertIcon } from "lucide-react";
 import { HostDialog } from "@/components/host-dialog";
 import { useOptionalInteractionLayers } from "@/components/interaction-layers";
+import { CLOSE_UPDATE_POPOVERS, keepFooterKeys } from "@/components/sidebar-keyboard";
 import { hasLegacyInteractionForeground } from "@/components/plugin-input-focus";
 import { InstallUpdateDialog } from "@/components/install-update-dialog";
 import { focusAfterDialog, SidebarUpdateCapsule } from "@/components/sidebar-update-capsule";
@@ -479,6 +480,11 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	// The plain tooltip's open state, controlled all the time: switching Radix between controlled and
 	// uncontrolled lost a close made while the notes applied, and the old state came back after.
 	const [plainOpen, setPlainOpen] = useState(false);
+	useEffect(() => {
+		const close = () => { setOpen(false); setPlainOpen(false); };
+		window.addEventListener(CLOSE_UPDATE_POPOVERS, close);
+		return () => window.removeEventListener(CLOSE_UPDATE_POPOVERS, close);
+	}, []);
 	const [spinKey, setSpinKey] = useState(0);
 	const isChecking = state?.status === "checking" || desktopStatus?.phase === "checking";
 	const [latched, setLatched] = useState(false);
@@ -620,18 +626,22 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 		if (!first) return;
 		event.preventDefault();
 		event.stopPropagation();
+		event.nativeEvent.stopImmediatePropagation();
 		first.focus();
 	};
 	const onNotesKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-		if (event.metaKey || event.ctrlKey || event.altKey || event.key !== "Tab") return;
+		if (event.key !== "Tab") { keepFooterKeys(event); return; }
+		if (event.metaKey || event.ctrlKey || event.altKey) return;
 		event.preventDefault();
 		const inside = tabbablesIn(popoverRef.current);
 		const at = inside.indexOf(event.target as HTMLElement);
 		if (event.shiftKey) {
 			event.stopPropagation();
+			event.nativeEvent.stopImmediatePropagation();
 			(at > 0 ? inside[at - 1] : buttonRef.current)?.focus({ preventScroll: true });
 		} else if (at >= 0 && at < inside.length - 1) {
 			event.stopPropagation();
+			event.nativeEvent.stopImmediatePropagation();
 			inside[at + 1]?.focus();
 		} else {
 			// Past the last link the notes close onto the button, and the app's own Tab goes on from there.
