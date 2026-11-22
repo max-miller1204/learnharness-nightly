@@ -874,18 +874,35 @@ export function ChainTableOverlay({
 						try {
 							const response = await fetch("/api/graph/sources", { method: "DELETE", headers: { "Content-Type": "application/json" },
 								body: JSON.stringify({ sourceIds: deletion?.sources.map((s) => s.id) ?? [], folderIds: deletion?.folders.map((f) => f.id) ?? [], deleteSessions }) });
-							const body = (await response.json().catch(() => ({}))) as SourceDirectory & { error?: string; graphRevision?: number };
+							const raw = await response.json().catch(() => null);
+							const body = raw && typeof raw === "object"
+								? (raw as Partial<SourceDirectory> & { error?: string; graphRevision?: number; deletedChatIds?: unknown })
+								: null;
 							if (!response.ok) {
-								settle([]);
-								throw new Error(typeof body.error === "string" ? body.error : "Could not delete sources.");
+								const partlyDeleted = Array.isArray(body?.deletedChatIds)
+									? body.deletedChatIds.filter((id): id is string => typeof id === "string")
+									: [];
+								settle(partlyDeleted);
+								notifySessionsDeleted(partlyDeleted);
+								throw new Error(typeof body?.error === "string" ? body.error : "Could not delete sources.");
 							}
-							const remaining = Array.isArray(body.sources) ? new Set(body.sources.map((s) => s.id)) : null;
-							const deletedChatIds = remaining ? chatIds.filter((id) => !remaining.has(id)) : chatIds;
-							settle(deletedChatIds);
-							notifySessionsDeleted(deletedChatIds);
-							graphRevision = body.graphRevision;
-							if (opening === directoryOpening.current) {
-								requestVersion.current++; setDirectory(body as SourceDirectory); setDirectoryPending(false); setDirectoryFailure("");
+							const validDirectory = body !== null && Array.isArray(body.sources) && body.organization != null;
+							if (validDirectory) {
+								const remaining = new Set(body.sources!.map((s) => s.id));
+								const deletedChatIds = chatIds.filter((id) => !remaining.has(id));
+								settle(deletedChatIds);
+								notifySessionsDeleted(deletedChatIds);
+								graphRevision = body.graphRevision;
+								if (opening === directoryOpening.current) {
+									requestVersion.current++; setDirectory(body as SourceDirectory); setDirectoryPending(false); setDirectoryFailure("");
+								}
+							} else {
+								// Keep the current directory until finally's readDirectory() returns valid
+								// data, release holds without guessing which ids went, and refresh the
+								// router cache so the server decides on Back.
+								settle([]);
+								if (chatIds.length > 0) notifySessionsDeleted([], { refresh: true });
+								graphRevision = body?.graphRevision;
 							}
 							setEntrySelection({ sources: new Set(), folders: new Set() });
 						} catch (error) {

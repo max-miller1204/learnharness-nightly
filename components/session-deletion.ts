@@ -55,9 +55,10 @@ export function isSessionDeleted(chatId: string): boolean {
  *  list and refreshes the client router cache through the same helper. */
 export const SESSIONS_DELETED_EVENT = "lh:sessions-deleted";
 
-export function notifySessionsDeleted(ids: readonly string[]): void {
-	if (ids.length === 0 || typeof window === "undefined") return;
-	window.dispatchEvent(new CustomEvent<{ ids: string[] }>(SESSIONS_DELETED_EVENT, { detail: { ids: [...ids] } }));
+export function notifySessionsDeleted(ids: readonly string[], options?: { refresh?: boolean }): void {
+	const refresh = options?.refresh ?? false;
+	if ((ids.length === 0 && !refresh) || typeof window === "undefined") return;
+	window.dispatchEvent(new CustomEvent<{ ids: string[]; refresh?: boolean }>(SESSIONS_DELETED_EVENT, { detail: { ids: [...ids], refresh } }));
 }
 
 /** null for a session nobody is deleting (read now, no extra tick).

@@ -1,9 +1,10 @@
 /**
- * Issue #328: pressing Back after deleting a session (single Delete or folder
- * Delete) must never show a deleted session's cached transcript or 404 its
- * stats request. Deleting drops older entries from Next's client router cache
- * via router.refresh(), SessionGate blocks a cached deleted view from mounting,
- * and Chat handles an external 404 by hiding the stale view and refreshing.
+ * Issue #328: pressing Back after deleting a session (single Delete, folder
+ * Delete, or graph source Delete with deleteSessions) must never show a deleted
+ * session's cached transcript or 404 its stats request. Deleting drops older
+ * entries from Next's client router cache via router.refresh(), SessionGate
+ * blocks a cached deleted view from mounting, and Chat refreshes on an external
+ * stats 404 so the server's not-found decides without blanking a live session.
  */
 import React, { act, useState } from "react";
 (globalThis as Record<string, unknown>).React = React;
@@ -112,6 +113,7 @@ async function mountShellWithRouter(config: {
 	folder?: { id: string; name: string; chatIds: string[] };
 	initialHistory: string[];
 	homeNode?: React.ReactNode;
+	onDeleteSources?: (body: { sourceIds?: string[]; deleteSessions?: boolean }) => Response | undefined;
 }) {
 	const statsRequests: Array<{ url: string; status: number }> = [];
 	let refreshCalls = 0;
@@ -124,6 +126,8 @@ async function mountShellWithRouter(config: {
 		}
 		if (url === "/api/graph/sources" && method === "DELETE") {
 			const body = JSON.parse(String(init?.body ?? "{}")) as { sourceIds?: string[]; deleteSessions?: boolean };
+			const custom = config.onDeleteSources?.(body);
+			if (custom) return custom;
 			if (body.deleteSessions) {
 				for (const id of body.sourceIds ?? []) config.sessions.delete(id);
 			}
@@ -422,6 +426,85 @@ describe("Back to a deleted session (#328)", () => {
 		assert.deepEqual(app.statsRequests.slice(statsBeforeBack), [], "no 404 stats request for A");
 	});
 
+	it("graph source Delete with a truncated OK body keeps the view alive, does not guess deleted ids, and refreshes so Back hits the server", async () => {
+		const id = "chat_graph_truncated_a";
+		const keptId = "chat_graph_truncated_b";
+		const sessions = new Map([
+			[id, { item: makeChatItem(id, "Truncated A"), transcript: "Transcript of truncated A" }],
+			[keptId, { item: makeChatItem(keptId, "Truncated B"), transcript: "Transcript of truncated B" }],
+		]);
+		const app = await mountShellWithRouter({
+			sessions,
+			initialHistory: [`/chat/${id}`, "/"],
+			homeNode: <ChainTableOverlay open nodes={[]} chains={[]} sessions={{ [id]: "Truncated A", [keptId]: "Truncated B" }} fileSources={{}} onClose={() => {}} />,
+			onDeleteSources: (body) => {
+				if (body.deleteSessions) sessions.delete(id);
+				return new Response('{"sources": [', { status: 200, headers: { "Content-Type": "application/json" } });
+			},
+		});
+
+		await act(async () => { document.querySelector<HTMLElement>(`[data-testid='cluster-checkbox-${id}']`)?.click(); });
+		await flush();
+		await act(async () => { document.querySelector<HTMLElement>("[data-testid='chain-delete']")?.click(); });
+		await flush();
+		await act(async () => { document.querySelector<HTMLInputElement>("[data-testid='delete-source-sessions']")?.click(); });
+		await flush();
+		await act(async () => { document.querySelector<HTMLElement>("[data-testid='source-delete-confirm']")?.click(); });
+		await flush();
+
+		assert.ok(document.querySelector(`[data-testid='cluster-checkbox-${keptId}']`), "surviving directory still renders without crashing");
+		assert.equal(isSessionDeleted(id), false, "unreadable body does not guess deleted ids client-side");
+		assert.equal(sessionReadHold(id), null, "holds are released when the body cannot be read");
+		assert.ok(app.refreshCalls >= 1, "refreshes the router cache so the server decides on Back");
+
+		const statsBeforeBack = app.statsRequests.length;
+		await app.back();
+		assert.equal(app.pathname, `/chat/${id}`);
+		assert.equal(document.querySelector(`[data-testid='transcript-${id}']`), null, "deleted A does not show a stale transcript");
+		assert.ok(document.querySelector("[data-testid='not-found-page']"), "server renders not-found on Back");
+		assert.deepEqual(app.statsRequests.slice(statsBeforeBack), [], "no 404 stats request for A");
+	});
+
+	it("graph source Delete partial failure marks and refreshes only the reported deletedChatIds", async () => {
+		const goneId = "chat_graph_partial_gone";
+		const keptId = "chat_graph_partial_kept";
+		const sessions = new Map([
+			[goneId, { item: makeChatItem(goneId, "Partial Gone"), transcript: "Transcript of partial gone" }],
+			[keptId, { item: makeChatItem(keptId, "Partial Kept"), transcript: "Transcript of partial kept" }],
+		]);
+		const app = await mountShellWithRouter({
+			sessions,
+			initialHistory: [`/chat/${goneId}`, "/"],
+			homeNode: <ChainTableOverlay open nodes={[]} chains={[]} sessions={{ [goneId]: "Partial Gone", [keptId]: "Partial Kept" }} fileSources={{}} onClose={() => {}} />,
+			onDeleteSources: () => {
+				sessions.delete(goneId);
+				return Response.json({ error: "Could not delete second session.", code: "error", deletedChatIds: [goneId] }, { status: 500 });
+			},
+		});
+
+		await act(async () => { document.querySelector<HTMLElement>(`[data-testid='cluster-checkbox-${goneId}']`)?.click(); });
+		await act(async () => { document.querySelector<HTMLElement>(`[data-testid='cluster-checkbox-${keptId}']`)?.click(); });
+		await flush();
+		await act(async () => { document.querySelector<HTMLElement>("[data-testid='chain-delete']")?.click(); });
+		await flush();
+		await act(async () => { document.querySelector<HTMLInputElement>("[data-testid='delete-source-sessions']")?.click(); });
+		await flush();
+		await act(async () => { document.querySelector<HTMLElement>("[data-testid='source-delete-confirm']")?.click(); });
+		await flush();
+
+		assert.equal(isSessionDeleted(goneId), true, "removed session is marked deleted");
+		assert.equal(isSessionDeleted(keptId), false, "surviving session is not marked deleted");
+		assert.equal(sessionReadHold(keptId), null, "surviving session's reads are released");
+		assert.ok(app.refreshCalls >= 1, "partial failure refreshes router cache for deletedChatIds");
+
+		const statsBeforeBack = app.statsRequests.length;
+		await app.back();
+		assert.equal(app.pathname, `/chat/${goneId}`);
+		assert.equal(document.querySelector(`[data-testid='transcript-${goneId}']`), null, "removed session transcript never renders");
+		assert.ok(document.querySelector("[data-testid='not-found-page']"), "removed session renders not-found on Back");
+		assert.deepEqual(app.statsRequests.slice(statsBeforeBack), [], "no 404 stats request for removed session");
+	});
+
 	it("SessionGate renders nothing and calls router.refresh() for a marked id, and renders children for an unmarked id", async () => {
 		const deletedId = "chat_gate_deleted";
 		const liveId = "chat_gate_live";
@@ -545,5 +628,75 @@ describe("Back to a deleted session (#328)", () => {
 		assert.equal(statsCalls, 2, "second stats call ran and returned 200");
 		assert.equal(refreshed, 1, "no further refresh after 200");
 		assert.ok(document.querySelector("[data-session-surface]"), "session stays visible on subsequent visit");
+	});
+
+	it("external delete: a stats 404 refreshes the route so the server renders not-found", async () => {
+		const id = "chat_external_deleted";
+		let refreshed = 0;
+		globalThis.fetch = (async (input: RequestInfo | URL) => {
+			const url = String(input);
+			if (url === `/api/chats/${id}?view=stats`) return Response.json({ error: "Not found" }, { status: 404 });
+			if (url === "/api/plugins") return Response.json({ plugins: [], directory: "", conflicts: [] });
+			if (url === "/api/activity") return Response.json({ jobs: [], turns: [], extractions: [] });
+			if (url === "/api/models") return Response.json({ providers: [], models: [], slots: {} });
+			if (url === "/api/settings") return Response.json({});
+			if (url === `/api/chats/${id}/side-chats`) return Response.json({ threads: [] });
+			if (url === `/api/jobs?chatId=${id}`) return Response.json({ jobs: [], turnInFlight: false });
+			return Response.json({});
+		}) as typeof fetch;
+
+		let setServerFound!: (found: boolean) => void;
+		const router = {
+			bfcacheId: "test",
+			back() {}, forward() {}, hmrRefresh() {}, push() {}, replace() {}, async prefetch() {},
+			refresh() {
+				refreshed++;
+				// Server re-renders /chat/<id>: getChat(id) is null -> notFound().
+				setServerFound(false);
+			},
+		};
+
+		function RouteHost() {
+			const [serverFound, updateServerFound] = useState(true);
+			setServerFound = updateServerFound;
+			return (
+				<AppRouterContext.Provider value={router}>
+				<PathnameContext.Provider value={`/chat/${id}`}>
+				<ServerEventsProvider connect={quietEvents}>
+					<PluginsProvider>
+						<AppearanceProvider initialAppearance={undefined} initialTheme={DEFAULT_THEME}>
+							<SidebarProvider>
+								<ActivityProvider>
+									<InteractionLayersProvider>
+										<SettingsDialogProvider>
+											{serverFound ? (
+												<SessionGate chatId={id}>
+													<Chat chatId={id} title="Externally deleted" initialMessages={makeMessages("Stale message")} />
+												</SessionGate>
+											) : (
+												<div data-testid="not-found-page">404 This page could not be found.</div>
+											)}
+										</SettingsDialogProvider>
+									</InteractionLayersProvider>
+								</ActivityProvider>
+							</SidebarProvider>
+						</AppearanceProvider>
+					</PluginsProvider>
+				</ServerEventsProvider>
+				</PathnameContext.Provider>
+				</AppRouterContext.Provider>
+			);
+		}
+
+		const host = document.createElement("div");
+		document.body.append(host);
+		const root = createRoot(host);
+		roots.push(root);
+		await act(async () => { root.render(<RouteHost />); });
+		await flush();
+
+		assert.equal(refreshed, 1, "stats 404 triggered router.refresh()");
+		assert.equal(document.querySelector("[data-session-surface]"), null, "server refresh replaced stale Chat with not-found");
+		assert.ok(document.querySelector("[data-testid='not-found-page']"), "renders server not-found page");
 	});
 });

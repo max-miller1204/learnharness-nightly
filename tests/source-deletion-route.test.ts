@@ -125,6 +125,23 @@ it("a swallowed session-unlink failure retains placement and folders, reports pa
 	assert.equal(stores.chatStore.getChat(chat.id), null);
 	assert.deepEqual(sourceDirectory.read().organization, { version: 1, folders: [], placements: {} });
 });
+it("a partial session-deletion failure reports deletedChatIds for the sessions already removed", async () => {
+	const first = stores.chatStore.createChat("Session 1");
+	const second = stores.chatStore.createChat("Session 2");
+	const ordered = sourceDirectory.read().sources.filter((s) => s.id === first.id || s.id === second.id).map((s) => s.id);
+	assert.equal(ordered.length, 2, "both sessions are in the source directory");
+	const [goneId, keptId] = ordered as [string, string];
+	const deleteChat = stores.chatStore.deleteChat;
+	try {
+		stores.chatStore.deleteChat = (id) => (id === keptId ? false : deleteChat(id));
+		const response = await remove([goneId, keptId], [], true);
+		assert.equal(response.status, 500);
+		const body = (await response.json()) as { error?: string; deletedChatIds?: string[] };
+		assert.deepEqual(body.deletedChatIds, [goneId], "reports the session already removed on disk");
+		assert.equal(stores.chatStore.getChat(goneId), null);
+		assert.ok(stores.chatStore.getChat(keptId), "the failing session remains on disk");
+	} finally { stores.chatStore.deleteChat = deleteChat; }
+});
 it("preflights every selected session's running turn/jobs before deleting any selected imports", async () => {
 	const chat = stores.chatStore.createChat("Busy"); book("a");
 	beginTurn(chat.id);

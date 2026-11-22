@@ -633,12 +633,13 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 	}, [pathname, router, onViewedSessionDeleted]);
 	useEffect(() => {
 		const onSessionsDeleted = (e: Event) => {
-			const ids = (e as CustomEvent<{ ids?: string[] }>).detail?.ids;
-			if (ids?.length) dropDeletedChats(ids);
+			const detail = (e as CustomEvent<{ ids?: string[]; refresh?: boolean }>).detail;
+			if (detail?.ids?.length) dropDeletedChats(detail.ids);
+			else if (detail?.refresh) router.refresh();
 		};
 		window.addEventListener(SESSIONS_DELETED_EVENT, onSessionsDeleted);
 		return () => window.removeEventListener(SESSIONS_DELETED_EVENT, onSessionsDeleted);
-	}, [dropDeletedChats]);
+	}, [dropDeletedChats, router]);
 	const onDeleted = useCallback(
 		(id: string, _mode: ChatDeleteMode, graphRevision: number) => {
 			setDeleting(null);
