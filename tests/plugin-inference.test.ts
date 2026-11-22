@@ -518,3 +518,77 @@ test("a model the catalog dropped is refused as model_unavailable before the pro
 		error.code === "model_unavailable" && error.message === `The model ${spec.provider}/retired is no longer available. Pick another model in Settings.`);
 	await assert.rejects(gone.engineFor(spec, "background"), /key/i, "a model that still exists keeps the key refusal");
 });
+
+test("plugin inference usage ledger omits cost for unpriced providers and $0 placeholders while keeping it for priced and known free models", async (t) => {
+	for (const pin of [
+		{ provider: "custom", id: "local-endpoint", thinkingLevel: "medium" } as const,
+		{ provider: "chatgpt", id: "gpt-5", thinkingLevel: "medium" } as const,
+		{ provider: "github-copilot-subscription", id: "gpt-5", thinkingLevel: "medium" } as const,
+		{ provider: CLAUDE_CODE_PROVIDER, id: "sonnet", thinkingLevel: "medium" } as const,
+	]) {
+		const f = fixture(t, { model: pin });
+		await f.adapter.inference.complete({ ...request(pin), purpose: "user" });
+		const rows = ledger(f.directory);
+		assert.equal(rows.length, 1, `${pin.provider}:${pin.id}`);
+		assert.equal(rows[0].usage.input, usage().input);
+		assert.equal(rows[0].usage.output, usage().output);
+		assert.equal("cost" in rows[0].usage, false, `${pin.provider}:${pin.id} must omit usage.cost`);
+	}
+
+	// Bundled $0 router placeholder omits usage.cost on both one-shot and managed calls.
+	const zeroUsage = { input: 3, output: 4, cacheRead: 0, cacheWrite: 0, totalTokens: 7, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	const routerPin = { provider: "openrouter", id: "openrouter/auto", thinkingLevel: "off" } as const;
+	const routerFixture = fixture(t, { model: routerPin, produce(stream) {
+		const m = { ...output(routerPin), stopReason: "stop" as const, content: [{ type: "text" as const, text: "Done" }], usage: structuredClone(zeroUsage) };
+		stream.push({ type: "done", reason: "stop", message: m }); stream.end();
+	} });
+	await routerFixture.adapter.inference.complete({ ...request(routerPin), purpose: "user" });
+	const routerRows = ledger(routerFixture.directory);
+	assert.equal(routerRows.length, 1);
+	assert.equal("cost" in routerRows[0].usage, false, "openrouter:openrouter/auto must omit usage.cost");
+
+	// Synthetic $0 placeholder model (zero rates on dispatched model) omits usage.cost even through a managed plugin agent that clones m.usage.
+	const zeroModelPin = { provider: "fixture", id: "router-placeholder", thinkingLevel: "off" } as const;
+	const zeroDir = mkdtempSync(join(tmpdir(), "lh-plugin-inference-zero-"));
+	t.after(() => rmSync(zeroDir, { recursive: true, force: true }));
+	const zeroSignal = new AbortController();
+	t.after(() => zeroSignal.abort());
+	const zeroAdapter = createPluginInference({ signal: zeroSignal.signal, dataDirectory: zeroDir }, {
+		catalog: () => listing(zeroModelPin),
+		providerKeyPresent: () => true,
+		engineForSpec: (pin) => ({
+			model: { api: "fixture", provider: pin.provider, id: pin.id, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } as never,
+			level: "off",
+			streamFn: () => {
+				const stream = new AssistantMessageEventStream();
+				const m = { ...output(pin), stopReason: "stop" as const, content: [{ type: "text" as const, text: "Done" }], usage: structuredClone(zeroUsage) };
+				stream.push({ type: "done", reason: "stop", message: m }); stream.end();
+				return stream;
+			},
+		}),
+	});
+	const agentService = createPluginAgentService({ store: createPluginAgentRecordStore(join(zeroDir, "agents")), engineFor: zeroAdapter.engineFor, onUsage: zeroAdapter.onUsage, signal: zeroSignal.signal });
+	t.after(() => agentService.dispose());
+	agentService.register({ id: "zero-helper", instructions: "Test", model: zeroModelPin });
+	const { id: sessionId } = agentService.create("zero-helper");
+	await agentService.send(sessionId, "Check placeholder", { requestId: "req_zero_1", purpose: "user" });
+	await new Promise<void>((resolve, reject) => {
+		let unsubscribe: (() => void) | undefined;
+		const timeout = setTimeout(() => { unsubscribe?.(); reject(new Error("managed zero-placeholder call did not settle")); }, 3000);
+		unsubscribe = agentService.subscribe(sessionId, (s) => { if (s.status !== "running") { clearTimeout(timeout); queueMicrotask(() => { unsubscribe?.(); resolve(); }); } });
+	});
+	const zeroAgentRows = ledger(zeroDir);
+	assert.equal(zeroAgentRows.length, 1);
+	assert.equal("cost" in zeroAgentRows[0].usage, false, "managed agent on $0 placeholder must omit usage.cost");
+
+	// Known free API model keeps usage.cost: 0 in the ledger.
+	const freePin = { provider: "openrouter", id: "openrouter/free", thinkingLevel: "off" } as const;
+	const freeFixture = fixture(t, { model: freePin, produce(stream) {
+		const m = { ...output(freePin), stopReason: "stop" as const, content: [{ type: "text" as const, text: "Done" }], usage: structuredClone(zeroUsage) };
+		stream.push({ type: "done", reason: "stop", message: m }); stream.end();
+	} });
+	await freeFixture.adapter.inference.complete({ ...request(freePin), purpose: "user" });
+	const freeRows = ledger(freeFixture.directory);
+	assert.equal(freeRows.length, 1);
+	assert.equal(freeRows[0].usage.cost?.total, 0, "known free model keeps $0 cost in ledger");
+});

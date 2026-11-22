@@ -33,6 +33,7 @@ export interface CallUsage {
     cacheWriteTokens: number | undefined;
     cacheWrite1hTokens?: number;
     reasoningTokens: number | undefined;
+    costUsd?: number;
 }
 ```
 
@@ -44,6 +45,7 @@ export interface CallUsage {
 - [cacheWriteTokens](#callusage-cachewritetokens)
 - [cacheWrite1hTokens](#callusage-cachewrite1htokens)
 - [reasoningTokens](#callusage-reasoningtokens)
+- [costUsd](#callusage-costusd)
 
 ### CallUsage inputTokens
 
@@ -90,6 +92,16 @@ The reasoning portion of the output tokens.
 
 ```ts
 reasoningTokens: number | undefined;
+```
+
+### CallUsage costUsd
+
+API-dollar cost computed from the active model catalog when this call
+ran. Absent on older records, unpriced models, subscriptions, CLI and
+custom endpoints.
+
+```ts
+costUsd?: number;
 ```
 
 ## ChatKind
@@ -892,8 +904,9 @@ Supporting declaration used by a public type. This is not an additional runtime 
 
 Usage for one native conversation-handler invocation, including user and
 wake turns. A tool-using turn may span several separately billed model calls.
-Accounting is captured when the turn persists; cost is estimated from the
-recorded calls and model catalog at read time.
+Accounting is captured when the turn persists, including each call's costUsd
+when priced; older calls without costUsd fall back to catalog lookup at read
+time.
 
 ```ts
 export interface TurnUsage {

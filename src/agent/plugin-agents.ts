@@ -7,6 +7,7 @@ import type {
 	PluginAgentSnapshot, PluginCallPurpose, PluginModelSpec,
 } from "../core/plugin-agents.ts";
 import type { PiEngine } from "./models.ts";
+import { dispatchedModelOf, recordDispatchedModel } from "./pricing.ts";
 import { usageWasAdmitted } from "./subscription-request-cycle.ts";
 
 import type { PluginAgentRecordStore } from "../core/ports.ts";
@@ -219,7 +220,9 @@ export function createPluginAgentService(deps: PluginAgentServiceDeps): PluginAg
 							if (new Set(ids).size !== ids.length) throw new Error("Duplicate tool call IDs in assistant response");
 							// This awaited native subscription is the side-effect write barrier.
 							if (m.stopReason !== "aborted" && usageWasAdmitted(m.usage)) {
-								try { deps.onUsage?.(clone(d.model), clone(m.usage)); } catch {
+								const reported = clone(m.usage);
+								recordDispatchedModel(reported, dispatchedModelOf(m.usage) ?? engine.model);
+								try { deps.onUsage?.(clone(d.model), reported); } catch {
 									// Accounting cannot rewrite an already committed response, but
 									// failures must be visible. Never log callback errors/request data.
 									console.error("[plugin-agents] Plugin accounting failure", { definitionId: d.id, sessionId: s.record.id });

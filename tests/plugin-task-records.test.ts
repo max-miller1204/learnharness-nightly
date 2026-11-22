@@ -63,6 +63,22 @@ test("corrupt JSON, unsupported versions and malformed known fields never disapp
 	}
 });
 
+test("usage calls tolerate absent costUsd, round-trip valid costUsd and reject invalid costUsd", t => {
+	const directory = fixture(t); const store = createPluginTaskRecordStore(directory);
+	const legacyUsage = { model: "openai:gpt-5", inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite1hTokens: 0, reasoningTokens: 0, steps: 1, calls: [{ inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite1hTokens: 0, reasoningTokens: 0 }], lastStep: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite1hTokens: 0, reasoningTokens: 0 } };
+	store.save(record({ id: "legacy_usage", usage: legacyUsage }));
+	assert.deepEqual(store.get("legacy_usage")?.usage, legacyUsage);
+	const pricedCall = { ...legacyUsage.calls[0]!, costUsd: 0.0125 };
+	const pricedUsage = { ...legacyUsage, calls: [pricedCall], lastStep: pricedCall };
+	store.save(record({ id: "priced_usage", usage: pricedUsage }));
+	assert.deepEqual(store.get("priced_usage")?.usage, pricedUsage);
+	for (const badCost of [-0.01, "0.5", null]) {
+		const badCall = { ...legacyUsage.calls[0]!, costUsd: badCost };
+		assert.throws(() => store.save(record({ id: "bad_call", usage: { ...legacyUsage, calls: [badCall as never] } })), /Corrupt|unsupported/);
+		assert.throws(() => store.save(record({ id: "bad_last", usage: { ...legacyUsage, lastStep: badCall as never } })), /Corrupt|unsupported/);
+	}
+});
+
 test("invalid save and failed rename preserve the previous file and remove temporary artifacts", t => {
 	const directory = fixture(t); const store = createPluginTaskRecordStore(directory); store.save(record());
 	const before = readFileSync(join(directory, "task_one.json"), "utf8");

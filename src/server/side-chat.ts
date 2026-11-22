@@ -15,6 +15,7 @@ import { COMPACTION_RESERVE_TOKENS } from "../core/compaction.ts";
 import { resolveSideQuestionSpec } from "../core/settings-resolution.ts";
 import { modelsNotConfigured, providerKeyMissing as providerKeyMissingEnvelope, subscriptionUnreachable } from "../core/settings.ts";
 import { catalogModelGone, ModelUnavailableError, piEngineForSpec, type PiEngine } from "../agent/models.ts";
+import { captureCallUsage } from "../agent/pricing.ts";
 import { MODEL_UNAVAILABLE, modelUnavailableMessage } from "../core/model-unavailable.ts";
 import { isSubscriptionProvider, connectionUnreachable } from "../agent/subscription-connections.ts";
 import { usageWasAdmitted } from "../agent/subscription-request-cycle.ts";
@@ -213,11 +214,7 @@ export function createSideChatService(deps: SideChatDeps): SideChatService {
 				}));
 				if (result.usage && usageWasAdmitted(result.usage) && engine.sideUsageAdmitted?.() !== false) {
 					try {
-						deps.chatStore.appendTurnUsage(chatId, { id: run.answerId, messageId: answer.id, at, model: run.model, steps: [{
-							inputTokens: result.usage.input, outputTokens: result.usage.output, cacheReadTokens: result.usage.cacheRead,
-							cacheWriteTokens: result.usage.cacheWrite, cacheWrite1hTokens: result.usage.cacheWrite1h ?? 0,
-							reasoningTokens: result.usage.reasoning ?? 0,
-						}] });
+						deps.chatStore.appendTurnUsage(chatId, { id: run.answerId, messageId: answer.id, at, model: run.model, steps: [captureCallUsage(result.usage, engine.model)] });
 					} catch { /* deleted session has no usage destination */ }
 				}
 			} catch (error) {

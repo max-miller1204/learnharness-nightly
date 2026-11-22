@@ -1,4 +1,5 @@
 import { catalogModelGone, ModelUnavailableError, type PiEngine } from "../models.ts";
+import { priceJobUsageStep } from "../pricing.ts";
 import type { SearchProvider } from "../../core/search.ts";
 import {
 	accumulateJobUsage,
@@ -156,9 +157,9 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			abortSignal: controller.signal,
 			chatId,
 			onUsage: (step) => {
-				const next = accumulateJobUsage(usageTotals.get(jobId), model, step);
+				const next = accumulateJobUsage(usageTotals.get(jobId), model, priceJobUsageStep(step, engine.model));
 				usageTotals.set(jobId, next);
-				jobStore.updateJob(jobId, { usage: next }); // merge patch — status untouched
+				jobStore.updateJob(jobId, { usage: next }); // merge patch, status untouched
 			},
 		};
 	}

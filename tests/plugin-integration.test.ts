@@ -242,7 +242,9 @@ test("external native backend composes host, inference, persistent managed input
 	assert.equal(fs.readFileSync(path.join(dataDirectory, "publications.jsonl"), "utf8"), `${JSON.stringify(artifact)}\n`);
 	const rows = fs.readFileSync(usageFile, "utf8").trim().split("\n").map(line => JSON.parse(line) as { model: unknown; usage: unknown });
 	assert.deepEqual(rows.map(row => row.model), [pin, pin]);
-	assert.deepEqual(rows.map(row => row.usage), [usage, usage]);
+	// The fixture model is $0-rated without a free id, so the usage ledger omits cost.
+	const expectedLedgerUsage = { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, totalTokens: usage.totalTokens };
+	assert.deepEqual(rows.map(row => row.usage), [expectedLedgerUsage, expectedLedgerUsage]);
 	assert.deepEqual(calls.map(entry => entry.background), [true, false]);
 	assert.equal(calls.length, 2, "publish endRun prevents an automatic third model call");
 	const checkpointed = JSON.parse(fs.readFileSync(recordFile, "utf8")) as PluginAgentRecord;

@@ -92,8 +92,8 @@ cacheWrite1hTokens?: number;
 
 ### JobUsage calls
 
-Individual calls for current-catalog per-call tier pricing. Absent on
-older jobs; never backfill them from cumulative totals.
+Individual calls for per-call pricing and stored record-time costUsd.
+Absent on older jobs; never backfill them from cumulative totals.
 
 ```ts
 calls?: CallUsage[];
