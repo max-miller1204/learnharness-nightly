@@ -132,7 +132,7 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 
 ### Web (primary)
 
-**Drive**: `node scripts/web-teach.mjs "$B"`, then `"$H"`, then `node scripts/compare.mjs "$RUN/base/web-teach/result.json" "$RUN/head/web-teach/result.json" --out "$RUN/compare-web.md"`. Run `scripts/ensure-axe.sh` once first. Run `node scripts/web-delete.mjs "$H"` for the deletion contract in #343 and item 4 of `docs/specs/polish-first-load.md`. Puppeteer-core drives `/usr/bin/google-chrome` with `data-testid` selectors. Details: [references/web.md](references/web.md).
+**Drive**: `node scripts/web-teach.mjs "$B"`, then `"$H"`, then `node scripts/compare.mjs "$RUN/base/web-teach/result.json" "$RUN/head/web-teach/result.json" --out "$RUN/compare-web.md"`. Run `scripts/ensure-axe.sh` once first. Run `node scripts/web-delete.mjs "$H"` for the deletion contract in #343 and item 4 of `docs/specs/polish-first-load.md`. For a change to how the transcript shows a tool call's state, start an instance with `scenarios/teach-read-fails.json` (`scripts/start.sh "$RUN" head "$PWD/scenarios/teach-read-fails.json"`, base likewise) and run `node scripts/web-tool-error.mjs` on each: a failed `read` must show its card with the red name and Error, never "Retrying…" (#335). Puppeteer-core drives `/usr/bin/google-chrome` with `data-testid` selectors. Details: [references/web.md](references/web.md).
 
 **Copies**: nothing. The base commit is its answer key for existing flows.
 
@@ -145,6 +145,7 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 - sidebar, API and disk removal can all pass while the deleted transcript stays mounted or stale reads return 404. `web-delete.mjs` checks the open view, an older Back entry, and every session API 404 from confirmation onward for single, folder and graph source deletes.
 - one session hides "lists only the newest": the drive uses a unique goal per run and checks the count before and after.
 - one session also hides the list's order: a list sorted oldest first passed every drive (audit 2026-11-21). `api-check.mjs` makes three sessions, then a turn on the first, and records the order before and after (`listOrder`); `web-teach.mjs` does the same in the rendered sidebar (`sidebarOrder`). The turn tells ordering by last activity from ordering by creation.
+- a failed tool call can be replaced by a "Retrying…" line in the transcript (#335), which only a call that really fails shows: the main drive's reads all succeed. `web-tool-error.mjs` fails a `read` on purpose and checks the card, its red name and its Error, live and after a reload.
 - a Retry button that is there but does nothing passed a probe that only looked for it (audit 2026-11-21): `probes.mjs` C presses Retry by mouse and from the keyboard (focus, Enter), and each counts only once its one `POST /api/chat` stream has closed, the question card is up and Retry is gone.
 
 ### API (`app/api`)

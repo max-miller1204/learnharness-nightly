@@ -75,4 +75,25 @@ describe("the chat view's server render", () => {
 			if (session.shows) assert.ok(html.includes(session.shows), `the page shows ${JSON.stringify(session.shows)}`);
 		});
 	}
+
+	// Issue #335: a failed call shows its card's Error, not "Retrying…". Only a
+	// question tool whose error goes back to the agent (it renders nothing of its
+	// own) gets the quiet retry line.
+	const failure = (id: string, toolCallId: string, toolName: string, text: string) => ({ id, role: "toolResult", toolCallId, toolName, content: [{ type: "text", text }], isError: true, timestamp: 2 });
+	const renderFailed = (name: string, args: unknown, text: string) => renderToString(<Shell pathname="/chat/chat_failed"><Chat chatId="chat_failed" title="Failed call" kind="teach" initialMessages={[user, assistant("m_fail", [call("call_fail", name, args)]), failure("m_fail_result", "call_fail", name, text)] as never} /></Shell>);
+	for (const tool of ["read", "grep", "ls", "find", "bash"]) {
+		it(`shows a failed ${tool} call's card and its error, not Retrying`, () => {
+			const html = renderFailed(tool, { path: "missing.md", pattern: "x" }, "ENOENT: no such file or directory, open 'missing.md'");
+			assert.ok(html.includes('data-testid="tool-call-card"'), "the card renders");
+			assert.ok(html.includes("ENOENT: no such file or directory"), "the error text shows");
+			assert.ok(html.includes("text-error"), "the failed call is red");
+			assert.ok(!html.includes("Retrying"), "no retry is pending");
+			assert.ok(!html.includes('data-testid="tool-retry"'));
+		});
+	}
+	it("still shows the quiet retry line for a question tool that errored back to the agent", () => {
+		const html = renderFailed("quiz", { malformed: true }, "Invalid arguments for quiz");
+		assert.ok(html.includes('data-testid="tool-retry"'));
+		assert.ok(html.includes("Retrying"));
+	});
 });
