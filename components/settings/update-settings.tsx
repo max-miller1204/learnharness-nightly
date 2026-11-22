@@ -8,7 +8,7 @@ import { InstallUpdateDialog } from "@/components/install-update-dialog";
 import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateErrorToast, UNEXPECTED_ERROR } from "@/components/update-toasts";
 import { updateButtonTooltip } from "@/components/update-tooltips";
 import { capReleaseNoteGroups, type ReleaseNoteGroup } from "@/src/core";
-import { readBridgeError, readUpdateEverythingResult, readUpdateEverythingRun, runIsLive, type UpdateEverythingResult, type UpdateEverythingRun } from "@/components/update-everything-logic";
+import { BRIDGE_FAILED, readBridgeAnswer, readUpdateEverythingResult, readUpdateEverythingRun, runIsLive, type BridgeAnswer, type UpdateEverythingResult, type UpdateEverythingRun } from "@/components/update-everything-logic";
 import { SettingsRow } from "./controls.tsx";
 import { isNewerVersion } from "@/selfhost/src/version-order.ts";
 
@@ -315,17 +315,19 @@ export function useDesktopAppUpdate() {
 	// Update everything in the page (revision PR 7), when the app has it.
 	const everything = useMemo(() => {
 		if (!bridge || typeof bridge.everything !== "function") return null;
-		/** The app's own dialog: null once it closed (whatever was chosen), else what to tell. */
-		const ask = (method: "everything" | "retry") => async (): Promise<{ title: string; detail: string } | null> => {
-			try { return readBridgeError(await bridge[method]?.()); } catch { return null; } finally { void refresh(); }
+		/** The app's own dialog: how it closed, or what to tell when it didn't open. */
+		const ask = (method: "everything" | "retry") => async (): Promise<BridgeAnswer> => {
+			try { return readBridgeAnswer(await bridge[method]?.()); } catch {
+				return { error: BRIDGE_FAILED, started: false, keyboard: false };
+			} finally { void refresh(); }
 		};
 		const act = (method: "later" | "dismiss") => () => { void bridge[method]?.().catch(() => {}).finally(() => void refresh()); };
 		return {
 			open: ask("everything"),
 			retry: ask("retry"),
 			later: act("later"), dismiss: act("dismiss"),
-			// No refresh after it: the next poll shows what the app did.
-			ready: () => { void bridge.ready?.().catch(() => {}); },
+			// The effect that calls it is keyed on awaitingPage alone, so this refresh doesn't loop.
+			ready: () => { void bridge.ready?.().catch(() => {}).finally(() => void refresh()); },
 			takeResult: async (): Promise<UpdateEverythingResult | null> => {
 				try { return readUpdateEverythingResult(await bridge.takeResult?.()); } catch { return null; }
 			},

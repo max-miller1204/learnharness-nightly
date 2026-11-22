@@ -184,6 +184,18 @@ export function readUpdateEverythingResult(value: unknown): UpdateEverythingResu
 	};
 }
 
+/** What the app's everything() or retry() answered: what to tell (or null), whether a run
+ *  started, and whether a key closed its dialog (for where focus goes after it). */
+export type BridgeAnswer = { error: { title: string; detail: string } | null; started: boolean; keyboard: boolean };
+
+/** A bridge call that failed (an older app, or no click behind it): still never a silent click. */
+export const BRIDGE_FAILED = { title: "Couldn’t update everything.", detail: "The app didn’t answer. Try again." };
+
+export function readBridgeAnswer(value: unknown): BridgeAnswer {
+	const fields = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
+	return { error: readBridgeError(value), started: fields.started === true, keyboard: fields.keyboard === true };
+}
+
 const text = (value: unknown, max: number) => (typeof value === "string" && value.trim() ? value.trim().slice(0, max) : null);
 
 /** What the app's everything() or retry() asks the page to tell, or null (its dialog closed). */

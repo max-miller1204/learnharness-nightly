@@ -1585,6 +1585,43 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		assert.ok(r.calls.ready >= 1, "it tells the app it shows the run, so the countdown can start");
 	});
 
+	it("ready() only while the capsule can be seen: a closed sidebar is still mounted, at width 0", async () => {
+		const r = everythingRemote({ version: V71, target: V72, phase: "available", error: null }, state({ status: "up-to-date", runningVersion: V71 }));
+		document.documentElement.setAttribute("data-lh-sidebar", "closed");
+		try {
+			const host = await mount(<SidebarUpdatePill pageVersion={V71} />);
+			await settle();
+			r.set({ version: V71, target: V72, phase: "updating", error: null, run: { phase: "countdown", localVersion: V72, restartAt: null, awaitingPage: true, machines: [] } });
+			await refreshDesktop();
+			assert.equal(q(host, "update-capsule") !== null, true);
+			assert.equal(r.calls.ready, 0, "closed: the app's own countdown shows instead");
+			await act(async () => { document.documentElement.removeAttribute("data-lh-sidebar"); await new Promise((resolve) => setTimeout(resolve, 0)); });
+			await settle();
+			assert.equal(r.calls.ready, 1, "opened while the app still waits: now it shows");
+		} finally { document.documentElement.removeAttribute("data-lh-sidebar"); }
+	});
+
+	it("a click is never silent: a bridge call that fails says so in a toast", async () => {
+		toastManager.clear();
+		everythingRemote({ version: V71, target: V72, phase: "available", error: null }, state({ status: "up-to-date", runningVersion: V71 }));
+		(window.lh!.desktopUpdate as unknown as { everything: () => Promise<unknown> }).everything = async () => { throw new Error("Update everything opens only from a click."); };
+		const host = await mount(<><SidebarUpdatePill pageVersion={V71} /><Toaster /></>);
+		await settle();
+		await click(q(host, "update-pill")); await settle();
+		assert.deepEqual([...document.querySelectorAll("[data-testid='toast-title']")].map((node) => node.textContent), ["Couldn’t update everything."]);
+	});
+
+	it("a key that closed the app's dialog with Update puts focus on the capsule that stands in for the control", async () => {
+		const r = everythingRemote({ version: V71, target: V72, phase: "available", error: null }, state({ status: "up-to-date", runningVersion: V71 }), { opened: { started: true, keyboard: true } });
+		const host = await mount(<SidebarUpdatePill pageVersion={V71} />);
+		await settle();
+		q(host, "update-pill")!.focus();
+		r.set({ version: V71, target: V72, phase: "updating", error: null, run: { phase: "servers", localVersion: V72, restartAt: null, awaitingPage: false, machines: [{ label: "max-desktop", status: "waiting", startedAt: Date.now(), failure: null }] } });
+		await click(q(host, "update-pill")); await settle(); await settle();
+		assert.equal(q(host, "update-pill") === null, true);
+		assert.equal(document.activeElement === q(host, "update-capsule-button"), true, "focus is on the capsule, not lost with the control");
+	});
+
 	it("what the app can't do says why in a toast", async () => {
 		toastManager.clear();
 		const r = everythingRemote({ version: V71, target: V72, phase: "available", error: null }, state({ status: "up-to-date", runningVersion: V71 }), { opened: { error: { title: "Couldn’t update everything.", detail: "max-desktop runs a newer version." } } });

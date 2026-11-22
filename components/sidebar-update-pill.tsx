@@ -43,7 +43,7 @@
  * server is behind (useUpdateEverything.ts:104).
  */
 
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent, type RefObject } from "react";
 import { createPortal, flushSync } from "react-dom";
 import * as Popper from "@radix-ui/react-popper";
 import { CheckIcon, CircleArrowUpIcon, DownloadIcon, RefreshCwIcon, RotateCwIcon, TriangleAlertIcon } from "lucide-react";
@@ -51,8 +51,9 @@ import { HostDialog } from "@/components/host-dialog";
 import { useOptionalInteractionLayers } from "@/components/interaction-layers";
 import { hasLegacyInteractionForeground } from "@/components/plugin-input-focus";
 import { InstallUpdateDialog } from "@/components/install-update-dialog";
-import { SidebarUpdateCapsule } from "@/components/sidebar-update-capsule";
-import type { UpdateRunLocalState } from "@/components/update-everything-logic";
+import { focusAfterDialog, SidebarUpdateCapsule } from "@/components/sidebar-update-capsule";
+import { SIDEBAR_CLOSED_ATTR } from "@/components/sidebar-boot";
+import type { BridgeAnswer, UpdateRunLocalState } from "@/components/update-everything-logic";
 import { UpdateReleaseNotes } from "@/components/release-notes-view";
 import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateDownloadedToast, showUpdateErrorToast, showUpdateEverythingResult, UNEXPECTED_ERROR } from "@/components/update-toasts";
 import { APP_VERSION, HOMEPAGE, desktopOffer, useDesktopAppUpdate, useUpdateState, type DesktopAppStatus, type UpdateState } from "@/components/settings/update-settings";
@@ -393,6 +394,16 @@ function ReloadConfirmDialog({ open, onClose, onConfirm }: { open: boolean; onCl
 	);
 }
 
+/** Whether the sidebar shows (data-lh-sidebar on <html>, components/sidebar.tsx): closed, it is
+ *  still mounted at width 0, and the capsule in it can't be seen. */
+function subscribeSidebar(onChange: () => void) {
+	if (typeof MutationObserver === "undefined") return () => {};
+	const observer = new MutationObserver(onChange);
+	observer.observe(document.documentElement, { attributes: true, attributeFilter: [SIDEBAR_CLOSED_ATTR] });
+	return () => observer.disconnect();
+}
+const sidebarShown = () => document.documentElement.getAttribute(SIDEBAR_CLOSED_ATTR) !== "closed";
+
 export function SidebarUpdatePill({ reload = () => window.location.reload(), pageVersion = APP_VERSION, homepage = HOMEPAGE }: { reload?: () => void; pageVersion?: string; homepage?: string } = {}) {
 	const { state, transport, check, install, download, dismissNotice } = useUpdateState();
 	const desktop = useDesktopAppUpdate();
@@ -416,9 +427,17 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 		void everything.takeResult().then((result) => { if (result) showUpdateEverythingResult(result, appVersion ?? undefined); });
 	}, [resultId, everything, appVersion]);
 	// The app waits for the capsule to show this (the countdown starts only then): say so once
-	// each time it starts waiting.
+	// each time it starts waiting, and only where it can be seen. In a closed sidebar the app's
+	// own countdown shows instead, once its wait is up.
 	const awaitingPage = desktopStatus?.run?.awaitingPage === true;
-	useEffect(() => { if (awaitingPage && everything) everything.ready(); }, [awaitingPage, everything]);
+	const shown = useSyncExternalStore(subscribeSidebar, sidebarShown, () => true);
+	useEffect(() => { if (awaitingPage && shown && everything) everything.ready(); }, [awaitingPage, shown, everything]);
+	// A key closed the app's dialog with Update: focus goes onto the capsule that stands in for the control.
+	const [focusCapsule, setFocusCapsule] = useState(false);
+	const toastOf = (answer: BridgeAnswer) => {
+		if (answer.error) showUpdateErrorToast(answer.error.title, answer.error.detail);
+		return answer;
+	};
 	const [open, setOpen] = useState(false);
 	// The plain tooltip's open state, controlled all the time: switching Radix between controlled and
 	// uncontrolled lost a close made while the notes applied, and the old state came back after.
@@ -510,10 +529,10 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 		return (
 			// T3's sidebar row for it (SidebarUpdatePill.tsx: @container/sidebar-update): the capsule's width follows it.
 			<div className="@container/sidebar-update ml-auto flex min-w-8 flex-1 justify-end">
-				<SidebarUpdateCapsule run={run} local={local} icon={<CircleArrowUpIcon className="size-4" aria-hidden />} actions={{
+				<SidebarUpdateCapsule run={run} local={local} icon={<CircleArrowUpIcon className="size-4" aria-hidden />} focusOnMount={focusCapsule} actions={{
 					later: everything.later,
 					// The app asks again in its own dialog before it retries anything.
-					retry: () => { void everything.retry().then((error) => { if (error) showUpdateErrorToast(error.title, error.detail); }); },
+					retry: () => everything.retry().then(toastOf),
 					dismiss: everything.dismiss,
 				}} />
 			</div>
@@ -591,7 +610,12 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 		} else if (everything && kind === "everything") {
 			// The app's own Update everything dialog (revision PR 7): it plans, asks and starts.
 			setPending(true);
-			void everything.open().then((error) => { if (error) showUpdateErrorToast(error.title, error.detail); }).finally(() => setPending(false));
+			const trigger = buttonRef.current;
+			setFocusCapsule(false);
+			void everything.open().then((answer) => {
+				toastOf(answer);
+				focusAfterDialog(answer, trigger, () => setFocusCapsule(true));
+			}).finally(() => setPending(false));
 		} else if (desktop && (kind === "everything" || kind === "app-install")) {
 			// An older app asks first in its own native dialog (electron/update-everything.cjs).
 			setPending(true);

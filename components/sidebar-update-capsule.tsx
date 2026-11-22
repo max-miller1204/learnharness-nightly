@@ -16,10 +16,12 @@
  * update control's notes are), and close on Escape (one Esc, one action) or a
  * pointer press outside. With T3's later fixes to how the capsule fits a narrow
  * sidebar (its container is the sidebar row's @container/sidebar-update):
- * 5aae5578 (the label shows from 5rem, not 12rem), dea657a0 (a short grow-in at
- * the default sidebar width), 4be39cf0 (the icon stays in place while the capsule
- * shrinks) and 1425613b (the countdown keeps its seconds visible: it expands only
- * from 12rem). Warnings use the theme's warning token, as T3's do.
+ * 5aae5578 (the label's breakpoint from 12rem to 7rem), dea657a0 (to 5rem, with a
+ * short grow-in at the default sidebar width), 4be39cf0 (the icon stays in place
+ * while the capsule shrinks) and 1425613b (the countdown keeps its seconds visible:
+ * it expands only from 12rem; narrower, its Later is in the details). Warnings use
+ * the theme's warning token, as T3's do. After main's dialog closes, focus follows
+ * T3's `finalFocus` (UpdateEverythingDialog.tsx:78-82): see focusAfterDialog.
  */
 
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
@@ -29,7 +31,7 @@ import { useOptionalInteractionLayers } from "@/components/interaction-layers";
 import { hasLegacyInteractionForeground } from "@/components/plugin-input-focus";
 import {
 	describeUpdateCapsule, formatUpdateElapsed, localStatusLabel, restartSecondsLeft, RUN_STATUS_LABELS,
-	type UpdateEverythingRun, type UpdateRunLocalState,
+	type BridgeAnswer, type UpdateEverythingRun, type UpdateRunLocalState,
 } from "@/components/update-everything-logic";
 import { cn } from "@/lib/utils";
 
@@ -44,15 +46,31 @@ function useNow(intervalMs: number | null, clock: () => number): number {
 	return useSyncExternalStore(subscribe, () => Math.floor(clock() / step) * step, () => Math.floor(clock() / step) * step);
 }
 
-export type CapsuleActions = { later: () => void; retry: () => void; dismiss: () => void };
+/** Where focus goes once main's dialog has closed, as T3's `finalFocus={(closeType) => closeType ===
+ *  "keyboard"}` (UpdateEverythingDialog.tsx:78-82): back to `trigger` only after a keyboard close;
+ *  a pointer close leaves it (a refocused trigger would show its focus ring and open its tooltip).
+ *  After a keyboard Update the trigger goes away with the run's start, so `started` takes focus. */
+export function focusAfterDialog(answer: BridgeAnswer, trigger: HTMLElement | null, started: () => void) {
+	if (!answer.keyboard) {
+		if (trigger && document.activeElement === trigger) trigger.blur();
+		return;
+	}
+	if (answer.started) started();
+	else if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+	else started();
+}
 
-export function SidebarUpdateCapsule({ run, local, icon, actions, clock = Date.now }: {
+export type CapsuleActions = { later: () => void; retry: () => Promise<BridgeAnswer> | void; dismiss: () => void };
+
+export function SidebarUpdateCapsule({ run, local, icon, actions, clock = Date.now, focusOnMount = false }: {
 	run: UpdateEverythingRun;
 	local: UpdateRunLocalState;
 	icon: ReactNode;
 	actions: CapsuleActions;
 	/** For tests: the time the capsule counts against. */
 	clock?: () => number;
+	/** It stands in for a control whose dialog a key closed with Update: focus starts on it. */
+	focusOnMount?: boolean;
 }) {
 	const machines = run.machines;
 	const hasActiveMachine = machines.some(({ status }) => status !== "done" && status !== "failed" && status !== "waiting");
@@ -71,9 +89,15 @@ export function SidebarUpdateCapsule({ run, local, icon, actions, clock = Date.n
 	const actionLabel = view.action === "later" ? "Later" : view.action === "retry" ? "Retry" : "Dismiss";
 	const runAction = () => {
 		if (view.action === "later") actions.later();
-		else if (view.action === "retry") actions.retry();
-		else actions.dismiss();
+		else if (view.action === "retry") {
+			const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+			const asked = actions.retry();
+			if (asked) void asked.then((answer) => focusAfterDialog(answer, trigger, () => buttonRef.current?.focus({ preventScroll: true })));
+		} else actions.dismiss();
 	};
+	useEffect(() => {
+		if (focusOnMount) buttonRef.current?.focus({ preventScroll: true });
+	}, [focusOnMount]);
 	const label = view.slow ? `${view.label} ${view.slow.status} ${view.slow.elapsed}` : view.label;
 	// T3 1425613b: during the countdown the capsule expands only where there is room for its
 	// label and Later; narrower, its seconds stay visible in place of the icon.

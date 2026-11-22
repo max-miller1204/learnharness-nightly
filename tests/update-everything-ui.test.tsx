@@ -119,8 +119,44 @@ describe("the capsule's words (T3's describeUpdateCapsule, updateEverything.logi
 describe("the capsule (T3's SidebarUpdateCapsule.tsx at df09ced7)", () => {
 	const actions = () => {
 		const calls: string[] = [];
-		return { calls, actions: { later: () => calls.push("later"), retry: () => calls.push("retry"), dismiss: () => calls.push("dismiss") } };
+		return { calls, actions: { later: () => { calls.push("later"); }, retry: () => { calls.push("retry"); }, dismiss: () => { calls.push("dismiss"); } } };
 	};
+	it("during the countdown in a sidebar narrower than 12rem, Later is still reachable from the keyboard, in the details", async () => {
+		const { calls, actions: a } = actions();
+		await mount(<SidebarUpdateCapsule run={run({ phase: "countdown", restartAt: NOW + 5_000, machines: [machine({ status: "done" })] })} local={{ status: "waiting" }} icon={null} actions={a} clock={() => NOW} />);
+		// Narrower than 12rem the inline Later is hidden (only @min-[12rem] shows it): the details have it.
+		assert.match(q("update-capsule-action")!.getAttribute("class") ?? "", /\bhidden\b.*@min-\[12rem\]\/sidebar-update:block/);
+		const capsule = q("update-capsule-button")!;
+		capsule.focus();
+		await press(capsule, "Enter");
+		const later = q("update-capsule-details-action");
+		assert.equal(later?.textContent, "Later");
+		assert.equal(document.activeElement === later, true, "focus lands on it");
+		await click(later);
+		assert.deepEqual(calls, ["later"]);
+	});
+	it("after main's dialog: a keyboard Update focuses the capsule, a keyboard Cancel the Retry pressed, a click neither (T3's finalFocus)", async () => {
+		const failed = run({ localVersion: null, machines: [machine({ status: "failed", failure: "no" })] });
+		for (const [answer, expect] of [
+			[{ error: null, started: true, keyboard: true }, "capsule"],
+			[{ error: null, started: false, keyboard: true }, "retry"],
+			[{ error: null, started: false, keyboard: false }, "none"],
+		] as const) {
+			let answered: (value: typeof answer) => void = () => {};
+			await mount(<SidebarUpdateCapsule run={failed} local={null} icon={null} clock={() => NOW} actions={{ later: () => {}, dismiss: () => {}, retry: () => new Promise((resolve) => { answered = resolve; }) }} />);
+			const retry = q("update-capsule-action")!;
+			let blurred = false;
+			retry.blur = () => { blurred = true; };
+			retry.focus();
+			await click(retry);
+			await act(async () => { answered(answer); await Promise.resolve(); });
+			const active = document.activeElement;
+			assert.equal(active === q("update-capsule-button"), expect === "capsule", `${expect}: on the capsule`);
+			if (expect !== "none") assert.equal(active === retry, expect === "retry", `${expect}: on Retry`);
+			assert.equal(blurred, expect === "none", `${expect}: a click lets go of Retry, so no focus ring or tooltip comes back`);
+			for (const { root, host } of roots.splice(0)) { await act(async () => { root.unmount(); }); host.remove(); }
+		}
+	});
 	it("Restart in 5s with Later", async () => {
 		const { calls, actions: a } = actions();
 		await mount(<SidebarUpdateCapsule run={run({ phase: "countdown", restartAt: NOW + 5_000, machines: [machine({ status: "done" })] })} local={{ status: "waiting" }} icon={null} actions={a} clock={() => NOW} />);
