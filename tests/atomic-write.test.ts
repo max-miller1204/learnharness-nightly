@@ -28,6 +28,21 @@ function target(name: string, text?: string, folder = "case-"): string {
 const temps = (file: string) => fs.readdirSync(path.dirname(file)).filter((f) => f.includes(".tmp-"));
 const fail = (code: string) => Object.assign(new Error(code), { code });
 
+/** Counts rename attempts and retry sleeps, with no clock: "fails at once"
+ * means one rename and no sleep (the retry loop sleeps between attempts with
+ * Atomics.wait). The sleeps return at once, so a test that does enter the
+ * retry fails on its counts, not on time. `refuse` makes every rename throw
+ * that error, as Windows does for a folder or a read-only file at the target. */
+function watchRetries(t: TestContext, refuse?: () => Error): { renames: () => number; sleeps: () => number } {
+	const rename = fs.renameSync;
+	const renames = t.mock.method(fs, "renameSync", (...args: Parameters<typeof rename>) => {
+		if (refuse) throw refuse();
+		return rename(...args);
+	});
+	const sleeps = t.mock.method(Atomics, "wait", (() => "timed-out") as unknown as typeof Atomics.wait);
+	return { renames: () => renames.mock.callCount(), sleeps: () => sleeps.mock.callCount() };
+}
+
 function modelWindows(t: TestContext): void {
 	// Only the platform gate is modeled. These are not native held-handle tests.
 	const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -153,23 +168,49 @@ describe("writeFileAtomicSync", () => {
 		assert.equal(fs.readFileSync(path.join(path.dirname(file), kept[0]!), "utf-8"), "new");
 	});
 
-	it("Windows: read-only files fail at once, like in-place writes", onWindows, () => {
+	it("Windows: read-only files fail at once, like in-place writes", onWindows, (t) => {
 		const file = target("record.json", "old");
 		fs.chmodSync(file, 0o444);
-		const started = Date.now();
+		const retries = watchRetries(t);
 		assert.throws(() => writeFileAtomicSync(file, "new"), { code: "EPERM" });
-		assert.ok(Date.now() - started < 50, "no waiting on read-only files");
+		assert.equal(retries.renames(), 1, "one rename, no retry on read-only files");
+		assert.equal(retries.sleeps(), 0, "no waiting on read-only files");
 		fs.chmodSync(file, 0o666);
 		assert.equal(fs.readFileSync(file, "utf-8"), "old");
 		assert.deepEqual(temps(file), []);
 	});
 
-	it("folders in the way fail at once", () => {
+	it("modeled Windows: read-only files fail at once, without retrying", (t) => {
+		modelWindows(t);
+		const file = target("record.json", "old");
+		fs.chmodSync(file, 0o444);
+		t.after(() => fs.chmodSync(file, 0o666));
+		const retries = watchRetries(t, () => fail("EPERM")); // what Windows answers for a read-only target
+		assert.throws(() => writeFileAtomicSync(file, "new"), { code: "EPERM" });
+		assert.equal(retries.renames(), 1, "one rename, no retry on read-only files");
+		assert.equal(retries.sleeps(), 0, "no waiting on read-only files");
+		assert.equal(fs.readFileSync(file, "utf-8"), "old");
+		assert.deepEqual(temps(file), []);
+	});
+
+	it("folders in the way fail at once", (t) => {
 		const file = target("record.json");
 		fs.mkdirSync(file);
-		const started = Date.now();
+		const retries = watchRetries(t);
 		assert.throws(() => writeFileAtomicSync(file, "new"));
-		assert.ok(Date.now() - started < 50, "no waiting on folders");
+		assert.equal(retries.renames(), 1, "one rename, no retry on folders");
+		assert.equal(retries.sleeps(), 0, "no waiting on folders");
+		assert.deepEqual(temps(file), []);
+	});
+
+	it("modeled Windows: folders in the way fail at once, without retrying", (t) => {
+		modelWindows(t);
+		const file = target("record.json");
+		fs.mkdirSync(file);
+		const retries = watchRetries(t, () => fail("EPERM")); // what Windows answers for a folder at the target
+		assert.throws(() => writeFileAtomicSync(file, "new"), { code: "EPERM" });
+		assert.equal(retries.renames(), 1, "one rename, no retry on folders");
+		assert.equal(retries.sleeps(), 0, "no waiting on folders");
 		assert.deepEqual(temps(file), []);
 	});
 
