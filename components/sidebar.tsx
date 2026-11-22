@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { MenuShell } from "@/components/menu-shell";
-import { closeMenuToRow, createNeighborHandoff, createRowFocusKeeper, focusWhenLost, isMenuKey, keepRowKeys, releaseRowAfterPointerClose, sidebarStopProps, swallowNextContextMenu, tabIntoList, tabThroughList, trackInputModality } from "@/components/sidebar-keyboard";
+import { closeMenuToRow, createNeighborHandoff, createRowFocusKeeper, focusWhenLost, isMenuKey, keepFooterKeys, keepRowKeys, releaseRowAfterPointerClose, sidebarStopProps, swallowNextContextMenu, tabIntoList, tabThroughFooter, tabThroughList, trackInputModality } from "@/components/sidebar-keyboard";
 import { DeleteFolderDialog, DeleteSessionDialog, folderDeleteCopy, type DeleteDialogCopy } from "@/components/delete-session-dialog";
 import { leaveDeletedSession, SESSIONS_DELETED_EVENT } from "@/components/session-deletion";
 import type { ChatDeleteMode, ThemeMode } from "@/src/core";
@@ -566,6 +566,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 	const [kbdIndex, setKbdIndex] = useState<number | null>(null);
 	const searchRef = useRef<HTMLInputElement>(null);
 	const listRef = useRef<HTMLDivElement>(null);
+	const footerRef = useRef<HTMLDivElement>(null);
 
 	/* ── Wave 6 chunk A: context menu + inline rename + deletion ──
 	   Right-click a session row → MenuShell: the two management actions
@@ -1046,7 +1047,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 				    highlights run to the edge; it shows while scrolling/hovering. */}
 				<OverlayScrollArea scrollRef={listRef} data-testid="session-list" className="flex flex-col" {...folderDrop.containerProps}>
 					{(creatingFolder?.parentId === null || (rows !== null && rows.length > 0)) && (
-						<div data-testid="session-rows" onKeyDown={(e) => { if (!tabThroughList(e, e.currentTarget, searchRef.current)) keepRowKeys(e); }}>
+						<div data-testid="session-rows" onKeyDown={(e) => { if (!tabThroughList(e, e.currentTarget, searchRef.current, footerRef.current?.querySelector('[data-testid="settings-entry"]') ?? null)) keepRowKeys(e); }}>
 							{creatingFolder?.parentId === null && (
 								<NewFolderRow depth={0} compact={compactSessionList} onDone={() => setCreatingFolder(null)}
 									onCreate={(name) => changeFolders({ action: "create-folder", name, parentId: null })} />
@@ -1077,13 +1078,13 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 					{/* Settings entry (settings-app wave): same row language as
 					    New session — quiet, bottom-pinned, opens the centered
 					    dialog (also mod+, in the keyboard registry). */}
-					<div className="flex items-center justify-between gap-2 px-3 pb-3 pt-1">
+					<div ref={footerRef} data-testid="sidebar-footer" onKeyDown={(e) => { if (!tabThroughFooter(e, e.currentTarget, listRef.current)) keepFooterKeys(e); }} className="flex items-center justify-between gap-2 px-3 pb-3 pt-1">
 						<Hint label="Settings" action="open-settings" side="right">
 							<button
 								type="button"
 								onClick={() => openSettings()}
 								data-testid="settings-entry"
-								className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs uppercase tracking-wider text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+								className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs uppercase tracking-wider text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
 							>
 								<SettingsIcon className="size-3" />
 								Settings

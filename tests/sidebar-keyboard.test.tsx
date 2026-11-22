@@ -18,7 +18,7 @@ import { SidebarFolderRow } from "../components/sidebar-folders.tsx";
 import { InteractionLayersProvider } from "../components/interaction-layers.tsx";
 import { MenuShell } from "../components/menu-shell.tsx";
 import { capturePluginQuestionKey, ownPluginQuestionKeys } from "../components/plugin-question-keys.ts";
-import { closeMenuToRow, createNeighborHandoff, createRowFocusKeeper, focusWhenLost, isMenuKey, keepRowKeys, releaseRowAfterPointerClose, sidebarStops, swallowNextContextMenu, tabIntoList, tabThroughList, trackInputModality } from "../components/sidebar-keyboard.ts";
+import { closeMenuToRow, createNeighborHandoff, createRowFocusKeeper, focusWhenLost, isMenuKey, keepFooterKeys, keepRowKeys, releaseRowAfterPointerClose, sidebarStops, swallowNextContextMenu, tabIntoList, tabThroughFooter, tabThroughList, trackInputModality } from "../components/sidebar-keyboard.ts";
 import type { ChatListItem } from "../src/core/contracts.ts";
 
 const dom = parseHTML("<html><body></body></html>");
@@ -93,6 +93,37 @@ const focusedName = () => {
 	return el && el !== document.body ? el.getAttribute("data-session-id") ?? el.getAttribute("data-testid") : null;
 };
 const tick = (ms = 5) => act(async () => { await new Promise((r) => setTimeout(r, ms)); });
+
+function FooterHarness({ capsule = false }: { capsule?: boolean }) {
+	const list = React.useRef<HTMLDivElement>(null);
+	const footer = React.useRef<HTMLDivElement>(null);
+	return <><div ref={list} onKeyDown={(e) => tabThroughList(e, list.current, null, footer.current?.querySelector('[data-testid="settings-entry"]') ?? null)}><button data-sidebar-stop="" data-testid="last-row">row</button></div>
+		<div ref={footer} data-testid="sidebar-footer" onKeyDown={(e) => { if (!tabThroughFooter(e, e.currentTarget, list.current)) keepFooterKeys(e); }}>
+			<button data-testid="settings-entry">Settings</button>
+			{capsule ? <><button data-testid="update-capsule-button">Update</button><button data-testid="update-capsule-action">Later</button></> : <button data-testid="update-pill">Update</button>}
+		</div></>;
+}
+
+describe("sidebar footer keyboard order", () => {
+	for (const capsule of [false, true]) it(capsule ? "walks capsule actions" : "walks the update pill", async () => {
+		await render(<FooterHarness capsule={capsule} />);
+		byId("last-row").focus();
+		await press(byId("last-row"), "Tab");
+		assert.equal(focusedName(), "settings-entry");
+		await press(byId("settings-entry"), "Tab");
+		assert.equal(focusedName(), capsule ? "update-capsule-button" : "update-pill");
+		if (capsule) {
+			await press(byId("update-capsule-button"), "Tab");
+			assert.equal(focusedName(), "update-capsule-action");
+			await press(byId("update-capsule-action"), "Tab", { shiftKey: true });
+			assert.equal(focusedName(), "update-capsule-button");
+		}
+		await press(byId(capsule ? "update-capsule-button" : "update-pill"), "Tab", { shiftKey: true });
+		assert.equal(focusedName(), "settings-entry");
+		await press(byId("settings-entry"), "Tab", { shiftKey: true });
+		assert.equal(focusedName(), "last-row");
+	});
+});
 
 let reachedWindow = 0;
 dom.window.addEventListener("keydown", () => { reachedWindow++; });
@@ -642,7 +673,7 @@ describe("a row deleted from the keyboard hands focus to its neighbour (#358 rou
 describe("sidebar.tsx wiring", () => {
 	it("uses the same handlers in the real list, search and menus", () => {
 		const source = readFileSync(new URL("../components/sidebar.tsx", import.meta.url), "utf8");
-		assert.match(source, /data-testid="session-rows" onKeyDown=\{\(e\) => \{ if \(!tabThroughList\(e, e\.currentTarget, searchRef\.current\)\) keepRowKeys\(e\); \}\}/);
+		assert.match(source, /tabThroughList\(e, e\.currentTarget, searchRef\.current, footerRef\.current/);
 		assert.match(source, /if \(tabIntoList\(e, listRef\.current, walked\)\) \{ setKbdIndex\(null\); return; \}/);
 		const search = source.slice(source.indexOf('data-testid="session-search"'));
 		assert.ok(search.indexOf("tabIntoList") < search.indexOf('e.key === "Escape"'), "the search's Tab is handled first");

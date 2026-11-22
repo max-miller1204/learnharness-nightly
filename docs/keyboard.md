@@ -137,7 +137,9 @@ submission conventions above.
   to the app's own Tab. In the list, **Tab** and **Shift+Tab** move through
   folder and session rows in order (Shift+Tab here moves back rather than
   cycling the thinking level); Shift+Tab on the first row returns to the search,
-  and Tab on the last row goes on to the app's own Tab. A focused row shows a
+  and Tab on the last row goes to Settings, then the update control and its
+  visible action before continuing to the app's own Tab. Shift+Tab walks back
+  through the footer. A focused row shows a
   focus ring. **Enter** or **Space** opens a session, or expands or collapses a
   folder. The **Menu** key or **Shift+F10** opens the row's menu, as
   right-clicking does: Rename, Export as Markdown…, Delete… and the extraction

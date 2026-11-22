@@ -12,7 +12,7 @@
  * (sidebar-update-pill.tsx): Tab from the sessions search enters the first
  * row (or the row the search's ↑/↓ walked to), Tab and Shift+Tab walk the
  * rows, Shift+Tab on the first row returns to the search, and Tab on the last
- * row hands Tab back to the app. The list's Tab and Shift+Tab, and plain
+ * row enters the footer. The list's Tab and Shift+Tab, and plain
  * Enter, Space and arrows on a row, don't reach the app's shortcuts or an
  * open question dock. A Tab an open plugin question dock already claimed, or
  * one typed during IME composition, stays the dock's (keyboard-shortcuts.tsx
@@ -73,18 +73,39 @@ export function tabIntoList(event: TabEvent, list: Element | null, walked: HTMLE
 }
 
 /** Tab or Shift+Tab on a row: the next or previous row; Shift+Tab on the
- *  first row returns to the search. Tab on the last row is not ours. */
-export function tabThroughList(event: TabEvent, list: Element | null, search: HTMLElement | null): boolean {
+ *  first row returns to the search. Tab on the last row enters the footer. */
+export function tabThroughList(event: TabEvent, list: Element | null, search: HTMLElement | null, footer: HTMLElement | null = null): boolean {
 	if (notOurs(event) || !plainTab(event)) return false;
 	const stops = sidebarStops(list);
 	const at = stops.indexOf(event.target as HTMLElement);
 	if (at < 0) return false; // a rename field or other control: its own keys
-	const next = event.shiftKey ? (at > 0 ? stops[at - 1] : search) : stops[at + 1];
+	const next = event.shiftKey ? (at > 0 ? stops[at - 1] : search) : stops[at + 1] ?? footer;
 	if (!next) return false;
 	event.preventDefault();
 	stopHere(event);
 	next.focus();
 	return true;
+}
+
+/** Footer order follows T3: Settings, then update.
+ * https://github.com/pingdotgg/t3code/blob/df09ced7688dec80a9c66c80181144cfb50f62ce/apps/web/src/components/sidebar/SidebarChrome.tsx#L270-L311 */
+export function tabThroughFooter(event: TabEvent, footer: Element, list: Element | null): boolean {
+	if (notOurs(event) || !plainTab(event)) return false;
+	const stops = Array.from(footer.querySelectorAll<HTMLElement>('[data-testid="settings-entry"], [data-testid="update-pill"], [data-testid="update-capsule-button"], [data-testid="update-capsule-action"]'))
+		.filter((el) => !el.closest('[hidden], [aria-hidden="true"]') && el.getAttribute('aria-disabled') !== 'true' && !(el as HTMLButtonElement).disabled && (typeof el.checkVisibility !== 'function' || el.checkVisibility()));
+	const at = stops.indexOf(event.target as HTMLElement);
+	if (at < 0) return false;
+	const next = event.shiftKey ? (at ? stops[at - 1] : sidebarStops(list).at(-1)) : stops[at + 1];
+	if (!next) return false;
+	event.preventDefault();
+	stopHere(event);
+	next.focus();
+	return true;
+}
+
+/** Footer buttons retain native activation and do not submit a question. */
+export function keepFooterKeys(event: TabEvent): void {
+	if (!notOurs(event) && !event.altKey && !event.ctrlKey && !event.metaKey && PRESS_KEYS.has(event.key) && (event.target as Element | null)?.closest?.('[data-testid="sidebar-footer"]')) stopHere(event);
 }
 
 const PRESS_KEYS = new Set(["Enter", " "]);
