@@ -14,6 +14,18 @@
 
 const inFlight = new Map<string, Promise<boolean>>(); // resolves true = deleted
 const deleted = new Set<string>(); // ids are never reused
+const reads = new Map<string, Set<AbortController>>();
+
+/** Register a cancellable read after checking sessionReadHold. */
+export function registerSessionRead(chatId: string, controller: AbortController): () => void {
+	let active = reads.get(chatId);
+	if (!active) reads.set(chatId, active = new Set());
+	active.add(controller);
+	return () => {
+		active.delete(controller);
+		if (active.size === 0 && reads.get(chatId) === active) reads.delete(chatId);
+	};
+}
 
 /** A fresh promise that never settles: a held read of a deleted session.
  *  Fresh per read, so nothing long-lived keeps the unmounted view alive. */
@@ -25,6 +37,7 @@ export function beginSessionDelete(chatId: string): (wasDeleted: boolean) => voi
 	let settle!: (wasDeleted: boolean) => void;
 	const pending = new Promise<boolean>((resolve) => { settle = resolve; });
 	inFlight.set(chatId, pending);
+	for (const controller of reads.get(chatId) ?? []) controller.abort();
 	let done = false;
 	return (wasDeleted) => {
 		if (done) return; // the first outcome stands

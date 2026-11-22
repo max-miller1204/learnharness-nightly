@@ -9,7 +9,7 @@ import { formatTokens } from "@/components/usage-format";
 import { Hint } from "@/components/ui/hint";
 import { timeAgo } from "@/components/time-ago";
 import { resolveSettings } from "@/src/core";
-import { sessionReadHold } from "@/components/session-deletion";
+import { registerSessionRead, sessionReadHold } from "@/components/session-deletion";
 
 /**
  * The extraction-coverage surfaces (extraction-UX redesign, owner-locked
@@ -45,16 +45,23 @@ export interface SessionCoverage {
 
 /** One session's coverage read — null on transport/404 (callers render
  *  nothing rather than a fake zero; the honest-render doctrine). */
-async function fetchCoverage(chatId: string): Promise<SessionCoverage | null> {
-	const hold = sessionReadHold(chatId); // holds while this window deletes the session
-	if (hold) await hold;
+export async function fetchCoverage(chatId: string): Promise<SessionCoverage | null> {
+	let hold = sessionReadHold(chatId);
+	while (hold) {
+		await hold;
+		hold = sessionReadHold(chatId);
+	}
+	const controller = new AbortController();
+	const unregister = registerSessionRead(chatId, controller);
 	try {
-		const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`);
+		const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`, { signal: controller.signal });
 		if (!res.ok) return null;
 		const body = (await res.json()) as { coverage?: SessionCoverage | null };
 		return body.coverage ?? null;
 	} catch {
 		return null;
+	} finally {
+		unregister();
 	}
 }
 
