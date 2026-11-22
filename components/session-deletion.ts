@@ -44,3 +44,14 @@ export function sessionReadHold(chatId: string): Promise<void> | null {
 	if (!pending) return null;
 	return pending.then((wasDeleted) => (wasDeleted ? never() : undefined));
 }
+
+/** After a delete: when the open session (`pathname`) is one of `deletedIds`,
+ *  drop its view at once (`drop`, before the navigation commits, so its
+ *  timers can't fetch it) and leave with `replace`, never push: Back must not
+ *  lead to a session that no longer exists (T3 Code's rule). */
+export function leaveDeletedSession(pathname: string, deletedIds: Iterable<string>, drop: (id: string) => void, replace: (href: string) => void): void {
+	const openId = pathname.startsWith("/chat/") ? pathname.slice("/chat/".length) : null;
+	if (openId === null || !new Set(deletedIds).has(openId)) return;
+	drop(openId);
+	replace("/");
+}

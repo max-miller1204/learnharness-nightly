@@ -346,6 +346,12 @@ export interface QuestionDismissRequest {
 /** 200 when saved, 202 when parked for the active turn's settlement. */
 export type QuestionDismissResponse = { ok: true; parked?: true };
 
+/** Optional protocol 1 extension: question data and answers may carry
+ * `optionOrder` (QuestionData, QuestionAnswerData in src/core/question-core.ts),
+ * the displayed letter of each authored option (upstream 0.7.0's lettered
+ * single-select options). A client without it shows the options unlettered. */
+export const QUESTION_OPTION_ORDER_V1 = "question-option-order-v1";
+
 /** Optional protocol 1 extension: rename, delete and export a session from
  * the session list (docs/specs/mobile-session-basics.md). The routes are the
  * web sidebar's own, unchanged. */

@@ -2,8 +2,14 @@ import { compactionInFlight, deleteChatSession, getChat, isTurnRunning, sessionC
 import { pendingPluginQuestionOf, activeProblemOf } from "@/src/core";
 import type { ChatResponse } from "@/src/server";
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
 	const { id } = await params;
+	if (new URL(req.url).searchParams.get("view") === "stats") {
+		// Stats refreshes don't adopt history or need plugin availability.
+		const chat = getChat(id);
+		return chat ? Response.json({ turns: chat.turns, pricing: sessionCost(chat) })
+			: Response.json({ error: "Not found" }, { status: 404 });
+	}
 	await reconcilePluginQuestionCompatibility(stores.chatStore, id);
 	let chat = getChat(id);
 	if (!chat) return Response.json({ error: "Not found" }, { status: 404 });

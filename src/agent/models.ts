@@ -7,8 +7,10 @@ import {
 	type Model,
 	type Models,
 	type MutableModels,
+	type Provider,
 	type StreamFunction,
 } from "@earendil-works/pi-ai";
+import { createHash } from "node:crypto";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { lazyApi, lazyStream } from "@earendil-works/pi-ai/api/lazy";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -55,6 +57,30 @@ export interface PiEngine {
 
 export type { ThinkingLevel };
 
+// Route handlers can have separate module instances in Next.js. All of
+// their collections see the same validated overlay without changing auth.
+const CATALOG_KEY = Symbol.for("lh.model-catalog-overlay");
+const catalogGlobal = globalThis as typeof globalThis & { [CATALOG_KEY]?: ReadonlyMap<string, readonly Model<Api>[]> };
+
+export function setModelCatalogOverlay(models: ReadonlyMap<string, readonly Model<Api>[]>): void {
+	catalogGlobal[CATALOG_KEY] = models;
+}
+
+function withCatalogOverlay(provider: Provider): Provider {
+	return {
+		...provider,
+		getModels: () => {
+			const extra = catalogGlobal[CATALOG_KEY]?.get(provider.id);
+			return extra?.length ? [...provider.getModels(), ...extra] : provider.getModels();
+		},
+		getAllModels: () => {
+			const base = provider.getAllModels?.() ?? provider.getModels();
+			const extra = catalogGlobal[CATALOG_KEY]?.get(provider.id);
+			return extra?.length ? [...base, ...extra] : base;
+		},
+	};
+}
+
 let collection: ReturnType<typeof createModels> | undefined;
 interface ProviderSource {
 	sync(models: MutableModels): void;
@@ -89,9 +115,9 @@ export function piModels() {
 			// Keep the native Bedrock implementation reachable by standalone tracing.
 			// Pi's default Node-only loader hides this import from bundlers. Only
 			// replace its lazy forwarding; preserve the native factory's auth/catalog.
-			collection.setProvider(provider.id === "amazon-bedrock"
+			collection.setProvider(withCatalogOverlay(provider.id === "amazon-bedrock"
 				? { ...provider, ...lazyApi(() => import("@earendil-works/pi-ai/api/bedrock-converse-stream")) }
-				: provider);
+				: provider));
 		}
 		collection.setProvider(createClaudeCodeProvider(streamClaudeCode));
 	}
@@ -202,9 +228,69 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 			}
 			const purpose = typeof background === "function" ? background : () => background;
 			const stream = spec.provider === "chatgpt" ? chatGPTStream(purpose, lifecycle) : nativeId ? nativeSubscriptionStream(models.getProvider(nativeId)!, purpose, lifecycle) : models.streamSimple.bind(models);
+			// Direct Anthropic auth is resolved per request, and Pi keys a message
+			// thread by the session id alone. A thread belongs to the key that made
+			// it, so the session id Pi sees carries a fingerprint of the credential
+			// sent (a hash, never the key): the same key continues its thread, a
+			// rotated key starts a new one (the owner keeps threads on, #278).
+			// The credential is resolved once here and that exact key and those
+			// headers are what the request sends, so a rotation or refresh after
+			// this point can't put another key on this thread.
+			if (requestModel.provider === "anthropic" && requestModel.api === "anthropic-messages" && typeof requestOptions.sessionId === "string") {
+				const sessionId = requestOptions.sessionId;
+				return lazyStream(requestModel, async () => {
+					const resolved = await models.getAuth(requestModel, { apiKey: requestOptions.apiKey, env: requestOptions.env, signal: requestOptions.signal });
+					// What Pi's request uses: explicit options win per field.
+					const apiKey = requestOptions.apiKey ?? resolved?.auth.apiKey;
+					const headers = mergeHeaders(resolved?.auth.headers, requestOptions.headers);
+					const credential = credentialHeaders(headers);
+					return stream(requestModel, context, {
+						...requestOptions,
+						apiKey,
+						headers,
+						// Pi resolves auth again inside the request. With the key given it
+						// takes that key as is, and this drops any credential header the
+						// second resolution added, so only the fingerprinted ones go out.
+						transformHeaders: (sent: Record<string, string | null>) => ({ ...withoutCredentialHeaders(sent), ...credential }),
+						sessionId: anthropicThreadSession(sessionId, apiKey, credential),
+					});
+				}, undefined, requestOptions.signal);
+			}
 			return stream(requestModel, context, requestOptions);
 		},
 	};
+}
+
+/** The session id Pi keys an Anthropic message thread by: the chat's, plus a
+ *  short hash of the credential that request sends (its key and any
+ *  credential header, such as an `x-api-key` override), so a thread is never
+ *  continued with another key. Exported for tests. */
+export function anthropicThreadSession(sessionId: string, apiKey: string | undefined, headers: Record<string, string | null> = {}): string {
+	const credential = JSON.stringify([apiKey ?? null, Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]).sort()]);
+	return `${sessionId}:key-${createHash("sha256").update(credential).digest("hex").slice(0, 16)}`;
+}
+
+/** The headers Anthropic requests authenticate with (Pi's anthropic-messages
+ *  checks the same three). */
+const CREDENTIAL_HEADERS = new Set(["authorization", "x-api-key", "cf-aig-authorization"]);
+
+function credentialHeaders(headers: Record<string, string | null> | undefined): Record<string, string | null> {
+	return Object.fromEntries(Object.entries(headers ?? {}).filter(([name]) => CREDENTIAL_HEADERS.has(name.toLowerCase())));
+}
+
+function withoutCredentialHeaders(headers: Record<string, string | null>): Record<string, string | null> {
+	return Object.fromEntries(Object.entries(headers).filter(([name]) => !CREDENTIAL_HEADERS.has(name.toLowerCase())));
+}
+
+/** Pi's header merge: a later name replaces an earlier one whatever its case. */
+function mergeHeaders(base: Record<string, string | null> | undefined, override: Record<string, string | null> | undefined): Record<string, string | null> | undefined {
+	if (!base && !override) return undefined;
+	const merged: Record<string, string | null> = { ...base };
+	for (const [name, value] of Object.entries(override ?? {})) {
+		for (const existing of Object.keys(merged)) if (existing.toLowerCase() === name.toLowerCase()) delete merged[existing];
+		merged[name] = value;
+	}
+	return merged;
 }
 
 /** The LEGACY role entry point — BYOK made it an honest THROWER (owner,

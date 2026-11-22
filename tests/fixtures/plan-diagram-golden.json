@@ -13,8 +13,7 @@
 				"h": 44,
 				"lines": [
 					"Alpha"
-				],
-				"width": 96
+				]
 			},
 			"b": {
 				"x": 0,
@@ -23,8 +22,7 @@
 				"h": 44,
 				"lines": [
 					"Beta"
-				],
-				"width": 96
+				]
 			},
 			"c": {
 				"x": 0,
@@ -33,8 +31,7 @@
 				"h": 44,
 				"lines": [
 					"Gamma"
-				],
-				"width": 96
+				]
 			}
 		},
 		"edges": {
@@ -92,20 +89,20 @@
 				"current": null,
 				"latestTree": 1,
 				"block": {
-					"length": 2783,
-					"sha256": "f762b97fb255c218ff4b79843ce5fb612e16a6d0cdfa14ce08049ef520742140"
+					"length": 3367,
+					"sha256": "85da61c7cba5a070a4cb7f68d503c2fe6a8a06aa3f27ceaed38f225d47b2d067"
 				},
 				"diagram": {
-					"length": 2621,
-					"sha256": "64b7d5a7b26a045a427b5b901c7b110b15d47529c1401eb7fa19487568110baf"
+					"length": 2699,
+					"sha256": "abd38204ae244f58856f670e3e29ba6dbb35a7fa7a6b133ef42ad58a6fbef2a7"
 				},
 				"marginalia": {
-					"length": 2623,
-					"sha256": "5587bdae1931714e86e42ebc3e77f4cc15fd159a8d90a3691dba8a56166f097a"
+					"length": 3207,
+					"sha256": "bfd85f5e565e20217b3424f5a527a1934f884b05b66f2fecd53753a685d842c0"
 				},
 				"popup": {
-					"length": 5931,
-					"sha256": "b7d5ef9172ac1431763fe80f568bafda55140c0f07ba39f3ba5951307ecb22f8"
+					"length": 6515,
+					"sha256": "3f665a197b0b137ab6a1c2185a997ef418d2e8836bc3e05a2e246ee1c138a2e7"
 				}
 			},
 			{
@@ -120,20 +117,20 @@
 				"current": "a",
 				"latestTree": 1,
 				"block": {
-					"length": 2782,
-					"sha256": "2e75fbba5ac46c23e22f15245a5b1fa4a5a17130a3739c72281e270c1933b301"
+					"length": 3366,
+					"sha256": "a48018d9c96ba6f5a544178b18365500c8a4f5210a721e3b732a6d067c1b1571"
 				},
 				"diagram": {
-					"length": 2743,
-					"sha256": "3bb6581a0b2534f731cf14b22c2b62a07564b28f3c62f1b62700cac8c04e593c"
+					"length": 2821,
+					"sha256": "0570489ddc2cea70a1ad9fc5a8415d323122dc86463e1ac85eb43a6018377c57"
 				},
 				"marginalia": {
-					"length": 2741,
-					"sha256": "72816701c753b91cfad9c6c995c9adca71f005e52fc30d902d104429e680ce27"
+					"length": 3325,
+					"sha256": "d30b1767b2588adb495d5dcd8861792584442d17b9dc91b09f8beb50b6b21cbe"
 				},
 				"popup": {
-					"length": 6051,
-					"sha256": "27abac635f0985180ec2f9c82a721563556cb90d9087c6ef7fe8a643fe68ae48"
+					"length": 6635,
+					"sha256": "2aeaf8bf2972ca2beafd9a835f5dd32b68e26e599617a0beb56958f629ff1f8a"
 				}
 			},
 			{
@@ -149,20 +146,20 @@
 				"current": "b",
 				"latestTree": 1,
 				"block": {
-					"length": 2781,
-					"sha256": "579f1cc70fceea848df8d26f7ac9c6fd3389060735f70c1883445d6e538393b2"
+					"length": 3365,
+					"sha256": "accd6190be2cd260aac58e49c5272447e491e07ff5b84c409930db5b3783b2fc"
 				},
 				"diagram": {
-					"length": 2749,
-					"sha256": "a3b0afd6a85b3721ada0d4ea32d8f237c5a5ba69b69bfd054e4051562fa5dac5"
+					"length": 2827,
+					"sha256": "0dff0ca4fe03d504480dde4e5eef737b699936870456f5bee672b65255ecdf03"
 				},
 				"marginalia": {
-					"length": 2747,
-					"sha256": "de3b32100b5514e9261e3d55ebfdc8d8a2a8d450175258df6d2fc325944237ed"
+					"length": 3331,
+					"sha256": "dc489b0a05ea8be54d6de32b43dff17f5c99566a5c4464327556deac1f2426cd"
 				},
 				"popup": {
-					"length": 6057,
-					"sha256": "6bc9f54a9b529b1fe768ec1c0eb1b9bfb4322ed3797b1e0986128fb8ca81f70c"
+					"length": 6641,
+					"sha256": "f0f4b2fd83f7665bb3054dbbcf60c041d408aaa6dd7beb7c448ff96ac7d55c65"
 				}
 			},
 			{
@@ -179,20 +176,20 @@
 				"current": "c",
 				"latestTree": 1,
 				"block": {
-					"length": 2780,
-					"sha256": "2aeda32a8214947f45e2f5729468784ae18505d78c6f2bbe5aa00fcd7f7716fa"
+					"length": 3364,
+					"sha256": "18b558d5714f062355764325a27da581cc69a93872cc8638c2244914af34cadb"
 				},
 				"diagram": {
-					"length": 2755,
-					"sha256": "b871af59b192d9f86ac46ab05327bb33be2682a251f6fcfbed0907ef0399bafd"
+					"length": 2833,
+					"sha256": "fefa2830e4358dc5507bb607adbe2e48aa96e240918fec184d2492aa045bc644"
 				},
 				"marginalia": {
-					"length": 2753,
-					"sha256": "f8848c8344424221c2b3b2a67035e3f164af42f657ac8ca2e8bf6c3cf41be62e"
+					"length": 3337,
+					"sha256": "f0a70688e2e5b3c4b40d15baa7273d9f7b6928bf511c4b9c69c84ed1bd2a4204"
 				},
 				"popup": {
-					"length": 6063,
-					"sha256": "26433db08483dfd0de723acc77c966262d8cd604a7b133468bcd43fcf652d6ee"
+					"length": 6647,
+					"sha256": "e4d30dccb1ed251fde3c77754489811a09582a34505dc8d08f1e14463afe16da"
 				}
 			}
 		]
@@ -212,8 +209,7 @@
 				"h": 44,
 				"lines": [
 					"What a set is"
-				],
-				"width": 96
+				]
 			},
 			"union": {
 				"x": 0,
@@ -222,8 +218,7 @@
 				"h": 44,
 				"lines": [
 					"Unions and intersections"
-				],
-				"width": 144
+				]
 			},
 			"power": {
 				"x": 168,
@@ -232,21 +227,18 @@
 				"h": 44,
 				"lines": [
 					"Power sets"
-				],
-				"width": 96
+				]
 			},
 			"venn": {
-				"x": 68,
+				"x": 62,
 				"y": 184,
-				"w": 152,
-				"h": 70,
+				"w": 164,
+				"h": 57,
 				"lines": [
 					"Venn diagrams and the",
-					"inclusion-exclusion",
-					"principle for two and three",
-					"sets"
-				],
-				"width": 152
+					"inclusion-exclusion principle",
+					"for two and three sets"
+				]
 			}
 		},
 		"edges": {
@@ -297,12 +289,12 @@
 						"y": 160
 					},
 					{
-						"x": 101.28813559322035,
+						"x": 104.91428571428571,
 						"y": 184
 					}
 				],
-				"d": "M72,136L72,140C72,144,72,152,75.343,157.722C78.686,163.445,85.372,166.889,90.001,170.144C94.63,173.398,97.201,176.462,98.486,177.994L99.772,179.526",
-				"bare": "M72,136L72,140C72,144,72,152,74.687,158.201C77.373,164.403,82.746,168.806,86.98,172.275C91.213,175.744,94.307,178.279,95.854,179.547L97.401,180.815"
+				"d": "M72,136L72,140C72,144,72,152,75.947,157.722C79.895,163.445,87.79,166.889,93.023,170.144C98.256,173.398,100.827,176.462,102.112,177.994L103.398,179.526",
+				"bare": "M72,136L72,140C72,144,72,152,75.193,158.328C78.386,164.656,84.772,169.313,89.581,172.819C94.389,176.326,97.621,178.682,99.238,179.861L100.854,181.039"
 			},
 			"power->venn": {
 				"points": [
@@ -315,17 +307,17 @@
 						"y": 160
 					},
 					{
-						"x": 186.71186440677965,
+						"x": 183.0857142857143,
 						"y": 184
 					}
 				],
-				"d": "M216,136L216,140C216,144,216,152,212.657,157.722C209.314,163.445,202.628,166.889,197.999,170.144C193.37,173.398,190.799,176.462,189.514,177.994L188.228,179.526",
-				"bare": "M216,136L216,140C216,144,216,152,213.313,158.201C210.627,164.403,205.254,168.806,201.02,172.275C196.787,175.744,193.693,178.279,192.146,179.547L190.599,180.815"
+				"d": "M216,136L216,140C216,144,216,152,212.053,157.722C208.105,163.445,200.21,166.889,194.977,170.144C189.744,173.398,187.173,176.462,185.888,177.994L184.602,179.526",
+				"bare": "M216,136L216,140C216,144,216,152,212.807,158.328C209.614,164.656,203.228,169.313,198.419,172.819C193.611,176.326,190.379,178.682,188.762,179.861L187.146,181.039"
 			}
 		},
 		"extent": {
 			"width": 264,
-			"height": 254,
+			"height": 241,
 			"originX": 0,
 			"originY": 0
 		},
@@ -341,20 +333,20 @@
 				"current": null,
 				"latestTree": 2,
 				"block": {
-					"length": 3937,
-					"sha256": "acc07bb0cc1b1c20c41308097645fdb858ab2aaf6fd3a74a4c085f6798910314"
+					"length": 4536,
+					"sha256": "a588315401b2dab03bb219294d2441a1a09311f90e01925539e42931da8aad57"
 				},
 				"diagram": {
-					"length": 3813,
-					"sha256": "b98d90b7290750cbe47bc53d95fb10bbfa0b86f5df54912abfc938276fe6d465"
+					"length": 3896,
+					"sha256": "1f276e2ef67cb24fccc09c61f7f29431390219b32f4df46fb43c99712315b4f3"
 				},
 				"marginalia": {
-					"length": 3807,
-					"sha256": "5284f7551d3979cf390bb4941b393cc0a8244c83a5082451b78f82c76297bb5e"
+					"length": 4396,
+					"sha256": "8ca336fbeaff7caf3d84198e6c633f930c14ef0b3e28ae0d7141ae1339a0f228"
 				},
 				"popup": {
-					"length": 7119,
-					"sha256": "1d42bf2c15c79a9f68297c6da1fe3c78c1a722f7424e55b8dea2a4b775d72e85"
+					"length": 7708,
+					"sha256": "344c705207be70fffc36ceeea659d8ffe17c94961fcd5e8c02800c5b4634ad31"
 				}
 			},
 			{
@@ -370,20 +362,20 @@
 				"current": "sets",
 				"latestTree": 2,
 				"block": {
-					"length": 3936,
-					"sha256": "f8088e625bfa4f985c3a79e72b1f15743cd90311b6d969a1c2ffb20e764f4695"
+					"length": 4535,
+					"sha256": "db0472e22ea5b0748b01437cf136dd29de68fbde3add8ac5580a010fe354bc11"
 				},
 				"diagram": {
-					"length": 3935,
-					"sha256": "da0cda89cba1367b3705fb6b7fafa31d0f2182172d7931190a8971cb9bc1613c"
+					"length": 4018,
+					"sha256": "757f5933c1bd8160008f15f3f9de3e13d99fd99b95f50382a96f65c9ca7e6e42"
 				},
 				"marginalia": {
-					"length": 3925,
-					"sha256": "8ef453501558417014888f94d892b20aee12a1369bcf2e4a7ed19e2e44144953"
+					"length": 4514,
+					"sha256": "aa60dde3249404aaf4bfbcd6673c546adbf7bf6b0041f3ec1829a831716e33b3"
 				},
 				"popup": {
-					"length": 7239,
-					"sha256": "0ccbe599b4e34b808af42b0c1d653dc7790c2a617bfa136b143268f651305bd3"
+					"length": 7828,
+					"sha256": "feb329b319eab0d0910643a9a0f9d274531599a8f76e1c754ba9990f2e362d95"
 				}
 			},
 			{
@@ -400,20 +392,20 @@
 				"current": "union",
 				"latestTree": 2,
 				"block": {
-					"length": 3935,
-					"sha256": "a23bc8549213454786434eeb74955a27644f58ea6ec2235eca7b72aa9d6bfc7e"
+					"length": 4534,
+					"sha256": "c2885173ebe46b2136e721b184f18e0a1b8fd394fdfdedbba4f9c03a3fc5267f"
 				},
 				"diagram": {
-					"length": 3941,
-					"sha256": "a9de95f9c54eb5884985d2ac91e68e56e8262f37ace4e0150401615a818707f6"
+					"length": 4024,
+					"sha256": "e371bf925fea04fbca8802e9847cd1c3def99dd9fb57e2c5316766dd97d64985"
 				},
 				"marginalia": {
-					"length": 3931,
-					"sha256": "610e36ba4775b99978918e46689a9683e0e9438eed71e63307882d0da11aa9c3"
+					"length": 4520,
+					"sha256": "b0c1caa9a4168cb3fb02ceb623379c8ec66c4981ea7e36cb087caf8eff24fb0d"
 				},
 				"popup": {
-					"length": 7245,
-					"sha256": "ba9da9ee3a42141cc442f0358a9cb5062e56a814948801d969e05cab5fe41f6d"
+					"length": 7834,
+					"sha256": "7c9e67ccfe80a758f04c659915f75d1cc6b217190d6709877c890548430405fc"
 				}
 			},
 			{
@@ -431,20 +423,20 @@
 				"current": "power",
 				"latestTree": 2,
 				"block": {
-					"length": 3934,
-					"sha256": "38df4cb34a68dded7c0ac91ff1b3d1e405c3a9d28597201c1bb75be78bc32994"
+					"length": 4533,
+					"sha256": "37f0b906e7078d7813e953830167f4aaee02fb1e7b720c861a490b34d153c825"
 				},
 				"diagram": {
-					"length": 3947,
-					"sha256": "c42b02f62564b42cbdcbccbc22db4be37536a87f23494bf2e43b1669cf1cae1b"
+					"length": 4030,
+					"sha256": "e8e634ff950b30cf56858f70f4e71a7517062d763055fefcb07ea428e661fcfd"
 				},
 				"marginalia": {
-					"length": 3937,
-					"sha256": "75d80e488346736f7a69429751df58f8c89a7f87343f56441b641b982e552f0c"
+					"length": 4526,
+					"sha256": "fc3120232e3ea8fe4ffcc8ef970cb1028219088d2f6ecab52eac0a0a4f3ee191"
 				},
 				"popup": {
-					"length": 7251,
-					"sha256": "afc4bcd88cfaedb51fbfa5f2a6d5e7088f98d234c6b04097724632f1ddf60bc3"
+					"length": 7840,
+					"sha256": "82d0ee0bae8d08447c5f136a862e202cf69d87390e3464d301175ba5296719ee"
 				}
 			},
 			{
@@ -463,20 +455,20 @@
 				"current": "venn",
 				"latestTree": 2,
 				"block": {
-					"length": 3933,
-					"sha256": "f23b706b6d235ffb7d0e22035fb8c0d9d8e157fad9c7d02a0d82e3cfcd5f9075"
+					"length": 4532,
+					"sha256": "fddf77f1df6787ae6d6a8e030987957772d0146e337a22def117b812cbdef90e"
 				},
 				"diagram": {
-					"length": 3966,
-					"sha256": "c15bdbcaf525932eb8557004bad9984591d42297a9302bf139ec92641b3912ef"
+					"length": 4045,
+					"sha256": "f4d41f0044a8a28be9c796181c27398d92038264e75583512efa55609f6a8a56"
 				},
 				"marginalia": {
-					"length": 3956,
-					"sha256": "7653e289526cd70a3ecfe5cf2f367cec718c8d6fc055898d10d77e472af55938"
+					"length": 4541,
+					"sha256": "355d77d25a0faec78b505d4d1ad8adb91f9555d85bd34106f69875453d0f63bb"
 				},
 				"popup": {
-					"length": 7270,
-					"sha256": "1cc31b31ec97d1e79bb27962bb5fd3f446be82b5e0591a7b0941366557348c9a"
+					"length": 7855,
+					"sha256": "33b708e56b82c8e063127f35757fe13c9f4e57666c01f4aebcf77a6900e0bd37"
 				}
 			}
 		]
@@ -490,113 +482,110 @@
 		],
 		"nodes": {
 			"x": {
-				"x": 66.75,
+				"x": 20.5,
 				"y": 0,
-				"w": 154,
+				"w": 206,
 				"h": 44,
 				"lines": [
-					"Supercalifragilisticexpialid",
-					"ociousness and friends"
-				],
-				"width": 154
+					"Supercalifragilisticexpialidociousness",
+					"and friends"
+				]
 			},
 			"y": {
 				"x": 0,
 				"y": 92,
-				"w": 177,
+				"w": 150,
 				"h": 44,
 				"lines": [
-					"MWMW @@ wide glyphs 0123"
-				],
-				"width": 177
+					"MWMW @@ wide glyphs",
+					"0123"
+				]
 			},
 			"z": {
-				"x": 95.75,
+				"x": 75.5,
 				"y": 184,
 				"w": 96,
 				"h": 44,
 				"lines": [
 					""
-				],
-				"width": 96
+				]
 			},
 			"lonely": {
-				"x": 244.75,
+				"x": 250.5,
 				"y": 0,
 				"w": 96,
 				"h": 44,
 				"lines": [
 					"On its own"
-				],
-				"width": 96
+				]
 			}
 		},
 		"edges": {
 			"x->y": {
 				"points": [
 					{
-						"x": 117.32608695652173,
+						"x": 100.30434782608695,
 						"y": 44
 					},
 					{
-						"x": 88.5,
+						"x": 75,
 						"y": 68
 					},
 					{
-						"x": 88.5,
+						"x": 75,
 						"y": 92
 					}
 				],
-				"d": "M117.326,44L112.522,48C107.717,52,98.109,60,93.304,65.162C88.5,70.325,88.5,72.65,88.5,75.812C88.5,78.974,88.5,82.974,88.5,84.974L88.5,86.974",
-				"bare": "M117.326,44L112.522,48C107.717,52,98.109,60,93.304,65.162C88.5,70.325,88.5,72.65,88.5,75.812C88.5,78.974,88.5,82.974,88.5,84.974L88.5,86.974"
+				"d": "M100.304,44L96.087,48C91.87,52,83.435,60,79.217,65.162C75,70.325,75,72.65,75,75.812C75,78.974,75,82.974,75,84.974L75,86.974",
+				"bare": "M100.304,44L96.087,48C91.87,52,83.435,60,79.217,65.162C75,70.325,75,72.65,75,75.812C75,78.974,75,82.974,75,84.974L75,86.974"
 			},
 			"y->z": {
 				"points": [
 					{
-						"x": 88.5,
+						"x": 75,
 						"y": 136
 					},
 					{
-						"x": 88.5,
+						"x": 75,
 						"y": 160
 					},
 					{
-						"x": 117.32608695652173,
+						"x": 100.30434782608695,
 						"y": 184
 					}
 				],
-				"d": "M88.5,136L88.5,140C88.5,144,88.5,152,91.766,157.722C95.032,163.445,101.564,166.889,106.116,170.144C110.667,173.398,113.239,176.462,114.524,177.994L115.81,179.526",
-				"bare": "M88.5,136L88.5,140C88.5,144,88.5,152,91.124,158.184C93.747,164.369,98.995,168.738,103.155,172.202C107.316,175.666,110.39,178.225,111.927,179.505L113.464,180.784"
+				"d": "M75,136L75,140C75,144,75,152,77.679,157.722C80.358,163.445,85.716,166.889,89.681,170.144C93.646,173.398,96.217,176.462,97.502,177.994L98.788,179.526",
+				"bare": "M75,136L75,140C75,144,75,152,77.159,158.047C79.317,164.095,83.634,168.189,87.244,171.613C90.853,175.036,93.756,177.789,95.207,179.165L96.658,180.542"
 			},
 			"x->z": {
 				"points": [
 					{
-						"x": 170.17391304347825,
+						"x": 146.69565217391303,
 						"y": 44
 					},
 					{
-						"x": 199,
+						"x": 172,
 						"y": 68
 					},
 					{
-						"x": 199,
+						"x": 172,
 						"y": 114
 					},
 					{
-						"x": 199,
+						"x": 172,
 						"y": 160
 					},
 					{
-						"x": 170.17391304347825,
+						"x": 146.69565217391303,
 						"y": 184
 					}
 				],
-				"d": "M170.174,44L174.978,48C179.783,52,189.391,60,194.196,71.667C199,83.333,199,98.667,199,114C199,129.333,199,144.667,195.734,154.056C192.468,163.445,185.936,166.889,181.384,170.144C176.833,173.398,174.261,176.462,172.976,177.994L171.69,179.526",
-				"bare": "M170.174,44L174.978,48C179.783,52,189.391,60,194.196,71.667C199,83.333,199,98.667,199,114C199,129.333,199,144.667,196.376,154.518C193.753,164.369,188.505,168.738,184.345,172.202C180.184,175.666,177.11,178.225,175.573,179.505L174.036,180.784"
+				"d": "M146.696,44L150.913,48C155.13,52,163.565,60,167.783,71.667C172,83.333,172,98.667,172,114C172,129.333,172,144.667,169.321,154.056C166.642,163.445,161.284,166.889,157.319,170.144C153.354,173.398,150.783,176.462,149.498,177.994L148.212,179.526",
+				"bare": "M146.696,44L150.913,48C155.13,52,163.565,60,167.783,71.667C172,83.333,172,98.667,172,114C172,129.333,172,144.667,169.841,154.381C167.683,164.095,163.366,168.189,159.756,171.613C156.147,175.036,153.244,177.789,151.793,179.165L150.342,180.542"
 			}
 		},
 		"extent": {
-			"width": 340.75,
+			"width": 346.5,
 			"height": 228,
 			"originX": 0,
 			"originY": 0
@@ -613,20 +602,20 @@
 				"current": null,
 				"latestTree": 3,
 				"block": {
-					"length": 3629,
-					"sha256": "2c16ae2a22a552c51b900b66c8c0f1c7f18bc56006bb2cfdfa5cc241515c8a7f"
+					"length": 4349,
+					"sha256": "4f687d11e1c15406276c646f2a520a1cba54ff068b16b4c6b87177136fcee6d5"
 				},
 				"diagram": {
-					"length": 3486,
-					"sha256": "21d3bd8cadcd7f369e050b7924d2da0ecb54acc210d424eeac936f48ad665fa7"
+					"length": 3708,
+					"sha256": "b6e0cd6464b1bca2cf953e3b47d3ca1876323ded7b3e99f5f8c9967bb84bd25a"
 				},
 				"marginalia": {
-					"length": 3480,
-					"sha256": "67f4478b0efd1603134339f28802314130bc7c6d02006a3a0f4db1f6ae677ce4"
+					"length": 4210,
+					"sha256": "c3d7f1852ff7320d3625d5e49f84ec0d8395ab8c1658914f11f4f5f1d52a9cb4"
 				},
 				"popup": {
-					"length": 6794,
-					"sha256": "8b22bb2291916de10ac8b8c9e724388db0300050cbd09e01f5d3f569f23a5ffb"
+					"length": 7522,
+					"sha256": "2520fe90f46e8a855bd4d8d7dbe986f11b4f4b1a8e582096b8fa42a6a3805695"
 				}
 			},
 			{
@@ -642,20 +631,20 @@
 				"current": "x",
 				"latestTree": 3,
 				"block": {
-					"length": 3628,
-					"sha256": "4d87b00b8df1d6e4df2596c6f1b296a99edcb28458434a8b09bb569ead250202"
+					"length": 4348,
+					"sha256": "3fab790252f8ea69b5b125e9776bce0631a2511b634969535ed3becce9daf9d2"
 				},
 				"diagram": {
-					"length": 3612,
-					"sha256": "9a4fcdc985f8e8b14cb047ba871d83577348fefb4fc3f55c0a8f9d1f4951dfb7"
+					"length": 3834,
+					"sha256": "bc6d65a1cdcc3c1fa491cfb5d4f206e92d132962ab750e271adce70a64c2a50d"
 				},
 				"marginalia": {
-					"length": 3602,
-					"sha256": "cc74d8d93aa236e506acd99b2f6e71f6a40ca6400e4f28b3953860db34240086"
+					"length": 4332,
+					"sha256": "e6a64d0362684c9526e78840d4d7eb6075d37af7cb69087a0d904f8b4ae1023e"
 				},
 				"popup": {
-					"length": 6918,
-					"sha256": "cd529e722ba2870d152078e56d0524be6b8f53c84cfedf7e9a127c09db4c383b"
+					"length": 7646,
+					"sha256": "46c808d0c357ae2116a95bc8f9f04f208bb599a3d818ece328c943043d67af03"
 				}
 			},
 			{
@@ -672,20 +661,20 @@
 				"current": "y",
 				"latestTree": 3,
 				"block": {
-					"length": 3627,
-					"sha256": "fb47c82affceef7855c6a051fc9c653099d6ed3ac7725e20e0fcd8f58b69107f"
+					"length": 4347,
+					"sha256": "2f5e01c0700475e3516b898ec37d7fb8ca89ec95a702c842ce8b6997ee1b6bdb"
 				},
 				"diagram": {
-					"length": 3606,
-					"sha256": "4f39f9ce59ff6f79ea70287dc9a9aa5fa87bc361f8bbaad5b5519ba61e775f89"
+					"length": 3832,
+					"sha256": "2c1b11ebac91f45da5aab2f5e72436df75336a1845175eb63986eb8656aac253"
 				},
 				"marginalia": {
-					"length": 3596,
-					"sha256": "226aa8045255a06779c7a1a46ab4263beea5ea81c663768632cfbb98e3cddce4"
+					"length": 4330,
+					"sha256": "d3502146586e394b6122d90c63bbbe555805e76f7a36d47142b2a80f76cdd1b8"
 				},
 				"popup": {
-					"length": 6912,
-					"sha256": "94898d567edd6f7134819ad345ec33148537ea02bb4a9ef4d615feb4a9c60fa9"
+					"length": 7644,
+					"sha256": "9fbe15fb8cc61b42fb7c90e7cd49beaf35ede16e5e7c1957c87be349c63702b6"
 				}
 			},
 			{
@@ -703,20 +692,20 @@
 				"current": "z",
 				"latestTree": 3,
 				"block": {
-					"length": 3626,
-					"sha256": "cd1aaa8b8dfc69d2da148699d3ee13fc3b1ff999c303f0f2098adf6b16569355"
+					"length": 4346,
+					"sha256": "6a5feb91ed349a0027c3eeeb3bfa954dddf83376136a44874975a15bf39b94d8"
 				},
 				"diagram": {
-					"length": 3613,
-					"sha256": "efea6399c43f96d32591b717b9398bd03c4358778feb692285e22c0bfbe4ff10"
+					"length": 3827,
+					"sha256": "f77e06ffc7298c44b8770fc2d03f77fda058f2e584b4e16518f8f9329948f1d2"
 				},
 				"marginalia": {
-					"length": 3603,
-					"sha256": "7958a357361cc68e6930042860112469dc0502f4f02d5549ef3a61dab87ea00f"
+					"length": 4325,
+					"sha256": "eb2618769570b67bf52733239c7b0446c6e98870ece36ad534bd4201a8286535"
 				},
 				"popup": {
-					"length": 6919,
-					"sha256": "f20e68dd695a6f70f42c50aa9a7861b66bc761193fef2dc317726f9472cfbda1"
+					"length": 7639,
+					"sha256": "7be5824d68fb3d2eaf6d0ea1d35eda32793ea8ce34ae1d460bfa2da287393096"
 				}
 			},
 			{
@@ -735,20 +724,20 @@
 				"current": "lonely",
 				"latestTree": 3,
 				"block": {
-					"length": 3625,
-					"sha256": "197d93c410dd1e5095bcdf17b3653d6d3fe955853247f0e3908d4cddec8e84a6"
+					"length": 4345,
+					"sha256": "e82af204242bb73a4fe34f56cbbdfa15faadc273e778504d24a6b6af45624f94"
 				},
 				"diagram": {
-					"length": 3618,
-					"sha256": "238eaa22b11db95c93e02123ac6473b59cf31fa1c9aa7788b35e5317872b1cec"
+					"length": 3832,
+					"sha256": "0d1d9687731eb7a22c2e7b23648fa9062b543b59d668b51ef3e6827246ac8484"
 				},
 				"marginalia": {
-					"length": 3608,
-					"sha256": "944084bbbfbcb752be836cb9d951abc03f03ae4be0e7a651d9134e88cbadae80"
+					"length": 4330,
+					"sha256": "34ae941aa47e74d5bbba1208bd0b26326c2e2159186e8b80b6596f487793e15d"
 				},
 				"popup": {
-					"length": 6924,
-					"sha256": "1e8a352bcdc65c4284c68b75fa294e76dfb8673ab9d29be486bae3b023e8c47e"
+					"length": 7644,
+					"sha256": "faa2597c999ebc9c02eebc0ba0e1a0971ccd2f4524e6f028ebfe179a24ce6abb"
 				}
 			}
 		]
@@ -776,8 +765,7 @@
 				"h": 44,
 				"lines": [
 					"What a vector space is"
-				],
-				"width": 137
+				]
 			},
 			"span-basis-dimension": {
 				"x": 359,
@@ -786,8 +774,7 @@
 				"h": 44,
 				"lines": [
 					"Span, basis, dimension"
-				],
-				"width": 140
+				]
 			},
 			"matrix-as-map": {
 				"x": 371.5,
@@ -796,8 +783,7 @@
 				"h": 44,
 				"lines": [
 					"Matrices as maps"
-				],
-				"width": 115
+				]
 			},
 			"elimination-rank": {
 				"x": 0,
@@ -806,8 +792,7 @@
 				"h": 44,
 				"lines": [
 					"Elimination exposes rank"
-				],
-				"width": 148
+				]
 			},
 			"determinant-volume": {
 				"x": 172,
@@ -816,8 +801,7 @@
 				"h": 44,
 				"lines": [
 					"Det as volume scaling"
-				],
-				"width": 134
+				]
 			},
 			"orthogonality-complements": {
 				"x": 413.25,
@@ -827,8 +811,7 @@
 				"lines": [
 					"Orthogonality and",
 					"complements"
-				],
-				"width": 111
+				]
 			},
 			"projection-theorem": {
 				"x": 617,
@@ -837,8 +820,7 @@
 				"h": 44,
 				"lines": [
 					"The projection theorem"
-				],
-				"width": 137
+				]
 			},
 			"transpose-adjoint": {
 				"x": 452,
@@ -847,8 +829,7 @@
 				"h": 44,
 				"lines": [
 					"The transpose as bridge"
-				],
-				"width": 141
+				]
 			},
 			"normal-equations": {
 				"x": 582.25,
@@ -858,8 +839,7 @@
 				"lines": [
 					"Least squares, normal",
 					"equations"
-				],
-				"width": 134
+				]
 			},
 			"eigen-diagonalization": {
 				"x": 213,
@@ -868,8 +848,7 @@
 				"h": 44,
 				"lines": [
 					"Eigenvectors as coordinates"
-				],
-				"width": 161
+				]
 			},
 			"spectral-theorem": {
 				"x": 280.25,
@@ -878,8 +857,7 @@
 				"h": 44,
 				"lines": [
 					"The spectral theorem"
-				],
-				"width": 129
+				]
 			},
 			"pca-synthesis": {
 				"x": 417.5,
@@ -889,8 +867,7 @@
 				"lines": [
 					"Goal: PCA and least-squares",
 					"derivations"
-				],
-				"width": 160
+				]
 			}
 		},
 		"edges": {
@@ -1327,20 +1304,20 @@
 				"current": null,
 				"latestTree": 1,
 				"block": {
-					"length": 11041,
-					"sha256": "02a4c4fa875ac29202b6de77995271fe085e3c6d957a8eec85664518c70903c2"
+					"length": 11958,
+					"sha256": "67bdce5ea02d50d1073e709dbe461d9d30468bae253d80b32d63da50a29cb85b"
 				},
 				"diagram": {
-					"length": 10992,
-					"sha256": "9bae3764517725ce4662a6c54d2c20115c1446fedf9c5adfd623886795fd67fa"
+					"length": 11406,
+					"sha256": "c94172d6beb69fe9cfcf3aa085db3034898489a6277d9a85c04bcf9fb023d0ce"
 				},
 				"marginalia": {
-					"length": 10927,
-					"sha256": "7b4e9c7c701a28b1f2fcd0c19cfe2862ac8f9341d14c13b1db867a49a524cc53"
+					"length": 11847,
+					"sha256": "28aabf5f1f4005015ed42be00105b3062c55ec5b9baf55ac87ec2a812a1ad257"
 				},
 				"popup": {
-					"length": 14268,
-					"sha256": "d266c2e0d3ed68007f8de7a4af2f4f84dad564b44b22035c7339757c3d4579f7"
+					"length": 15188,
+					"sha256": "c4087bba019cf4d8531c182fb2445fcd3b2688840132c0a213c8903c7570e644"
 				}
 			},
 			{
@@ -1364,20 +1341,20 @@
 				"current": "vector-space-axioms",
 				"latestTree": 1,
 				"block": {
-					"length": 11040,
-					"sha256": "fd06fabf8ad63cde1fa34e239e093482c87acb2a4a03777fdde1d6da0fd3b12d"
+					"length": 11957,
+					"sha256": "e777b1fba2a448a9d258b537846b4cda36578f3a7c0a402ad372a0016fe51784"
 				},
 				"diagram": {
-					"length": 11114,
-					"sha256": "cefdf5226d0a05c63d80f69e95b9d1aaf9bc1f349258e69254011a5ea75a734b"
+					"length": 11528,
+					"sha256": "8de771c753ebc2ca51b6873b9f433fbfc965c63fff473ec5a0de4d35ed506ba5"
 				},
 				"marginalia": {
-					"length": 11045,
-					"sha256": "3d56d0d7741481ebd1f7a4fb11f07e72acf8444bcf89e716077f530d78662b30"
+					"length": 11965,
+					"sha256": "5acde2038d5ab05fb6e8156cbd4957f8f9ad9e59b0e928779bcbc46ecf7718cd"
 				},
 				"popup": {
-					"length": 14388,
-					"sha256": "e2c8cba9900ea0993be8148de8ba0ac97bcb9bb6607486407f2c4df8e2aa290c"
+					"length": 15308,
+					"sha256": "8c92f4d129894e58bf2e2f55d9fa956b967a3bee91f49814c14bea3e2c7be9c0"
 				}
 			},
 			{
@@ -1402,20 +1379,20 @@
 				"current": "span-basis-dimension",
 				"latestTree": 1,
 				"block": {
-					"length": 11039,
-					"sha256": "c22fad71807a97dfd67fd3bb84d84eab510a204cc6de5b8ebc217eb593296bbf"
+					"length": 11956,
+					"sha256": "1eeb8a11a71faa2acd763bb12b5a1b2d3b8a6b6d15ec3901634f970f93ab7122"
 				},
 				"diagram": {
-					"length": 11119,
-					"sha256": "aceec994c30e51f139ca4c649ec4438384b698a823592ef6ff1746d4d838434e"
+					"length": 11533,
+					"sha256": "632a3d425b987cb01144e41e3a9625fafbd1cbe5510e331c7611174d15d3b876"
 				},
 				"marginalia": {
-					"length": 11050,
-					"sha256": "f670ec5f3bdc0fad0443f9df7fac4a00868913fe7cdfcbf2fa69af8c4f57bd55"
+					"length": 11970,
+					"sha256": "219c5d5cdd7e731b4ef4615e5c3b06024bdaa83646ada1bfeb1b5f70c08f3f65"
 				},
 				"popup": {
-					"length": 14393,
-					"sha256": "299a6b1eb4321a44ca7c7f6dcaeb21d91433167e4987da3c3247b141c773eedf"
+					"length": 15313,
+					"sha256": "00e2f89c8867196080f0c77a1e8126ae3aa1c735e476d6b000dbc5f5a28486f6"
 				}
 			},
 			{
@@ -1441,20 +1418,20 @@
 				"current": "matrix-as-map",
 				"latestTree": 1,
 				"block": {
-					"length": 11038,
-					"sha256": "b5df4869b249c3733a28ef3930fb67c8486f689ffd346352d2181c3748322035"
+					"length": 11955,
+					"sha256": "6b82d5e3ffe792cc5982b2b3648973e20bab8883651423de21c5a5054f68090b"
 				},
 				"diagram": {
-					"length": 11125,
-					"sha256": "f18df92b20f4ca6fd1bf161d7f060338ef31f75776f181dc947765f9f9ddb9d6"
+					"length": 11539,
+					"sha256": "466d09f4a2f7438088c47c2779a32e6302a8af4884b9badb155b8e40e0ce5629"
 				},
 				"marginalia": {
-					"length": 11056,
-					"sha256": "836b7ba2e5876d9f00cc2d33a684790512a519b2dcb84003e601414190dc854b"
+					"length": 11976,
+					"sha256": "6029ac3ec2e680367a97ba20eaf151cf58c1a33225a89db4360367e8903bdb28"
 				},
 				"popup": {
-					"length": 14399,
-					"sha256": "ee9f124a3d4ef8965d73a90ec6db62fb0b75a3b1b3ac902c60f55a88db027df6"
+					"length": 15319,
+					"sha256": "efd9c3dac9e3a7a158f713667c79fd6b11bc00a9d01988cc62bfceeb2802177b"
 				}
 			},
 			{
@@ -1481,20 +1458,20 @@
 				"current": "elimination-rank",
 				"latestTree": 1,
 				"block": {
-					"length": 11037,
-					"sha256": "0a7807744865cbd2afecc2308b10e198d673dae78a74d89511e86a03b8b575d1"
+					"length": 11954,
+					"sha256": "6f368d273e6ede1fd2c2bc3c04b241ee103059ea680be4b27eb427689ba97349"
 				},
 				"diagram": {
-					"length": 11131,
-					"sha256": "ab383d37d07356bfe8c272dec167f548eea18b1d357d1f93379a7e30966d0b80"
+					"length": 11545,
+					"sha256": "f7f61570cb5ae3ef72d63e06350cc99e09e7d2eaf669e9cec0cb886701e3cf75"
 				},
 				"marginalia": {
-					"length": 11062,
-					"sha256": "99eceae53581faf1d92ccdfd87c1af0282c649b90a5de9f246b40a3655aac8f5"
+					"length": 11982,
+					"sha256": "6aafc3991a01aa15bb8194260c5084712e350128f8066b0cf9c7528382e24ef8"
 				},
 				"popup": {
-					"length": 14405,
-					"sha256": "33f5dd141e563980efbb19c278e0a792f47dec96a5bf920817b06efdc112128f"
+					"length": 15325,
+					"sha256": "b4396ad61ff1bf767858c515fc181297d849edccf30098b777cce2aeba9bce94"
 				}
 			},
 			{
@@ -1522,20 +1499,20 @@
 				"current": "determinant-volume",
 				"latestTree": 1,
 				"block": {
-					"length": 11036,
-					"sha256": "5a190cdced2c2fabcd2e8e88689359985de6a77ae16a212a8f659a44d073b97e"
+					"length": 11953,
+					"sha256": "36e2822d5fefe8c5606b2cc43e6a449cfcf5b7323b730e638c481de3d64ce864"
 				},
 				"diagram": {
-					"length": 11137,
-					"sha256": "9c0ac98b6b57751bbd407d987899818e4deb1513c3bc69f1293912d26375d9e8"
+					"length": 11551,
+					"sha256": "13d4a6660bb9fe44776e51be896bcb7611aee0f510648a07e59fc0eb6d29bc4a"
 				},
 				"marginalia": {
-					"length": 11068,
-					"sha256": "e51351ef871a84f01596a8109123eb1436ef98aaa03ac8a20d5a4c23e202cef2"
+					"length": 11988,
+					"sha256": "c2472315aa0225cde484f90eec1a30fb2d1d031da60646ff7de1e469a6d0cb0a"
 				},
 				"popup": {
-					"length": 14411,
-					"sha256": "03f4631dfb05fa636ea645e51dcf03a1203bb8efc5b854315dcd7d5381a91633"
+					"length": 15331,
+					"sha256": "24c5bbf459fec43af26ae58e9a65b2dddc3ade207c081b01650654388dd73336"
 				}
 			},
 			{
@@ -1564,20 +1541,20 @@
 				"current": "orthogonality-complements",
 				"latestTree": 1,
 				"block": {
-					"length": 11035,
-					"sha256": "dd6e30ab6bb1a7b21efd7f33c9a849c9b5d9cf0ee3a3757fc6e76c961d526b8c"
+					"length": 11952,
+					"sha256": "d94dbf582836121eb96209151692efd47dfcbd9aa3831e85226299b885cf66d7"
 				},
 				"diagram": {
-					"length": 11148,
-					"sha256": "75175226dd77dd3be5e8881b3a2bb6cb0af9e82dabc7876b9e660f5c3edccea6"
+					"length": 11562,
+					"sha256": "737771ef56cc8c77ca948db03d0407be2dd776c84749138e0c19ddc0b444d770"
 				},
 				"marginalia": {
-					"length": 11079,
-					"sha256": "2dadaef564f6556c216e15e882c1f06082b529e43f27fb628d40914b1e3ef04a"
+					"length": 11999,
+					"sha256": "c9c8b7f3a96a9699936fe568ff7cc3486f5047c08b8cc2296c9150348232687b"
 				},
 				"popup": {
-					"length": 14422,
-					"sha256": "fa9fcbe66dfde7badd2ebba48ee8ad2207ec350def38e7bbee6f3392642ca2fb"
+					"length": 15342,
+					"sha256": "031cd9ddfbb44264ea0aca39424d2e7b80695818accaa9c1f1addc6796ccf385"
 				}
 			},
 			{
@@ -1607,20 +1584,20 @@
 				"current": "projection-theorem",
 				"latestTree": 1,
 				"block": {
-					"length": 11034,
-					"sha256": "3a8520a62e34a7be947639a7627b9d23dc933a9456fa907a7bfd59e64dee51b8"
+					"length": 11951,
+					"sha256": "2bf310388f2e920e44e290c3647df6170faf763fb5d912ed37ad1b9fa370190e"
 				},
 				"diagram": {
-					"length": 11142,
-					"sha256": "b4c37f7db0aaba0993688ffaace54cec1256e2f107d9cf15c042dcc6fb7e1ff3"
+					"length": 11556,
+					"sha256": "4dbadfe7a94a68064ea72a1cc1b6592d623ba6da161480136b5a5191e4c84412"
 				},
 				"marginalia": {
-					"length": 11073,
-					"sha256": "859c3757f9a7e2e5c6d0b63ea1ed0ade69a1894bb28f61e32ea7afb0e18b101f"
+					"length": 11993,
+					"sha256": "6b03706895a60bc9814a314e9a51d847324bd24bb1ef8565a637b3e41c0a4a30"
 				},
 				"popup": {
-					"length": 14416,
-					"sha256": "435b927e960ead8e8f2e8a4f991f444b255e5e20fb347693ab84c6f5f3c01da1"
+					"length": 15336,
+					"sha256": "995a93920760d222a1465496cbbd2b9c91292931382bcb1e50be135d1cb7adfe"
 				}
 			},
 			{
@@ -1651,20 +1628,20 @@
 				"current": "transpose-adjoint",
 				"latestTree": 1,
 				"block": {
-					"length": 11033,
-					"sha256": "c9249a437fca75a6d0e1d8c8c502389715a94c546a40e6a2982891b4d2d1a9c2"
+					"length": 11950,
+					"sha256": "6812b252719d60fe5ac05da861da5265d51fac53f1686b59efbe3355b8fbaa6c"
 				},
 				"diagram": {
-					"length": 11149,
-					"sha256": "dc03e5b8a283adafd726f8a9107c0586dedf7c46674e09e45f501a18ee583c33"
+					"length": 11563,
+					"sha256": "293467b9fd893d52b3ebc266b7f3867374662d833c86af0b34c263ac42feef5b"
 				},
 				"marginalia": {
-					"length": 11080,
-					"sha256": "150ea65629b46e98e9c7ec48c000f3faa7d19724715fb4062bef10498b4c50b8"
+					"length": 12000,
+					"sha256": "3ba627ea6a76b59c7506cf34cc14f79d7aa136c2eb9635d81a1cec34499ad245"
 				},
 				"popup": {
-					"length": 14423,
-					"sha256": "95b0dc95e9cc504e591217dd0531f632057bacce31b72797f3c4148b3bc59799"
+					"length": 15343,
+					"sha256": "d98513c21d34f12757d61e011eb4e2df602822affc3026c8e714c81c777628f5"
 				}
 			},
 			{
@@ -1696,20 +1673,20 @@
 				"current": "normal-equations",
 				"latestTree": 1,
 				"block": {
-					"length": 11032,
-					"sha256": "8b9097ca0c4ad338d31df64218a0f9f0c633e81c78ab8bbb431abf8fa38b798e"
+					"length": 11949,
+					"sha256": "1c58821b91f096f02b2c4dd166141f1a4efcd276bae9a4200f4cca10c96c368f"
 				},
 				"diagram": {
-					"length": 11161,
-					"sha256": "dbc2cab8d251e450ea46c271aa04a041e829fbed79e0e88385b30173278c87a1"
+					"length": 11575,
+					"sha256": "1cd3425195a17d3ce3c0df39bfa862f6bb32bab71cf208074b7b7631866ca8b3"
 				},
 				"marginalia": {
-					"length": 11092,
-					"sha256": "1b170cb3be09b1cde5fec0df63169817911b434444fb1fef2b434c8736fe4f60"
+					"length": 12012,
+					"sha256": "0bf0918aa4602d212d85c59d1ab3355e89be5795129260993ea51e3bd006167d"
 				},
 				"popup": {
-					"length": 14435,
-					"sha256": "b218ce2dfefbb36d9dc1104605650ddcc5c058a086a31d57984ecc6131ad22ed"
+					"length": 15355,
+					"sha256": "b184ef272cb466469b15e885820ec2bbc57b38e27462dde4c1afba0501c47dee"
 				}
 			},
 			{
@@ -1742,20 +1719,20 @@
 				"current": "eigen-diagonalization",
 				"latestTree": 1,
 				"block": {
-					"length": 11031,
-					"sha256": "dfe3d965369c16886957cee9060cb45493c955cbe00f9633f92944590b1d5630"
+					"length": 11948,
+					"sha256": "c932091715ff1b57400ead03ac6f1b314d7c7dfa93f4342bd088b3642a73214f"
 				},
 				"diagram": {
-					"length": 11157,
-					"sha256": "b3ccd1199c7840aa7946135c3b432dbb481111f766a2213597c51cb671125fcf"
+					"length": 11571,
+					"sha256": "03796f97fe922b40031d4ace22a88b0081065aeb0b2318f5414b8d0d502ebd06"
 				},
 				"marginalia": {
-					"length": 11088,
-					"sha256": "ca8a88218dfb0dc1cd967647013f3d8df354eede0ed86497e052b94807de5ae4"
+					"length": 12008,
+					"sha256": "ed7c4d6906cdcbc7d51b972f73fa47aabc2dc8405ea1bcbfb1f1ebac6f4e1a6f"
 				},
 				"popup": {
-					"length": 14431,
-					"sha256": "54f1a6025b36ee6e10d47c89bf92fb4f3ea64ef6e51ee865d73d3f70802bd828"
+					"length": 15351,
+					"sha256": "3c64426b044025157ade6d645e9948a3479dc99a4f5630250c53660b559e2edb"
 				}
 			},
 			{
@@ -1789,20 +1766,20 @@
 				"current": "spectral-theorem",
 				"latestTree": 1,
 				"block": {
-					"length": 11030,
-					"sha256": "aa722b898a2c8e14739163c738fb4ca234e8a780f2cf0b0a621254acb520278f"
+					"length": 11947,
+					"sha256": "74272fb0c2706d6299adf8fbd79a31eaaf5cc75e24297b75f600fa37ff22b7a4"
 				},
 				"diagram": {
-					"length": 11165,
-					"sha256": "dd8dede8244cfea37bc52363cc0ac5952edc79685cd94e7c84e01d155cfcc49a"
+					"length": 11579,
+					"sha256": "e7740566da38796c1fba39152ab74dc1e190d6fe09942b18562572b915fd259d"
 				},
 				"marginalia": {
-					"length": 11096,
-					"sha256": "eb134caa735e790b60bf09eaece96e74ffb3eae463e3131a3c58aaf5a2b79bab"
+					"length": 12016,
+					"sha256": "80e4ed49742e91b5eb67dff34c63ec2b9a121f7369832d65f936584c211d6106"
 				},
 				"popup": {
-					"length": 14439,
-					"sha256": "75fa2c4eafe009c4531ae1466a749816a7b99f71e4d0130da2830dbe893ec24b"
+					"length": 15359,
+					"sha256": "f10f8414187fcb78ec98bb2446e74e9f309e44094d5443135941960b2fe6b20e"
 				}
 			},
 			{
@@ -1837,20 +1814,20 @@
 				"current": "pca-synthesis",
 				"latestTree": 1,
 				"block": {
-					"length": 11029,
-					"sha256": "ee7bc8bd8e56a16879a0971aef5f531290a3e45bdbf0ad42b8284af7548f1778"
+					"length": 11946,
+					"sha256": "1265db921fdea266e57174f913a5ca4f02fe2c61bc4ef298e3abda7cd27270bd"
 				},
 				"diagram": {
-					"length": 11176,
-					"sha256": "97d99d7f761a2e17e4fe54dc9378996a73498b48533889dc8f297f5c3395c9df"
+					"length": 11590,
+					"sha256": "a10463ccd418be7face10289c9a390f390e9a5b2cecfa1ebb521325f06e03af3"
 				},
 				"marginalia": {
-					"length": 11107,
-					"sha256": "baa9a3ac0e6058cdcd542e39d477e8ef1cd2788db0e809592ed7a6c0fcf8cbf9"
+					"length": 12027,
+					"sha256": "ca741c4c7704ea42cbc4fc0dddf21cd57f7c5d1ea56c0b3f6bfeabb534460dc1"
 				},
 				"popup": {
-					"length": 14450,
-					"sha256": "66a25dd5e674a2dae54562deed69db0ebc23dd7db77a624bc5c2bc53f9c7cb77"
+					"length": 15370,
+					"sha256": "2c676927971419dfcd39e184a2472cd05fa19c04e1a4c8f3c5e9b467ac24a158"
 				}
 			}
 		]

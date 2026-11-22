@@ -34,7 +34,7 @@ import { GET as serverInfoRoute } from "../app/.well-known/learnharness/server/r
 const RECORDED = {
 	protocolVersion: 1,
 	fingerprint: {
-		"src/client-protocol/index.ts": "83c9e95bc738019a",
+		"src/client-protocol/index.ts": "375f03fb8e188ef1",
 		"src/core/attachments.ts": "a2fda90879239dc8",
 		"src/core/contracts/chat.ts": "937c52917f863b25",
 		"src/core/contracts/graph.ts": "b84d4803bd0c4acc",
@@ -48,7 +48,7 @@ const RECORDED = {
 		"src/core/plugin-questions.ts": "2a40092a355d2315",
 		"src/core/plugin-submissions.ts": "41625a9ecd73afb7",
 		"src/core/prices.ts": "059a6fdabac2ec43",
-		"src/core/question-core.ts": "9ad92ef81c8b7f99",
+		"src/core/question-core.ts": "54b07ed1079ef322",
 		"@earendil-works/pi-agent-core": "1.5.2",
 		"@earendil-works/pi-ai": "1.5.2",
 		"@earendil-works/pi-schema": "1.5.2",
@@ -143,7 +143,7 @@ describe("server info", () => {
 		assert.equal(info.version, "0.6.1-nightly.1");
 		assert.equal(info.protocolVersion, 1);
 		assert.ok(info.name.length > 0);
-		assert.deepEqual(info.capabilities, ["attachment-uploads-v1", "attachment-folders-v1", "practice-controls-v1", "browser-handoff-v1", "lesson-view-v1", "session-basics-v1"]);
+		assert.deepEqual(info.capabilities, ["attachment-uploads-v1", "attachment-folders-v1", "practice-controls-v1", "browser-handoff-v1", "lesson-view-v1", "session-basics-v1", "question-option-order-v1"]);
 		assert.deepEqual(info.auth, {
 			required: true,
 			bootstrapMethods: ["one-time-token"],

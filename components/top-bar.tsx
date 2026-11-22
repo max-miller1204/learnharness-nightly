@@ -41,7 +41,7 @@
  */
 
 import { useLayoutEffect, useRef, type ReactNode } from "react";
-import { SidebarToggle } from "@/components/sidebar";
+import { SidebarToggle } from "@/components/sidebar-toggle";
 
 export function TopBar({
 	drag = true,

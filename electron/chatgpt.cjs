@@ -116,7 +116,12 @@ function allowedAuthEndpoint(value) {
 	} catch { return false; }
 }
 
-function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch, onChange = () => {}, timeoutMs = 300000 }) {
+/** How long a sign-in attempt stays pending before it times out by default. The desktop's
+ *  remote sign-in (remote-chatgpt.cjs) reads it too: an attempt whose cancel it skipped stays
+ *  pending on the server at most this long. */
+const ATTEMPT_TIMEOUT_MS = 300000;
+
+function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch, onChange = () => {}, timeoutMs = ATTEMPT_TIMEOUT_MS }) {
 	let state;
 	let init;
 	let queue = Promise.resolve();
@@ -600,4 +605,4 @@ function createChatGPT({ store, openExternal, fetch: request = globalThis.fetch,
 	return { status, login, cancelLogin, pendingAttempt, completeLogin, lease, models, select, consent, disconnect, logout, close, pause, resume, stamp };
 }
 
-module.exports = { createChatGPT, fileStore, publicError, allowedAuthEndpoint, pastedCallback, AUTHORIZE, SCOPES, validateState };
+module.exports = { createChatGPT, fileStore, publicError, allowedAuthEndpoint, pastedCallback, AUTHORIZE, ATTEMPT_TIMEOUT_MS, SCOPES, validateState };
