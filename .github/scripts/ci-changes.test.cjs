@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
-const { decide, pushPaths } = require("./ci-changes.cjs");
+const { decide, pathsFile, pushPaths } = require("./ci-changes.cjs");
 
 const none = { typecheck: false, test: false, selfhost: false, standalone: false, mobile: false, iphone: false };
 const all = { typecheck: true, test: true, selfhost: true, standalone: true, mobile: false, iphone: false };
@@ -77,7 +77,7 @@ test("the command line prints one gate per line for GITHUB_OUTPUT", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ci-changes-"));
 	try {
 		const list = path.join(dir, "paths");
-		fs.writeFileSync(list, "docs/a.md\ntests/jobs.test.ts\n");
+		fs.writeFileSync(list, "docs/a.md\0tests/jobs.test.ts\0");
 		const script = path.join(__dirname, "ci-changes.cjs");
 		const run = (...args) => execFileSync(process.execPath, [script, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
 		assert.equal(run("--paths", list), "typecheck=true\ntest=true\nselfhost=false\nstandalone=false\nmobile=false\niphone=false\n");
@@ -113,6 +113,66 @@ test("a push is diffed from the commit before it, every commit included, and run
 			assert.equal(pushPaths(unknown, dir), null, unknown);
 			assert.deepEqual(decide(pushPaths(unknown, dir), true), { ...all, mobile: true, iphone: true }, unknown);
 		}
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("names Git would quote (non-ASCII, a newline) reach the gates as they are, from a pull request's diff file and from a push", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ci-quoted-"));
+	try {
+		// Default Git settings, so core.quotePath is on, as on the runner.
+		const git = (...args) => execFileSync("git", ["-c", "core.quotePath=true", ...args], { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+		git("init", "-q");
+		fs.writeFileSync(path.join(dir, "README.md"), "base");
+		git("add", "-A");
+		git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "base");
+		const before = git("rev-parse", "HEAD").trim();
+		const names = [
+			"apps/mobile/src/\u00e9.ts",
+			// Git never quoted a space; kept as a guard that splitting stays NUL-only.
+			"apps/mobile/src/course notes.ts",
+			// Windows can't create a name with a newline.
+			...(process.platform === "win32" ? [] : ["docs/line\nbreak.md"]),
+		];
+		for (const name of names) {
+			fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+			fs.writeFileSync(path.join(dir, name), name);
+		}
+		git("add", "-A");
+		git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "names");
+		const expected = [...names].sort();
+		const gates = { ...none, mobile: true, iphone: true };
+
+		// A push: ci-changes reads the diff itself.
+		assert.deepEqual([...pushPaths(before, dir)].sort(), expected);
+		assert.deepEqual(decide(pushPaths(before, dir)), gates);
+
+		// A pull request: ci.yml writes the diff to a file, the same command as the workflow's.
+		const list = path.join(dir, ".git", "changed-paths");
+		fs.writeFileSync(list, git("diff", "-z", "--name-only", "--no-renames", "HEAD^1", "HEAD"));
+		const script = path.join(__dirname, "ci-changes.cjs");
+		const out = execFileSync(process.execPath, [script, "--paths", list], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+		assert.equal(out, Object.entries(gates).map(([key, value]) => `${key}=${value}`).join("\n") + "\n");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a --paths file that isn't NUL-separated runs every job instead of skipping", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ci-newline-paths-"));
+	try {
+		const list = path.join(dir, "paths");
+		// The old newline format: read as one name it would match nothing and skip Mobile.
+		fs.writeFileSync(list, "docs/a.md\napps/mobile/src/App.tsx\n");
+		const script = path.join(__dirname, "ci-changes.cjs");
+		const run = () => execFileSync(process.execPath, [script, "--paths", list], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+		assert.equal(run(), "typecheck=true\ntest=true\nselfhost=true\nstandalone=true\nmobile=true\niphone=true\n");
+		// An empty diff is still an empty diff.
+		fs.writeFileSync(list, "");
+		assert.equal(run(), "typecheck=false\ntest=false\nselfhost=false\nstandalone=false\nmobile=false\niphone=false\n");
+		assert.equal(pathsFile("docs/a.md"), null);
+		assert.deepEqual(pathsFile("docs/a.md\0"), ["docs/a.md"]);
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
