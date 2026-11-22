@@ -70,6 +70,7 @@ async function createServerList({
 		return !!server && (removing === server || updatingServer() === server || updating?.origin === server);
 	}
 	const HELD_BY_UPDATE = "Update everything is running for this server. Try again once it finishes.";
+	const REPAIRED = "This server was paired again, so it wasn’t removed.";
 	function snapshot() {
 		return {
 			servers: store.origins, defaultServer: store.defaultServer, damaged: store.damaged,
@@ -333,30 +334,53 @@ async function createServerList({
 			publish();
 			return;
 		}
+		// The pairing this confirm is about: one made again while it was open is a new one, kept.
+		const pairing = store.pairing(server);
 		const { response } = await dialog.showMessageBox(controls, {
 			type: "warning", noLink: true, buttons: ["Cancel", "Confirm"], defaultId: 0, cancelId: 0,
 			message: `Remove ${server} from this device?`,
 			detail: "This forgets its pairing and saved credential here. Pair again to add it back.",
 		});
-		if (response !== 1 || busy || removing || closing || store.damaged || !store.origins.includes(server)) return;
+		if (response !== 1 || busy || removing || closing || store.damaged || !pairing) return;
+		if (store.pairing(server) !== pairing) {
+			// Paired again while this confirm was open: that is a new pairing, kept. Removed
+			// meanwhile (no pairing now): nothing left to say.
+			if (store.pairing(server)) {
+				notice = REPAIRED;
+				publish();
+			}
+			return;
+		}
 		if (held(server)) {
 			notice = HELD_BY_UPDATE;
 			publish();
 			return;
 		}
-		// Not busy: a failing check of the open server still shows its problem meanwhile.
+		// Not busy: a failing check of another open server still shows its problem meanwhile.
 		removing = server;
-		// Its bearer is never sent again: a check still running for it stops now.
+		// Its bearer is never sent again: a check still running for it stops now, and so does
+		// its ChatGPT sign-in, without the cancel that would carry the bearer.
+		const signIns = chatgpt.forget(server);
 		if (window && rechecks.get(window)?.server === server) rechecks.get(window).stop.abort();
+		// Its window closes before the write: its page's own requests carry the bearer too.
+		// The list comes first, so the app always has a window, and stays in front for the keyboard.
+		if (active?.server === server) { show(); destroyContent(); }
 		publish();
 		try {
 			await store.remove(server);
-			// Its window closes; the list stays in front for the keyboard.
-			if (active?.server === server) { destroyContent(); show(); }
 			if (problem?.server === server) problem = null;
 			notice = "";
-		} catch { notice = "Couldn’t remove the saved server."; }
-		finally { removing = null; publish(); }
+		} catch {
+			// A write can fail after it already took effect (its cleanup, say): then the server is
+			// gone, and so is its bearer.
+			const gone = !store.origins.includes(server);
+			if (gone && problem?.server === server) problem = null;
+			notice = gone ? "" : "Couldn’t remove the saved server.";
+			// The sign-in's skipped cancel goes out after all, so the server doesn't hold that
+			// attempt pending until its own timeout, but only while the same pairing is verifiably
+			// still saved, in memory and on disk. Otherwise the bearer is forgotten: never sent.
+			if (store.pairing(server) === pairing && await store.persisted(server)) await signIns.kept();
+		} finally { removing = null; publish(); }
 	}
 	// The open remote window's ChatGPT sign-in (window.lh.chatgptSignIn), never for a held server.
 	const chatgpt = createRemoteChatGPTSignIn({
