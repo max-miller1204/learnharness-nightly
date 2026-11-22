@@ -8,6 +8,7 @@ import { InstallUpdateDialog } from "@/components/install-update-dialog";
 import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateErrorToast, UNEXPECTED_ERROR } from "@/components/update-toasts";
 import { updateButtonTooltip } from "@/components/update-tooltips";
 import { capReleaseNoteGroups, type ReleaseNoteGroup } from "@/src/core";
+import { readUpdateEverythingPlan, readUpdateEverythingResult, readUpdateEverythingRun, type UpdateEverythingPlanResult, type UpdateEverythingResult, type UpdateEverythingRun } from "@/components/update-everything-logic";
 import { SettingsRow } from "./controls.tsx";
 import { isNewerVersion } from "@/selfhost/src/version-order.ts";
 
@@ -80,6 +81,10 @@ export type DesktopAppStatus = {
 	/** The offered version's notes, newest first, as in UpdateState (the sidebar's hover). Older apps omit them. */
 	releaseNotes?: ReleaseNoteGroup[];
 	omittedReleaseCount?: number;
+	/** Update everything's run for the page's capsule (revision PR 7), or null. Older apps omit it. */
+	run?: UpdateEverythingRun | null;
+	/** A result toast waits for this page (takeResult). Older apps omit it. */
+	result?: boolean;
 };
 
 export type DesktopUpdateBridge = {
@@ -91,6 +96,15 @@ export type DesktopUpdateBridge = {
 	/** Settings' This app Install: only this app, after T3's confirm in the app's own native
 	 *  dialog. Apps from before it lack it. */
 	installApp?: () => Promise<void>;
+	/** Revision PR 7, all missing from older apps: the page's own Update everything dialog gets
+	 *  its rows from plan(), and its Update hands back exactly that plan's id to install(). The
+	 *  capsule's later(), retry() and dismiss() act on the run, and takeResult() reads its result
+	 *  toast once. */
+	plan?: () => Promise<unknown>;
+	later?: () => Promise<void>;
+	retry?: () => Promise<void>;
+	dismiss?: () => Promise<void>;
+	takeResult?: () => Promise<unknown>;
 };
 
 /** The local desktop window's full bridge (electron/preload.cjs), not the remote one. */
@@ -258,11 +272,16 @@ export function readDesktopAppStatus(value: unknown): DesktopAppStatus | null {
 	}));
 	const { releaseNotes } = capReleaseNoteGroups(groups);
 	const omitted = value.omittedReleaseCount;
-	return { ...value, releaseNotes, omittedReleaseCount: typeof omitted === "number" && Number.isInteger(omitted) && omitted > 0 ? Math.min(omitted, MAX_OMITTED_RELEASE_COUNT) : 0 };
+	return {
+		...value, releaseNotes, omittedReleaseCount: typeof omitted === "number" && Number.isInteger(omitted) && omitted > 0 ? Math.min(omitted, MAX_OMITTED_RELEASE_COUNT) : 0,
+		run: readUpdateEverythingRun(value.run), result: value.result === true,
+	};
 }
 
 /** How often the page asks the app for its update status (the bridge has no push channel). */
 export const DESKTOP_STATUS_POLL_MS = 5_000;
+/** While Update everything runs: often enough for its capsule's steps and countdown. */
+export const DESKTOP_RUN_POLL_MS = 1_000;
 
 /** The desktop app's own update, seen from its window onto a self-hosted
  *  server. Null everywhere else (browsers, the local desktop window). */
@@ -276,24 +295,47 @@ export function useDesktopAppUpdate() {
 			if (next) setStatus(next);
 		} catch { /* keep the last status */ }
 	}, [bridge]);
+	const running = !!status?.run;
 	useEffect(() => {
 		if (!bridge) return;
 		void refresh();
-		const timer = setInterval(() => { if (document.visibilityState !== "hidden") void refresh(); }, DESKTOP_STATUS_POLL_MS);
+		const timer = setInterval(() => { if (document.visibilityState !== "hidden") void refresh(); }, running ? DESKTOP_RUN_POLL_MS : DESKTOP_STATUS_POLL_MS);
 		const onVisible = () => { if (document.visibilityState !== "hidden") void refresh(); };
 		document.addEventListener("visibilitychange", onVisible);
 		return () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
-	}, [bridge, refresh]);
+	}, [bridge, refresh, running]);
 	const call = useCallback((method: "check" | "download" | "install" | "installApp") => async (): Promise<void> => {
 		const action = bridge?.[method];
 		if (!action) return;
 		try { await action(); } finally { void refresh(); }
 	}, [bridge, refresh]);
+	// Update everything in the page (revision PR 7), when the app has it.
+	const everything = useMemo(() => {
+		if (!bridge || typeof bridge.plan !== "function") return null;
+		const act = (method: "later" | "retry" | "dismiss") => () => { void bridge[method]?.().catch(() => {}).finally(() => void refresh()); };
+		return {
+			plan: async (): Promise<UpdateEverythingPlanResult> => {
+				try { return readUpdateEverythingPlan(await bridge.plan!()); } catch { return readUpdateEverythingPlan(null); }
+			},
+			/** The dialog's Update: true once main started exactly that plan. */
+			start: async (planId: string): Promise<boolean> => {
+				try {
+					const answer: unknown = await (bridge.install as (choice: { planId: string }) => Promise<unknown>)({ planId });
+					return typeof answer === "object" && answer !== null && (answer as { started?: unknown }).started === true;
+				} catch { return false; } finally { void refresh(); }
+			},
+			later: act("later"), retry: act("retry"), dismiss: act("dismiss"),
+			takeResult: async (): Promise<UpdateEverythingResult | null> => {
+				try { return readUpdateEverythingResult(await bridge.takeResult?.()); } catch { return null; }
+			},
+		};
+	}, [bridge, refresh]);
 	return useMemo(() => bridge ? {
 		status, check: call("check"), download: call("download"), install: call("install"),
 		// An app from before installApp has only Update everything's install.
 		installApp: typeof bridge.installApp === "function" ? call("installApp") : call("install"),
-	} : null, [bridge, status, call]);
+		everything,
+	} : null, [bridge, status, call, everything]);
 }
 
 /** A newer app version the desktop offers, or null. */

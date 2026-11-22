@@ -25,6 +25,7 @@ import { ArrowRightIcon } from "lucide-react";
 import { releaseUrl } from "@/components/release-notes-view";
 import { APP_VERSION, HOMEPAGE, useUpdateState } from "@/components/settings/update-settings";
 import { toastManager } from "@/components/ui/toast";
+import { getUpdateEverythingToastView, type UpdateEverythingResult } from "@/components/update-everything-logic";
 
 export const UPDATE_DOWNLOADED_TITLE = "Update downloaded";
 export const UPDATE_DOWNLOADED_LINE = "Restart the app from the update button to install it.";
@@ -69,6 +70,18 @@ export function showUpdateDownloadedToast(version: string | null | undefined, ho
 
 export function showUpdateErrorToast(title: string, description: string): void {
 	toastManager.add({ type: "error", title, description });
+}
+
+/** Update everything's result in the window onto a server (revision PR 7), also after the restart
+ *  that finished it: T3's showUpdateEverythingResult (updateEverythingRun.tsx:267-279 at df09ced7). */
+export function showUpdateEverythingResult(result: UpdateEverythingResult, appVersion: string = APP_VERSION): void {
+	const view = getUpdateEverythingToastView(result, appVersion);
+	if (!view) return;
+	toastManager.add({
+		type: view.type,
+		title: view.title,
+		...(view.description ? { description: <span className="whitespace-pre-line">{view.description}</span>, announce: `${view.title}. ${view.description}` } : {}),
+	});
 }
 
 /** The fixed line of main's install-failure notice when the state carries none (main's INSTALL_FAILED). */

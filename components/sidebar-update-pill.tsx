@@ -51,8 +51,11 @@ import { HostDialog } from "@/components/host-dialog";
 import { useOptionalInteractionLayers } from "@/components/interaction-layers";
 import { hasLegacyInteractionForeground } from "@/components/plugin-input-focus";
 import { InstallUpdateDialog } from "@/components/install-update-dialog";
+import { SidebarUpdateCapsule } from "@/components/sidebar-update-capsule";
+import { UpdateEverythingDialog } from "@/components/update-everything-dialog";
+import type { UpdateEverythingPlan, UpdateRunLocalState } from "@/components/update-everything-logic";
 import { UpdateReleaseNotes } from "@/components/release-notes-view";
-import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateDownloadedToast, showUpdateErrorToast, UNEXPECTED_ERROR } from "@/components/update-toasts";
+import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateDownloadedToast, showUpdateErrorToast, showUpdateEverythingResult, UNEXPECTED_ERROR } from "@/components/update-toasts";
 import { APP_VERSION, HOMEPAGE, desktopOffer, useDesktopAppUpdate, useUpdateState, type DesktopAppStatus, type UpdateState } from "@/components/settings/update-settings";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { downloadingTooltip, PREPARING_LABEL, retryTooltip } from "@/components/update-tooltips";
@@ -401,6 +404,18 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	const [pending, setPending] = useState(false);
 	// Confirmed Install in this page: "restarting" until the page reloads, or the state moves on (a failure).
 	const [installing, setInstalling] = useState(false);
+	// Update everything in the page (revision PR 7): the dialog's plan from the app, and its Update in flight.
+	const [plan, setPlan] = useState<UpdateEverythingPlan | null>(null);
+	const [starting, setStarting] = useState(false);
+	const everything = desktop?.everything ?? null;
+	// The run's result toast, once, also after the restart that finished it (T3's saved result).
+	const takingResult = useRef(false);
+	const hasResult = desktopStatus?.result === true;
+	useEffect(() => {
+		if (!hasResult || !everything || takingResult.current) return;
+		takingResult.current = true;
+		void everything.takeResult().then((result) => { if (result) showUpdateEverythingResult(result); }).finally(() => { takingResult.current = false; });
+	}, [hasResult, everything]);
 	const [open, setOpen] = useState(false);
 	// The plain tooltip's open state, controlled all the time: switching Radix between controlled and
 	// uncontrolled lost a close made while the notes applied, and the old state came back after.
@@ -483,6 +498,36 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	}, [notesOpen, layers]);
 	const onIteration = useCallback(() => setLatched(continuesCheckSpin(isChecking, reducedMotion)), [isChecking, reducedMotion]);
 
+	const everythingDialog = (
+		<UpdateEverythingDialog
+			plan={plan}
+			busy={starting}
+			onClose={() => setPlan(null)}
+			onConfirm={() => {
+				if (!plan || !everything) return;
+				setStarting(true);
+				// Called within the click: the app starts a run only from a real click (electron/remote-preload.cjs).
+				void everything.start(plan.planId).then((started) => {
+					setStarting(false);
+					setPlan(null);
+					if (!started) showUpdateErrorToast("Couldn’t update everything.", "Try again.");
+				});
+			}}
+		/>
+	);
+	// While the app runs Update everything, or keeps a run that failed, the capsule stands in for the control.
+	const run = everything ? desktopStatus?.run ?? null : null;
+	if (run && everything) {
+		const local: UpdateRunLocalState = run.localVersion === null ? null
+			: desktopStatus?.phase === "downloading" ? { status: "downloading", percent: desktopStatus.downloadPercent ?? null }
+			: { status: "waiting" };
+		return (
+			<div className="ml-auto flex min-w-0 shrink justify-end">
+				<SidebarUpdateCapsule run={run} local={local} icon={<CircleArrowUpIcon className="size-4" aria-hidden />} actions={{ later: everything.later, retry: everything.retry, dismiss: everything.dismiss }} />
+				{everythingDialog}
+			</div>
+		);
+	}
 	if (!state || !kind) return null;
 	const downloadPercent = shownDownloadPercent(state, desktopStatus);
 	const tooltip = (kind === "app-download" || kind === "app-install") && desktopStatus ? appUpdateTooltip(desktopStatus, kind)
@@ -552,8 +597,15 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 		if (kind === "reload") {
 			if (hasUnsentMessage()) setConfirmingReload(true);
 			else reload();
+		} else if (everything && kind === "everything") {
+			// The page's own dialog (revision PR 7), with the rows the app plans.
+			setPending(true);
+			void everything.plan().then((answer) => {
+				if ("plan" in answer) setPlan(answer.plan);
+				else showUpdateErrorToast(answer.error.title, answer.error.detail);
+			}).finally(() => setPending(false));
 		} else if (desktop && (kind === "everything" || kind === "app-install")) {
-			// The app asks first in its own dialog (electron/update-everything.cjs).
+			// An older app asks first in its own native dialog (electron/update-everything.cjs).
 			setPending(true);
 			void desktop.install().catch(() => {}).finally(() => setPending(false));
 		} else if (desktop && kind === "app-download") void desktop.download().catch(() => {});
@@ -694,6 +746,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 					void install().then((sent) => { if (!sent) setInstalling(false); });
 				}}
 			/>
+			{everythingDialog}
 			<ReloadConfirmDialog
 				open={confirmingReload}
 				onClose={() => setConfirmingReload(false)}

@@ -1553,6 +1553,66 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		return { ...r, pill: () => q(host, "update-pill")! };
 	};
 
+	// Revision PR 7: an app with the page's own dialog and capsule.
+	const PLAN_ID = "123e4567-e89b-42d3-a456-426614174000";
+	function everythingRemote(status: Status & { run?: unknown; result?: boolean }, server: UpdateState, { plan = { planId: PLAN_ID, version: V72, running: 2, disabledReason: null, skipped: [], rows: [{ label: "max-desktop", app: "server", running: 2 }, { label: "This app", app: "this-app", running: 0 }] } as unknown, result = null as unknown } = {}) {
+		let current = status;
+		const calls = { install: [] as unknown[][], plan: 0, takeResult: 0, later: 0, retry: 0, dismiss: 0 };
+		window.lh = { desktopUpdate: {
+			getStatus: async () => current as never,
+			check: async () => {}, download: async () => {}, installApp: async () => {},
+			install: async (...args: unknown[]) => { calls.install.push(args); return { started: true } as never; },
+			plan: async () => { calls.plan++; return plan; },
+			later: async () => { calls.later++; }, retry: async () => { calls.retry++; }, dismiss: async () => { calls.dismiss++; },
+			takeResult: async () => { calls.takeResult++; const taken = result; result = null; return taken; },
+		} } as never;
+		globalThis.fetch = async () => Response.json(server);
+		return { calls, set: (next: typeof status) => { current = next; } };
+	}
+
+	it("with the app's plan, the everything control opens the page's dialog, its Update hands back exactly that plan, and the capsule takes over", async () => {
+		const r = everythingRemote({ version: V71, target: V72, phase: "available", error: null }, state({ status: "up-to-date", runningVersion: V71 }));
+		const host = await mount(<SidebarUpdatePill pageVersion={V71} />);
+		await settle();
+		await click(q(host, "update-pill")); await settle();
+		assert.equal(r.calls.plan, 1);
+		assert.equal(r.calls.install.length, 0, "opening the dialog starts nothing");
+		assert.equal(q(document, "update-everything-title")!.textContent, "Update 2 machines?");
+		assert.equal(document.activeElement, q(document, "update-everything-cancel"));
+		await click(q(document, "update-everything-confirm")); await settle();
+		assert.deepEqual(r.calls.install, [[{ planId: PLAN_ID }]], "exactly the plan's id, nothing else");
+		assert.equal(q(document, "update-everything-dialog"), null, "the dialog closes");
+		r.set({ version: V71, target: V72, phase: "updating", error: null, run: { phase: "servers", localVersion: V72, restartAt: null, machines: [{ label: "max-desktop", status: "downloading", startedAt: Date.now(), failure: null }] } });
+		await act(async () => { document.dispatchEvent(new dom.window.Event("visibilitychange")); });
+		await settle();
+		assert.equal(q(host, "update-pill"), null, "the capsule stands in for the control");
+		assert.equal(q(host, "update-capsule-label")!.textContent, "0 of 1 updated");
+	});
+
+	it("a plan the app can't make says why in a toast and opens no dialog", async () => {
+		toastManager.clear();
+		const r = everythingRemote({ version: V71, target: V72, phase: "available", error: null }, state({ status: "up-to-date", runningVersion: V71 }), { plan: { error: { title: "Couldn’t update everything.", detail: "max-desktop runs a newer version." } } });
+		const host = await mount(<><SidebarUpdatePill pageVersion={V71} /><Toaster /></>);
+		await settle();
+		await click(q(host, "update-pill")); await settle();
+		assert.equal(r.calls.plan, 1);
+		assert.equal(q(document, "update-everything-dialog"), null);
+		assert.match(document.body.textContent ?? "", /Couldn’t update everything\.max-desktop runs a newer version\./);
+		assert.equal(r.calls.install.length, 0);
+	});
+
+	it("the result toast, also after the restart: read from the app once and shown once", async () => {
+		toastManager.clear();
+		const r = everythingRemote({ version: V72, target: null, phase: "up-to-date", error: null, result: true }, state({ status: "up-to-date", runningVersion: V72 }), { result: { localVersion: V72, updatedServers: 1, failures: [] } });
+		await mount(<><SidebarUpdatePill pageVersion={V72} /><Toaster /></>);
+		await settle(); await settle();
+		assert.equal(r.calls.takeResult, 1);
+		const titles = [...document.querySelectorAll("[data-testid='toast-title']")].map((node) => node.textContent);
+		assert.equal(titles.length, 1, "shown once");
+		// "this app" counts only when the page's app version is the one installed (APP_VERSION here).
+		assert.match(titles[0] ?? "", /^Updated (this app and )?1 server$/);
+	});
+
 	it("a newer app with the server behind it shows T3's everything state, and clicking only asks the app", async () => {
 		const { calls, pill } = await pillIn({ version: V71, target: V72, phase: "available", error: null }, state({ status: "up-to-date", runningVersion: V71 }));
 		assert.equal(pill().getAttribute("data-action"), "everything");
@@ -1618,7 +1678,7 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		assert.equal(readDesktopAppStatus(null), null);
 		assert.equal(readDesktopAppStatus({ version: V71 }), null);
 		assert.deepEqual(readDesktopAppStatus({ version: V71, target: V72, phase: "available", error: null }),
-			{ version: V71, target: V72, phase: "available", error: null, releaseNotes: [], omittedReleaseCount: 0 });
+			{ version: V71, target: V72, phase: "available", error: null, releaseNotes: [], omittedReleaseCount: 0, run: null, result: false }, "an older app: no run, no result toast");
 		const good = { version: V72, items: ["a"], totalItems: 1 };
 		const read = readDesktopAppStatus({ version: V71, target: V72, phase: "available", error: null, omittedReleaseCount: "2",
 			releaseNotes: [good, { version: 3, items: [] }, { version: V71, items: [1] }, null] });

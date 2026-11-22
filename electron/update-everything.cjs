@@ -16,6 +16,7 @@
  * server's new version, not when its restart starts (owner decision).
  */
 
+const { randomUUID } = require("node:crypto");
 const { compareVersions, bridgeNotes } = require("./release-notes.cjs");
 const { hasDownloadableOffer, hasInstallableDownload } = require("./update-machine.cjs");
 
@@ -29,6 +30,8 @@ const POLL_MS = 2_000;
 const ROUTE_ERROR_LIMIT = 3;
 const SAVED_RESULT_MAX_AGE_MS = 10 * 60 * 1000;
 const INSTALL_VERSION_PATH = "/api/updates/install-version";
+// How long the page's Update everything dialog may stay open before its Update is refused (revision PR 7).
+const PLAN_MAX_AGE_MS = 10 * 60 * 1000;
 
 // The ghost dashboard's name for a server: its first label, or a whole IP.
 const { hostLabel: serverLabel } = require("./skeleton.cjs");
@@ -66,11 +69,15 @@ function installAppConfirmation(version) {
 }
 
 class RunProblem extends Error {
-	/** `server` failures leave the app as it is and offer Retry (or Pair again) and Switch server…. */
-	constructor(message, { server = false, kind = "retry" } = {}) {
+	/** `server` failures leave the app as it is and offer Retry (or Pair again) and Switch server….
+	 *  `unreachable`: the server's page can't be shown either (it never came back), so the list
+	 *  shows the problem, never the page's capsule. `version`: what the server runs after it. */
+	constructor(message, { server = false, kind = "retry", unreachable = false, version = null } = {}) {
 		super(message);
 		this.server = server;
 		this.kind = kind;
+		this.unreachable = unreachable;
+		this.version = version;
 	}
 }
 
@@ -100,10 +107,29 @@ async function readJSON(response) {
  *   now(), sleep(ms), timeoutSignal(ms) (defaults to AbortSignal.timeout)
  */
 function createUpdateEverything(deps) {
-	let run = null; // { target, step: "downloading" | "updating" | "restarting" }
+	let run = null; // { target, step: "downloading" | "updating" | "restarting" }, plus the page's view of an in-page run
 	let asking = false;
 	// The server a run (or its confirmation) talks to with its bearer.
 	let against = null;
+	// Revision PR 7: the in-page dialog's plan (one at a time, used once), the run kept after a
+	// server failure for the capsule's Retry and Dismiss, the result toast (read once), and the
+	// countdown's Later.
+	let plan = null;
+	let kept = null;
+	let result = null;
+	let decideRestart = null;
+
+	/** What the page's capsule shows of an in-page run, or of a run kept after its failure.
+	 *  Labels and messages are main's own text, never the page's. */
+	function runView(source) {
+		if (!source) return null;
+		return {
+			phase: source.phase,
+			localVersion: source.localVersion,
+			restartAt: source.restartAt,
+			machines: source.machines.map(({ label, status, startedAt, failure }) => ({ label, status, startedAt, failure })),
+		};
+	}
 
 	function status() {
 		const state = deps.updater.state();
@@ -111,7 +137,10 @@ function createUpdateEverything(deps) {
 		const downloadPercent = state.status === "downloading" && typeof state.downloadPercent === "number" ? state.downloadPercent : null;
 		// A run shows no notes, also in its download step, which the page can't tell from a
 		// plain download (T3's `!isRunningEverything`, SidebarUpdatePill.tsx:279-280).
-		if (run) return { version: deps.appVersion, target: run.target, phase: run.step === "downloading" ? "downloading" : "updating", error: null, downloadPercent, releaseNotes: [], omittedReleaseCount: 0 };
+		// A run kept after its failure shows only on its own server's page, where Retry acts.
+		const shownKept = kept && deps.selection()?.origin === kept.origin ? kept : null;
+		const page = { run: runView(run?.inPage ? run : shownKept), result: result !== null };
+		if (run) return { version: deps.appVersion, target: run.target, phase: run.step === "downloading" ? "downloading" : "updating", error: null, downloadPercent, releaseNotes: [], omittedReleaseCount: 0, ...page };
 		// The offered version's notes (the reducers keep them until a new check or "no update"
 		// clears them, electron/update-machine.cjs), bounded: the sidebar's hover shows them for this
 		// app's states, as T3's does.
@@ -123,6 +152,7 @@ function createUpdateEverything(deps) {
 			error: state.status === "error" ? "Couldn’t check for updates. Try again later." : null,
 			downloadPercent,
 			...notes,
+			...page,
 		};
 	}
 
@@ -151,10 +181,19 @@ function createUpdateEverything(deps) {
 	 *  A request that gets no answer may still have started, so it is sent again on
 	 *  each poll (the same request is harmless) and the run never claims nothing
 	 *  changed unless the server itself refused. */
-	async function updateServer(selection, label, target, before) {
+	async function updateServer(selection, label, target, before, machine = null) {
 		const { origin, token } = selection;
 		run.step = "updating";
-		deps.progress(origin, `Updating ${label} to ${target}… This can take a few minutes.`);
+		const coverText = `Updating ${label} to ${target}… This can take a few minutes.`;
+		// An older page has no capsule: the cover shows the whole server step, as before. The
+		// page's run (`machine`) keeps the page in view and covers it only while the server
+		// restarts and can't render it (revision PR 7).
+		if (!machine) deps.progress(origin, coverText);
+		const restarting = () => {
+			if (!machine || machine.status === "restarting") return;
+			machine.status = "restarting";
+			if (!machine.covered) { machine.covered = true; deps.progress(origin, coverText); }
+		};
 		let asked = false;
 		// The id of the server's attempt this run's request started (or joined):
 		// only its `pinned.error` is this run's failure, never one left from earlier.
@@ -177,6 +216,7 @@ function createUpdateEverything(deps) {
 			if (response.status === 401) throw new RunProblem("This desktop is no longer paired with the server.", { server: true, kind: "pair" });
 			if (!response.ok) throw new RunProblem(`${label} can’t update: ${typeof body?.error === "string" ? body.error : `HTTP ${response.status}`} Nothing was changed.`, { server: true });
 			asked = true;
+			if (machine?.status === "waiting") machine.status = "downloading";
 			const pinned = body?.pinned;
 			if (pinned?.version === target && pinned.error === null && typeof pinned.id === "string") attempt = pinned.id;
 		};
@@ -187,30 +227,33 @@ function createUpdateEverything(deps) {
 				const health = await deps.request(origin, "/api/health", {});
 				const healthy = health.ok && (await readJSON(health))?.version === target;
 				const state = await serverUpdates(origin, token, { restarting: true });
-				if (!state) throw new Error("not back yet");
+				if (!state) { restarting(); throw new Error("not back yet"); }
 				if (healthy && state.runningVersion === target && state.committed === true) return;
+				// A new process that hasn't been kept yet: the launcher is still trying the new version.
+				if (state.instance !== before) restarting();
 				if (attempt && state.pinned?.id === attempt && typeof state.pinned.error === "string") {
-					throw new RunProblem(`${label} couldn’t start the update: ${state.pinned.error} Your app wasn’t changed.`, { server: true });
+					throw new RunProblem(`${label} couldn’t start the update: ${state.pinned.error} Your app wasn’t changed.`, { server: true, version: state.runningVersion });
 				}
 				const started = state.pinned?.version === target && !state.pinned.error;
 				if (routeError && state.instance === before && !started) {
 					routeErrors += 1;
-					if (routeErrors >= ROUTE_ERROR_LIMIT) throw new RunProblem(`${label} can’t update: HTTP ${routeError}. Nothing was changed.`, { server: true });
+					if (routeErrors >= ROUTE_ERROR_LIMIT) throw new RunProblem(`${label} can’t update: HTTP ${routeError}. Nothing was changed.`, { server: true, version: state.runningVersion });
 				} else {
 					routeErrors = 0;
 				}
 				if (state.instance !== before && state.runningVersion !== target && state.notice?.kind === "rolled-back" && state.notice.version === target) {
-					throw new RunProblem(`${label} couldn’t start ${target} and went back to ${state.runningVersion}. Your app wasn’t changed.`, { server: true });
+					throw new RunProblem(`${label} couldn’t start ${target} and went back to ${state.runningVersion}. Your app wasn’t changed.`, { server: true, version: state.runningVersion });
 				}
 			} catch (error) {
 				if (error instanceof RunProblem) throw error;
-				/* Restarting: keep waiting. */
+				// Restarting: keep waiting. Once asked, a server that doesn't answer is restarting.
+				if (asked) restarting();
 			}
 			await deps.sleep(POLL_MS);
 		}
 		throw new RunProblem(asked
 			? `${label} wasn’t back after ${HANDOFF_TIMEOUT_MS / 60_000} minutes. Your app wasn’t changed.`
-			: `Couldn’t reach ${label} for ${HANDOFF_TIMEOUT_MS / 60_000} minutes. Your app wasn’t changed.`, { server: true });
+			: `Couldn’t reach ${label} for ${HANDOFF_TIMEOUT_MS / 60_000} minutes. Your app wasn’t changed.`, { server: true, unreachable: true });
 	}
 
 	/** A saved result whose install never started: read it away, so the next launch offers nothing. */
@@ -353,8 +396,171 @@ function createUpdateEverything(deps) {
 		}
 	}
 
+	/** The page's Update everything dialog (revision PR 7; T3's UpdateEverythingDialog.tsx at
+	 *  df09ced7): what main would do, as rows for its table. Main pins the version and reads the
+	 *  server itself; the page names nothing. Returns { error } for what the native flow tells,
+	 *  else a plan whose id the page's Update hands back, once. */
+	async function makePlan() {
+		const selection = deps.selection();
+		if (!selection) return { error: { title: "Couldn’t update everything.", detail: "Open a server first." } };
+		against = selection.origin;
+		try {
+			const label = serverLabel(selection.origin);
+			let target;
+			try { target = await deps.updater.pin(); } catch { target = null; }
+			if (!target || !isNewerVersion(target, deps.appVersion)) return { error: { title: "LearnHarness is up to date.", detail: "No newer version of this app was found." } };
+			let server;
+			try { server = await serverUpdates(selection.origin, selection.token); } catch (error) {
+				return { error: { title: "Couldn’t update everything.", detail: error.message } };
+			}
+			if (isNewerVersion(server.runningVersion, target)) {
+				return { error: { title: "Couldn’t update everything.", detail: `${label} runs ${server.runningVersion}, newer than this app’s update (${target}). Check for updates again.` } };
+			}
+			const serverBehind = compareVersions(server.runningVersion, target) < 0;
+			// A server that can't update itself is skipped, and this app waits for it: an app newer
+			// than its server could stop speaking its protocol.
+			const manual = serverBehind && server.status === "disabled";
+			const reason = manual ? (typeof server.message === "string" && server.message.trim() ? server.message.trim().slice(0, 200) : "needs a manual update") : null;
+			const running = serverBehind && !manual ? await runningCount(selection.origin, selection.token) : 0;
+			const rows = [
+				...(serverBehind && !manual ? [{ label, app: "server", running }] : []),
+				// This app last (owner, docs/specs/desktop-server-list.md): it restarts after the server.
+				{ label: "This app", app: "this-app", running: 0 },
+			];
+			plan = {
+				id: randomUUID(), issuedAt: deps.now(), origin: selection.origin, token: selection.token,
+				target, label, serverBehind: serverBehind && !manual, before: typeof server.instance === "string" ? server.instance : null,
+				disabled: manual ? `Update ${label} from its own Settings first.` : null,
+			};
+			return {
+				planId: plan.id, version: target, rows, running,
+				skipped: manual ? [{ label, reason }] : [],
+				disabledReason: plan.disabled,
+			};
+		} finally { against = null; }
+	}
+
+	/** The countdown before this app restarts: resolves true when it runs out, false on Later. */
+	function countdown() {
+		run.phase = "countdown";
+		run.restartAt = deps.now() + RESTART_DELAY_MS;
+		const signal = (deps.timeoutSignal ?? AbortSignal.timeout)(RESTART_DELAY_MS);
+		return new Promise((resolve) => {
+			const decide = (restart) => {
+				decideRestart = null;
+				signal.removeEventListener("abort", ran);
+				resolve(restart);
+			};
+			const ran = () => decide(true);
+			if (signal.aborted) return decide(true);
+			signal.addEventListener("abort", ran, { once: true });
+			decideRestart = decide;
+		});
+	}
+
+	/** An in-page run: the same steps as the native one (download, the server to exactly the
+	 *  target, its commit, then this app), shown in the page's capsule. */
+	async function runInPage(selection, chosen) {
+		const { target, label, serverBehind } = chosen;
+		const machine = serverBehind ? { label, status: "waiting", startedAt: deps.now(), failure: null, covered: false } : null;
+		run = { target, step: "downloading", inPage: true, phase: "servers", localVersion: target, restartAt: null, machines: machine ? [machine] : [] };
+		against = selection.origin;
+		let serverDone = false;
+		try {
+			try {
+				await deps.updater.downloadPinned(target);
+			} catch {
+				throw new RunProblem("Couldn’t download the app update. Nothing was changed.");
+			}
+			if (machine) {
+				machine.startedAt = deps.now();
+				await updateServer(selection, label, target, chosen.before, machine);
+				machine.status = "done";
+				serverDone = true;
+				// Back on the target: the page shows again, now with the countdown.
+				if (machine.covered) deps.reconnect(selection.origin, target);
+			}
+			if (!(await countdown())) {
+				run = null;
+				// Later: the server is updated and this app stays as it is until its own Install.
+				if (serverDone) result = { localVersion: null, updatedServers: 1, failures: [] };
+				return;
+			}
+			run.phase = "installing";
+			run.restartAt = null;
+			run.step = "restarting";
+			deps.saveResult({ savedAt: deps.now(), server: deps.selection()?.origin ?? selection.origin, updated: selection.origin, from: deps.appVersion, target, inPage: true, updatedServers: serverDone ? 1 : 0 });
+			run.installFailed = async () => {
+				run = null;
+				forgetResult();
+				if (serverDone) await offerRetry({ target, server: selection.origin, updated: selection.origin });
+				else result = { localVersion: null, updatedServers: 0, failures: ["This app: Couldn’t install the app update. Try again."] };
+			};
+			deps.updater.installPinned(target);
+		} catch (error) {
+			const saved = run?.step === "restarting";
+			run = null;
+			if (saved) forgetResult();
+			if (serverDone) {
+				await offerRetry({ target, server: selection.origin, updated: selection.origin });
+				return;
+			}
+			const problem = error instanceof RunProblem ? error : new RunProblem("Update everything stopped. Nothing was changed.");
+			if (machine && problem.server && problem.kind === "retry" && !problem.unreachable) {
+				// The server's page can show this: the capsule says "<server> failed" with Retry.
+				machine.status = "failed";
+				machine.failure = problem.message;
+				kept = { origin: selection.origin, target, label, phase: "servers", localVersion: null, restartAt: null, machines: [machine] };
+				result = { localVersion: null, updatedServers: 0, failures: [`${label}: ${problem.message}`] };
+				if (machine.covered) deps.reconnect(selection.origin, problem.version ?? target);
+			} else if (problem.server) {
+				deps.fail(selection.origin, { kind: problem.kind, message: problem.message });
+			} else {
+				result = { localVersion: null, updatedServers: 0, failures: [`This app: ${problem.message}`] };
+			}
+		} finally { against = null; }
+	}
+
 	return {
 		status,
+		/** The page's Update everything dialog: its rows, or the reason there's nothing to do. */
+		async plan() {
+			if (run || asking) return { error: { title: "Update everything is already running.", detail: "Wait for it to finish." } };
+			return makePlan();
+		},
+		/** The page's Restart in Ns: Later keeps this app as it is. */
+		later() { decideRestart?.(false); },
+		/** The capsule's Retry: the failed server again, with the same version. */
+		async retry() {
+			if (run || asking || !kept) return;
+			const selection = deps.selection();
+			if (!selection || selection.origin !== kept.origin) return;
+			const { target, label } = kept;
+			kept = null;
+			result = null;
+			let server;
+			against = selection.origin;
+			try { server = await serverUpdates(selection.origin, selection.token); } catch (error) {
+				against = null;
+				if (error instanceof RunProblem && error.kind === "pair") deps.fail(selection.origin, { kind: error.kind, message: error.message });
+				else {
+					kept = { origin: selection.origin, target, label, phase: "servers", localVersion: null, restartAt: null, machines: [{ label, status: "failed", startedAt: deps.now(), failure: error.message }] };
+				}
+				return;
+			}
+			against = null;
+			// Back on the target by now: only this app is left (T3's retryFailedUpdateRunServers).
+			const serverBehind = compareVersions(server.runningVersion, target) < 0;
+			void runInPage(selection, { target, label, serverBehind, before: typeof server.instance === "string" ? server.instance : null });
+		},
+		/** The capsule's Dismiss: forget a run that ended on a failure. */
+		dismiss() { if (!run) kept = null; },
+		/** The result toast, once (also after the restart that finished the run). */
+		takeResult() {
+			const taken = result;
+			result = null;
+			return taken;
+		},
 		/** A run, or its confirmation, is going: the plain install and the menu wait. */
 		running: () => run !== null || asking,
 		/** Main recovered from an installer error (T3's recoverFailedInstall): a run waiting on its
@@ -386,8 +592,23 @@ function createUpdateEverything(deps) {
 			}
 			if (choice === 0 && !run && hasInstallableDownload(deps.updater.state())) deps.updater.install();
 		},
-		/** The page's install(): resolves once the confirmation is answered. */
-		async install() {
+		/** The page's install(). With no choice (an older page): main asks in its own dialog, and
+		 *  this resolves once that is answered. With the choice from the page's own dialog
+		 *  ({ planId }, checked by the bridge): exactly that plan, once, from the same server
+		 *  window, within PLAN_MAX_AGE_MS. Resolves { started } at once. */
+		async install(choice) {
+			if (choice !== undefined) {
+				const chosen = plan;
+				const selection = deps.selection();
+				const fits = chosen && choice?.planId === chosen.id && deps.now() - chosen.issuedAt <= PLAN_MAX_AGE_MS && !chosen.disabled &&
+					selection && selection.origin === chosen.origin && selection.token === chosen.token;
+				if (run || asking || !fits) return { started: false };
+				plan = null;
+				kept = null;
+				result = null;
+				void runInPage(selection, chosen).catch(() => {});
+				return { started: true };
+			}
 			if (run || asking) return;
 			asking = true;
 			let answered;
@@ -409,6 +630,9 @@ function createUpdateEverything(deps) {
 			if (!saved || typeof saved.server !== "string" || typeof saved.target !== "string" || typeof saved.savedAt !== "number") return null;
 			if (deps.now() - saved.savedAt > SAVED_RESULT_MAX_AGE_MS) return null;
 			const applied = deps.appVersion === saved.target;
+			// The in-page run's result toast, kept across the restart (T3's saved result,
+			// updateEverythingRun.tsx:188-265 at df09ced7).
+			if (applied && saved.inPage === true) result = { localVersion: saved.target, updatedServers: saved.updatedServers === 1 ? 1 : 0, failures: [] };
 			const missed = applied ? null : { target: saved.target, server: saved.server, updated: typeof saved.updated === "string" ? saved.updated : saved.server };
 			return {
 				server: saved.server,
@@ -419,4 +643,4 @@ function createUpdateEverything(deps) {
 	};
 }
 
-module.exports = { createUpdateEverything, serverLabel, confirmation, installAppConfirmation, HANDOFF_TIMEOUT_MS, RESTART_DELAY_MS, SAVED_RESULT_MAX_AGE_MS, INSTALL_VERSION_PATH };
+module.exports = { createUpdateEverything, serverLabel, confirmation, installAppConfirmation, HANDOFF_TIMEOUT_MS, RESTART_DELAY_MS, SAVED_RESULT_MAX_AGE_MS, INSTALL_VERSION_PATH, PLAN_MAX_AGE_MS };

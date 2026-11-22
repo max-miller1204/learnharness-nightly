@@ -11,7 +11,7 @@ import path from "node:path";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const { createUpdateEverything, serverLabel, HANDOFF_TIMEOUT_MS, RESTART_DELAY_MS, SAVED_RESULT_MAX_AGE_MS } = require("../electron/update-everything.cjs");
+const { createUpdateEverything, serverLabel, HANDOFF_TIMEOUT_MS, RESTART_DELAY_MS, SAVED_RESULT_MAX_AGE_MS, PLAN_MAX_AGE_MS } = require("../electron/update-everything.cjs");
 const { registerDesktopUpdateIPC } = require("../electron/update-everything-ipc.cjs");
 
 const ORIGIN = "https://max-desktop.tail1234.ts.net:8443";
@@ -22,7 +22,9 @@ const V73 = "0.6.1-nightly.20261118.73";
 type Reply = { status?: number; body?: unknown } | Error;
 type Prompt = { message: string; detail: string; buttons: string[]; signal?: AbortSignal };
 
-function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0] as Array<number | "wait">, saved = null as unknown, downloadFails = false, appNotes = [] as unknown[], duringDownload = () => {} } = {}) {
+function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0] as Array<number | "wait">, saved = null as unknown, downloadFails = false, appNotes = [] as unknown[], duringDownload = () => {},
+	countdown = null as AbortController | null, expectReconnect = V72 as string | null, appVersion = V71 } = {}) {
+	const reconnects: string[] = [];
 	const log: string[] = [];
 	const prompts: Prompt[] = [];
 	const notices: Array<{ message: string; detail: string }> = [];
@@ -46,7 +48,7 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 	let finished: () => void = () => {};
 	const done = new Promise<void>((resolve) => { finished = resolve; });
 	const ue = createUpdateEverything({
-		appVersion: V71,
+		appVersion,
 		updater: {
 			state: () => ({ status: offered ? "available" : "up-to-date", version: offered, releaseNotes: appNotes }),
 			check: () => log.push("check"),
@@ -98,14 +100,19 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 		tell: async (notice: { message: string; detail: string }) => { notices.push(notice); finished(); },
 		progress: (origin: string, text: string) => { assert.equal(origin, ORIGIN, "the run covers only its own server"); progress.push(text); },
 		fail: (origin: string, problem: { kind: string; message: string }) => { failures.push(problem.message); kinds.push(problem.kind); finished(); },
-		reconnect: (origin: string, version: string) => { assert.equal(version, V72, "Later shows the version the server is now on"); log.push(`reconnect ${origin}`); finished(); },
+		reconnect: (origin: string, version: string) => {
+			if (expectReconnect !== null) assert.equal(version, expectReconnect, "Later shows the version the server is now on");
+			reconnects.push(version);
+			log.push(`reconnect ${origin}`);
+			finished();
+		},
 		saveResult: (record: unknown) => { results.push(record); stored = record; },
 		takeResult: () => { const value = stored; stored = null; return value; },
 		now: () => clock,
-		timeoutSignal: (ms: number) => { assert.equal(ms, RESTART_DELAY_MS); return AbortSignal.timeout(5); },
+		timeoutSignal: (ms: number) => { assert.equal(ms, RESTART_DELAY_MS); return countdown ? countdown.signal : AbortSignal.timeout(5); },
 		sleep: async (ms: number) => { clock += ms; remote.tick?.(); await new Promise((resolve) => setImmediate(resolve)); },
 	});
-	return { ue, log, prompts, notices, failures, kinds, progress, requests, results, remote, done, advance: (ms: number) => { clock += ms; } };
+	return { ue, log, prompts, notices, failures, kinds, progress, requests, results, remote, done, reconnects, advance: (ms: number) => { clock += ms; }, now: () => clock };
 }
 
 test("server labels follow the ghost dashboard: first name, or the whole address for an IP", () => {
@@ -303,13 +310,13 @@ test("status passes the offered version's release notes through to the remote pa
 	const notes = [{ version: V72, items: ["**Cards.** Practice with cards."], totalItems: 1, stats: "3 changes from 1 contributor", footer: "Plus 2 more bug fixes." }, { version: V71, items: ["Older"], totalItems: 1 }];
 	let appState: Record<string, unknown> = { status: "available", version: V72, releaseNotes: notes, omittedReleaseCount: 3 };
 	const ue = createUpdateEverything({ appVersion: V71, updater: { state: () => appState } });
-	assert.deepEqual(ue.status(), { version: V71, target: V72, phase: "available", error: null, downloadPercent: null, releaseNotes: notes, omittedReleaseCount: 3 });
+	assert.deepEqual(ue.status(), { version: V71, target: V72, phase: "available", error: null, downloadPercent: null, releaseNotes: notes, omittedReleaseCount: 3, run: null, result: false });
 	appState = { status: "downloading", version: V72, downloadPercent: 40, releaseNotes: notes, omittedReleaseCount: 0 };
 	assert.deepEqual(ue.status().releaseNotes, notes);
 	assert.equal(ue.status().downloadPercent, 40);
 	// A state without notes (an updater snapshot before any offer, or a malformed count) reads as none.
 	appState = { status: "up-to-date", version: null, omittedReleaseCount: -2 };
-	assert.deepEqual(ue.status(), { version: V71, target: null, phase: "up-to-date", error: null, downloadPercent: null, releaseNotes: [], omittedReleaseCount: 0 });
+	assert.deepEqual(ue.status(), { version: V71, target: null, phase: "up-to-date", error: null, downloadPercent: null, releaseNotes: [], omittedReleaseCount: 0, run: null, result: false });
 	appState = { status: "available", version: V72, releaseNotes: "not a list", omittedReleaseCount: 1.5 };
 	assert.deepEqual([ue.status().releaseNotes, ue.status().omittedReleaseCount], [[], 0]);
 });
@@ -369,7 +376,7 @@ test("status forwards only the notes' rendered fields, each validated and bounde
 
 test("status reports the run, and a second click while the dialog is open is ignored", async () => {
 	const f = fixture({ answers: [0, 1] });
-	assert.deepEqual(f.ue.status(), { version: V71, target: V72, phase: "available", error: null, downloadPercent: null, releaseNotes: [], omittedReleaseCount: 0 });
+	assert.deepEqual(f.ue.status(), { version: V71, target: V72, phase: "available", error: null, downloadPercent: null, releaseNotes: [], omittedReleaseCount: 0, run: null, result: false });
 	let phaseWhileUpdating: unknown;
 	f.remote.onInstall = () => {
 		phaseWhileUpdating = f.ue.status().phase;
@@ -563,7 +570,7 @@ test("Settings' This app Install: T3's confirm in main, then only this app insta
 	assert.equal(asking.ue.running(), false);
 });
 
-test("the bridge answers only the remote window's main frame at its origin, with no arguments", async () => {
+test("the bridge answers only the remote window's main frame at its origin, and takes no argument but install's exact dialog choice", async () => {
 	const handlers = new Map<string, (event: unknown, ...args: unknown[]) => Promise<unknown>>();
 	const mainFrame = { url: `${ORIGIN}/learn/x` };
 	const contents = { mainFrame };
@@ -571,13 +578,47 @@ test("the bridge answers only the remote window's main frame at its origin, with
 	const calls: string[] = [];
 	registerDesktopUpdateIPC({ handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => Promise<unknown>) => handlers.set(channel, fn) }, {
 		current: () => ({ win, origin: ORIGIN }),
-		updateEverything: { status: () => { calls.push("status"); return { phase: "idle" }; }, check: () => calls.push("check"), download: () => calls.push("download"), install: async () => { calls.push("install"); }, installApp: async () => { calls.push("installApp"); return "never returned to the page"; } },
+		updateEverything: {
+			status: () => { calls.push("status"); return { phase: "idle" }; }, check: () => calls.push("check"), download: () => calls.push("download"),
+			install: async (...args: unknown[]) => { calls.push(args.length ? `install ${JSON.stringify(args)}` : "install"); return args.length ? { started: true } : undefined; },
+			installApp: async () => { calls.push("installApp"); return "never returned to the page"; },
+			plan: async () => { calls.push("plan"); return { planId: PLAN_ID }; },
+			later: () => { calls.push("later"); return "never returned"; }, retry: async () => { calls.push("retry"); return "never returned"; },
+			dismiss: () => { calls.push("dismiss"); return "never returned"; }, takeResult: () => { calls.push("takeResult"); return null; },
+		},
 	});
+	const PLAN_ID = "123e4567-e89b-42d3-a456-426614174000";
 	const handle = handlers.get("lh:desktop-update")!;
-	assert.deepEqual(await handle({ sender: contents, senderFrame: mainFrame }, "status"), { phase: "idle" });
-	await handle({ sender: contents, senderFrame: mainFrame }, "install");
-	assert.equal(await handle({ sender: contents, senderFrame: mainFrame }, "install-app"), undefined);
-	assert.deepEqual(calls, ["status", "install", "installApp"]);
+	const own = { sender: contents, senderFrame: mainFrame };
+	assert.deepEqual(await handle(own, "status"), { phase: "idle" });
+	await handle(own, "install");
+	assert.equal(await handle(own, "install-app"), undefined);
+	assert.deepEqual(await handle(own, "plan"), { planId: PLAN_ID });
+	assert.deepEqual(await handle(own, "install", { planId: PLAN_ID }), { started: true });
+	for (const action of ["later", "retry", "dismiss"]) assert.equal(await handle(own, action), undefined, `${action} returns nothing to the page`);
+	assert.equal(await handle(own, "take-result"), null);
+	assert.deepEqual(calls, ["status", "install", "installApp", "plan", `install [{"planId":"${PLAN_ID}"}]`, "later", "retry", "dismiss", "takeResult"]);
+	calls.length = 0;
+	// Hostile choices from the page: anything but exactly { planId: <uuid> } is refused.
+	const hostile: unknown[][] = [
+		["install", { planId: PLAN_ID, version: V72 }],
+		["install", { planId: PLAN_ID, url: "https://evil.example/app.dmg" }],
+		["install", { planId: 7 }],
+		["install", { planId: "../../evil" }],
+		["install", { planId: PLAN_ID.toUpperCase() }],
+		["install", Object.create({ planId: PLAN_ID })],
+		["install", { get planId() { return PLAN_ID; } }],
+		["install", Object.assign(Object.create(null), { planId: PLAN_ID })],
+		["install", [PLAN_ID]],
+		["install", PLAN_ID],
+		["install", null],
+		["install", { planId: PLAN_ID }, "extra"],
+		["install", { [Symbol("x")]: 1, planId: PLAN_ID }],
+		["plan", V72], ["later", 1], ["retry", {}], ["dismiss", null], ["take-result", "x"],
+		["__proto__"], ["constructor"], [{ toString: () => "status" }],
+	];
+	for (const args of hostile) await assert.rejects(handle(own, ...args), /Untrusted desktop request/, JSON.stringify(args));
+	assert.deepEqual(calls, [], "none of them reached main's run");
 	const refused = [
 		[{ sender: {}, senderFrame: mainFrame }, "status"],
 		[{ sender: contents, senderFrame: { url: `${ORIGIN}/x` } }, "status"],
@@ -590,10 +631,10 @@ test("the bridge answers only the remote window's main frame at its origin, with
 	for (const [event, ...args] of refused) await assert.rejects(handle(event, ...args), /Untrusted desktop request/);
 	mainFrame.url = "https://evil.example/";
 	await assert.rejects(handle({ sender: contents, senderFrame: mainFrame }, "status"), /Untrusted/);
-	assert.deepEqual(calls, ["status", "install", "installApp"]);
+	assert.deepEqual(calls, []);
 });
 
-test("the remote preload exposes only window.lh.desktopUpdate with five methods and window.lh.chatgptSignIn", () => {
+test("the remote preload exposes only window.lh.desktopUpdate and window.lh.chatgptSignIn, and the run starts only from a click", async () => {
 	const source = fs.readFileSync(path.join(import.meta.dirname, "..", "electron", "remote-preload.cjs"), "utf8");
 	const exposed = new Map<string, unknown>();
 	const invoked: unknown[][] = [];
@@ -610,10 +651,31 @@ test("the remote preload exposes only window.lh.desktopUpdate with five methods 
 	assert.deepEqual([...exposed.keys()], ["lh"]);
 	const lh = exposed.get("lh") as { desktopUpdate: Record<string, (...args: unknown[]) => unknown> };
 	assert.deepEqual(Object.keys(lh), ["desktopUpdate", "chatgptSignIn"]);
-	assert.deepEqual(Object.keys(lh.desktopUpdate), ["getStatus", "check", "download", "install", "installApp"]);
-	lh.desktopUpdate.install!("0.0.1-evil", "https://evil.example");
-	lh.desktopUpdate.installApp!("0.0.1-evil", "https://evil.example");
-	assert.deepEqual(invoked.splice(0), [["lh:desktop-update", "install"], ["lh:desktop-update", "install-app"]], "arguments from the page are never forwarded");
+	assert.deepEqual(Object.keys(lh.desktopUpdate), ["getStatus", "check", "download", "install", "installApp", "plan", "later", "retry", "dismiss", "takeResult"]);
+	const desktop = lh.desktopUpdate;
+	desktop.install!();
+	desktop.installApp!("0.0.1-evil", "https://evil.example");
+	for (const method of ["plan", "later", "dismiss", "takeResult"] as const) desktop[method]!("0.0.1-evil", "https://evil.example");
+	assert.deepEqual(invoked.splice(0), [["lh:desktop-update", "install"], ["lh:desktop-update", "install-app"], ["lh:desktop-update", "plan"], ["lh:desktop-update", "later"], ["lh:desktop-update", "dismiss"], ["lh:desktop-update", "take-result"]], "arguments from the page are never forwarded");
+	// Starting a run (the dialog's Update) or retrying one needs a real click or key press.
+	const PLAN_ID = "123e4567-e89b-42d3-a456-426614174000";
+	const activation = { isActive: false };
+	const descriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+	Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userActivation: activation } });
+	try {
+		await assert.rejects(desktop.install!({ planId: PLAN_ID }) as Promise<unknown>, /only from a click/);
+		await assert.rejects(desktop.install!("0.0.1-evil") as Promise<unknown>, /only from a click/);
+		await assert.rejects(desktop.retry!() as Promise<unknown>, /only from a click/);
+		assert.deepEqual(invoked.splice(0), [], "a script can't start or retry a run");
+		activation.isActive = true;
+		desktop.install!({ planId: PLAN_ID, version: "0.0.1-evil", url: "https://evil.example" });
+		desktop.install!({ planId: 7 });
+		desktop.retry!("x");
+		assert.deepEqual(invoked.splice(0), [["lh:desktop-update", "install", { planId: PLAN_ID }], ["lh:desktop-update", "install", { planId: "" }], ["lh:desktop-update", "retry"]], "only the id goes on, as a string");
+	} finally {
+		if (descriptor) Object.defineProperty(globalThis, "navigator", descriptor);
+		else delete (globalThis as { navigator?: unknown }).navigator;
+	}
 	const signIn = (lh as unknown as { chatgptSignIn: Record<string, (...args: unknown[]) => unknown> }).chatgptSignIn;
 	assert.deepEqual(Object.keys(signIn), ["start", "cancel"]);
 	signIn.start!();
@@ -637,4 +699,166 @@ test("a run names the server it updates from its confirmation to its end, so the
 	const cancelled = fixture({ answers: [1] });
 	await cancelled.ue.install();
 	await until(() => cancelled.ue.server() === null);
+});
+
+// ─── Revision PR 7: the page's own dialog and capsule ─────────────────────────
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+type Plan = { planId: string; version: string; rows: unknown[]; skipped: unknown[]; running: number; disabledReason: string | null; error?: { title: string; detail: string } };
+type RunView = { phase: string; localVersion: string | null; restartAt: number | null; machines: Array<{ label: string; status: string; startedAt: number; failure: string | null }> };
+const runOf = (f: ReturnType<typeof fixture>) => (f.ue.status() as { run: RunView | null }).run;
+
+test("the page's dialog plan: the server first, This app last, its running work, and nothing asked natively", async () => {
+	const f = fixture();
+	const plan = await f.ue.plan() as Plan;
+	assert.match(plan.planId, UUID);
+	assert.equal(plan.version, V72);
+	assert.deepEqual(plan.rows, [{ label: "max-desktop", app: "server", running: 2 }, { label: "This app", app: "this-app", running: 0 }]);
+	assert.equal(plan.running, 2);
+	assert.deepEqual(plan.skipped, []);
+	assert.equal(plan.disabledReason, null);
+	assert.equal(f.prompts.length, 0, "the page's dialog asks, not a native one");
+	assert.equal(f.requests.some((request) => request.method === "POST"), false, "planning changes nothing");
+
+	const appOnly = await fixture({ server: V72 }).ue.plan() as Plan;
+	assert.deepEqual(appOnly.rows, [{ label: "This app", app: "this-app", running: 0 }]);
+	assert.equal(appOnly.running, 0, "an app restart stops no server work: no running list (owner, PR 3)");
+
+	assert.match((await fixture({ server: V73 }).ue.plan() as Plan).error!.detail, /runs 0\.6\.1-nightly\.20261118\.73, newer than this app’s update/);
+	assert.equal((await fixture({ offered: null }).ue.plan() as Plan).error!.title, "LearnHarness is up to date.");
+
+	// A server that can't update itself is skipped, and this app waits for it.
+	const manual = fixture();
+	manual.remote.status = "disabled";
+	manual.remote.message = "Installed with Docker: update the image.";
+	const skipped = await manual.ue.plan() as Plan;
+	assert.deepEqual(skipped.rows, [{ label: "This app", app: "this-app", running: 0 }]);
+	assert.deepEqual(skipped.skipped, [{ label: "max-desktop", reason: "Installed with Docker: update the image." }]);
+	assert.equal(skipped.disabledReason, "Update max-desktop from its own Settings first.");
+	assert.deepEqual(await manual.ue.install({ planId: skipped.planId }), { started: false }, "its Update can't start anything");
+	assert.equal(manual.ue.running(), false);
+});
+
+test("the dialog's Update starts exactly its plan, once, from the same server window, within ten minutes", async () => {
+	const f = fixture({ countdown: new AbortController() });
+	const plan = await f.ue.plan() as Plan;
+	assert.deepEqual(await f.ue.install({ planId: "00000000-0000-4000-8000-000000000000" }), { started: false }, "another id");
+	f.remote.selected = "https://other.example.test";
+	assert.deepEqual(await f.ue.install({ planId: plan.planId }), { started: false }, "another server's window");
+	f.remote.selected = ORIGIN;
+	f.advance(PLAN_MAX_AGE_MS + 1);
+	assert.deepEqual(await f.ue.install({ planId: plan.planId }), { started: false }, "a dialog left open too long");
+	assert.equal(f.ue.running(), false);
+	const fresh = await f.ue.plan() as Plan;
+	assert.notEqual(fresh.planId, plan.planId);
+	assert.deepEqual(await f.ue.install({ planId: plan.planId }), { started: false }, "an older plan once a newer one is out");
+	f.remote.onInstall = () => { f.remote.running = V72; f.remote.health = V72; f.remote.instance = "new"; };
+	assert.deepEqual(await f.ue.install({ planId: fresh.planId }), { started: true });
+	assert.deepEqual(await f.ue.install({ planId: fresh.planId }), { started: false }, "used once");
+	assert.equal(f.prompts.length, 0, "no native confirmation on top of the page's");
+	f.ue.later();
+});
+
+test("an in-page run: the capsule's steps, the cover only while the server restarts, Restart in 5s and Later", async () => {
+	const countdown = new AbortController(); // only Later ends it here
+	const f = fixture({ countdown });
+	const seen: string[] = [];
+	let polls = 0;
+	f.remote.onInstall = () => {
+		f.remote.tick = () => {
+			polls++;
+			const machine = runOf(f)?.machines[0];
+			seen.push(`${machine?.status} cover=${f.progress.length}`);
+			if (polls === 2) f.remote.down = true;
+			if (polls === 4) { f.remote.down = false; f.remote.running = V72; f.remote.health = V72; f.remote.instance = "new"; }
+		};
+	};
+	const plan = await f.ue.plan() as Plan;
+	assert.deepEqual(runOf(f), null);
+	await f.ue.install({ planId: plan.planId });
+	await until(() => runOf(f)?.phase === "countdown");
+	assert.deepEqual(seen.slice(0, 2), ["downloading cover=0", "downloading cover=0"], "staging: the page stays in view, with the capsule");
+	assert.ok(seen.includes("restarting cover=1"), "restarting: the ghost cover goes up");
+	assert.deepEqual(f.progress, [`Updating max-desktop to ${V72}… This can take a few minutes.`], "covered once");
+	assert.deepEqual(f.reconnects, [V72], "back on the target: the page shows again");
+	const run = runOf(f)!;
+	assert.equal(run.localVersion, V72);
+	assert.equal(run.restartAt, f.now() + RESTART_DELAY_MS, "restartAt is when T3's 5 s run out (no time passes in the countdown here)");
+	assert.deepEqual(run.machines.map(({ label, status, failure }) => ({ label, status, failure })), [{ label: "max-desktop", status: "done", failure: null }]);
+	assert.equal(f.prompts.length, 0, "Restart in 5s is the page's, not a native dialog");
+	f.ue.later();
+	await until(() => runOf(f) === null);
+	assert.equal(f.log.some((entry) => entry.startsWith("install")), false, "Later: this app stays as it is");
+	assert.equal(f.ue.running(), false);
+	assert.equal((f.ue.status() as { result: boolean }).result, true);
+	assert.deepEqual(f.ue.takeResult(), { localVersion: null, updatedServers: 1, failures: [] });
+	assert.equal(f.ue.takeResult(), null, "read once");
+});
+
+test("the countdown restarts by itself: Restarting…, and the result toast waits for the page after the relaunch", async () => {
+	const f = fixture({ server: V72 });
+	const plan = await f.ue.plan() as Plan;
+	await f.ue.install({ planId: plan.planId });
+	await f.done;
+	assert.equal(runOf(f)?.phase, "installing");
+	assert.deepEqual(f.log, ["pin", `download ${V72}`, `install ${V72}`]);
+	const record = f.results[0] as Record<string, unknown>;
+	assert.equal(record.inPage, true);
+	assert.equal(record.updatedServers, 0);
+	// The relaunch: the app runs the target, and the page's first status read finds the toast.
+	const next = fixture({ saved: record, appVersion: V72 });
+	next.ue.takeLaunch();
+	assert.equal((next.ue.status() as { result: boolean }).result, true);
+	assert.deepEqual(next.ue.takeResult(), { localVersion: V72, updatedServers: 0, failures: [] });
+	// An older run (no inPage) leaves no toast for the page.
+	const legacy = fixture({ saved: { ...record, inPage: undefined }, appVersion: V72 });
+	legacy.ue.takeLaunch();
+	assert.equal(legacy.ue.takeResult(), null);
+});
+
+test("a server failure stays in the capsule with Retry on its own server; Retry tries it again, Dismiss forgets it", async () => {
+	const f = fixture({ expectReconnect: null });
+	f.remote.onInstall = () => {
+		f.remote.instance = "back";
+		f.remote.status = "error";
+		f.remote.notice = { kind: "rolled-back", version: V72, text: "x", at: 1 };
+	};
+	await f.ue.install({ planId: (await f.ue.plan() as Plan).planId });
+	await until(() => runOf(f)?.machines[0]?.status === "failed");
+	const message = `max-desktop couldn’t start ${V72} and went back to ${V71}. Your app wasn’t changed.`;
+	assert.deepEqual(runOf(f)!.machines.map(({ status, failure }) => ({ status, failure })), [{ status: "failed", failure: message }]);
+	assert.equal(runOf(f)!.localVersion, null, "this app won't restart in this run");
+	assert.deepEqual(f.failures, [], "the page shows it, not the server list");
+	assert.deepEqual(f.reconnects, [V71], "covered while it restarted, then shown again on the version it went back to");
+	assert.equal(f.ue.running(), false, "nothing runs: the menu and Settings' Install work");
+	assert.deepEqual(f.ue.takeResult(), { localVersion: null, updatedServers: 0, failures: [`max-desktop: ${message}`] });
+	f.remote.selected = "https://other.example.test";
+	assert.equal(runOf(f), null, "another server's page doesn't show it");
+	await f.ue.retry();
+	assert.equal(f.log.filter((entry) => entry === `download ${V72}`).length, 1, "and can't retry it");
+	f.remote.selected = ORIGIN;
+	// The server can take it now.
+	f.remote.notice = null;
+	f.remote.status = "idle";
+	f.remote.onInstall = () => { f.remote.running = V72; f.remote.health = V72; f.remote.instance = "new"; };
+	f.remote.pinned = null;
+	await f.ue.retry();
+	await until(() => f.log.includes(`install ${V72}`));
+	assert.equal(f.prompts.length, 0);
+
+	const dismissed = fixture({ expectReconnect: null });
+	dismissed.remote.onInstall = () => { dismissed.remote.pinned = { ...(dismissed.remote.pinned as object), error: "Not enough disk space." }; };
+	await dismissed.ue.install({ planId: (await dismissed.ue.plan() as Plan).planId });
+	await until(() => runOf(dismissed)?.machines[0]?.status === "failed");
+	dismissed.ue.dismiss();
+	assert.equal(runOf(dismissed), null);
+});
+
+test("an in-page run whose server never comes back shows the problem in the server list, as the page can't", async () => {
+	const f = fixture({ expectReconnect: null });
+	f.remote.onInstall = () => { f.remote.down = true; };
+	await f.ue.install({ planId: (await f.ue.plan() as Plan).planId });
+	await f.done;
+	assert.deepEqual(f.failures, ["max-desktop wasn’t back after 32 minutes. Your app wasn’t changed."]);
+	assert.equal(runOf(f), null, "no capsule left behind");
 });
