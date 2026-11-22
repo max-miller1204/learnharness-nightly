@@ -61,19 +61,24 @@ export async function mountPluginChrome(frontend: PluginFrontendModule, children
 	});
 	window.__lhPluginWindow = owner;
 	const recoverableErrors: unknown[] = [];
-	if (hydrate) hydrate.beforeHydration?.(dom.document);
-	let root!: ReturnType<typeof createRoot>;
-	if (!hydrate) root = createRoot(document.querySelector("#root")!);
+	let root: ReturnType<typeof createRoot> | undefined;
+	const container = () => document.querySelector("#root")!;
 	const render = async (content: ReactNode) => {
 		const tree = wrap(content);
-		await act(async () => { root.render(strictMode ? <React.StrictMode>{tree}</React.StrictMode> : tree); });
+		await act(async () => { root!.render(strictMode ? <React.StrictMode>{tree}</React.StrictMode> : tree); });
 	};
 	try {
-		if (hydrate) await act(async () => { root = hydrateRoot(document.querySelector("#root")!, wrap(children), { onRecoverableError: (error) => recoverableErrors.push(error) }); });
-		else await render(children);
+		if (hydrate) {
+			hydrate.beforeHydration?.(dom.document);
+			const tree = wrap(children);
+			await act(async () => { root = hydrateRoot(container(), strictMode ? <React.StrictMode>{tree}</React.StrictMode> : tree, { onRecoverableError: (error) => recoverableErrors.push(error) }); });
+		} else {
+			root = createRoot(container());
+			await render(children);
+		}
 	}
 	catch (error) {
-		await act(async () => { root.unmount(); });
+		if (root) await act(async () => { root!.unmount(); });
 		await new Promise(resolve => setTimeout(resolve, 5));
 		restore(); throw error;
 	}
@@ -89,7 +94,7 @@ export async function mountPluginChrome(frontend: PluginFrontendModule, children
 		async resize(value: number) { width = value; Object.defineProperty(dom.window, "innerWidth", { configurable: true, value }); await act(async () => { window.dispatchEvent(new dom.window.Event("resize")); }); },
 		async click(element: HTMLElement) { await act(async () => { element.dispatchEvent(new dom.window.Event("click", { bubbles: true })); }); },
 		async close() {
-			await act(async () => { root.unmount(); });
+			await act(async () => { root?.unmount(); });
 			// FocusScope's delayed unmount event still needs the fixture DOM.
 			await new Promise(resolve => setTimeout(resolve, 5));
 			restore();

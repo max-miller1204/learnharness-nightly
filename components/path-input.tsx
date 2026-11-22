@@ -87,6 +87,8 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		let pendingPaste: string[] = [];
 		let pendingCitations: InsertCitationDetail[] = [];
 		let mounted = true;
+		// Text adopted at mount that the owner has not heard of yet (`report`).
+		let adopted = false;
 		const history = new PathInputHistory();
 
 		function remember() {
@@ -108,7 +110,7 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 			if (record) history.push(before);
 			current = next.value;
 			paint(next.selection, document.activeElement === root);
-			if (notify) callbacks.current.onValueChange(current);
+			if (notify) { adopted = false; callbacks.current.onValueChange(current); }
 		}
 		function replace(text: string) {
 			remember();
@@ -299,6 +301,7 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 				const selection = saved.anchor === current.length && saved.focus === current.length
 					? { anchor: next.length, focus: next.length } : clampPathSelection(next, saved);
 				current = next;
+				adopted = false; // the owner's value is now what the field shows
 				paint(selection, document.activeElement === root);
 			},
 		};
@@ -313,7 +316,6 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		// no edit.
 		const lineBreaks = (text: string) => text.replace(/\r\n?/g, "\n");
 		const live = readPathInput(root);
-		let adopted = false;
 		let edited = false;
 		if (lineBreaks(live) !== lineBreaks(current)) {
 			const caret = document.activeElement === root ? readPathSelection(root) : null;

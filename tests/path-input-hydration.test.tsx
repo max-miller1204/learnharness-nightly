@@ -16,8 +16,8 @@ let cleanup: (() => Promise<void>) | undefined;
 afterEach(async () => { await cleanup?.(); cleanup = undefined; });
 
 /** Server-render `serverValue`, let the "user" edit the live field, then hydrate with `clientValue`. */
-async function hydrate(serverValue: string, typed: string | null, clientValue = serverValue, singleLine = false, caret?: number) {
-	const html = renderToString(<PathInput value={serverValue} onValueChange={() => assert.fail("SSR cannot emit changes")} singleLine={singleLine} />);
+async function hydrate(serverValue: string, typed: string | null, clientValue = serverValue, singleLine = false, caret?: number, extra?: React.ReactNode) {
+	const html = renderToString(<><PathInput value={serverValue} onValueChange={() => assert.fail("SSR cannot emit changes")} singleLine={singleLine} />{extra}</>);
 	const { window: win, document: doc } = parseHTML(`<html><body><div id='root'>${html}</div></body></html>`);
 	const previous = new Map<string, PropertyDescriptor | undefined>();
 	for (const [name, value] of Object.entries({ React, window: win, document: doc, HTMLElement: win.HTMLElement, Element: win.Element, Event: win.Event, IS_REACT_ACT_ENVIRONMENT: true })) {
@@ -40,7 +40,7 @@ async function hydrate(serverValue: string, typed: string | null, clientValue = 
 	const changes: string[] = [];
 	const errors: unknown[] = [];
 	let reactRoot!: ReturnType<typeof hydrateRoot>;
-	const element = (value: string) => <PathInput value={value} onValueChange={(next) => changes.push(next)} singleLine={singleLine} />;
+	const element = (value: string) => <><PathInput value={value} onValueChange={(next) => changes.push(next)} singleLine={singleLine} />{extra}</>;
 	await act(async () => { reactRoot = hydrateRoot(doc.getElementById("root")!, element(clientValue), { onRecoverableError: (error) => errors.push(error) }); });
 	cleanup = async () => {
 		await act(async () => { reactRoot.unmount(); });
@@ -147,4 +147,20 @@ test("a single-line field remaps the caret past a line break typed before hydrat
 	const f = await hydrate("", "ab\ncd", "", true, 4); // 4 is after "ab\nc"
 	assert.equal(readPathInput(f.live), "abcd");
 	assert.deepEqual(readPathSelection(f.live), { anchor: 3, focus: 3 }, "the caret stays between c and d");
+});
+
+/** A sibling after the field: its mount layout effect runs after the field's and before any passive effect. */
+function EditAtMount({ text }: { text: string }) {
+	React.useLayoutEffect(() => {
+		const field = document.querySelector("[data-file-path-input]") as HTMLElement;
+		field.replaceChildren(document.createTextNode(text));
+		field.dispatchEvent(new Event("input", { bubbles: true }));
+	}, [text]);
+	return null;
+}
+
+test("an edit that lands before the passive report is reported once", async () => {
+	const f = await hydrate("", "typed early", "", false, undefined, <EditAtMount text="typed early and more" />);
+	assert.equal(readPathInput(f.live), "typed early and more");
+	assert.deepEqual(f.changes, ["typed early and more"]);
 });

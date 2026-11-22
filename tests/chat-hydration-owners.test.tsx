@@ -11,6 +11,7 @@ import React, { act } from "react";
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { Chat } from "../components/chat.tsx";
+import { ChatSessionComposer } from "../components/composer.tsx";
 import { COMPOSER_DRAFT_KEY_PREFIX, flushComposerDrafts } from "../lib/composer-drafts.ts";
 import type { LhMessage } from "../src/core/native-messages.ts";
 import { mountPluginChrome } from "./helpers/plugin-chrome.tsx";
@@ -28,10 +29,13 @@ const keyOf = (id: string) => COMPOSER_DRAFT_KEY_PREFIX + id;
 const storedText = (id: string) => { const raw = values.get(keyOf(id)); return raw === undefined ? undefined : (JSON.parse(raw) as { text: string }).text; };
 const posts: { url: string; body: unknown }[] = []; // every request that isn't a read
 
+let heldStream: ReadableStreamDefaultController<Uint8Array> | undefined; // an open reattach stream: the turn keeps running
 let fixture: Awaited<ReturnType<typeof mountPluginChrome>> | undefined;
 let savedObserver: PropertyDescriptor | undefined;
 let savedSession: PropertyDescriptor | undefined;
 afterEach(async () => {
+	try { heldStream?.close(); } catch { /* already closed */ }
+	heldStream = undefined;
 	await fixture?.close();
 	fixture = undefined;
 	flushComposerDrafts();
@@ -87,6 +91,8 @@ async function hydrate(selector: string, props: Props = {}, saved?: string) {
 			if (url === "/api/settings") return Response.json({});
 			if (/^\/api\/chats\/\w+\/side-chats$/.test(url)) return Response.json({ threads: [] });
 			if (url.startsWith("/api/jobs?chatId=")) return Response.json({ jobs: [], turnInFlight: false });
+			if (/^\/api\/chats\/\w+\/stream$/.test(url)) return new Response(new ReadableStream<Uint8Array>({ start(controller) { heldStream = controller; } }), { headers: { "content-type": "text/event-stream" } });
+			if (/^\/api\/chats\/\w+\/steer$/.test(url) || url === "/api/activity/abort") return Response.json({ ok: true });
 			if (url === "/api/chat") return Response.json({ error: "no model in this fixture" }, { status: 500 });
 			assert.fail(`Unexpected fixture request: ${url}`);
 		},
@@ -125,11 +131,16 @@ describe("text typed before hydration, through the production owners", () => {
 		assert.ok(posts.some((post) => post.url === "/api/chat" && JSON.stringify(post.body).includes(TYPED)), `Enter sends the typed text: ${JSON.stringify(posts)}`);
 	});
 
-	it("keeps Send, not Stop, while a turn runs, so Enter steers instead of stopping it", { timeout: 30_000 }, async () => {
+	it("steers with the typed text while a turn runs, and never stops it", { timeout: 30_000 }, async () => {
 		const field = await hydrate(COMPOSER, { initialMessages: [user], initiallyInFlight: true });
 		assert.equal(field.textContent, TYPED);
+		assert.ok(heldStream, "the turn's reattach stream is still open");
 		assert.ok(button("Send"), "the button is Send (steer)");
 		assert.equal(button("Stop"), null, "the button is not Stop");
+		await press(field, { key: "Enter" });
+		await settle();
+		assert.ok(posts.some((post) => post.url.endsWith("/steer") && JSON.stringify(post.body).includes(TYPED)), `Enter steers with the typed text: ${JSON.stringify(posts)}`);
+		assert.ok(!posts.some((post) => post.url === "/api/activity/abort"), "the turn is not aborted");
 	});
 
 	it("keeps reading notes typed before hydration and submits them with the check", { timeout: 30_000 }, async () => {
@@ -148,5 +159,44 @@ describe("text typed before hydration, through the production owners", () => {
 		const sent = posts.find((post) => post.url === "/api/chat");
 		assert.ok(sent, `the check was submitted: ${JSON.stringify(posts)}`);
 		assert.ok(JSON.stringify(sent.body).includes(`"readingThinking":"${TYPED}"`), `the answer carries the reading notes: ${JSON.stringify(sent.body)}`);
+	});
+});
+
+describe("ChatSessionComposer hydrated on its own", () => {
+	/** The owner keeps the value it first rendered, as Chat does until something re-renders it. */
+	async function hydrateComposer(busy: boolean) {
+		savedObserver = Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver");
+		Object.assign(globalThis, { ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } });
+		const changes: string[] = [];
+		const sends: number[] = [];
+		const stops: number[] = [];
+		fixture = await mountPluginChrome({ activate() {} }, <ChatSessionComposer busy={busy} value="" revision={0} onChange={(v) => changes.push(v)} onSend={() => sends.push(1)} onStop={() => stops.push(1)} sendAllowed dictationActive={false} />, {
+			hydrate: { beforeHydration(document) { document.querySelector("[data-file-path-input]")!.replaceChildren(document.createTextNode(TYPED)); } },
+			prepareDom(dom) {
+				const prototype = dom.window.HTMLElement.prototype;
+				Object.defineProperty(prototype, "getAnimations", { configurable: true, value: () => [] });
+			},
+		});
+		await settle();
+		return { changes, sends, stops, field: fixture.document.querySelector<HTMLElement>("[data-file-path-input]")! };
+	}
+
+	it("enables Send for the typed text and Enter sends it", { timeout: 30_000 }, async () => {
+		const { changes, sends, field } = await hydrateComposer(false);
+		assert.equal(field.textContent, TYPED);
+		assert.deepEqual(fixture!.recoverableErrors, []);
+		assert.equal(button("Send")?.disabled, false, "Send is enabled");
+		assert.deepEqual(changes, [TYPED]);
+		await press(field, { key: "Enter" });
+		assert.equal(sends.length, 1, "Enter sends");
+	});
+
+	it("shows Send, not Stop, while busy, so Enter steers rather than stops", { timeout: 30_000 }, async () => {
+		const { sends, stops, field } = await hydrateComposer(true);
+		assert.equal(field.textContent, TYPED);
+		assert.ok(button("Send"), "the button is Send");
+		assert.equal(button("Stop"), null);
+		await press(field, { key: "Enter" });
+		assert.deepEqual({ sends: sends.length, stops: stops.length }, { sends: 1, stops: 0 });
 	});
 });
