@@ -80,27 +80,41 @@ function topLevelNavigation(headers: Headers, method: string | undefined, pathna
 	return dest === null || dest === "document";
 }
 
+/** Whether a URL header (Origin, Referer) names this request's own host. */
+function sameHost(value: string, headers: Headers): boolean {
+	const host = headers.get("host");
+	if (!host) return false;
+	try {
+		return new URL(value).host.toLowerCase() === host.toLowerCase();
+	} catch {
+		return false;
+	}
+}
+
 /** The rule for cookie credentials, and for the route that sets the cookie.
  * Fetch Metadata first: same-origin passes; same-site and cross-site pass
  * only as a top-level page navigation, so another site's page can't send a
  * cookie request to the API even without an Origin header. With no Fetch
  * Metadata (a non-secure context, a native client) or "none" (a typed
- * address), the Origin part of T3's rule: no Origin, or an Origin whose
- * host equals the Host header. Bearer tokens skip it. `pathname` is null for a URL
- * that doesn't parse, and left out only by a layout. */
+ * address), the Origin part of T3's rule: an Origin must name this host.
+ * With no Fetch Metadata and no Origin, a request that reaches the API needs
+ * a Referer naming this host (issue #323): browsers send neither header to a
+ * plain-HTTP, non-loopback origin, nor does Safari before 16.4, so an `<img>`
+ * or `<script>` on another origin of the same site (another port on the same
+ * LAN address) would otherwise carry the cookie to the API. The app's own
+ * fetches, EventSource streams and subresources send a same-origin Referer;
+ * pages need none, as navigations. Bearer tokens skip it. `pathname` is null
+ * for a URL that doesn't parse, and left out only by a layout. */
 export function cookieOriginAllowed(headers: Headers, method?: string, pathname?: string | null): boolean {
 	const site = headers.get("sec-fetch-site");
 	if (site === "same-origin") return true;
 	if (site === "same-site" || site === "cross-site") return topLevelNavigation(headers, method, pathname);
 	const origin = headers.get("origin");
-	if (origin === null) return true;
-	const host = headers.get("host");
-	if (!host) return false;
-	try {
-		return new URL(origin).host.toLowerCase() === host.toLowerCase();
-	} catch {
-		return false;
-	}
+	if (origin !== null) return sameHost(origin, headers);
+	if (site === "none" || pathname === undefined) return true;
+	if (pathname !== null && !reachesApi(pathname)) return true;
+	const referer = headers.get("referer");
+	return referer !== null && sameHost(referer, headers);
 }
 
 export type Credential = { token: string; via: "cookie" | "bearer" };
