@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { MenuShell } from "@/components/menu-shell";
+import { isMenuKey, sidebarStopProps, tabIntoList, tabThroughList } from "@/components/sidebar-keyboard";
 import { DeleteFolderDialog, DeleteSessionDialog, folderDeleteCopy, type DeleteDialogCopy } from "@/components/delete-session-dialog";
 import { leaveDeletedSession, SESSIONS_DELETED_EVENT } from "@/components/session-deletion";
 import type { ChatDeleteMode, ThemeMode } from "@/src/core";
@@ -294,18 +295,25 @@ export function SessionRow({
 	/** Keyboard-cycle highlight (shortcut wave A: Alt+↑/↓ + Alt+Enter) —
 	 *  visually distinct from the active session, which stays filled. */
 	kbdSelected?: boolean;
-	/** Right-click opens the context menu (wave 6: Rename / Delete). */
-	onContextMenu?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+	/** Right-click, the Menu key or Shift+F10 opens the context menu (wave 6:
+	 *  Rename / Delete; the keys after T3's sidebar rows, #302). */
+	onContextMenu?: (e: React.SyntheticEvent<HTMLButtonElement>) => void;
 }) {
 	return (
 		<button
 			type="button"
 			onClick={onOpen}
 			onContextMenu={onContextMenu}
+			onKeyDown={(e) => {
+				if (!onContextMenu || !isMenuKey(e)) return;
+				e.preventDefault(); // no second, native contextmenu event
+				onContextMenu(e);
+			}}
+			{...sidebarStopProps}
 			data-testid={kbdSelected ? "session-row-kbd" : "session-row"}
 			data-session-id={chat.id}
 			className={cn(
-				"relative flex w-full items-center gap-2 pr-3 text-left hover:bg-accent",
+				"relative flex w-full items-center gap-2 pr-3 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
 				compact ? SIDEBAR_COMPACT_ROW : "py-2",
 				active && "bg-accent",
 				kbdSelected && !active && "bg-accent/60 ring-1 ring-inset ring-border",
@@ -569,7 +577,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 	const [renamingId, setRenamingId] = useState<string | null>(null);
 	const [deleting, setDeleting] = useState<ChatListItem | null>(null);
 
-	const openContext = (e: React.MouseEvent<HTMLButtonElement>, chat: ChatListItem) => {
+	const openContext = (e: React.SyntheticEvent<HTMLButtonElement>, chat: ChatListItem) => {
 		e.preventDefault(); // suppress the native menu
 		ctxAnchorRef.current = e.currentTarget;
 		setCtxFolderId(null);
@@ -683,7 +691,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 	const [ctxFolderId, setCtxFolderId] = useState<string | null>(null);
 	const [deletingFolder, setDeletingFolder] = useState<{ id: string; name: string; copy: DeleteDialogCopy; scope: FolderDeletionScope } | null>(null);
 	const folderAnchorRef = useRef<HTMLElement | null>(null);
-	const openFolderContext = (e: React.MouseEvent<HTMLButtonElement>, id: string) => {
+	const openFolderContext = (e: React.SyntheticEvent<HTMLButtonElement>, id: string) => {
 		e.preventDefault();
 		folderAnchorRef.current = e.currentTarget;
 		setCtxChatId(null);
@@ -907,6 +915,8 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 							// key so the window Esc chain (dictation / abort)
 							// doesn't also fire.
 							onKeyDown={(e) => {
+								// Tab enters the session list's first row (#302).
+								if (tabIntoList(e, listRef.current)) return;
 								if (e.key === "Escape") {
 									if (!interactions.isElementEligible(e.currentTarget)) return;
 									interactions.claimEscape(e);
@@ -997,7 +1007,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 				    highlights run to the edge; it shows while scrolling/hovering. */}
 				<OverlayScrollArea scrollRef={listRef} data-testid="session-list" className="flex flex-col" {...folderDrop.containerProps}>
 					{(creatingFolder?.parentId === null || (rows !== null && rows.length > 0)) && (
-						<div data-testid="session-rows">
+						<div data-testid="session-rows" onKeyDown={(e) => { tabThroughList(e, e.currentTarget, searchRef.current); }}>
 							{creatingFolder?.parentId === null && (
 								<NewFolderRow depth={0} compact={compactSessionList} onDone={() => setCreatingFolder(null)}
 									onCreate={(name) => changeFolders({ action: "create-folder", name, parentId: null })} />

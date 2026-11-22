@@ -50,7 +50,8 @@ handling; this is not a guarantee for every OS/IME or layout-specific key.
   pages it cycles the live text fields forward, wrapping to the first. In a
   session the order is reading-thinking → active dock fields → composer,
   including only fields currently mounted. From elsewhere it enters the first
-  field. The expanded select-question dock has its own rows↔thinking cycle below.
+  field. The expanded select-question dock has its own rows↔thinking cycle below,
+  and the sidebar's sessions list walks its rows with Tab (Search and menus).
 - **Shift+Tab** cycles the model's thinking level, including while typing; it is
   not backward focus traversal. Connection dialogs can own their own Tab trap.
 - **Esc** acts on the active field or topmost surfaced layer first: for example,
@@ -130,6 +131,13 @@ submission conventions above.
   search field. **↑/↓** walk the filtered sessions with wrap; **Enter** opens the
   walked row, or the first match if none was walked, then leaves the field.
   **Esc** leaves the field without clearing the query.
+- **Sessions list:** **Tab** from the sessions search focuses the list's first
+  row. In the list, **Tab** and **Shift+Tab** move through folder and session
+  rows in order (Shift+Tab here moves back rather than cycling the thinking
+  level); Shift+Tab on the first row returns to the search, and Tab on the last
+  row goes on to the app's own Tab. A focused row shows a focus ring. **Enter**
+  or **Space** opens a session or expands a folder, and the **Menu** key or
+  **Shift+F10** opens the row's menu (Rename, Delete), as right-clicking does.
 - **Model search menus:** focus stays in search. **↑/↓** walk filtered results
   without wrap; the first ↓ starts at the first result, the first ↑ at the last.
   **Enter** picks the walked result or the first result. Editing the query resets
