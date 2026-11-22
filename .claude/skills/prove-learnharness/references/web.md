@@ -26,3 +26,7 @@ To add a page to a drive, call the drive's `budgetsHere("<label>")` after the pa
 ## Adding a drive for a new feature
 
 Copy the shape of `scripts/web-teach.mjs`: same instance file, same `result.json` (`steps`, `observations`, `budgets`), so `compare.mjs` works unchanged. Put only base/head-comparable facts in `observations` (no ids, timestamps or nonces; normalize paths with the `<chat>` placeholder). Write the recipe in `features/` once it ran.
+
+## Deleted sessions
+
+`node scripts/web-delete.mjs "$H"` drives the single-session and folder delete dialogs while viewing a session. It also checks the graph's source delete with “delete sessions too” selected. The graph drive holds the browser's DELETE response and visits the cached session while the real server has already deleted it. Each case checks that the open view clears after success, then revisits an older entry with Back and asserts not-found, no transcript and no composer. The receipt `$RUN/head/web-delete.json` records every session API 404 from confirmation through the Back check. The answer keys are #343 and item 4 of `docs/specs/polish-first-load.md`.

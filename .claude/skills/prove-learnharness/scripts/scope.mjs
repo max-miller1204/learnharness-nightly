@@ -101,10 +101,12 @@ if (Object.keys(surfaces).length) {
 	if (web) {
 		plan.push("scripts/ensure-axe.sh");
 		plan.push(`node scripts/web-teach.mjs "$B"; node scripts/web-teach.mjs "$H"`);
+		plan.push(`node scripts/web-delete.mjs "$H"`);
 		plan.push(`node scripts/compare.mjs "$RUN/base/web-teach/result.json" "$RUN/head/web-teach/result.json" --out "$RUN/compare-web.md"`);
 		plan.push(`node scripts/probes.mjs "$B"; node scripts/probes.mjs "$H"; node scripts/compare.mjs "$RUN/base/probes/result.json" "$RUN/head/probes/result.json" --out "$RUN/compare-probes.md"`);
 	}
 	if (api) plan.push(`node scripts/api-check.mjs "$B"; node scripts/api-check.mjs "$H"; node scripts/compare.mjs "$RUN/base/api-check/result.json" "$RUN/head/api-check/result.json" --out "$RUN/compare-api.md"`);
+	if (api) plan.push(`scripts/api-pricing.sh "$RUN"`);
 	if (surfaces["selfhost-a"]) plan.push(`scripts/selfhost-a.sh "$RUN" base; scripts/selfhost-a.sh "$RUN" head; node scripts/compare.mjs "$RUN/base/selfhost-a/result.json" "$RUN/head/selfhost-a/result.json" --out "$RUN/compare-selfhost-a.md"`);
 	if (surfaces["selfhost-b"]) plan.push(`scripts/selfhost-b.sh "$RUN"`);
 	if (electron) {

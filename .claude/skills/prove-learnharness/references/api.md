@@ -25,3 +25,7 @@ Writes from a non-browser client without `Origin` are allowed by design; some ro
 ## Adding a check for a new route
 
 Add it to `READS` (with its headers and expected status) or as a step in `api-check.mjs`, keeping observations value-free. A new route is a new flow: its answer key is the spec, and later the client protocol (see planned.md) when it becomes part of `/api/v<N>`.
+
+## Persisted pricing
+
+`scripts/api-pricing.sh "$RUN"` runs the #345 regression fixtures in an isolated home and data directory. The chat API handler fixture dispatches a turn, refreshes the fake catalog before releasing the reply and checks the recorded `costUsd` against the original rates and fixture token counts. The plugin inference fixture reads `usage.jsonl` and checks that the router placeholder omits `usage.cost`, a known-free id records zero, and a priced model records its cost. The TAP files go in the run directory.

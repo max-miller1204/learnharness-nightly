@@ -132,7 +132,7 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 
 ### Web (primary)
 
-**Drive**: `node scripts/web-teach.mjs "$B"`, then `"$H"`, then `node scripts/compare.mjs "$RUN/base/web-teach/result.json" "$RUN/head/web-teach/result.json" --out "$RUN/compare-web.md"`. Run `scripts/ensure-axe.sh` once first. Puppeteer-core drives `/usr/bin/google-chrome` with `data-testid` selectors. Details: [references/web.md](references/web.md).
+**Drive**: `node scripts/web-teach.mjs "$B"`, then `"$H"`, then `node scripts/compare.mjs "$RUN/base/web-teach/result.json" "$RUN/head/web-teach/result.json" --out "$RUN/compare-web.md"`. Run `scripts/ensure-axe.sh` once first. Run `node scripts/web-delete.mjs "$H"` for the deletion contract in #343 and item 4 of `docs/specs/polish-first-load.md`. Puppeteer-core drives `/usr/bin/google-chrome` with `data-testid` selectors. Details: [references/web.md](references/web.md).
 
 **Copies**: nothing. The base commit is its answer key for existing flows.
 
@@ -142,19 +142,21 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 - the transcript can show text before it is stored: `web-teach.mjs` also reads `data/chats/<id>.json`.
 - the question card shuffles its options on purpose: compare them as a set.
 - a single-select option's text includes its letter badge ("ABlue", since c3ff55ff): a read of `textContent` sees no "Blue", the pick never happens and the drive times out on both sides (every plan from #322 to this fix was BLOCKED that way). `scripts/question-options.mjs` reads the label without the badge and the letters on their own (`optionLetters`, diffed against base).
+- sidebar, API and disk removal can all pass while the deleted transcript stays mounted or stale reads return 404. `web-delete.mjs` checks the open view, an older Back entry, and every session API 404 from confirmation onward for single, folder and graph source deletes.
 - one session hides "lists only the newest": the drive uses a unique goal per run and checks the count before and after.
 - one session also hides the list's order: a list sorted oldest first passed every drive (audit 2026-11-21). `api-check.mjs` makes three sessions, then a turn on the first, and records the order before and after (`listOrder`); `web-teach.mjs` does the same in the rendered sidebar (`sidebarOrder`). The turn tells ordering by last activity from ordering by creation.
 - a Retry button that is there but does nothing passed a probe that only looked for it (audit 2026-11-21): `probes.mjs` C presses Retry by mouse and from the keyboard (focus, Enter), and each counts only once its one `POST /api/chat` stream has closed, the question card is up and Retry is gone.
 
 ### API (`app/api`)
 
-**Drive**: `node scripts/api-check.mjs "$B"` and `"$H"`, then `compare.mjs` on `api-check/result.json`. Read routes (status plus body shape), refusals (foreign Host, cross-site Origin and fetch metadata, unknown id, bad JSON, empty input, delete without mode), a create/list/delete round trip on disk, and a failing model (fake `http500`) that must end the turn with a recorded error. Details: [references/api.md](references/api.md).
+**Drive**: `node scripts/api-check.mjs "$B"` and `"$H"`, then `compare.mjs` on `api-check/result.json`. Read routes (status plus body shape), refusals (foreign Host, cross-site Origin and fetch metadata, unknown id, bad JSON, empty input, delete without mode), a create/list/delete round trip on disk, and a failing model (fake `http500`) that must end the turn with a recorded error. Run `scripts/api-pricing.sh "$RUN"` for the #345 pricing contracts. Details: [references/api.md](references/api.md).
 
 **Copies**: nothing (the web UI is its main caller).
 
 **Done looks like**: every read route answers its expected status with the base's shape, every refusal still refuses, the round trip leaves no record, the model failure is recorded as an error.
 
 **Could fool you**:
+- a catalog change during a call can misprice persisted usage even when every response has the expected shape. The pricing drive holds an API call across a fake catalog refresh and checks the dispatch rate in the saved call. It also reads the plugin usage ledger for absent router placeholder cost, explicit known-free zero and priced cost.
 - `fetch` can't forge `Host`: `api-check.mjs` uses raw `http.request` for that probe.
 - shapes, not values, are diffed: a value change in a read route needs a recipe step that asserts the value. The list's order is one such value: `listOrder` (three sessions, labelled) is diffed against base, and a reversed sort fails it.
 
