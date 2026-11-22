@@ -12,7 +12,7 @@ in-app cheat sheet. See [Getting started](getting-started.md) for setup.
 | Open settings | Mod+, |
 | Model selector | Mod+K |
 | Cycle thinking level | Shift+Tab |
-| Focus session stats or graph costs | Mod+Shift+U |
+| Focus session stats or graph costs | Mod+Shift+F8 |
 | Toggle sessions sidebar | Mod+B |
 | Search sessions | Mod+Shift+F |
 | Graph view | Mod+G |
@@ -56,8 +56,9 @@ handling; this is not a guarantee for every OS/IME or layout-specific key.
 - **Shift+Tab** cycles the model's thinking level, including while typing; it is
   not backward focus traversal, except in the sidebar's sessions list (Search
   and menus). Connection dialogs can own their own Tab trap.
-- **Mod+Shift+U** focuses Session stats in a session or the graph cost pill
-  when it is available. Enter opens it and Esc closes it.
+- **Mod+Shift+F8** focuses Session stats in a session or the graph cost pill
+  when available. Enter or Space opens it. Tab and Shift+Tab cycle its controls;
+  Esc from the details returns to the toggle, and Esc there returns to the field.
 - **Esc** acts on the active field or topmost surfaced layer first: for example,
   leave a field, dismiss a menu/dialog, or close Find. Handlers claim the event
   so one Esc does not also act on lower layers. With no layer claiming it, the

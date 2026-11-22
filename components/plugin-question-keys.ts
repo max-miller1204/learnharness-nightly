@@ -26,6 +26,7 @@ export function composingQuestionKey(event: { isComposing?: boolean; keyCode?: n
 /** Called after Escape ownership is snapshotted, before native Tab prevention. */
 export function capturePluginQuestionKey(event: KeyboardEvent): void {
 	if (composingQuestionKey(event)) { composing.add(event); return; }
+	if ((event.target as Element | null)?.closest?.("[data-lh-usage-scope]")) return;
 	const current = owner;
 	if (!current?.eligible(event.key)) return;
 	const claim = () => { claimed.add(event); event.preventDefault(); };

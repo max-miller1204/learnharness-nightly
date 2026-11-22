@@ -61,7 +61,7 @@ export const KEYBOARD_ACTIONS: readonly KeyActionDef[] = [
 	{ id: "open-settings", label: "Open settings", scope: "global", binding: "mod+," },
 	{ id: "open-model-picker", label: "Model selector", scope: "global", binding: "mod+k" },
 	{ id: "cycle-thinking", label: "Cycle thinking level", scope: "global", binding: "shift+tab" },
-	{ id: "focus-usage", label: "Focus usage details", scope: "global", binding: "mod+shift+u" },
+	{ id: "focus-usage", label: "Focus session stats or graph costs", scope: "global", binding: "mod+shift+f8" },
 	{ id: "toggle-sidebar", label: "Toggle sessions sidebar", scope: "global", binding: "mod+b" },
 	{ id: "sessions-search", label: "Search sessions", scope: "global", binding: "mod+shift+f" },
 	// (The Alt+↑/↓/↵ session cycle was RETIRED, owner 2026-10-10: barely
