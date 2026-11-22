@@ -5,7 +5,7 @@ import { ChevronRightIcon, FolderIcon, FolderOpenIcon } from "lucide-react";
 import { canMoveFolder, type OrganizationAction, type SourceFolder, type SourceOrganization } from "@/src/core";
 import { EditableSourceName, SOURCE_DRAG_TYPE, SourceDragRow } from "@/components/source-folder-tree";
 import { cn } from "@/lib/utils";
-import { isMenuKey, sidebarStopProps } from "@/components/sidebar-keyboard";
+import { isMenuKey, sidebarStopProps, swallowNextContextMenu } from "@/components/sidebar-keyboard";
 
 /**
  * Session-sidebar folders (approved plan): the shared source organization
@@ -141,7 +141,7 @@ export function SidebarFolderRow({ folder, depth, open, dropActive, renaming, on
 				<button type="button" data-testid={`sidebar-folder-${folder.id}`} aria-expanded={open}
 					aria-label={`${open ? "Collapse" : "Expand"} folder ${folder.name}`}
 					onClick={onToggle} onContextMenu={onContextMenu}
-					onKeyDown={(e) => { if (isMenuKey(e)) { e.preventDefault(); onContextMenu(e); } }}
+					onKeyDown={(e) => { if (isMenuKey(e)) { e.preventDefault(); swallowNextContextMenu(); onContextMenu(e); } }}
 					{...sidebarStopProps}
 					className={cn("flex w-full items-center gap-1 pr-3 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", compact ? SIDEBAR_COMPACT_ROW : "py-1.5")}
 					style={{ paddingLeft: sidebarFolderBox(depth).paddingLeft }}>
