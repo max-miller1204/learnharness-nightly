@@ -54,11 +54,11 @@ function fixture() {
 			else Reflect.deleteProperty(globalThis, key);
 		}
 	};
-	root = createRoot(document.querySelector("#root")!);
+	root = createRoot(document);
 	let controller!: InteractionLayersController;
 	function Probe() { controller = useInteractionLayers(); return null; }
 	async function render(children: React.ReactNode, provided = true) {
-		await act(async () => root!.render(provided ? <InteractionLayersProvider><Probe />{children}</InteractionLayersProvider> : children));
+		await act(async () => root!.render(<html><head /><body>{provided ? <InteractionLayersProvider><Probe />{children}</InteractionLayersProvider> : children}</body></html>));
 	}
 	async function key(target: HTMLElement, key: string, extra: Record<string, unknown> = {}) {
 		const event = new dom.window.Event("keydown", { bubbles: true, cancelable: true });
@@ -107,6 +107,31 @@ it("usage shortcut does not escape legacy dialogs, plugin docks, popups or views
 	}
 });
 
+it("native dialogs and alert dialogs block the shortcut but passive tooltips do not", async () => {
+	const f = fixture();
+	await f.render(<><Shortcuts /><button data-lh-usage-control data-testid="usage" /><input data-testid="field" /><dialog open data-testid="native"><input data-testid="native-field" /></dialog><div role="alertdialog" data-testid="alert"><input data-testid="alert-field" /></div><div data-radix-popper-content-wrapper="" data-testid="tooltip" /></>);
+	for (const id of ["native-field", "alert-field"]) { get(id).focus(); await f.key(get(id), "F8", { ctrlKey: true, shiftKey: true }); assert.ok(f.focus() === get(id)); }
+	get("field").focus(); await f.key(get("field"), "F8", { ctrlKey: true, shiftKey: true }); assert.ok(f.focus() === get("usage"));
+});
+
+it("Escape on a closed usage toggle without an origin falls through", async () => {
+	const f = fixture(); let aborts = 0;
+	await f.render(<><Shortcuts /><StatsBar chatId="fixture" turns={[]} /></>);
+	const handler = () => { aborts++; }; window.addEventListener("lh:kbd-abort-turn", handler);
+	try { const button = get("stats-summary"); button.focus(); const event = await f.key(button, "Escape"); assert.equal(event.defaultPrevented, false); assert.equal(aborts, 1); }
+	finally { window.removeEventListener("lh:kbd-abort-turn", handler); }
+});
+
+it("a deferred focus return never overrides a newer focus change", async () => {
+	const f = fixture(); await f.render(<><Shortcuts /><input data-testid="field" /><input data-testid="other" /><StatsBar chatId="fixture" turns={[]} /></>);
+	get("field").focus(); await f.key(get("field"), "F8", { ctrlKey: true, shiftKey: true });
+	const button = get("stats-summary");
+	const click = new f.dom.window.Event("click", { bubbles: true, cancelable: true }); Object.assign(click, { detail: 0 });
+	await act(async () => button.dispatchEvent(click));
+	await f.key(button, "Escape"); get("other").focus(); f.controller().observeFocus();
+	await new Promise(resolve => setTimeout(resolve, 10)); assert.ok(f.focus() === get("other"));
+});
+
 it("real usage controls own press, Tab and Escape and restore the invoking field", async () => {
 	for (const kind of ["stats", "graph"] as const) {
 		const f = fixture(); let leaked = 0;
@@ -116,20 +141,21 @@ it("real usage controls own press, Tab and Escape and restore the invoking field
 		try {
 			get("field").focus(); await f.key(get("field"), "F8", { ctrlKey: true, shiftKey: true });
 			const button = document.querySelector<HTMLButtonElement>("[data-lh-usage-control]")!;
-			assert.equal(f.focus(), button);
+			assert.ok(f.focus() === button);
 			await f.key(button, "Enter"); assert.equal(leaked, 0);
-			await act(async () => button.click()); assert.equal(button.getAttribute("aria-expanded"), "true");
+			const click = new f.dom.window.Event("click", { bubbles: true, cancelable: true }); Object.assign(click, { detail: 0 });
+			await act(async () => button.dispatchEvent(click)); assert.equal(button.getAttribute("aria-expanded"), "true");
 			await f.key(button, "Tab");
 			if (kind === "stats") {
 				const link = document.querySelector<HTMLAnchorElement>('a[href="https://chatgpt.com/settings/usage"]')!;
-				assert.equal(f.focus(), link);
-				await f.key(link, "Tab", { shiftKey: true }); assert.equal(f.focus(), button);
+				assert.ok(f.focus() === link);
+				await f.key(link, "Tab", { shiftKey: true }); assert.ok(f.focus() === button);
 				await f.key(button, "Tab"); await f.key(link, "Escape");
-				assert.equal(f.focus(), button, "Escape from details returns to toggle");
-			} else { assert.equal(f.focus(), button, "empty details wrap to toggle"); await f.key(button, "Escape"); }
+				assert.ok(f.focus() === button, "Escape from details returns to toggle");
+			} else { assert.ok(f.focus() === button, "empty details wrap to toggle"); await f.key(button, "Escape"); }
 			assert.equal(button.getAttribute("aria-expanded"), "false");
 			if (kind === "stats") await f.key(button, "Escape");
-			await new Promise(resolve => setTimeout(resolve, 10)); assert.equal(f.focus(), get("field"));
+			await new Promise(resolve => setTimeout(resolve, 10)); assert.ok(f.focus() === get("field"), `${kind}: ${f.focus()?.outerHTML?.slice(0, 120)}; connected ${get("field").isConnected}`);
 		} finally {
 			document.removeEventListener("keydown", onKey);
 			await act(async () => root?.unmount()); root = undefined; cleanup?.(); cleanup = undefined;
@@ -241,9 +267,12 @@ it("a selected quiz does not consume the stats toggle's Enter or Space", async (
 	await f.render(<><Shortcuts /><input data-testid="field" /><StatsBar chatId="fixture" turns={[]} /><QuestionDock toolName="quiz" toolCallId="q" input={{ question: "Pick", options: [{ label: "Yes", value: "yes" }, { label: "No", value: "no" }], correctAnswer: "yes", explanation: "Yes" }} expanded onExpand={() => {}} onSubmit={() => { submitted++; }} dictationClaim={false} /></>);
 	await f.key(document.body, "Tab");
 	await f.key(f.focus(), " ");
-	get("field").focus(); await f.key(get("field"), "F8", { ctrlKey: true, shiftKey: true });
-	const button = get("stats-summary"); assert.equal(f.focus(), button);
-	await f.key(button, "Enter"); await f.key(button, " ");
+	const row = f.focus(); assert.equal(row.getAttribute("aria-checked"), "true");
+	await f.key(row, "F8", { ctrlKey: true, shiftKey: true });
+	const button = get("stats-summary"); assert.ok(f.focus() === button);
+	const enter = await f.key(button, "Enter"); const space = await f.key(button, " ");
+	assert.equal(enter.defaultPrevented, false); assert.equal(space.defaultPrevented, false);
+	assert.equal(row.getAttribute("aria-checked"), "true");
 	assert.equal(submitted, 0);
 });
 

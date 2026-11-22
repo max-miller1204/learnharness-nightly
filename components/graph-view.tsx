@@ -332,7 +332,7 @@ export function GraphCostControl({ costs }: { costs: GraphCostSummary }) {
 	const keyboard = useUsageKeyboard(toggleRef, panelRef, open, setOpen);
 	const popupLayer = usePopoverDismiss(rootRef, open, (reason) => { setOpen(false); if (reason === "escape") toggleRef.current?.focus(); }, { layerRootRef: panelRef });
 	return (
-		<div ref={rootRef} data-lh-usage-scope="" className="relative" onKeyDown={keyboard.onKeyDown}>
+		<div ref={rootRef} data-lh-usage-scope="" data-lh-usage-open={open ? "" : undefined} className="relative" onKeyDown={keyboard.onKeyDown}>
 			<Hint
 				// Trimmed (owner, subtlety round 2026-09-25).
 				label="Graph costs — click for details"

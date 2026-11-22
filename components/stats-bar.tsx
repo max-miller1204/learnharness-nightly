@@ -120,7 +120,7 @@ export function StatsBar({
 			{/* The left side: the session-data summary — only once a session
 			    exists (turns). Pre-chat renders nothing (see the header). */}
 			{(chatId || turns.length > 0) && (
-			<div ref={barRef} data-lh-usage-scope="" className="relative" onKeyDown={keyboard.onKeyDown}>
+			<div ref={barRef} data-lh-usage-scope="" data-lh-usage-open={open ? "" : undefined} className="relative" onKeyDown={keyboard.onKeyDown}>
 				{/* No tooltip — the numbers describe themselves and the popover
 			    speaks on click (owner, subtlety round 2026-09-25). */}
 			<button
@@ -130,7 +130,7 @@ export function StatsBar({
 				aria-expanded={open}
 				data-testid="stats-summary"
 				data-lh-usage-control=""
-				className="flex items-center gap-1.5 tabular-nums transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+				className="flex items-center gap-1.5 rounded px-1 py-0.5 tabular-nums transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
 			>
 				<span data-testid="stats-context">
 					{contextLabel}
@@ -168,7 +168,7 @@ export function StatsBar({
 									<span className="tabular-nums text-card-foreground">{(cacheHitRate * 100).toFixed(1)}%</span>
 								</div>
 							)}
-							{providers.includes("ChatGPT") && <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer" className="underline underline-offset-2">Manage ChatGPT usage</a>}
+							{providers.includes("ChatGPT") && <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer" className="rounded underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-ring">Manage ChatGPT usage</a>}
 							{unpriced > 0 && (
 								<div className="flex justify-between gap-2">
 									<span>Unpriced turns</span>

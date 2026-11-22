@@ -153,8 +153,8 @@ export function KeyboardShortcuts() {
 					const active = document.activeElement as HTMLElement | null;
 					if (e.repeat || e.isComposing || e.getModifierState?.("AltGraph") ||
 						(controller && controller.getEventOwner(e) !== controller.getTopLayer()) ||
-						active?.closest('[role="dialog"], [data-testid="question-dock"], [data-testid="practice-dock"], [data-testid="plugin-question-dock"], [data-testid="plugin-problem-dock"]') ||
-						hasLegacyInteractionForeground(document, active)) break;
+						active?.closest('[role="dialog"], [role="alertdialog"], dialog[open], [data-testid="plugin-question-dock"], [data-testid="plugin-problem-dock"]') ||
+						(!controller && hasLegacyInteractionForeground(document, active))) break;
 					const target = Array.from(document.querySelectorAll<HTMLElement>("[data-lh-usage-control]"))
 						.find((element) => isInteractionScopeEligible(element, controller));
 					if (target && target !== active) { e.preventDefault(); rememberUsageFocus(target, active); target.focus(); }
