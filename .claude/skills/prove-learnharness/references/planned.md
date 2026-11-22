@@ -1,6 +1,6 @@
 # Planned surfaces (extension points)
 
-A surface here has no section in SKILL.md. A diff that reaches one is BLOCKED for that surface until `/create-prove-it` adds its section to SKILL.md (Scope map row, Answer keys row, a surface section, scripts, a recipe). When a spec for one lands in `docs/specs/`, update its note here.
+A surface here has no section in SKILL.md. A diff that reaches one is BLOCKED for that surface until `/create-prove-it` adds its section to SKILL.md (Scope map row, Answer keys row, a surface section, scripts, a recipe). When a `Spec:` issue is approved for one, update its note here.
 
 ## iOS (iPhone)
 
