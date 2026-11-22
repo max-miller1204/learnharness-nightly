@@ -547,6 +547,13 @@ test("plugin inference usage ledger omits cost for unpriced providers and $0 pla
 	assert.equal(routerRows.length, 1);
 	assert.equal("cost" in routerRows[0].usage, false, "openrouter:openrouter/auto must omit usage.cost");
 
+	const billedFixture = fixture(t, { model: routerPin, produce(stream) {
+		const m = { ...output(routerPin), stopReason: "stop" as const, content: [{ type: "text" as const, text: "Done" }], usage: { ...zeroUsage, cost: { ...zeroUsage.cost, total: 0.12, totalFromProvider: true } } };
+		stream.push({ type: "done", reason: "stop", message: m }); stream.end();
+	} });
+	await billedFixture.adapter.inference.complete({ ...request(routerPin), purpose: "user" });
+	assert.equal(ledger(billedFixture.directory)[0].usage.cost.total, 0.12);
+
 	// Synthetic $0 placeholder model (zero rates on dispatched model) omits usage.cost even through a managed plugin agent that clones m.usage.
 	const zeroModelPin = { provider: "fixture", id: "router-placeholder", thinkingLevel: "off" } as const;
 	const zeroDir = mkdtempSync(join(tmpdir(), "lh-plugin-inference-zero-"));

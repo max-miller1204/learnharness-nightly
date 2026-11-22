@@ -13,6 +13,14 @@ function catalogModel(id: string) {
 	return liveCatalogModel(id) ?? (Object.hasOwn(RETIRED_MODELS, id) ? RETIRED_MODELS[id] : undefined);
 }
 
+// These catalog entries route to other models, so zero rates do not describe
+// the selected model's price. The free router is explicitly free.
+const ROUTER_PLACEHOLDERS = new Set([
+	"openrouter:auto", "openrouter:openrouter/auto", "openrouter:openrouter/auto-beta",
+	"openrouter:openrouter/auto-code", "openrouter:openrouter/fusion",
+	"openrouter:openrouter/pareto-code", "openrouter:typesafe/jev-router",
+]);
+
 export function callCost(call: Partial<CallUsage>, modelId: string): number | null {
 	if (isUnpricedModelId(modelId)) return null;
 	if (call.costUsd !== undefined) {
@@ -20,7 +28,7 @@ export function callCost(call: Partial<CallUsage>, modelId: string): number | nu
 	}
 	const model = catalogModel(modelId);
 	const colon = modelId.indexOf(":");
-	if (!model || !hasRecordableCost({ provider: modelId.slice(0, colon), id: modelId.slice(colon + 1), cost: model.cost })) return null;
+	if (model && ROUTER_PLACEHOLDERS.has(modelId) && !hasRecordableCost({ provider: modelId.slice(0, colon), id: modelId.slice(colon + 1), cost: model.cost })) return null;
 	return computeCallCost(call, model);
 }
 

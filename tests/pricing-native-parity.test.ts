@@ -18,7 +18,8 @@ test("API catalog models price through Pi at every tier boundary; native CLI sta
 			const usage = nativeUsage(input);
 			const call = Object.freeze(saved(usage));
 			const before = structuredClone(call);
-			const expected = model.provider === "claude-code" ? null : calculateCost(model, usage).total;
+			const routerPlaceholders = new Set(["auto", "openrouter/auto", "openrouter/auto-beta", "openrouter/auto-code", "openrouter/fusion", "openrouter/pareto-code", "typesafe/jev-router"]);
+			const expected = model.provider === "claude-code" || (model.provider === "openrouter" && routerPlaceholders.has(model.id)) ? null : calculateCost(model, usage).total;
 			assert.equal(callCost(call, `${model.provider}:${model.id}`), expected, `${model.provider}:${model.id} input=${input}`);
 			assert.deepEqual(call, before);
 		}

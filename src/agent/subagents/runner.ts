@@ -1,5 +1,5 @@
 import { catalogModelGone, ModelUnavailableError, type PiEngine } from "../models.ts";
-import { priceJobUsageStep } from "../pricing.ts";
+import { captureJobUsageStep, dispatchedModelOf, priceJobUsageStep } from "../pricing.ts";
 import type { SearchProvider } from "../../core/search.ts";
 import {
 	accumulateJobUsage,
@@ -480,7 +480,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 				chatId: loop.chatId,
 				// Money channel: each agent step is one model call — fold its
 				// usage into the record as it completes (progress write).
-				onUsage: (usage) => loop.onUsage(piUsageToStep(usage)),
+				onUsage: (usage) => loop.onUsage((dispatchedModelOf(usage) ?? model?.model) ? captureJobUsageStep(usage, (dispatchedModelOf(usage) ?? model!.model)) : piUsageToStep(usage)),
 				onToolStart: (toolName, args) => {
 					const input = args as { query?: string; url?: string } | undefined;
 					jobStore.updateJob(jobId, { activity: activityLine(toolName, input) });
@@ -528,7 +528,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 					engine: model,
 					abortSignal: loop.abortSignal,
 					chatId: loop.chatId,
-					onUsage: (usage) => loop.onUsage(piUsageToStep(usage)),
+					onUsage: (usage) => loop.onUsage((dispatchedModelOf(usage) ?? model?.model) ? captureJobUsageStep(usage, (dispatchedModelOf(usage) ?? model!.model)) : piUsageToStep(usage)),
 					onActivity: (line) => jobStore.updateJob(jobId, { activity: line }),
 				},
 			);
@@ -583,7 +583,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 						engine: model,
 						abortSignal: loop.abortSignal,
 						chatId: loop.chatId,
-						onUsage: (usage) => loop.onUsage(piUsageToStep(usage)),
+						onUsage: (usage) => loop.onUsage((dispatchedModelOf(usage) ?? model?.model) ? captureJobUsageStep(usage, (dispatchedModelOf(usage) ?? model!.model)) : piUsageToStep(usage)),
 						onActivity: (line) => jobStore.updateJob(jobId, { activity: line }),
 					},
 				);
@@ -630,7 +630,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 				abortSignal: loop.abortSignal,
 				chatId: loop.chatId,
 				resolveAttachment: deps.attachmentsForChat?.(job.chatId),
-				onUsage: (usage) => loop.onUsage(piUsageToStep(usage)),
+				onUsage: (usage) => loop.onUsage((dispatchedModelOf(usage) ?? model?.model) ? captureJobUsageStep(usage, (dispatchedModelOf(usage) ?? model!.model)) : piUsageToStep(usage)),
 				onActivity: (line) => jobStore.updateJob(jobId, { activity: line }),
 			},
 			);

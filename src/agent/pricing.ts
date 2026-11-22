@@ -18,6 +18,7 @@ export type DispatchedModel = {
 	provider: string;
 	id: string;
 	cost?: Model<Api>["cost"];
+	free?: boolean;
 };
 
 const dispatchedModels = new WeakMap<Usage, DispatchedModel>();
@@ -61,7 +62,7 @@ export function hasRecordableCost(model: DispatchedModel): boolean {
 	if (isUnpricedModelId(modelId) || !model.cost) return false;
 	// Do not freeze $0 placeholder rates unless the model id marks it free;
 	// leaving costUsd absent lets later catalog updates price it at read time.
-	return hasNonZeroRate(model.cost) || isKnownFreeModelId(model.id);
+	return model.free === true || hasNonZeroRate(model.cost) || isKnownFreeModelId(model.id);
 }
 
 function dispatchedCost(call: Partial<CallUsage>, model: DispatchedModel): number | null {
@@ -90,7 +91,7 @@ export function computeCallCost(call: Partial<CallUsage>, model: PricedModel | u
 	return Number.isFinite(total) && total >= 0 ? total : null;
 }
 
-function providerCost(usage: Usage, model: DispatchedModel): number | null {
+export function providerCost(usage: Usage, model: DispatchedModel): number | null {
 	const total = usage.cost?.total;
 	return !isUnpricedModelId(`${model.provider}:${model.id}`) && usage.cost?.totalFromProvider === true &&
 		typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : null;
