@@ -8,6 +8,7 @@ import { InstallUpdateDialog } from "@/components/install-update-dialog";
 import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateErrorToast, UNEXPECTED_ERROR } from "@/components/update-toasts";
 import { updateButtonTooltip } from "@/components/update-tooltips";
 import { capReleaseNoteGroups, type ReleaseNoteGroup } from "@/src/core";
+import { BRIDGE_FAILED, readBridgeAnswer, readUpdateEverythingResult, readUpdateEverythingRun, runIsLive, type BridgeAnswer, type UpdateEverythingResult, type UpdateEverythingRun } from "@/components/update-everything-logic";
 import { SettingsRow } from "./controls.tsx";
 import { isNewerVersion } from "@/selfhost/src/version-order.ts";
 
@@ -80,6 +81,10 @@ export type DesktopAppStatus = {
 	/** The offered version's notes, newest first, as in UpdateState (the sidebar's hover). Older apps omit them. */
 	releaseNotes?: ReleaseNoteGroup[];
 	omittedReleaseCount?: number;
+	/** Update everything's run for the page's capsule (revision PR 7), or null. Older apps omit it. */
+	run?: UpdateEverythingRun | null;
+	/** A result toast waits for this page (takeResult): its number, new for each result. Older apps omit it. */
+	result?: number | null;
 };
 
 export type DesktopUpdateBridge = {
@@ -91,6 +96,16 @@ export type DesktopUpdateBridge = {
 	/** Settings' This app Install: only this app, after T3's confirm in the app's own native
 	 *  dialog. Apps from before it lack it. */
 	installApp?: () => Promise<void>;
+	/** Revision PR 7, all missing from older apps. everything() and retry() make the app show its
+	 *  own Update everything dialog over this window (the page can't start a run itself) and
+	 *  resolve { started } or { error }. ready() says the capsule shows what the app waits on;
+	 *  later() and dismiss() act on the run; takeResult() reads its result toast once. */
+	everything?: () => Promise<unknown>;
+	ready?: () => Promise<void>;
+	later?: () => Promise<void>;
+	retry?: () => Promise<unknown>;
+	dismiss?: () => Promise<void>;
+	takeResult?: () => Promise<unknown>;
 };
 
 /** The local desktop window's full bridge (electron/preload.cjs), not the remote one. */
@@ -258,11 +273,17 @@ export function readDesktopAppStatus(value: unknown): DesktopAppStatus | null {
 	}));
 	const { releaseNotes } = capReleaseNoteGroups(groups);
 	const omitted = value.omittedReleaseCount;
-	return { ...value, releaseNotes, omittedReleaseCount: typeof omitted === "number" && Number.isInteger(omitted) && omitted > 0 ? Math.min(omitted, MAX_OMITTED_RELEASE_COUNT) : 0 };
+	return {
+		...value, releaseNotes, omittedReleaseCount: typeof omitted === "number" && Number.isInteger(omitted) && omitted > 0 ? Math.min(omitted, MAX_OMITTED_RELEASE_COUNT) : 0,
+		run: readUpdateEverythingRun(value.run),
+		result: typeof value.result === "number" && Number.isInteger(value.result) && value.result > 0 ? value.result : null,
+	};
 }
 
 /** How often the page asks the app for its update status (the bridge has no push channel). */
 export const DESKTOP_STATUS_POLL_MS = 5_000;
+/** While Update everything runs: often enough for its capsule's steps and countdown. */
+export const DESKTOP_RUN_POLL_MS = 1_000;
 
 /** The desktop app's own update, seen from its window onto a self-hosted
  *  server. Null everywhere else (browsers, the local desktop window). */
@@ -276,24 +297,48 @@ export function useDesktopAppUpdate() {
 			if (next) setStatus(next);
 		} catch { /* keep the last status */ }
 	}, [bridge]);
+	// Fast only while a run moves: a failure kept for Retry waits like the rest.
+	const running = runIsLive(status?.run ?? null);
 	useEffect(() => {
 		if (!bridge) return;
 		void refresh();
-		const timer = setInterval(() => { if (document.visibilityState !== "hidden") void refresh(); }, DESKTOP_STATUS_POLL_MS);
+		const timer = setInterval(() => { if (document.visibilityState !== "hidden") void refresh(); }, running ? DESKTOP_RUN_POLL_MS : DESKTOP_STATUS_POLL_MS);
 		const onVisible = () => { if (document.visibilityState !== "hidden") void refresh(); };
 		document.addEventListener("visibilitychange", onVisible);
 		return () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
-	}, [bridge, refresh]);
+	}, [bridge, refresh, running]);
 	const call = useCallback((method: "check" | "download" | "install" | "installApp") => async (): Promise<void> => {
 		const action = bridge?.[method];
 		if (!action) return;
 		try { await action(); } finally { void refresh(); }
 	}, [bridge, refresh]);
+	// Update everything in the page (revision PR 7), when the app has it.
+	const everything = useMemo(() => {
+		if (!bridge || typeof bridge.everything !== "function") return null;
+		/** The app's own dialog: how it closed, or what to tell when it didn't open. */
+		const ask = (method: "everything" | "retry") => async (): Promise<BridgeAnswer> => {
+			try { return readBridgeAnswer(await bridge[method]?.()); } catch {
+				return { error: BRIDGE_FAILED, started: false, keyboard: false, dialog: false };
+			} finally { void refresh(); }
+		};
+		const act = (method: "later" | "dismiss") => () => { void bridge[method]?.().catch(() => {}).finally(() => void refresh()); };
+		return {
+			open: ask("everything"),
+			retry: ask("retry"),
+			later: act("later"), dismiss: act("dismiss"),
+			// The effect that calls it is keyed on awaitingPage alone, so this refresh doesn't loop.
+			ready: () => { void bridge.ready?.().catch(() => {}).finally(() => void refresh()); },
+			takeResult: async (): Promise<UpdateEverythingResult | null> => {
+				try { return readUpdateEverythingResult(await bridge.takeResult?.()); } catch { return null; }
+			},
+		};
+	}, [bridge, refresh]);
 	return useMemo(() => bridge ? {
 		status, check: call("check"), download: call("download"), install: call("install"),
 		// An app from before installApp has only Update everything's install.
 		installApp: typeof bridge.installApp === "function" ? call("installApp") : call("install"),
-	} : null, [bridge, status, call]);
+		everything,
+	} : null, [bridge, status, call, everything]);
 }
 
 /** A newer app version the desktop offers, or null. */

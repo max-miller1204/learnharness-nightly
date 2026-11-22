@@ -11,7 +11,7 @@ import path from "node:path";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const { createUpdateEverything, serverLabel, HANDOFF_TIMEOUT_MS, RESTART_DELAY_MS, SAVED_RESULT_MAX_AGE_MS } = require("../electron/update-everything.cjs");
+const { createUpdateEverything, serverLabel, HANDOFF_TIMEOUT_MS, RESTART_DELAY_MS, SAVED_RESULT_MAX_AGE_MS, PAGE_READY_TIMEOUT_MS, ASK_COOLDOWN_MS } = require("../electron/update-everything.cjs");
 const { registerDesktopUpdateIPC } = require("../electron/update-everything-ipc.cjs");
 
 const ORIGIN = "https://max-desktop.tail1234.ts.net:8443";
@@ -22,7 +22,15 @@ const V73 = "0.6.1-nightly.20261118.73";
 type Reply = { status?: number; body?: unknown } | Error;
 type Prompt = { message: string; detail: string; buttons: string[]; signal?: AbortSignal };
 
-function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0] as Array<number | "wait">, saved = null as unknown, downloadFails = false, appNotes = [] as unknown[], duringDownload = () => {} } = {}) {
+function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0] as Array<number | "wait">, saved = null as unknown, downloadFails = false, appNotes = [] as unknown[], duringDownload = () => {},
+	countdown = null as AbortController | null, expectReconnect = V72 as string | null, appVersion = V71,
+	// Main's own dialog (askInApp): each answer in turn, true for Update; "wait" leaves it open until answer().
+	inApp = [true] as Array<boolean | "wait" | { update: boolean; keyboard: boolean }>,
+	// The page: "ready" says it shows the capsule at once, "manual" waits for the test, "none" never does (a page from before PR 7).
+	page: pageMode = "ready" as "ready" | "manual" | "none" } = {}) {
+	const reconnects: string[] = [];
+	const asked: Array<{ plan: unknown; win: unknown }> = [];
+	let answerDialog: (update: boolean) => void = () => {};
 	const log: string[] = [];
 	const prompts: Prompt[] = [];
 	const notices: Array<{ message: string; detail: string }> = [];
@@ -38,15 +46,25 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 		running: server, committed: true, instance: "old", status: "up-to-date", notice: null as unknown, message: null as string | null,
 		health: server as string | null, installReply: null as Reply | null, onInstall: () => {}, items: [{ kind: "turn" }, { kind: "job" }],
 		down: false, proxy502: false, installFails: 0, attempts: 0, tick: undefined as (() => void) | undefined,
-		pinned: null as unknown, selected: ORIGIN,
+		pinned: null as unknown, selected: ORIGIN, win: { id: 1 } as object, unpaired: false,
+		// The server's page in that window: its loads (deps.page). A reconnect reloads it by
+		// default, and `holdLoad` keeps the new page from committing until loadPage().
+		reloads: true, holdLoad: false,
 		// POSTs that get no answer: the transport gives up after its 15 s timeout (requestServer's),
 		// and `startsAnyway` says whether the server got it before the answer was lost.
 		postTimeouts: 0, startsAnyway: true,
 	};
+	const page = { generation: 0, settled: 0, closed: false, watchers: new Set<() => void>(), clocks: 0 };
+	const notify = () => { for (const watcher of [...page.watchers]) watcher(); };
+	const loadPage = () => {
+		page.generation += 1;
+		setImmediate(() => { page.settled += 1; notify(); });
+	};
+	let pendingLoad = false;
 	let finished: () => void = () => {};
 	const done = new Promise<void>((resolve) => { finished = resolve; });
 	const ue = createUpdateEverything({
-		appVersion: V71,
+		appVersion,
 		updater: {
 			state: () => ({ status: offered ? "available" : "up-to-date", version: offered, releaseNotes: appNotes }),
 			check: () => log.push("check"),
@@ -60,7 +78,17 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 				log.push(`install ${v}`); finished();
 			},
 		},
-		selection: () => ({ origin: remote.selected, token: "bearer" }),
+		selection: () => (page.closed ? null : { origin: remote.selected, token: "bearer", win: remote.win }),
+		page: (win: unknown) => (win === remote.win ? {
+			generation: () => page.generation, settled: () => page.settled, closed: () => page.closed,
+			watch: (watcher: () => void) => { page.watchers.add(watcher); return () => { page.watchers.delete(watcher); }; },
+		} : null),
+		askInApp: async (selection: { win: unknown }, plan: unknown) => {
+			asked.push({ plan, win: selection.win });
+			const answer = inApp.shift() ?? false;
+			if (answer === "wait") return new Promise<boolean>((resolve) => { answerDialog = resolve; });
+			return answer;
+		},
 		request: async (origin: string, pathname: string, options: { token?: string; method?: string; body?: unknown }) => {
 			assert.equal(origin, ORIGIN, "only the selected server");
 			requests.push({ path: pathname, ...options });
@@ -83,6 +111,7 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 				return Response.json(reply.body, { status: reply.status ?? 202 });
 			}
 			if (remote.down) throw new Error("ECONNREFUSED");
+			if (remote.unpaired && pathname === "/api/updates") return Response.json({ error: "unpaired" }, { status: 401 });
 			// Tailscale Serve (or any HTTPS proxy) answers 502 while the server is down.
 			if (remote.proxy502) return new Response("Bad Gateway", { status: 502 });
 			if (pathname === "/api/health") return Response.json({ ok: true, version: remote.health });
@@ -98,14 +127,43 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 		tell: async (notice: { message: string; detail: string }) => { notices.push(notice); finished(); },
 		progress: (origin: string, text: string) => { assert.equal(origin, ORIGIN, "the run covers only its own server"); progress.push(text); },
 		fail: (origin: string, problem: { kind: string; message: string }) => { failures.push(problem.message); kinds.push(problem.kind); finished(); },
-		reconnect: (origin: string, version: string) => { assert.equal(version, V72, "Later shows the version the server is now on"); log.push(`reconnect ${origin}`); finished(); },
+		// As main's endUpdate: async (it claims the version in the page first), then the reload
+		// commits and loads a moment after it resolves.
+		reconnect: async (origin: string, version: string) => {
+			if (expectReconnect !== null) assert.equal(version, expectReconnect, "Later shows the version the server is now on");
+			reconnects.push(version);
+			log.push(`reconnect ${origin}`);
+			finished();
+			await new Promise((resolve) => setImmediate(resolve));
+			if (!remote.reloads) return false;
+			if (remote.holdLoad) pendingLoad = true;
+			else setImmediate(loadPage);
+			return true;
+		},
 		saveResult: (record: unknown) => { results.push(record); stored = record; },
 		takeResult: () => { const value = stored; stored = null; return value; },
 		now: () => clock,
-		timeoutSignal: (ms: number) => { assert.equal(ms, RESTART_DELAY_MS); return AbortSignal.timeout(5); },
+		timeoutSignal: (ms: number) => {
+			if (ms === PAGE_READY_TIMEOUT_MS) {
+				page.clocks += 1;
+				if (pageMode === "none") return AbortSignal.timeout(5);
+				if (pageMode === "ready") setImmediate(ready);
+				return new AbortController().signal;
+			}
+			assert.equal(ms, RESTART_DELAY_MS);
+			return countdown ? countdown.signal : AbortSignal.timeout(5);
+		},
 		sleep: async (ms: number) => { clock += ms; remote.tick?.(); await new Promise((resolve) => setImmediate(resolve)); },
 	});
-	return { ue, log, prompts, notices, failures, kinds, progress, requests, results, remote, done, advance: (ms: number) => { clock += ms; } };
+	/** The page in the window says it shows the capsule (window.lh.desktopUpdate.ready()). */
+	function ready() { ue.ready({ win: remote.win, generation: page.generation }); }
+	return {
+		ue, log, prompts, notices, failures, kinds, progress, requests, results, remote, done, reconnects, asked, page, ready,
+		answer: (update: boolean) => answerDialog(update), advance: (ms: number) => { clock += ms; }, now: () => clock,
+		/** The held reload commits and loads. */
+		loadPage: () => { if (pendingLoad) { pendingLoad = false; loadPage(); } },
+		closeWindow: () => { page.closed = true; notify(); },
+	};
 }
 
 test("server labels follow the ghost dashboard: first name, or the whole address for an IP", () => {
@@ -303,13 +361,13 @@ test("status passes the offered version's release notes through to the remote pa
 	const notes = [{ version: V72, items: ["**Cards.** Practice with cards."], totalItems: 1, stats: "3 changes from 1 contributor", footer: "Plus 2 more bug fixes." }, { version: V71, items: ["Older"], totalItems: 1 }];
 	let appState: Record<string, unknown> = { status: "available", version: V72, releaseNotes: notes, omittedReleaseCount: 3 };
 	const ue = createUpdateEverything({ appVersion: V71, updater: { state: () => appState } });
-	assert.deepEqual(ue.status(), { version: V71, target: V72, phase: "available", error: null, downloadPercent: null, releaseNotes: notes, omittedReleaseCount: 3 });
+	assert.deepEqual(ue.status(), { version: V71, target: V72, phase: "available", error: null, downloadPercent: null, releaseNotes: notes, omittedReleaseCount: 3, run: null, result: null });
 	appState = { status: "downloading", version: V72, downloadPercent: 40, releaseNotes: notes, omittedReleaseCount: 0 };
 	assert.deepEqual(ue.status().releaseNotes, notes);
 	assert.equal(ue.status().downloadPercent, 40);
 	// A state without notes (an updater snapshot before any offer, or a malformed count) reads as none.
 	appState = { status: "up-to-date", version: null, omittedReleaseCount: -2 };
-	assert.deepEqual(ue.status(), { version: V71, target: null, phase: "up-to-date", error: null, downloadPercent: null, releaseNotes: [], omittedReleaseCount: 0 });
+	assert.deepEqual(ue.status(), { version: V71, target: null, phase: "up-to-date", error: null, downloadPercent: null, releaseNotes: [], omittedReleaseCount: 0, run: null, result: null });
 	appState = { status: "available", version: V72, releaseNotes: "not a list", omittedReleaseCount: 1.5 };
 	assert.deepEqual([ue.status().releaseNotes, ue.status().omittedReleaseCount], [[], 0]);
 });
@@ -369,7 +427,7 @@ test("status forwards only the notes' rendered fields, each validated and bounde
 
 test("status reports the run, and a second click while the dialog is open is ignored", async () => {
 	const f = fixture({ answers: [0, 1] });
-	assert.deepEqual(f.ue.status(), { version: V71, target: V72, phase: "available", error: null, downloadPercent: null, releaseNotes: [], omittedReleaseCount: 0 });
+	assert.deepEqual(f.ue.status(), { version: V71, target: V72, phase: "available", error: null, downloadPercent: null, releaseNotes: [], omittedReleaseCount: 0, run: null, result: null });
 	let phaseWhileUpdating: unknown;
 	f.remote.onInstall = () => {
 		phaseWhileUpdating = f.ue.status().phase;
@@ -563,7 +621,7 @@ test("Settings' This app Install: T3's confirm in main, then only this app insta
 	assert.equal(asking.ue.running(), false);
 });
 
-test("the bridge answers only the remote window's main frame at its origin, with no arguments", async () => {
+test("the bridge answers only the remote window's main frame at its origin, and takes no argument at all", async () => {
 	const handlers = new Map<string, (event: unknown, ...args: unknown[]) => Promise<unknown>>();
 	const mainFrame = { url: `${ORIGIN}/learn/x` };
 	const contents = { mainFrame };
@@ -571,29 +629,51 @@ test("the bridge answers only the remote window's main frame at its origin, with
 	const calls: string[] = [];
 	registerDesktopUpdateIPC({ handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => Promise<unknown>) => handlers.set(channel, fn) }, {
 		current: () => ({ win, origin: ORIGIN }),
-		updateEverything: { status: () => { calls.push("status"); return { phase: "idle" }; }, check: () => calls.push("check"), download: () => calls.push("download"), install: async () => { calls.push("install"); }, installApp: async () => { calls.push("installApp"); return "never returned to the page"; } },
+		pageGeneration: (of: unknown) => (of === win ? 3 : -1),
+		updateEverything: {
+			status: () => { calls.push("status"); return { phase: "idle" }; }, check: () => calls.push("check"), download: () => calls.push("download"),
+			install: async (...args: unknown[]) => { calls.push(`install${args.length ? JSON.stringify(args) : ""}`); },
+			installApp: async () => { calls.push("installApp"); return "never returned to the page"; },
+			everything: async () => { calls.push("everything"); return { started: false }; },
+			ready: (from: { win: unknown; generation: number }) => { calls.push(`ready ${from.win === win} ${from.generation}`); return "never returned"; }, later: () => { calls.push("later"); return "never returned"; },
+			retry: async () => { calls.push("retry"); return { started: false }; },
+			dismiss: () => { calls.push("dismiss"); return "never returned"; }, takeResult: () => { calls.push("takeResult"); return null; },
+		},
 	});
 	const handle = handlers.get("lh:desktop-update")!;
-	assert.deepEqual(await handle({ sender: contents, senderFrame: mainFrame }, "status"), { phase: "idle" });
-	await handle({ sender: contents, senderFrame: mainFrame }, "install");
-	assert.equal(await handle({ sender: contents, senderFrame: mainFrame }, "install-app"), undefined);
-	assert.deepEqual(calls, ["status", "install", "installApp"]);
+	const own = { sender: contents, senderFrame: mainFrame };
+	assert.deepEqual(await handle(own, "status"), { phase: "idle" });
+	await handle(own, "install");
+	assert.equal(await handle(own, "install-app"), undefined);
+	assert.deepEqual(await handle(own, "everything"), { started: false });
+	assert.deepEqual(await handle(own, "retry"), { started: false });
+	for (const action of ["ready", "later", "dismiss"]) assert.equal(await handle(own, action), undefined, `${action} returns nothing to the page`);
+	assert.equal(await handle(own, "take-result"), null);
+	assert.deepEqual(calls, ["status", "install", "installApp", "everything", "retry", "ready true 3", "later", "dismiss", "takeResult"], "ready() says which window and page load it came from");
+	calls.length = 0;
+	// Hostile arguments from the page, including the dialog choice an earlier draft took: all refused.
+	const PLAN_ID = "123e4567-e89b-42d3-a456-426614174000";
+	const hostile: unknown[][] = [
+		["install", { planId: PLAN_ID }],
+		["install", V72],
+		["install", { version: V72, url: "https://evil.example/app.dmg" }],
+		["everything", { planId: PLAN_ID }], ["everything", V72],
+		["retry", {}], ["ready", 1], ["later", "x"], ["dismiss", null], ["take-result", "x"], ["install-app", V72], ["status", true],
+		["plan"], ["__proto__"], ["constructor"], [{ toString: () => "status" }],
+	];
+	for (const args of hostile) await assert.rejects(handle(own, ...args), /Untrusted desktop request/, JSON.stringify(args));
 	const refused = [
 		[{ sender: {}, senderFrame: mainFrame }, "status"],
-		[{ sender: contents, senderFrame: { url: `${ORIGIN}/x` } }, "status"],
+		[{ sender: contents, senderFrame: { url: `${ORIGIN}/x` } }, "everything"],
 		[{ sender: contents, senderFrame: { ...mainFrame } }, "install"],
-		[{ sender: contents, senderFrame: mainFrame, }, "install", V72],
-		[{ sender: contents, senderFrame: mainFrame, }, "install-app", V72],
-		[{ sender: contents, senderFrame: { ...mainFrame } }, "install-app"],
-		[{ sender: contents, senderFrame: mainFrame }, "quitAndInstall"],
 	] as const;
 	for (const [event, ...args] of refused) await assert.rejects(handle(event, ...args), /Untrusted desktop request/);
 	mainFrame.url = "https://evil.example/";
-	await assert.rejects(handle({ sender: contents, senderFrame: mainFrame }, "status"), /Untrusted/);
-	assert.deepEqual(calls, ["status", "install", "installApp"]);
+	await assert.rejects(handle({ sender: contents, senderFrame: mainFrame }, "everything"), /Untrusted/);
+	assert.deepEqual(calls, [], "none of them reached main's run");
 });
 
-test("the remote preload exposes only window.lh.desktopUpdate with five methods and window.lh.chatgptSignIn", () => {
+test("the remote preload exposes only window.lh.desktopUpdate and window.lh.chatgptSignIn, forwards no argument, and asks only from a click", async () => {
 	const source = fs.readFileSync(path.join(import.meta.dirname, "..", "electron", "remote-preload.cjs"), "utf8");
 	const exposed = new Map<string, unknown>();
 	const invoked: unknown[][] = [];
@@ -610,10 +690,29 @@ test("the remote preload exposes only window.lh.desktopUpdate with five methods 
 	assert.deepEqual([...exposed.keys()], ["lh"]);
 	const lh = exposed.get("lh") as { desktopUpdate: Record<string, (...args: unknown[]) => unknown> };
 	assert.deepEqual(Object.keys(lh), ["desktopUpdate", "chatgptSignIn"]);
-	assert.deepEqual(Object.keys(lh.desktopUpdate), ["getStatus", "check", "download", "install", "installApp"]);
-	lh.desktopUpdate.install!("0.0.1-evil", "https://evil.example");
-	lh.desktopUpdate.installApp!("0.0.1-evil", "https://evil.example");
-	assert.deepEqual(invoked.splice(0), [["lh:desktop-update", "install"], ["lh:desktop-update", "install-app"]], "arguments from the page are never forwarded");
+	const methods = ["getStatus", "check", "download", "install", "installApp", "everything", "ready", "later", "retry", "dismiss", "takeResult"];
+	assert.deepEqual(Object.keys(lh.desktopUpdate), methods);
+	// Asking for a dialog needs the user's own click or key press in the page.
+	const activation = { isActive: false };
+	const descriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+	Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userActivation: activation } });
+	try {
+		for (const method of ["install", "everything", "retry"]) {
+			const refused = lh.desktopUpdate[method]!() as Promise<unknown>;
+			await assert.rejects(refused, /only from a click/, method);
+		}
+		assert.deepEqual(invoked.splice(0), [], "a script alone asks for nothing");
+		activation.isActive = true;
+		for (const method of methods) lh.desktopUpdate[method]!({ planId: "123e4567-e89b-42d3-a456-426614174000" }, "0.0.1-evil", "https://evil.example");
+	} finally {
+		if (descriptor) Object.defineProperty(globalThis, "navigator", descriptor);
+		else delete (globalThis as { navigator?: unknown }).navigator;
+	}
+	assert.deepEqual(invoked.splice(0), [
+		["lh:desktop-update", "status"], ["lh:desktop-update", "check"], ["lh:desktop-update", "download"], ["lh:desktop-update", "install"],
+		["lh:desktop-update", "install-app"], ["lh:desktop-update", "everything"], ["lh:desktop-update", "ready"], ["lh:desktop-update", "later"],
+		["lh:desktop-update", "retry"], ["lh:desktop-update", "dismiss"], ["lh:desktop-update", "take-result"],
+	], "arguments from the page are never forwarded");
 	const signIn = (lh as unknown as { chatgptSignIn: Record<string, (...args: unknown[]) => unknown> }).chatgptSignIn;
 	assert.deepEqual(Object.keys(signIn), ["start", "cancel"]);
 	signIn.start!();
@@ -637,4 +736,436 @@ test("a run names the server it updates from its confirmation to its end, so the
 	const cancelled = fixture({ answers: [1] });
 	await cancelled.ue.install();
 	await until(() => cancelled.ue.server() === null);
+});
+
+
+// ─── Revision PR 7: main's own dialog, the page's capsule ─────────────────────
+
+type View = { version: string; rows: unknown[]; skipped: unknown[]; running: number; disabledReason: string | null };
+type RunView = { phase: string; localVersion: string | null; restartAt: number | null; awaitingPage: boolean; keyboard: boolean; machines: Array<{ label: string; status: string; startedAt: number; failure: string | null }> };
+const runOf = (f: ReturnType<typeof fixture>) => (f.ue.status() as { run: RunView | null }).run;
+const resultOf = (f: ReturnType<typeof fixture>) => (f.ue.status() as { result: number | null }).result;
+const viewOf = (f: ReturnType<typeof fixture>, at = 0) => f.asked[at]!.plan as View;
+/** A failed run kept for the capsule: the server rolled back. */
+async function failedRun(options: Parameters<typeof fixture>[0] = {}) {
+	const f = fixture({ expectReconnect: null, ...options });
+	f.remote.onInstall = () => {
+		f.remote.instance = "back";
+		f.remote.status = "error";
+		f.remote.notice = { kind: "rolled-back", version: V72, text: "x", at: 1 };
+	};
+	await f.ue.everything();
+	await until(() => runOf(f)?.machines[0]?.status === "failed");
+	return f;
+}
+
+test("only main's own dialog starts a run: the page's calls alone never do, a recent click or not", async () => {
+	const f = fixture({ inApp: ["wait"] });
+	const opening = f.ue.everything();
+	await until(() => f.asked.length === 1);
+	// The page keeps calling while the dialog is open (a compromised page, a user typing).
+	assert.deepEqual(await f.ue.everything(), { error: { title: "Update everything", detail: "Update everything is already running." } });
+	assert.deepEqual(await f.ue.retry(), { error: { title: "Update everything", detail: "Update everything is already running." } }, "busy, said in the page's toast");
+	f.ready();
+	f.ue.later();
+	assert.equal(f.ue.server(), null, "only the dialog is open: no hold on the server yet");
+	assert.equal(runOf(f), null);
+	assert.equal(f.ue.running(), true, "the dialog holds the slot");
+	assert.equal(f.requests.some((request) => request.method === "POST"), false, "nothing changed on the server");
+	assert.deepEqual(f.log, ["pin"], "nothing downloaded");
+	f.answer(false);
+	assert.deepEqual(await opening, { started: false, keyboard: false, dialog: true }, "Cancel in main's dialog");
+	assert.equal(f.asked.length, 1, "asked once");
+	assert.equal(f.ue.running(), false);
+	assert.equal(runOf(f), null);
+	assert.equal(f.prompts.length, 0);
+});
+
+test("after a Cancel the page can't ask again at once: a script can't keep putting the dialog up", async () => {
+	const f = fixture({ inApp: [false, false] });
+	assert.deepEqual(await f.ue.everything(), { started: false, keyboard: false, dialog: true });
+	assert.deepEqual(await f.ue.everything(), { error: { title: "Update everything", detail: "Try again in a moment." } }, "refused, with a reason the page can show");
+	assert.equal(f.asked.length, 1, "no second dialog");
+	f.advance(ASK_COOLDOWN_MS);
+	assert.deepEqual(await f.ue.everything(), { started: false, keyboard: false, dialog: true });
+	assert.equal(f.asked.length, 2, "it asks again later");
+	// The native confirmation's Cancel counts too.
+	const native = fixture({ answers: [1] });
+	await native.ue.install();
+	await native.ue.install();
+	assert.equal(native.prompts.length, 1);
+});
+
+test("main's native confirmations default to Cancel: Enter or Escape changes nothing", async () => {
+	for (const server of [V71, V72]) {
+		const f = fixture({ server, answers: [1] });
+		await f.ue.install();
+		const prompt = f.prompts[0] as Prompt & { defaultId?: number; cancelId?: number };
+		assert.equal(prompt.buttons[prompt.defaultId!], "Cancel", `${server}: the default`);
+		assert.equal(prompt.buttons[prompt.cancelId!], "Cancel");
+	}
+	const { installAppConfirmation } = require("../electron/update-everything.cjs");
+	const app = installAppConfirmation(V72);
+	assert.equal(app.buttons[app.defaultId], "Cancel");
+});
+
+test("main's dialog shows the plan: the server first, This app last, its running work", async () => {
+	const f = fixture({ inApp: [false] });
+	await f.ue.everything();
+	assert.deepEqual(viewOf(f), { version: V72, rows: [{ label: "max-desktop", app: "server", running: 2 }, { label: "This app", app: "this-app", running: 0 }], running: 2, skipped: [], disabledReason: null });
+	assert.equal(f.asked[0]!.win, f.remote.win, "over the server's own window");
+	const appOnly = fixture({ server: V72, inApp: [false] });
+	await appOnly.ue.everything();
+	assert.deepEqual(viewOf(appOnly).rows, [{ label: "This app", app: "this-app", running: 0 }]);
+	assert.equal(viewOf(appOnly).running, 0, "an app restart stops no server work: no running list (owner, PR 3)");
+	assert.match((await fixture({ server: V73 }).ue.everything() as { error: { detail: string } }).error.detail, /runs 0\.6\.1-nightly\.20261118\.73, newer than this app’s update/);
+	assert.equal((await fixture({ offered: null }).ue.everything() as { error: { title: string } }).error.title, "LearnHarness is up to date.");
+	// A server that can't update itself is skipped; Update can't start anything even if pressed.
+	const manual = fixture({ inApp: [true] });
+	manual.remote.status = "disabled";
+	manual.remote.message = "Installed with Docker: update the image.";
+	assert.deepEqual(await manual.ue.everything(), { started: false, keyboard: false, dialog: true });
+	assert.deepEqual(viewOf(manual).skipped, [{ label: "max-desktop", reason: "Installed with Docker: update the image." }]);
+	assert.equal(viewOf(manual).disabledReason, "Update max-desktop from its own Settings first.");
+	assert.equal(runOf(manual), null);
+});
+
+test("a dialog belongs to its window: one closed and opened again on the same server can't use it", async () => {
+	const f = fixture({ inApp: ["wait"] });
+	const opening = f.ue.everything();
+	await until(() => f.asked.length === 1);
+	f.remote.win = { id: 2 }; // the same server, a new window
+	f.answer(true);
+	assert.deepEqual(await opening, { started: false, keyboard: false, dialog: true });
+	assert.equal(runOf(f), null);
+	assert.equal(f.log.includes(`download ${V72}`), false);
+});
+
+test("one dialog at a time, the run reserved before any wait, and a hold released only by whoever took it", async () => {
+	const f = fixture({ inApp: [true], countdown: new AbortController() });
+	f.remote.onInstall = () => { f.remote.running = V72; f.remote.health = V72; f.remote.instance = "new"; };
+	const [first, second] = await Promise.all([f.ue.everything(), f.ue.everything()]);
+	assert.deepEqual([first, second], [{ started: true, keyboard: false, dialog: true }, { error: { title: "Update everything", detail: "Update everything is already running." } }]);
+	assert.equal(f.asked.length, 1, "asked once");
+	await until(() => runOf(f)?.phase === "countdown");
+	assert.equal(f.ue.server(), ORIGIN, "the run holds its server");
+	assert.deepEqual(await f.ue.everything(), { error: { title: "Update everything", detail: "Update everything is already running." } });
+	assert.deepEqual(await f.ue.retry(), { error: { title: "Update everything", detail: "Update everything is already running." } });
+	assert.equal(f.ue.server(), ORIGIN, "calls that changed nothing released nothing");
+	f.ue.later();
+	await until(() => f.ue.server() === null);
+
+	// Retry reserves too: a second Retry, or the everything control, waits for its dialog.
+	const kept = await failedRun({ inApp: [true, "wait"] });
+	const retrying = kept.ue.retry();
+	assert.deepEqual(await kept.ue.retry(), { error: { title: "Update everything", detail: "Update everything is already running." } });
+	assert.deepEqual(await kept.ue.everything(), { error: { title: "Update everything", detail: "Update everything is already running." } });
+	await until(() => kept.asked.length === 2);
+	assert.equal(kept.ue.server(), null, "Retry's dialog holds nothing either");
+	kept.answer(false);
+	assert.deepEqual(await retrying, { started: false, keyboard: false, dialog: true });
+	assert.equal(kept.asked.length, 2);
+});
+
+test("Retry checks again: a server now newer than the target, or one that can't update itself, isn't retried", async () => {
+	const newer = await failedRun();
+	newer.remote.running = V73;
+	newer.remote.notice = null;
+	const answer = await newer.ue.retry() as { error: { detail: string } };
+	assert.match(answer.error.detail, /runs 0\.6\.1-nightly\.20261118\.73, newer than this app’s update/);
+	assert.equal(newer.asked.length, 1, "no dialog for it");
+	assert.equal(runOf(newer)!.machines[0]!.failure, `max-desktop couldn’t start ${V72} and went back to ${V71}. Your app wasn’t changed.`, "the capsule keeps the run's own failure; the toast says why Retry didn't start");
+
+	const manual = await failedRun();
+	manual.remote.status = "disabled";
+	assert.equal((await manual.ue.retry() as { error: { detail: string } }).error.detail, "Update max-desktop from its own Settings first.");
+	assert.equal(manual.asked.length, 1);
+});
+
+test("Retry updates only the failed server, as T3 does: this app stays as it is", async () => {
+	const f = await failedRun({ inApp: [true, true] });
+	f.remote.notice = null;
+	f.remote.status = "idle";
+	f.remote.pinned = null;
+	f.remote.onInstall = () => { f.remote.running = V72; f.remote.health = V72; f.remote.instance = "new"; };
+	assert.deepEqual(await f.ue.retry(), { started: true, keyboard: false, dialog: true });
+	assert.deepEqual(viewOf(f, 1).rows, [{ label: "max-desktop", app: "server", running: 2 }], "main's dialog asks for the server only");
+	await until(() => runOf(f) === null && resultOf(f) !== null);
+	assert.equal(f.log.some((entry) => entry.startsWith("install")), false, "no app restart");
+	assert.deepEqual(f.ue.takeResult(), { localVersion: null, updatedServers: 1, failures: [] });
+
+	// Back on the target by the time of Retry: done, no dialog.
+	const back = await failedRun();
+	back.remote.running = V72;
+	back.remote.notice = null;
+	assert.deepEqual(await back.ue.retry(), { started: false });
+	assert.equal(back.asked.length, 1);
+	assert.equal(runOf(back), null);
+	assert.deepEqual(back.ue.takeResult(), { localVersion: null, updatedServers: 1, failures: [] });
+});
+
+test("nothing restarts, and nothing is covered, before the server was asked", async () => {
+	const f = fixture({ expectReconnect: null });
+	f.remote.installReply = { status: 409, body: { error: "Another update is running." } };
+	await f.ue.everything();
+	await until(() => runOf(f)?.machines[0]?.status === "failed");
+	assert.deepEqual(f.progress, [], "no cover for a refusal");
+	assert.deepEqual(f.reconnects, [], "nothing to show again, and no version claimed as reloaded");
+	assert.equal(runOf(f)!.machines[0]!.failure, "max-desktop can’t update: Another update is running. Nothing was changed.");
+});
+
+test("the 5 s countdown starts only once the page shows it; a page that never does gets main's own countdown", async () => {
+	const countdown = new AbortController();
+	const f = fixture({ server: V72, page: "manual", countdown });
+	await f.ue.everything();
+	await until(() => runOf(f)?.phase === "countdown");
+	assert.equal(runOf(f)!.restartAt, null, "not counting yet");
+	assert.equal(runOf(f)!.awaitingPage, true, "main waits for the page");
+	f.ready();
+	await until(() => runOf(f)?.restartAt !== null);
+	assert.equal(runOf(f)!.restartAt, f.now() + RESTART_DELAY_MS, "the user's full 5 s, from when the page shows it");
+	assert.equal(runOf(f)!.awaitingPage, false);
+	f.ue.later();
+	await until(() => runOf(f) === null);
+	assert.equal(f.prompts.length, 0);
+
+	const old = fixture({ server: V72, page: "none", answers: [1] });
+	await old.ue.everything();
+	await until(() => old.prompts.length === 1);
+	assert.deepEqual(old.prompts[0]!.buttons, ["Restart now", "Later"], "main's native countdown, with its Later");
+	assert.ok(old.prompts[0]!.signal);
+	await until(() => runOf(old) === null);
+	assert.equal(old.log.some((entry) => entry.startsWith("install")), false, "Later there too");
+});
+
+test("an in-page run: the capsule's steps, the cover only while the server restarts, then the countdown and Later", async () => {
+	const countdown = new AbortController();
+	const f = fixture({ countdown });
+	const seen: string[] = [];
+	let polls = 0;
+	f.remote.onInstall = () => {
+		f.remote.tick = () => {
+			polls++;
+			seen.push(`${runOf(f)?.machines[0]?.status} cover=${f.progress.length}`);
+			if (polls === 2) f.remote.down = true;
+			if (polls === 4) { f.remote.down = false; f.remote.running = V72; f.remote.health = V72; f.remote.instance = "new"; }
+		};
+	};
+	assert.deepEqual(await f.ue.everything(), { started: true, keyboard: false, dialog: true });
+	await until(() => runOf(f)?.restartAt !== null && runOf(f)?.phase === "countdown");
+	assert.deepEqual(seen.slice(0, 2), ["downloading cover=0", "downloading cover=0"], "staging: the page stays in view, with the capsule");
+	assert.ok(seen.includes("restarting cover=1"), "restarting: the ghost cover goes up");
+	assert.deepEqual(f.progress, [`Updating max-desktop to ${V72}… This can take a few minutes.`], "covered once");
+	assert.deepEqual(f.reconnects, [V72], "back on the target: the page shows again");
+	assert.deepEqual(runOf(f)!.machines.map(({ label, status, failure }) => ({ label, status, failure })), [{ label: "max-desktop", status: "done", failure: null }]);
+	assert.equal(f.prompts.length, 0, "Restart in 5s is the page's, not a native dialog");
+	f.ue.later();
+	await until(() => runOf(f) === null);
+	assert.equal(f.log.some((entry) => entry.startsWith("install")), false, "Later: this app stays as it is");
+	const id = resultOf(f);
+	assert.equal(typeof id, "number");
+	assert.deepEqual(f.ue.takeResult(), { localVersion: null, updatedServers: 1, failures: [] });
+	assert.equal(f.ue.takeResult(), null, "read once");
+	assert.equal(resultOf(f), null);
+});
+
+test("the countdown restarts by itself: Restarting…, and the result toast waits for the page after the relaunch", async () => {
+	const f = fixture({ server: V72 });
+	await f.ue.everything();
+	await f.done;
+	assert.equal(runOf(f)?.phase, "installing");
+	assert.deepEqual(f.log, ["pin", `download ${V72}`, `install ${V72}`]);
+	const record = f.results[0] as Record<string, unknown>;
+	assert.equal(record.inPage, true);
+	const next = fixture({ saved: record, appVersion: V72 });
+	next.ue.takeLaunch();
+	assert.equal(typeof resultOf(next), "number");
+	assert.deepEqual(next.ue.takeResult(), { localVersion: V72, updatedServers: 0, failures: [] });
+	const legacy = fixture({ saved: { ...record, inPage: undefined }, appVersion: V72 });
+	legacy.ue.takeLaunch();
+	assert.equal(legacy.ue.takeResult(), null, "an older run leaves no toast");
+});
+
+test("a failure stays in the capsule on its own server; a second failure is a new result; Dismiss forgets it", async () => {
+	const f = await failedRun();
+	const message = `max-desktop couldn’t start ${V72} and went back to ${V71}. Your app wasn’t changed.`;
+	assert.deepEqual(runOf(f)!.machines.map(({ status, failure }) => ({ status, failure })), [{ status: "failed", failure: message }]);
+	assert.equal(runOf(f)!.localVersion, null);
+	assert.deepEqual(f.failures, [], "the page shows it, not the server list");
+	assert.deepEqual(f.reconnects, [V71], "covered while it restarted, then shown again on the version it went back to");
+	const first = resultOf(f);
+	f.remote.selected = "https://other.example.test";
+	assert.equal(runOf(f), null, "another server's page doesn't show it");
+	f.remote.selected = ORIGIN;
+	f.ue.dismiss();
+	assert.equal(runOf(f), null);
+	assert.notEqual(first, null);
+
+	// A quick Retry that fails again gets its own result number, so its toast isn't lost.
+	const again = await failedRun({ inApp: [true, true] });
+	const before = resultOf(again);
+	again.remote.installReply = { status: 409, body: { error: "Another update is running." } };
+	await again.ue.retry();
+	await until(() => runOf(again)?.machines[0]?.status === "failed" && resultOf(again) !== before);
+	assert.notEqual(resultOf(again), before);
+});
+
+test("a rollback to a page that can't show the capsule falls back to the server list, with its Retry", async () => {
+	const f = fixture({ expectReconnect: null, page: "none" });
+	f.remote.onInstall = () => {
+		f.remote.instance = "back";
+		f.remote.status = "error";
+		f.remote.notice = { kind: "rolled-back", version: V72, text: "x", at: 1 };
+	};
+	await f.ue.everything();
+	await until(() => f.failures.length === 1);
+	assert.equal(f.failures[0], `max-desktop couldn’t start ${V72} and went back to ${V71}. Your app wasn’t changed.`);
+	assert.deepEqual(f.kinds, ["retry"]);
+	assert.equal(runOf(f), null, "nothing left the page can't show");
+	assert.equal(f.ue.takeResult(), null);
+});
+
+test("an in-page run whose server never comes back shows the problem in the server list", async () => {
+	const f = fixture({ expectReconnect: null });
+	f.remote.onInstall = () => { f.remote.down = true; };
+	await f.ue.everything();
+	await f.done;
+	assert.deepEqual(f.failures, ["max-desktop wasn’t back after 32 minutes. Your app wasn’t changed."]);
+	assert.equal(runOf(f), null);
+});
+
+/** An in-page run whose server is covered while it restarts, then shown again (reconnect). */
+function coveredRun(options: Parameters<typeof fixture>[0] = {}) {
+	const f = fixture(options);
+	f.remote.onInstall = () => {
+		f.remote.instance = "new";
+		f.remote.tick = () => { f.remote.running = V72; f.remote.health = V72; };
+	};
+	return f;
+}
+
+test("after the cover, only the reloaded page can say it shows the countdown, and the 10 s start once it has loaded", async () => {
+	const f = coveredRun({ page: "manual", countdown: new AbortController() });
+	f.remote.holdLoad = true;
+	assert.deepEqual(await f.ue.everything(), { started: true, keyboard: false, dialog: true });
+	await until(() => runOf(f)?.phase === "countdown");
+	assert.deepEqual(f.reconnects, [V72]);
+	assert.equal(f.page.clocks, 0, "the wait's clock waits for the new page to load");
+	// The page from before the reload still polls and answers: not the page that will show it.
+	f.ready();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(runOf(f)!.restartAt, null, "the old page's answer doesn't count");
+	f.loadPage();
+	await until(() => f.page.clocks === 1);
+	assert.equal(runOf(f)!.awaitingPage, true);
+	f.ready();
+	await until(() => runOf(f)?.restartAt !== null);
+	assert.equal(runOf(f)!.restartAt, f.now() + RESTART_DELAY_MS);
+	f.ue.later();
+	await until(() => runOf(f) === null);
+});
+
+test("a page that already reloaded itself under the cover answers at once", async () => {
+	const f = coveredRun({ page: "manual", countdown: new AbortController() });
+	f.remote.reloads = false;
+	await f.ue.everything();
+	await until(() => runOf(f)?.awaitingPage === true);
+	assert.equal(f.page.clocks, 1, "nothing to wait for: the page is the new one");
+	f.ready();
+	await until(() => runOf(f)?.restartAt !== null);
+	f.ue.later();
+	await until(() => runOf(f) === null);
+});
+
+test("waiting for the page to show a failure: no hold on the server, and Dismiss or a closed window ends the wait without the server list", async () => {
+	const dismissed = await failedRun({ page: "manual" });
+	await until(() => runOf(dismissed)?.awaitingPage === true);
+	assert.equal(dismissed.ue.server(), null, "Remove needn't wait for the page");
+	dismissed.ue.dismiss();
+	await until(() => runOf(dismissed) === null);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(dismissed.failures, [], "dismissed: nothing more to show");
+
+	const closed = await failedRun({ page: "manual" });
+	await until(() => runOf(closed)?.awaitingPage === true);
+	closed.closeWindow();
+	await new Promise((resolve) => setImmediate(resolve));
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(closed.failures, [], "another window, or none: not the server list's problem");
+	closed.page.closed = false;
+	assert.equal(runOf(closed)?.machines[0]?.status, "failed", "the capsule shows it when this server's page opens again");
+	assert.equal(runOf(closed)!.awaitingPage, false, "and main no longer waits on the closed window");
+});
+
+test("Retry: Dismiss while main plans stops it, and Pair again is said once, by the server list", async () => {
+	const f = await failedRun({ inApp: [true, true] });
+	const retrying = f.ue.retry();
+	f.ue.dismiss();
+	assert.deepEqual(await retrying, { started: false });
+	assert.equal(f.asked.length, 1, "no Retry dialog after a Dismiss");
+
+	const unpaired = await failedRun({ inApp: [true, true] });
+	unpaired.remote.unpaired = true;
+	assert.deepEqual(await unpaired.ue.retry(), { started: false }, "no toast on top of the list's Pair again");
+	assert.deepEqual(unpaired.kinds, ["pair"]);
+	assert.equal(runOf(unpaired), null);
+});
+
+test("a run started from a key says so, also once it failed, so the page main reloads can put focus on the capsule", async () => {
+	const f = coveredRun({ page: "manual", countdown: new AbortController(), inApp: [{ update: true, keyboard: true }] });
+	assert.deepEqual(await f.ue.everything(), { started: true, keyboard: true, dialog: true });
+	assert.equal(runOf(f)!.keyboard, true);
+	await until(() => runOf(f)?.awaitingPage === true);
+	assert.equal(runOf(f)!.keyboard, true, "the reloaded page sees it too");
+	f.ue.later();
+	const failed = await failedRun({ inApp: [{ update: true, keyboard: true }] });
+	assert.equal(runOf(failed)!.keyboard, true);
+	assert.equal(runOf(fixture())?.keyboard, undefined);
+	const clicked = coveredRun({ page: "manual", countdown: new AbortController() });
+	await clicked.ue.everything();
+	assert.equal(runOf(clicked)!.keyboard, false);
+});
+
+test("the result toast waits for the page main reloads: the page it replaces can't take it", async () => {
+	// Retry: the server back on the target, the page reloaded under the cover's end.
+	const f = await failedRun({ inApp: [true, true] });
+	f.remote.notice = null;
+	f.remote.status = "idle";
+	f.remote.pinned = null;
+	f.remote.onInstall = () => {
+		f.remote.instance = "newer";
+		f.remote.tick = () => { f.remote.running = V72; f.remote.health = V72; };
+	};
+	f.remote.holdLoad = true;
+	const old = () => ({ win: f.remote.win, generation: f.page.generation });
+	await f.ue.retry();
+	await until(() => runOf(f) === null && resultOf(f) !== null);
+	const before = old();
+	const seen = f.ue.status(before) as { result: number | null };
+	assert.equal(seen.result, null, "the old page doesn't see it");
+	assert.equal(f.ue.takeResult(before), null, "nor take it");
+	f.loadPage();
+	await until(() => f.page.generation > before.generation);
+	const now = old();
+	assert.equal(typeof (f.ue.status(now) as { result: number | null }).result, "number");
+	assert.deepEqual(f.ue.takeResult(now), { localVersion: null, updatedServers: 1, failures: [] }, "the page that stays shows it");
+	assert.equal(f.ue.takeResult(now), null, "once");
+
+	// A rollback: its failure toast also waits for the reloaded page.
+	const rolled = fixture({ expectReconnect: null, page: "manual" });
+	rolled.remote.holdLoad = true;
+	rolled.remote.onInstall = () => {
+		rolled.remote.instance = "back";
+		rolled.remote.status = "error";
+		rolled.remote.notice = { kind: "rolled-back", version: V72, text: "x", at: 1 };
+	};
+	await rolled.ue.everything();
+	await until(() => runOf(rolled)?.machines[0]?.status === "failed" && resultOf(rolled) !== null);
+	const gone = { win: rolled.remote.win, generation: rolled.page.generation };
+	assert.equal(rolled.ue.takeResult(gone), null);
+	rolled.loadPage();
+	await until(() => rolled.page.generation > gone.generation);
+	assert.deepEqual(rolled.ue.takeResult({ win: rolled.remote.win, generation: rolled.page.generation })!.failures, [`max-desktop: max-desktop couldn’t start ${V72} and went back to ${V71}. Your app wasn’t changed.`]);
+	// Another window (a switch, a reopen) is a page that stays.
+	assert.equal(f.ue.takeResult({ win: { id: 9 }, generation: 0 }), null, "nothing left there");
 });

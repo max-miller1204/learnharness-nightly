@@ -13,13 +13,15 @@
  * the sidebar's "Updated to X. Click to reload." button until it does), and
  * the popup shows on the first page that runs X (after the reload, or the
  * next time the app opens). It is
- * not marked seen while held back, so it is neither lost nor shown twice.
+ * not marked seen while held back, so it is neither lost nor shown twice. It also waits while
+ * the sidebar's Update everything capsule shows a run (components/whats-new-hold.ts).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { HostDialog } from "@/components/host-dialog";
 import { ReleaseNoteSections, releaseUrl } from "@/components/release-notes-view";
 import { useNotifyHub } from "@/components/server-events";
+import { useWhatsNewHeld } from "@/components/whats-new-hold";
 import { APP_VERSION, HOMEPAGE } from "@/components/settings/update-settings";
 import { isNewerVersion } from "@/selfhost/src/version-order.ts";
 import type { ReleaseNoteGroup } from "@/src/core";
@@ -105,8 +107,9 @@ export default function WhatsNewDialog({ pageVersion = APP_VERSION }: { pageVers
 		}).catch(() => { /* shows again on the next load */ });
 	}, [whatsNew]);
 
+	const held = useWhatsNewHeld();
 	// The server's running version is whatsNew.version: newer than this page's code means reload first.
-	if (!whatsNew || isNewerVersion(whatsNew.version, pageVersion)) return null;
+	if (!whatsNew || held || isNewerVersion(whatsNew.version, pageVersion)) return null;
 	return (
 		<HostDialog
 			open

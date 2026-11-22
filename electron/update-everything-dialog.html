@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<title>Update everything</title>
+	<script src="./window-mode.js"></script>
+	<link rel="stylesheet" href="./update-everything-dialog.css">
+	<script src="./update-everything-dialog.js" defer></script>
+</head>
+<body>
+	<div class="backdrop">
+		<div class="dialog" id="dialog" role="alertdialog" aria-modal="true" aria-labelledby="title" aria-describedby="version" hidden>
+			<h2 id="title"></h2>
+			<p id="version" class="muted"></p>
+			<div id="table" class="table" role="table" aria-label="Machines to update">
+				<div class="row head" role="row">
+					<span role="columnheader">Machine</span>
+					<span role="columnheader">LearnHarness</span>
+					<span role="columnheader">Providers</span>
+					<span role="columnheader"><span class="sr-only">Running</span></span>
+				</div>
+			</div>
+			<div id="skipped-section" hidden>
+				<button type="button" id="skipped-toggle" class="link" aria-expanded="false" aria-controls="skipped"></button>
+				<div id="skipped" class="skipped muted" hidden></div>
+			</div>
+			<div class="footer">
+				<p id="warning" hidden></p>
+				<button type="button" id="cancel" class="outline">Cancel</button>
+				<button type="button" id="update" class="primary">Update</button>
+			</div>
+		</div>
+	</div>
+</body>
+</html>

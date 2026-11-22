@@ -35,6 +35,7 @@ const { setTraceSink } = require("./first-frame.cjs");
 const { createServerList } = require("./server-list.cjs");
 const { createUpdateEverything } = require("./update-everything.cjs");
 const { registerDesktopUpdateIPC } = require("./update-everything-ipc.cjs");
+const { createUpdateEverythingDialog } = require("./update-everything-dialog.cjs");
 const { registerChatGPTSignInIPC } = require("./remote-chatgpt-ipc.cjs");
 const { createUpdateActions } = require("./update-actions.cjs");
 const { requestServer } = require("./remote-server.cjs");
@@ -952,8 +953,35 @@ const updateActions = createUpdateActions({
 
 const UPDATE_EVERYTHING_RESULT = () => path.join(app.getPath("userData"), "update-everything.json");
 
+/** A remote window's page loads, for Update everything's ready() (update-everything.cjs's
+ *  deps.page): each main-frame document counts from its commit, so a page from before a reload
+ *  can't answer for the one after it, and a load settles when it finishes or fails. */
+const pageLoads = new WeakMap();
+function pageLoadsOf(win) {
+	if (!win || win.isDestroyed()) return null;
+	let page = pageLoads.get(win);
+	if (page) return page;
+	let generation = 0;
+	let settled = 0;
+	let closed = false;
+	const watchers = new Set();
+	const changed = () => { for (const watcher of [...watchers]) watcher(); };
+	win.webContents.on("did-navigate", () => { generation += 1; });
+	win.webContents.on("did-finish-load", () => { settled += 1; changed(); });
+	win.webContents.on("did-fail-load", (_event, _code, _description, _url, isMainFrame) => { if (isMainFrame) { settled += 1; changed(); } });
+	win.once("closed", () => { closed = true; changed(); });
+	page = {
+		generation: () => generation,
+		settled: () => settled,
+		closed: () => closed || win.isDestroyed(),
+		watch: (watcher) => { watchers.add(watcher); return () => watchers.delete(watcher); },
+	};
+	pageLoads.set(win, page);
+	return page;
+}
+
 /** Main's side of electron/update-everything.cjs. */
-function updateEverythingDeps(list) {
+function updateEverythingDeps(list, inApp) {
 	const ask = (options) => {
 		const parent = list.current()?.win;
 		const settings = { type: "question", noLink: true, defaultId: 0, cancelId: options.buttons.length - 1, ...options };
@@ -978,10 +1006,13 @@ function updateEverythingDeps(list) {
 			...(body && { body: JSON.stringify(body), headers: { "content-type": "application/json" } }),
 		}),
 		confirm: ask,
+		// Main's own Update everything dialog over the server's window, the run's consent (revision PR 7).
+		askInApp: (selection, plan) => inApp.ask(selection?.win, plan),
 		tell: ({ message, detail }) => ask({ type: "info", message, detail, buttons: ["OK"] }),
 		progress: (origin, text) => list.coverForUpdate(origin, text),
 		fail: (origin, problem) => list.endUpdate(origin, problem),
 		reconnect: (origin, version) => list.endUpdate(origin, null, { version }),
+		page: pageLoadsOf,
 		saveResult: (record) => fs.writeFileSync(UPDATE_EVERYTHING_RESULT(), JSON.stringify(record), { mode: 0o600 }),
 		takeResult: () => {
 			let raw;
@@ -1373,8 +1404,9 @@ async function main() {
 		});
 		installMenu();
 		reopenWindow = () => serverList.reopen();
-		updateEverything = createUpdateEverything(updateEverythingDeps(serverList));
-		registerDesktopUpdateIPC(ipcMain, { current: () => serverList.current(), updateEverything });
+		const inApp = createUpdateEverythingDialog({ ipcMain, WebContentsView, session, themeMode: () => appearance.mode });
+		updateEverything = createUpdateEverything(updateEverythingDeps(serverList, inApp));
+		registerDesktopUpdateIPC(ipcMain, { current: () => serverList.current(), updateEverything, pageGeneration: (win) => pageLoadsOf(win)?.generation() ?? 0 });
 		registerChatGPTSignInIPC(ipcMain, {
 			current: () => serverList.current(), signIn: (accountId) => serverList.chatgptSignIn(accountId), cancel: () => serverList.chatgptCancel(),
 		});
