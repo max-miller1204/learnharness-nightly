@@ -1882,6 +1882,8 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 			const nightly = state({ status: "up-to-date", runningVersion: "0.7.0-nightly.20261118.71" });
 			assert.equal(resolveUpdateControl(nightly, { pageVersion: nightly.runningVersion ?? "", desktop: dev as DesktopAppStatus }), "check", "a disabled updater offers no flow");
 			assert.equal(resolveUpdateControl(nightly, { pageVersion: nightly.runningVersion ?? "", desktop: { ...dev, phase: "up-to-date" } as DesktopAppStatus }), "check", "even with the updater on, a plain 0.7.0 is no update for a nightly (T3 compares within a channel only)");
+			// The disabled guard alone: a nightly app on the server's own track, its updater off.
+			assert.equal(resolveUpdateControl(state({ status: "up-to-date", runningVersion: V71 }), { pageVersion: V71, desktop: { ...dev, version: V72 } as DesktopAppStatus }), "check", "a disabled updater alone");
 		});
 
 		it("an app that offers an update keeps T3's 'Update this app and 1 server' and its notes", async () => {
@@ -1915,6 +1917,8 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 			assert.equal(sameReleaseTrack("0.7.0", "0.6.9"), true);
 			assert.equal(sameReleaseTrack("0.7.0", "0.7.0-nightly.20261118.71"), false);
 			assert.equal(sameReleaseTrack(V72, "0.6.9"), false);
+			assert.equal(sameReleaseTrack("0.7.0-preview.20261119.5", V72), false, "preview and nightly are separate");
+			assert.equal(sameReleaseTrack("0.7.0-preview.20261119.5", "0.6.9-preview.20261001.1"), true);
 			assert.equal(sameReleaseTrack(V72, "dev"), false);
 			assert.equal(sameReleaseTrack(null, V72), false);
 		});
@@ -1937,9 +1941,14 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 			assert.equal(kind(state({ status: "up-to-date", runningVersion: "dev" }), desktop), "check");
 			assert.equal(kind(behind, { ...desktop, version: "0.0.0-dev" }), "check", "an app with no exact version asks the server for nothing");
 			assert.equal(kind(behind, { ...desktop, phase: "disabled" }), "check", "an app whose updater is off has no release to move a server to");
+			assert.equal(resolveUpdateControl(behind, { pageVersion: V71, desktop, everythingBridge: false }), "check", "an app without the everything() bridge can't be asked");
 			assert.equal(kind(behind, { ...desktop, serverOnly: undefined }), "check", "an app that doesn't plan the flow");
 			assert.equal(kind(state({ status: "up-to-date", runningVersion: "0.7.0-nightly.20261118.71" }), { ...desktop, version: "0.7.0" }), "check", "a plain version is not newer than a nightly of the same core");
 			assert.equal(kind(state({ status: "up-to-date", runningVersion: "0.6.9" }), { ...desktop, version: "0.7.0-nightly.20261118.71" }), "check", "nothing is compared across channels");
+			// Preview and nightly are separate tracks, in both directions.
+			assert.equal(kind(state({ status: "up-to-date", runningVersion: "0.6.9-preview.20261001.1" }), { ...desktop, version: "0.7.0-nightly.20261118.71" }), "check", "a preview server is not moved to a nightly");
+			assert.equal(kind(state({ status: "up-to-date", runningVersion: "0.6.9-nightly.20261001.1" }), { ...desktop, version: "0.7.0-preview.20261119.5" }), "check", "a nightly server is not moved to a preview");
+			assert.equal(kind(state({ status: "up-to-date", runningVersion: "0.7.0-preview.20261101.2" }), { ...desktop, version: "0.7.0-preview.20261119.5" }), "everything", "within a track it is");
 			assert.equal(kind(behind, { ...desktop, target: V73, phase: "error" }), "everything", "a target left by a failed check is no offer");
 			assert.equal(updateControlTooltip(behind, "everything", V71, { ...desktop, target: V73, phase: "error" }), "Update 1 server");
 			// Only the window onto a self-hosted server has this app's status.

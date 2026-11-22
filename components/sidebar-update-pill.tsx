@@ -116,12 +116,13 @@ const serverKept = (state: UpdateState, version: string) =>
  *  `useUpdateEverything.ts:57` and `:104` at df09ced7; T3 compares only within a channel,
  *  `versionSkew.ts:62-70` and `updateEverything.logic.ts:121-130`). The run then asks the server
  *  for exactly this app's version and restarts nothing here. Not offered: by an app that doesn't
- *  plan it (`serverOnly`), one whose updater is off (a dev or unpackaged build), a plain release
- *  against a nightly server, a server that can't update itself, or while a rollback notice waits
+ *  plan it (`serverOnly`, and the `everything()` bridge to ask it), one whose updater is off (a dev
+ *  or unpackaged build), a server on another release track (plain, nightly and preview are three:
+ *  a plain release against a nightly server, a nightly against a preview), a server that can't update itself, or while a rollback notice waits
  *  (it is read first). The app's own offer is checked while it is active only, so a failed check
  *  that left its version behind changes nothing. */
-export function serverBehindApp(state: UpdateState, desktop: DesktopAppStatus | null): boolean {
-	return !!desktop && desktop.serverOnly === true && desktop.phase !== "disabled" && !activeDesktopOffer(desktop)
+export function serverBehindApp(state: UpdateState, desktop: DesktopAppStatus | null, everythingBridge = true): boolean {
+	return !!desktop && everythingBridge && desktop.serverOnly === true && desktop.phase !== "disabled" && !activeDesktopOffer(desktop)
 		&& state.status !== "disabled" && state.notice?.kind !== "rolled-back"
 		&& sameReleaseTrack(desktop.version, state.runningVersion) && isNewerVersion(desktop.version, state.runningVersion);
 }
@@ -129,7 +130,7 @@ export function serverBehindApp(state: UpdateState, desktop: DesktopAppStatus | 
 /** The one place that picks the button's state (T3's resolveSidebarUpdatePresentation order).
  *  `desktop` is this app's own update, only in its window onto a self-hosted server.
  *  `installing`: the user confirmed Install in this page and the restart hasn't happened. */
-export function resolveUpdateControl(state: UpdateState | null, { showCheckIcon = false, pageVersion = APP_VERSION, desktop = null, installing = false }: { showCheckIcon?: boolean; pageVersion?: string; desktop?: DesktopAppStatus | null; installing?: boolean } = {}): UpdateControlKind | null {
+export function resolveUpdateControl(state: UpdateState | null, { showCheckIcon = false, pageVersion = APP_VERSION, desktop = null, installing = false, everythingBridge = true }: { showCheckIcon?: boolean; pageVersion?: string; desktop?: DesktopAppStatus | null; installing?: boolean; everythingBridge?: boolean } = {}): UpdateControlKind | null {
 	if (!state) return null;
 	if (pageIsStale(state, pageVersion)) return "reload";
 	if (showCheckIcon) return "checking";
@@ -143,7 +144,7 @@ export function resolveUpdateControl(state: UpdateState | null, { showCheckIcon 
 		return desktop.phase === "downloaded" ? "app-install" : "app-download";
 	}
 	if (state.status === "downloading") return "downloading";
-	if (!installing && serverBehindApp(state, desktop)) return "everything";
+	if (!installing && serverBehindApp(state, desktop, everythingBridge)) return "everything";
 	// A failed install (T3's recovery: still downloaded, with the install context) leaves Restarting.
 	if (state.status === "downloaded") return installing && state.errorContext !== "install" ? "restarting" : "install";
 	if (state.status === "available") return "download";
@@ -498,7 +499,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
 
 	const showCheckIcon = showsCheckIcon(isChecking, latched, reducedMotion);
-	const kind = resolveUpdateControl(state, { showCheckIcon, pageVersion, desktop: desktopStatus, installing });
+	const kind = resolveUpdateControl(state, { showCheckIcon, pageVersion, desktop: desktopStatus, installing, everythingBridge: !!everything });
 	// Anything but the restart (an error, a newer version to download, a rollback notice) is the normal
 	// button again. A check spin started elsewhere (this app's own timer) outranks it only for a moment.
 	// An install main recovered from says so through its notice (components/update-toasts.tsx), not here:
