@@ -299,6 +299,16 @@ describe("render smoke tests", () => {
 		assert.ok(!askHtml.includes("answered-confidence"), "ask never had one");
 	});
 
+	it("AnsweredCard shows a confidence from 0 to 100, off the stops too, and nothing for one outside it", () => {
+		const answer = buildAnswer(quizQD(), { values: ["Venus"], confidence: 70 });
+		const card = (confidence: number) => renderToStaticMarkup(<AnsweredCard answer={{ ...answer, confidence }} />);
+		for (const value of [0, 55, 100]) assert.match(card(value), new RegExp(`data-testid="answered-confidence"[^]*>${value}%<`), String(value));
+		for (const value of [140, -5, Number.POSITIVE_INFINITY, Number.NaN]) assert.ok(!card(value).includes("answered-confidence"), String(value));
+		// A fraction shows rounded, as buildAnswer stores it, and "I don't know" shows none.
+		assert.match(card(55.5), /data-testid="answered-confidence"[^]*>56%</);
+		assert.ok(!renderToStaticMarkup(<AnsweredCard answer={{ ...answer, dontKnow: true, confidence: 70 }} />).includes("answered-confidence"));
+	});
+
 	it("AnsweredCard renders the learner's own Other answer AS an option row", () => {
 		const answer = buildAnswer(askQD(), { other: "Fairly confident — but shaky on applications" });
 		const html = renderToStaticMarkup(<AnsweredCard answer={answer} />);

@@ -220,7 +220,7 @@ try {
 	const chrome = await puppeteer.launch({ executablePath: process.env.LH_TEST_CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: true, userDataDir: path.join(home, "chrome-profile"), env, args: ["--disable-background-networking", "--disable-sync", "--no-first-run", "--disable-default-apps"] }); browsers.push(chrome);
 	page = await chrome.newPage(); await page.setExtraHTTPHeaders({ authorization: `Bearer ${token}` }); await page.setViewport({ width: 1280, height: 900 }); await instrument(page);
 	await chrome.defaultBrowserContext().overridePermissions(origin, ["clipboard-read", "clipboard-write", "clipboard-sanitized-write"]);
-	const token = "`/synthetic/course notes.pdf`";
+	const pathToken = "`/synthetic/course notes.pdf`";
 	for (const route of ["/", "/chat/new"]) {
 		await open(page, route);
 		// Sidebar drops prevent browser navigation but must not stage paths or
@@ -238,34 +238,34 @@ try {
 		});
 		assert.equal(prevented, true);
 		await page.waitForFunction(() => document.querySelector('[role="status"]')?.textContent.includes("desktop app"));
-		await fill(page, "read "); await page.keyboard.type(token + " now");
-		await expectValue(page, `read ${token} now`);
+		await fill(page, "read "); await page.keyboard.type(pathToken + " now");
+		await expectValue(page, `read ${pathToken} now`);
 		assert.equal(await page.$$eval('[data-file-path-input] [role="img"]', elements => elements.length), 1);
 		// Native browser arrows cross the atomic host without entering its label.
 		await caret(page, 5); await page.keyboard.press("ArrowRight");
 		assert.equal(await page.evaluate(() => !!document.getSelection().anchorNode?.parentElement?.closest('[role="img"]')), false);
 		await page.keyboard.press("Backspace"); await expectValue(page, "read  now");
-		await shortcut(page, "KeyZ"); await expectValue(page, `read ${token} now`);
+		await shortcut(page, "KeyZ"); await expectValue(page, `read ${pathToken} now`);
 		await shortcut(page, "KeyZ", true); await expectValue(page, "read  now");
 		await shortcut(page, "KeyZ"); await caret(page, 5); await page.keyboard.press("Delete"); await expectValue(page, "read  now");
-		await shortcut(page, "KeyZ"); await expectValue(page, `read ${token} now`);
+		await shortcut(page, "KeyZ"); await expectValue(page, `read ${pathToken} now`);
 		// Select the actual rendered label; copy must emit the full source token.
 		await page.$eval('[data-file-path-input] [role="img"] span', label => {
 			const range = document.createRange(); range.selectNodeContents(label); const selection = document.getSelection(); selection.removeAllRanges(); selection.addRange(range); document.dispatchEvent(new Event("selectionchange"));
 		});
 		await clipboardCommand(page, "copy");
-		assert.equal(await page.evaluate(() => navigator.clipboard.readText()), token);
+		assert.equal(await page.evaluate(() => navigator.clipboard.readText()), pathToken);
 		await clipboardCommand(page, "cut", "Delete", 8);
 		await expectValue(page, "read  now");
-		assert.equal(await page.evaluate(() => navigator.clipboard.readText()), token, "Shift+Delete is native cut, not editor-only deletion");
-		await shortcut(page, "KeyZ"); await expectValue(page, `read ${token} now`);
+		assert.equal(await page.evaluate(() => navigator.clipboard.readText()), pathToken, "Shift+Delete is native cut, not editor-only deletion");
+		await shortcut(page, "KeyZ"); await expectValue(page, `read ${pathToken} now`);
 		// Clipboard image-only input must not erase the current selected path.
 		await page.$eval('[data-file-path-input]', editor => {
 			const host = editor.querySelector('[data-file-path-source]'); const range = document.createRange(); range.selectNode(host); const selection = document.getSelection(); selection.removeAllRanges(); selection.addRange(range); document.dispatchEvent(new Event("selectionchange"));
 			const data = new DataTransfer(); data.items.add(new File(["image fixture"], "image.png", { type: "image/png" }));
 			editor.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: data }));
 		});
-		await expectValue(page, `read ${token} now`);
+		await expectValue(page, `read ${pathToken} now`);
 		// Pasting HTML-bearing clipboard content is plain text, at the range.
 		await page.evaluate(() => navigator.clipboard.writeText('<img src=x onerror="alert(1)">\n中'));
 		await clipboardCommand(page, "paste");
@@ -297,7 +297,7 @@ try {
 		await expectValue(page, "composer fallback `/synthetic/default.pdf`");
 		// Small viewport: wrapped multiline content stays scrollable inside its editor.
 		await page.setViewport({ width: 900, height: 520 });
-		await fill(page, (`${token} a long synthetic line wrapping at narrow widths.\n`).repeat(24));
+		await fill(page, (`${pathToken} a long synthetic line wrapping at narrow widths.\n`).repeat(24));
 		const sizing = await page.$eval(inputSelector, element => ({ height: element.clientHeight, scrollHeight: element.scrollHeight, overflowY: getComputedStyle(element).overflowY, bodyWidth: document.body.scrollWidth, viewport: innerWidth }));
 		assert.ok(sizing.scrollHeight > sizing.height && sizing.height > 0, JSON.stringify(sizing));
 		assert.ok(["auto", "scroll"].includes(sizing.overflowY));
@@ -375,7 +375,16 @@ try {
 	fs.mkdirSync(path.join(home, "desktop-profile"), { recursive: true });
 	fs.mkdirSync(path.join(home, "desktop-profile-dev"), { recursive: true });
 	fs.writeFileSync(launcher, `const {app,session}=require('electron');\napp.setPath('home',${JSON.stringify(home)});\napp.setPath('userData',${JSON.stringify(path.join(home, "desktop-profile"))});\napp.commandLine.appendSwitch('remote-debugging-port',${JSON.stringify(String(debugPort))});\napp.commandLine.appendSwitch('disable-background-networking');\napp.commandLine.appendSwitch('disable-sync');\napp.whenReady().then(()=>session.defaultSession.webRequest.onBeforeRequest((details,cb)=>{let u;try{u=new URL(details.url)}catch{return cb({cancel:true})}cb({cancel:!(${JSON.stringify(origin)}===u.origin||(u.protocol==='ws:'&&u.host===${JSON.stringify(new URL(origin).host)})||['about:','data:','devtools:'].includes(u.protocol))});}));\nrequire(${JSON.stringify(path.join(root, "electron", "main.cjs"))});\nconsole.log('LH_FILE_PATH_PROFILE '+JSON.stringify({home:app.getPath('home'),userData:app.getPath('userData')}));\n`);
-	const electron = spawn(require("electron"), [launcher], { cwd: root, env: { ...env, LH_DEV_URL: origin }, stdio: ["ignore", "pipe", "pipe"] }); children.push(electron);
+	// Electron on Linux needs the parent's X display, and Chromium needs a UTF-8
+	// locale to turn the α fixture's name into a File (without one, input.files
+	// stays empty). Set one when the parent's isn't UTF-8.
+	const desktopEnv = Object.fromEntries(["DISPLAY", "XAUTHORITY", "LANG", "LC_ALL", "LC_CTYPE"].flatMap(name => process.env[name] ? [[name, process.env[name]]] : []));
+	// The child's HOME is the temp folder, so without XAUTHORITY (ssh -X,
+	// startx) X would look for the cookie there: point it at the real one.
+	const xauthority = path.join(os.homedir(), ".Xauthority");
+	if (desktopEnv.DISPLAY && !desktopEnv.XAUTHORITY && fs.existsSync(xauthority)) desktopEnv.XAUTHORITY = xauthority;
+	if (!/utf-?8/i.test(desktopEnv.LC_ALL || desktopEnv.LC_CTYPE || desktopEnv.LANG || "")) desktopEnv.LC_ALL = "C.UTF-8";
+	const electron = spawn(require("electron"), [launcher], { cwd: root, env: { ...env, ...desktopEnv, LH_DEV_URL: origin }, stdio: ["ignore", "pipe", "pipe"] }); children.push(electron);
 	const captureElectron = data => { electronLogs = (electronLogs + data).slice(-24000); }; electron.stdout.on("data", captureElectron); electron.stderr.on("data", captureElectron);
 	await startup(electron, () => electronLogs, /DevTools listening on (ws:\/\/[^\s]+)/, 45000);
 	const profile = JSON.parse(electronLogs.match(/LH_FILE_PATH_PROFILE ([^\r\n]+)/)[1]);

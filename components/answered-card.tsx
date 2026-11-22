@@ -10,7 +10,7 @@ import { PathText } from "@/components/file-path-chip";
 import { cn } from "@/lib/utils";
 import { ToolContentResponse } from "@/components/ai-elements/message";
 import type { QuestionAnswerData } from "@/src/core";
-import { answeredOptionLetters, answerForPresentation, parseAskInput, parseQuizInput } from "@/src/core";
+import { answeredOptionLetters, answerForPresentation, parseAskInput, parseQuizInput, shownConfidence } from "@/src/core";
 import { useAppearance } from "@/components/settings/appearance";
 import { questionCardLabel, questionCardStandIn } from "@/components/question-dock";
 import {
@@ -132,6 +132,7 @@ export function AnsweredCard({ answer: savedAnswer, input, toolCallId }: { answe
 	}
 
 	const isQuiz = answer.kind === "quiz";
+	const confidence = shownConfidence(answer);
 	const isExplain = answer.kind === "explain";
 	const selectedIdx = new Set(answer.answers.map((a) => a.index));
 	const correctIdx = new Set(answer.correctIndices ?? []);
@@ -272,12 +273,12 @@ export function AnsweredCard({ answer: savedAnswer, input, toolCallId }: { answe
 			    "I don't know" sent none (its slider was grayed out), explain and
 			    ask never had one, and records from before the feature carry no
 			    field — nothing to show, nothing rendered. */}
-			{isQuiz && answer.confidence != null && (
+			{confidence !== undefined && (
 				<div className="mt-3 flex items-center gap-3" data-testid="answered-confidence">
-					<ConfidenceRail value={answer.confidence} className="min-w-0 flex-1" />
+					<ConfidenceRail value={confidence} className="min-w-0 flex-1" />
 					{/* Sized for "100%", shorter values centered (as on the question card). */}
 					<span className="w-[4ch] shrink-0 text-center font-mono text-sm tabular-nums text-muted-foreground">
-						{answer.confidence}%
+						{confidence}%
 					</span>
 				</div>
 			)}
