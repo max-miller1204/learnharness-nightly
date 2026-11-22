@@ -32,3 +32,14 @@ export function compareVersions(a: string, b: string): number {
 export function isNewerVersion(a: string | null | undefined, b: string | null | undefined): boolean {
 	return !!a && !!b && isExactVersion(a) && isExactVersion(b) && compareVersions(a, b) > 0;
 }
+
+/** True when both are exact versions on the same release track: both nightlies, or both plain
+ *  releases. T3 never compares across channels (`resolveVersionMismatch` compares full nightly
+ *  versions only when both are nightlies, `apps/web/src/versionSkew.ts:62-70`, and
+ *  `collectServerUpdateTargets` skips a server on another channel,
+ *  `updateEverything.logic.ts:121-130`, at df09ced7). A plain "0.7.0" sorts after every
+ *  "0.7.0-nightly.*", but it is no update for a nightly server. */
+export function sameReleaseTrack(a: string | null | undefined, b: string | null | undefined): boolean {
+	if (!a || !b || !isExactVersion(a) || !isExactVersion(b)) return false;
+	return a.includes("-") === b.includes("-");
+}

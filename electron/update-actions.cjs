@@ -27,6 +27,7 @@
  *   install(version)     the menu's Restart (installUpdateNow, which re-checks), of exactly
  *                        `version`; resolves { superseded: true } likewise
  *   running()            an Update everything run (or its confirmation) is going
+ *   restartsApp()        optional: false while that run only moves the server (this app stays open)
  *   pinFeed(version)     make the feed offer exactly `version` (null: the newest again)
  *   log(line), wait(ms)
  */
@@ -112,7 +113,9 @@ function createUpdateActions(deps) {
 		const show = deps.show;
 		if (deps.installing()) return;
 		if (deps.running()) {
-			await show({ type: "info", title: "Update in progress", message: "Update everything is running.", detail: "LearnHarness restarts by itself when the server is back.", buttons: ["OK"] }, deps.appWindow?.() ?? null);
+			// A run that only moves the server never restarts this app.
+			const detail = deps.restartsApp?.() === false ? "Only the server is updating. LearnHarness stays open." : "LearnHarness restarts by itself when the server is back.";
+			await show({ type: "info", title: "Update in progress", message: "Update everything is running.", detail, buttons: ["OK"] }, deps.appWindow?.() ?? null);
 			return;
 		}
 		// T3's "Updates unavailable" (:155-166), before any window opens: on the app window if one is shown.

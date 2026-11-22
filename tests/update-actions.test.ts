@@ -20,7 +20,7 @@ const V73 = "0.6.1-nightly.20261118.73";
 
 type State = { status: string; version: string | null; revision?: number; availableVersion?: string | null; downloadedVersion?: string | null; message?: string | null };
 
-function fixture({ state = { status: "available", version: V72 } as State, offered = V72 as string | null, running = false, answers = [] as number[] } = {}) {
+function fixture({ state = { status: "available", version: V72 } as State, offered = V72 as string | null, running = false, restartsApp = true, answers = [] as number[] } = {}) {
 	const log: string[] = [];
 	const started: string[] = [];
 	const dialogs: Array<{ title?: string; message: string; detail?: string; buttons: string[] }> = [];
@@ -79,6 +79,7 @@ function fixture({ state = { status: "available", version: V72 } as State, offer
 		download: async (version: string) => { log.push(`menu download ${version}`); return flags.onAction?.(); },
 		install: async (version: string) => { log.push(`menu install ${version}`); return flags.onAction?.(); },
 		running: () => flags.running,
+		restartsApp: () => restartsApp,
 		pinFeed: (version: string | null) => { log.push(`pin feed ${version}`); flags.pinnedFeed = version; if (version) flags.offered = version; },
 		log: () => {},
 		wait: async () => {},
@@ -267,6 +268,15 @@ test("the menu during an Update everything run: Update in progress, and no check
 	await busy.actions.checkNatively();
 	assert.deepEqual([busy.dialogs[0]!.title, busy.dialogs[0]!.message], ["Update in progress", "Update everything is running."]);
 	assert.deepEqual(busy.log, [], "no window, check, download or install during a run");
+});
+
+test("the menu during a run that only moves the server: this app stays open", async () => {
+	const busy = fixture({ running: true, restartsApp: false });
+	await busy.actions.checkNatively();
+	assert.deepEqual([busy.dialogs[0]!.title, busy.dialogs[0]!.detail], ["Update in progress", "Only the server is updating. LearnHarness stays open."]);
+	const restarts = fixture({ running: true });
+	await restarts.actions.checkNatively();
+	assert.equal(restarts.dialogs[0]!.detail, "LearnHarness restarts by itself when the server is back.");
 });
 
 for (const [status, action] of [["downloaded", "menu install"], ["available", "menu download"]] as const) {

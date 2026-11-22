@@ -947,6 +947,7 @@ const updateActions = createUpdateActions({
 	download: (version) => downloadUpdateNow({ expect: version }),
 	install: (version) => installUpdateNow({ expect: version }),
 	running: () => updateEverything?.running() ?? false,
+	restartsApp: () => updateEverything?.restartsApp?.() ?? true,
 	pinFeed: (version) => require("./nightly-updater.cjs").pinFeed(autoUpdater, version, { override: process.env.LH_UPDATE_FEED }),
 	log,
 });

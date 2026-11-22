@@ -58,11 +58,11 @@ import { runIsLive, type BridgeAnswer, type UpdateRunLocalState } from "@/compon
 import { holdWhatsNew } from "@/components/whats-new-hold";
 import { UpdateReleaseNotes } from "@/components/release-notes-view";
 import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateDownloadedToast, showUpdateErrorToast, showUpdateEverythingResult, UNEXPECTED_ERROR } from "@/components/update-toasts";
-import { APP_VERSION, HOMEPAGE, desktopOffer, useDesktopAppUpdate, useUpdateState, type DesktopAppStatus, type UpdateState } from "@/components/settings/update-settings";
+import { activeDesktopOffer, APP_VERSION, HOMEPAGE, desktopOffer, useDesktopAppUpdate, useUpdateState, type DesktopAppStatus, type UpdateState } from "@/components/settings/update-settings";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { downloadingTooltip, PREPARING_LABEL, retryTooltip } from "@/components/update-tooltips";
 import { cn } from "@/lib/utils";
-import { isExactVersion, isNewerVersion } from "@/selfhost/src/version-order.ts";
+import { isExactVersion, isNewerVersion, sameReleaseTrack } from "@/selfhost/src/version-order.ts";
 import type { ReleaseNoteGroup } from "@/src/core";
 
 export type UpdateControlKind = "check" | "checking" | "unavailable" | "download" | "downloading" | "install" | "restarting" | "dismiss-notice" | "reload" | "everything" | "app-download" | "app-install";
@@ -111,13 +111,19 @@ export function claimAutoReload(version: string): boolean {
 const serverKept = (state: UpdateState, version: string) =>
 	!!state.runningVersion && isExactVersion(state.runningVersion) && state.runningVersion === version && state.committed === true;
 
-/** Revision PR 8: this app has no newer version, but its server runs an older one (T3's
- *  `targetVersion = localUpdateVersion ?? APP_VERSION`, whose servers behind it make
- *  `hasUpdates`, `useUpdateEverything.ts:55-56` and `:104` at df09ced7). The run then asks the
- *  server for exactly this app's version and restarts nothing here. A server that can't update
- *  itself is no machine to update (T3 skips it too), and a rollback notice is read first. */
+/** This app has no newer version, but its server runs an older one on the same release track
+ *  (T3's target is `localUpdateVersion ?? APP_VERSION`, and servers behind it make `hasUpdates`,
+ *  `useUpdateEverything.ts:57` and `:104` at df09ced7; T3 compares only within a channel,
+ *  `versionSkew.ts:62-70` and `updateEverything.logic.ts:121-130`). The run then asks the server
+ *  for exactly this app's version and restarts nothing here. Not offered: by an app that doesn't
+ *  plan it (`serverOnly`), one whose updater is off (a dev or unpackaged build), a plain release
+ *  against a nightly server, a server that can't update itself, or while a rollback notice waits
+ *  (it is read first). The app's own offer is checked while it is active only, so a failed check
+ *  that left its version behind changes nothing. */
 export function serverBehindApp(state: UpdateState, desktop: DesktopAppStatus | null): boolean {
-	return !!desktop && !desktopOffer(desktop) && state.status !== "disabled" && state.notice?.kind !== "rolled-back" && isNewerVersion(desktop.version, state.runningVersion);
+	return !!desktop && desktop.serverOnly === true && desktop.phase !== "disabled" && !activeDesktopOffer(desktop)
+		&& state.status !== "disabled" && state.notice?.kind !== "rolled-back"
+		&& sameReleaseTrack(desktop.version, state.runningVersion) && isNewerVersion(desktop.version, state.runningVersion);
 }
 
 /** The one place that picks the button's state (T3's resolveSidebarUpdatePresentation order).
@@ -168,9 +174,9 @@ export function updateControlTooltip(state: UpdateState, kind: UpdateControlKind
 		case "restarting": return restartingTooltip(state.version);
 		case "dismiss-notice": return state.notice?.text ?? "";
 		// T3's updateTargetsSentence for this app and one server (updateEverything.logic.ts:765-772).
-		// With no newer app version only the server is behind (revision PR 8): "Update 1 server", as
-		// T3's sentence for servers alone (updateEverything.logic.ts:826-832).
-		case "everything": return desktop && !desktopOffer(desktop) ? "Update 1 server" : "Update this app and 1 server";
+		// With no active app update only the server is behind: "Update 1 server", as T3's sentence for
+		// servers alone (updateEverything.logic.ts:811-822 at df09ced7).
+		case "everything": return desktop && !activeDesktopOffer(desktop) ? "Update 1 server" : "Update this app and 1 server";
 		default: return "Check for updates";
 	}
 }
@@ -214,8 +220,8 @@ export type ShownReleaseNotes = {
 
 export function shownReleaseNotes(state: UpdateState | null, kind: UpdateControlKind | null, desktop: DesktopAppStatus | null = null): ShownReleaseNotes | null {
 	if (!kind || !DETAIL_KINDS.has(kind) || desktop?.phase === "updating") return null;
-	// Only the server is behind (revision PR 8): this app offers nothing, so there are no notes to show.
-	if (kind === "everything" && !desktopOffer(desktop)) return null;
+	// Only the server is behind: this app offers nothing, so there are no notes to show.
+	if (kind === "everything" && !activeDesktopOffer(desktop)) return null;
 	const appOwned = kind === "everything" || kind === "app-download" || kind === "app-install" || (kind === "downloading" && desktop?.phase === "downloading");
 	const source = appOwned ? desktop : state;
 	const releaseNotes = source?.releaseNotes ?? [];
