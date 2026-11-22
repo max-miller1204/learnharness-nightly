@@ -37,6 +37,8 @@ export type PathInputProps = Omit<React.HTMLAttributes<HTMLDivElement>, "childre
 type Controller = {
 	external: (value: string) => void;
 	remember: () => void;
+	/** Tell the owner about text adopted at mount, once. */
+	report: () => void;
 };
 
 /**
@@ -280,6 +282,11 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		}
 		controllerRef.current = {
 			remember,
+			report() {
+				if (!adopted) return;
+				adopted = false;
+				callbacks.current.onValueChange(current);
+			},
 			external(next) {
 				next = normalizePathInputValue(next, callbacks.current.singleLine);
 				if (composing.current) { pendingExternal = next; return; }
@@ -298,18 +305,28 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		// The field is editable from the server render, before any of this runs.
 		// What it holds now that differs from what React rendered is the
 		// learner's own typing (a client-only mount renders exactly `current`):
-		// keep it, and tell the owner, so it beats a saved draft or any other
-		// value the owner would restore.
-		const typed = normalizePathInputValue(readPathInput(root), initial.current.singleLine);
-		const edited = typed !== current;
-		if (edited) {
+		// keep it, so it beats a saved draft or any other value the owner would
+		// restore. The owner hears of it from a passive effect (`report`): its
+		// own mount layout effects, which reset state from its first value, run
+		// after this one in the same commit and would overwrite it.
+		// HTML parsing turns CRLF in the server's text into LF, so that alone is
+		// no edit.
+		const lineBreaks = (text: string) => text.replace(/\r\n?/g, "\n");
+		const live = readPathInput(root);
+		let adopted = false;
+		let edited = false;
+		if (lineBreaks(live) !== lineBreaks(current)) {
 			const caret = document.activeElement === root ? readPathSelection(root) : null;
-			current = typed;
-			saved = clampPathSelection(current, caret ?? { anchor: current.length, focus: current.length });
-			adoptedEdit.current = true;
+			const next = normalizePathEdit({ value: live, selection: caret ?? { anchor: live.length, focus: live.length } }, initial.current.singleLine);
+			edited = next.value !== current;
+			if (edited) {
+				current = next.value;
+				saved = clampPathSelection(current, next.selection);
+				adopted = true;
+				adoptedEdit.current = true;
+			}
 		}
 		paint(saved, edited && document.activeElement === root);
-		if (edited) callbacks.current.onValueChange(current);
 		if (initial.current.autoFocus) { root.focus(); restorePathSelection(root, saved); }
 		root.addEventListener(INSERT_FILE_PATHS_EVENT, insertEvent);
 		root.addEventListener(INSERT_CITATION_EVENT, insertCitationEvent);
@@ -341,6 +358,10 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 			document.removeEventListener("selectionchange", remember);
 		};
 	}, []);
+
+	// Child passive effects run after every layout effect of the commit (the
+	// owners' mount resets included) and before the owners' passive effects.
+	React.useEffect(() => { controllerRef.current?.report(); }, []);
 
 	React.useLayoutEffect(() => {
 		if (adoptedEdit.current) { adoptedEdit.current = false; return; }

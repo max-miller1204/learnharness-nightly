@@ -10,13 +10,13 @@ import { afterEach, test } from "node:test";
 import { parseHTML } from "linkedom";
 import { renderToString } from "react-dom/server";
 import { PathInput } from "../components/path-input.tsx";
-import { readPathInput } from "../components/path-input-dom.ts";
+import { readPathInput, readPathSelection } from "../components/path-input-dom.ts";
 
 let cleanup: (() => Promise<void>) | undefined;
 afterEach(async () => { await cleanup?.(); cleanup = undefined; });
 
 /** Server-render `serverValue`, let the "user" edit the live field, then hydrate with `clientValue`. */
-async function hydrate(serverValue: string, typed: string | null, clientValue = serverValue, singleLine = false) {
+async function hydrate(serverValue: string, typed: string | null, clientValue = serverValue, singleLine = false, caret?: number) {
 	const html = renderToString(<PathInput value={serverValue} onValueChange={() => assert.fail("SSR cannot emit changes")} singleLine={singleLine} />);
 	const { window: win, document: doc } = parseHTML(`<html><body><div id='root'>${html}</div></body></html>`);
 	const previous = new Map<string, PropertyDescriptor | undefined>();
@@ -24,10 +24,18 @@ async function hydrate(serverValue: string, typed: string | null, clientValue = 
 		previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
 		Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
 	}
-	Object.defineProperty(doc, "activeElement", { get: () => doc.body });
-	Object.assign(doc, { getSelection: () => null });
 	const field = doc.querySelector("[data-file-path-input]") as HTMLElement;
-	if (typed !== null) field.replaceChildren(doc.createTextNode(typed)); // typed before any listener existed
+	const selection = {
+		anchorNode: null as Node | null, anchorOffset: 0, focusNode: null as Node | null, focusOffset: 0,
+		setBaseAndExtent(anchorNode: Node, anchorOffset: number, focusNode: Node, focusOffset: number) { Object.assign(this, { anchorNode, anchorOffset, focusNode, focusOffset }); },
+	};
+	Object.defineProperty(doc, "activeElement", { get: () => (caret === undefined ? doc.body : field) });
+	Object.assign(doc, { getSelection: () => (caret === undefined ? null : selection) });
+	if (typed !== null) {
+		const text = doc.createTextNode(typed);
+		field.replaceChildren(text); // typed before any listener existed
+		if (caret !== undefined) selection.setBaseAndExtent(text, caret, text, caret);
+	}
 	const { hydrateRoot } = await import("react-dom/client");
 	const changes: string[] = [];
 	const errors: unknown[] = [];
@@ -42,7 +50,9 @@ async function hydrate(serverValue: string, typed: string | null, clientValue = 
 		}
 	};
 	const live = doc.querySelector("[data-file-path-input]") as HTMLElement;
-	return { field, live, changes, errors, rerender: (value: string) => act(async () => { reactRoot.render(element(value)); }) };
+	assert.deepEqual(errors, [], "hydration raised no error (React error 418 is a text mismatch)");
+	assert.equal(live, field, "hydration keeps the element the learner typed into");
+	return { field, live, selection, doc, changes, errors, rerender: (value: string) => act(async () => { reactRoot.render(element(value)); }) };
 }
 
 test("text typed before hydration is kept and reported to the owner", async () => {
@@ -120,4 +130,21 @@ test("an owner that restores a saved draft after mount leaves a pre-hydration ed
 	assert.equal(await run("typed early"), "typed early");
 	await cleanup?.(); cleanup = undefined;
 	assert.equal(await run(null), "saved draft", "with nothing typed the saved draft is restored");
+});
+
+test("a server value with CRLF is not an edit: HTML parsing turns it into LF", async () => {
+	const f = await hydrate("one\r\ntwo", "one\ntwo"); // what a browser's parser leaves in the field
+	assert.deepEqual(f.changes, []);
+});
+
+test("the caret keeps its place in the text typed before hydration", async () => {
+	const f = await hydrate("", "hello world", "", false, 5);
+	assert.equal(readPathInput(f.live), "hello world");
+	assert.deepEqual(readPathSelection(f.live), { anchor: 5, focus: 5 });
+});
+
+test("a single-line field remaps the caret past a line break typed before hydration", async () => {
+	const f = await hydrate("", "ab\ncd", "", true, 4); // 4 is after "ab\nc"
+	assert.equal(readPathInput(f.live), "abcd");
+	assert.deepEqual(readPathSelection(f.live), { anchor: 3, focus: 3 }, "the caret stays between c and d");
 });
