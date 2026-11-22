@@ -3,6 +3,8 @@
  *
  * Run: npm run build && node scripts/smoke-plan-labels.mjs [--out <dir>]
  * Focused font invalidation regressions: add --invalidation-only.
+ * With the plans far up a long transcript (80 more turns after them): add
+ * --long-transcript.
  *
  * - Starts `next start` on the existing production build (it never builds)
  *   with disposable copies of tests/fixtures/golden-data, plus one seeded chat
@@ -95,9 +97,23 @@ async function freePort() {
 	return port;
 }
 
+/** 80 more plain turns at the end of the fixture chat, so its plans sit far up a long transcript. */
+function padTranscript(file) {
+	const chat = JSON.parse(fs.readFileSync(file, "utf8"));
+	const template = chat.messages.find((m) => m.role === "assistant" && Array.isArray(m.content));
+	let at = (chat.messages.at(-1)?.timestamp ?? Date.now()) + 1;
+	for (let i = 0; i < 80; i++) {
+		chat.messages.push({ id: `msg_smoke_pad_user_${i}`, role: "user", content: `Filler question ${i}: what comes next?`, timestamp: at++ });
+		chat.messages.push({ ...structuredClone(template), id: `msg_smoke_pad_reply_${i}`, responseId: `resp_smoke_pad_${i}`, stopReason: "stop", rawStopReason: "stop", timestamp: at++,
+			content: [{ type: "text", text: `Filler answer ${i}. ${"This paragraph only makes the transcript longer. ".repeat(6)}` }] });
+	}
+	fs.writeFileSync(file, JSON.stringify(chat));
+}
+
 function seedData() {
 	const data = path.join(home, "data");
 	fs.cpSync(path.join(root, "tests/fixtures/golden-data"), data, { recursive: true });
+	if (process.argv.includes("--long-transcript")) padTranscript(path.join(data, "chats", `${FIXTURE_CHAT}.json`));
 	// The hard-titles chat: the fixture teaching chat with every plan title
 	// swapped (same ids, same edges — the real 14-node shape).
 	const chat = JSON.parse(fs.readFileSync(path.join(data, "chats", `${FIXTURE_CHAT}.json`), "utf8"));
@@ -251,13 +267,20 @@ async function setFont(page, stack, size) {
 				rule.id = "smoke-label-size";
 				document.head.appendChild(rule);
 			}
-			// The matrix reads every plan block, including offscreen ones. Lay out
-			// just those older rows while forcing sizes so their probes observe
-			// the new metrics before we compare the labels with their boxes.
-			rule.textContent = z ? `
+			// The matrix reads every plan block, including offscreen ones, and
+			// switches the font here, past Settings: only the probe's
+			// ResizeObserver hears it. An older row offscreen is skipped
+			// (content-visibility: auto): the browser lays out none of it and that
+			// observer hears nothing, so its boxes keep the last font until it comes
+			// into view and measures again (checkOffscreenSwitch covers that). Reading
+			// such a diagram would compare stale boxes with text forced into the new
+			// font, a race on transcript height and so on platform fonts. Keep those
+			// rows laid out at every size, the default 11px included, so each check
+			// reads what the diagram shows when it is seen.
+			rule.textContent = `
 				[data-older-transcript-row]:has([data-testid="plan-block-full"]) { content-visibility: visible; }
-				:is(svg[aria-label="Plan diagram"], svg[data-plan-probe]) .text-xs { font-size: ${z} !important; }
-			` : "";
+				${z ? `:is(svg[aria-label="Plan diagram"], svg[data-plan-probe]) .text-xs { font-size: ${z} !important; }` : ""}
+			`;
 		},
 		stack,
 		size,
@@ -398,6 +421,83 @@ async function checkFontInvalidation(page, origin) {
 	}
 }
 
+/** A font change that bypasses Settings (so only the probe's ResizeObserver can hear it)
+ *  while one plan's older row is skipped offscreen (content-visibility: auto, nothing laid
+ *  out, no ResizeObserver notification): its boxes stay as they were, and once it scrolls
+ *  into view the observer measures it again and its labels fit the new font. The face is
+ *  loaded first, so no font load (loadingdone) can do that work instead. */
+async function checkOffscreenSwitch(page, origin) {
+	const label = "offscreen plan · font switch past Settings, then scrolled into view · JetBrains Mono · 11px";
+	const target = "[data-smoke-offscreen-target]";
+	const fail = (problem) => { failures.push({ label, bad: [problem] }); console.log(`FAIL ${label}: ${problem}`); };
+	await openChat(page, origin, FIXTURE_CHAT);
+	// The first plan is the one this case follows, and the only one it measures.
+	await page.evaluate((stack) => {
+		document.getElementById("smoke-label-size")?.remove();
+		document.documentElement.style.removeProperty("--font-prose");
+		document.querySelector("[data-testid=plan-block-full]").setAttribute("data-smoke-offscreen-target", "");
+		// The bundled face, by its resolved family name (a CSS variable can't go in a font
+		// shorthand). Only the first family: next/font's fallback after it is a local() face
+		// (Arial), which fails to load where the OS has no Arial.
+		const family = getComputedStyle(document.documentElement).getPropertyValue("--font-jetbrains").split(",")[0].trim();
+		return Promise.all(["400", "500"].map((weight) => document.fonts.load(`${weight} 11px ${family}`, "Mastery 漢字")));
+	}, FONTS[1][1]);
+	// The transcript's own scroller is inside the role="log" wrapper (StickToBottom's content
+	// element). Scroll it to the end and wait until it is there.
+	const atEnd = () => page.evaluate(() => {
+		const scroller = [...document.querySelectorAll('[role="log"] *')].find((el) => el instanceof HTMLElement && /(auto|scroll)/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight);
+		if (!scroller) return false;
+		scroller.scrollTop = scroller.scrollHeight;
+		return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 2;
+	});
+	for (let tries = 0; !(await atEnd()) && tries < 40; tries++) await settle(page);
+	await settle(page);
+	const state = () => page.$eval(target, (block) => {
+		const row = block.closest("[data-older-transcript-row]");
+		return {
+			// The row is the root of the skip; the block inside it is what is skipped.
+			skipped: !!row && getComputedStyle(row).contentVisibility === "auto" && !block.checkVisibility({ contentVisibilityAuto: true }),
+			boxes: [...block.querySelectorAll('svg[aria-label="Plan diagram"] [data-testid^=plan-node-] > rect:first-child')].map((r) => r.getAttribute("width")).join(),
+		};
+	});
+	const before = await state();
+	if (!before.skipped) return fail("the plan's row was not skipped offscreen, so this case did not run (the transcript must be taller than the window)");
+	await page.evaluate((stack) => document.documentElement.style.setProperty("--font-prose", `${stack}, var(--font-sans3), ui-sans-serif, system-ui, sans-serif`), FONTS[1][1]);
+	await settle(page);
+	const switched = await state();
+	if (!switched.skipped) return fail("the plan's row stopped being skipped before it was scrolled to");
+	// Nothing measured it while skipped: only the observer, once it is seen, can fix the boxes.
+	if (switched.boxes !== before.boxes) return fail("the boxes changed while the row was skipped, so the ResizeObserver path was not what this tested");
+	// The transcript sticks to its bottom (StickToBottom) until the user scrolls away, and a
+	// script's scrollIntoView isn't that: as the row lays out and the content grows, it would
+	// scroll back down. A real wheel gesture up first, as a user's, then into view.
+	const log = await (await page.$('[role="log"]')).boundingBox();
+	await page.mouse.move(log.x + log.width / 2, log.y + log.height / 2);
+	for (let i = 0; i < 3; i++) { await page.mouse.wheel({ deltaY: -800 }); await new Promise((r) => setTimeout(r, 100)); }
+	const inView = () => page.$eval(target, (block) => {
+		const scroller = [...document.querySelectorAll('[role="log"] *')].find((el) => el instanceof HTMLElement && /(auto|scroll)/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight);
+		if (!scroller) return false;
+		const b = block.getBoundingClientRect();
+		const v = scroller.getBoundingClientRect();
+		return b.bottom > v.top && b.top < v.bottom && block.checkVisibility({ contentVisibilityAuto: true });
+	});
+	for (let tries = 0; tries < 20; tries++) {
+		await page.$eval(target, (el) => el.scrollIntoView({ block: "start" }));
+		await settle(page);
+		if (await inView()) break;
+	}
+	await untilStable(page, target);
+	if (!(await inView())) return fail("the plan did not stay in the transcript's view after scrolling to it");
+	const rows = await measureLabels(page, target);
+	if (!rows.every((r) => /JetBrains Mono/.test(r.font))) return fail(`the plan's labels render in ${rows.find((r) => !/JetBrains Mono/.test(r.font))?.font}, not JetBrains Mono`);
+	check(label, rows);
+	await page.evaluate((sel) => {
+		document.querySelector(sel)?.removeAttribute("data-smoke-offscreen-target");
+		document.documentElement.style.removeProperty("--font-prose");
+	}, target);
+	await settle(page);
+}
+
 /** Element screenshot after scrolling it to the top and letting layout settle. */
 async function shoot(page, selector, file) {
 	await page.$eval(selector, (el) => el.scrollIntoView({ block: "start" }));
@@ -421,10 +521,15 @@ async function openChat(page, origin, id, font) {
 		{ timeout: 30_000 },
 		font ?? null,
 	);
+	await untilStable(page);
+}
+
+/** Until the box widths under `scope` hold still for three polls in a row. */
+async function untilStable(page, scope = "") {
 	let last = "";
 	for (let same = 0, tries = 0; same < 3 && tries < 40; tries++) {
 		await settle(page);
-		const now = await page.$$eval("[data-testid^=plan-node-] rect", (rects) => rects.map((r) => r.getAttribute("width")).join());
+		const now = await page.$$eval(`${scope} [data-testid^=plan-node-] rect`, (rects) => rects.map((r) => r.getAttribute("width")).join());
 		same = now === last ? same + 1 : 0;
 		last = now;
 	}
@@ -466,6 +571,10 @@ async function main() {
 			}
 			await setFont(page, null, null);
 		}
+
+		// 1b. A font change past Settings under an offscreen plan: skipped while offscreen,
+		// it is measured again in the new font as it comes into view.
+		await checkOffscreenSwitch(page, origin);
 
 		// 2. Popup (the live plan) on the hard titles, default + mono + big.
 		await openChat(page, origin, HARD_CHAT);
