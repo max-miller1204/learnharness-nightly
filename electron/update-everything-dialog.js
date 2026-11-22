@@ -71,14 +71,22 @@ function render(plan) {
 	warning.hidden = !text;
 	warning.textContent = text ?? "";
 	warning.classList.toggle("blocking", !!plan.disabledReason);
-	$("update").disabled = !!plan.disabledReason;
+	$("update").disabled = true;
 	$("dialog").hidden = false;
 	$("cancel").focus();
+	setTimeout(() => {
+		armed = true;
+		$("update").disabled = !!plan.disabledReason;
+	}, ARM_MS);
 }
 
 let answered = false;
+// Update counts only after this, as main's own check (UPDATE_ARM_MS): a click the page lured to
+// where Update appears isn't an answer.
+const ARM_MS = 500;
+let armed = false;
 function answer(update) {
-	if (answered) return;
+	if (answered || (update && !armed)) return;
 	answered = true;
 	void (update ? api.update() : api.cancel());
 }
@@ -101,12 +109,15 @@ document.addEventListener("keydown", (event) => {
 		answer(false);
 		return;
 	}
+	// A shortcut with Meta, Ctrl or Alt is not the dialog's.
+	if (event.metaKey || event.ctrlKey || event.altKey) return;
 	const buttons = [...document.querySelectorAll("#dialog button")].filter((button) => !button.disabled && !button.closest("[hidden]"));
 	if (event.key === "Tab") {
 		event.preventDefault();
 		if (buttons.length === 0) return;
 		const at = buttons.indexOf(document.activeElement);
-		const next = at < 0 ? 0 : (at + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length;
+		// From outside the buttons, Tab goes to the first and Shift+Tab to the last.
+		const next = at < 0 ? (event.shiftKey ? buttons.length - 1 : 0) : (at + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length;
 		buttons[next].focus();
 		return;
 	}

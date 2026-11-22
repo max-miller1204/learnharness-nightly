@@ -11,7 +11,7 @@ import path from "node:path";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const { createUpdateEverything, serverLabel, HANDOFF_TIMEOUT_MS, RESTART_DELAY_MS, SAVED_RESULT_MAX_AGE_MS, PAGE_READY_TIMEOUT_MS } = require("../electron/update-everything.cjs");
+const { createUpdateEverything, serverLabel, HANDOFF_TIMEOUT_MS, RESTART_DELAY_MS, SAVED_RESULT_MAX_AGE_MS, PAGE_READY_TIMEOUT_MS, ASK_COOLDOWN_MS } = require("../electron/update-everything.cjs");
 const { registerDesktopUpdateIPC } = require("../electron/update-everything-ipc.cjs");
 
 const ORIGIN = "https://max-desktop.tail1234.ts.net:8443";
@@ -641,7 +641,7 @@ test("the bridge answers only the remote window's main frame at its origin, and 
 	assert.deepEqual(calls, [], "none of them reached main's run");
 });
 
-test("the remote preload exposes only window.lh.desktopUpdate and window.lh.chatgptSignIn, and forwards no argument", () => {
+test("the remote preload exposes only window.lh.desktopUpdate and window.lh.chatgptSignIn, forwards no argument, and asks only from a click", async () => {
 	const source = fs.readFileSync(path.join(import.meta.dirname, "..", "electron", "remote-preload.cjs"), "utf8");
 	const exposed = new Map<string, unknown>();
 	const invoked: unknown[][] = [];
@@ -660,7 +660,22 @@ test("the remote preload exposes only window.lh.desktopUpdate and window.lh.chat
 	assert.deepEqual(Object.keys(lh), ["desktopUpdate", "chatgptSignIn"]);
 	const methods = ["getStatus", "check", "download", "install", "installApp", "everything", "ready", "later", "retry", "dismiss", "takeResult"];
 	assert.deepEqual(Object.keys(lh.desktopUpdate), methods);
-	for (const method of methods) lh.desktopUpdate[method]!({ planId: "123e4567-e89b-42d3-a456-426614174000" }, "0.0.1-evil", "https://evil.example");
+	// Asking for a dialog needs the user's own click or key press in the page.
+	const activation = { isActive: false };
+	const descriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+	Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userActivation: activation } });
+	try {
+		for (const method of ["install", "everything", "retry"]) {
+			const refused = lh.desktopUpdate[method]!() as Promise<unknown>;
+			await assert.rejects(refused, /only from a click/, method);
+		}
+		assert.deepEqual(invoked.splice(0), [], "a script alone asks for nothing");
+		activation.isActive = true;
+		for (const method of methods) lh.desktopUpdate[method]!({ planId: "123e4567-e89b-42d3-a456-426614174000" }, "0.0.1-evil", "https://evil.example");
+	} finally {
+		if (descriptor) Object.defineProperty(globalThis, "navigator", descriptor);
+		else delete (globalThis as { navigator?: unknown }).navigator;
+	}
 	assert.deepEqual(invoked.splice(0), [
 		["lh:desktop-update", "status"], ["lh:desktop-update", "check"], ["lh:desktop-update", "download"], ["lh:desktop-update", "install"],
 		["lh:desktop-update", "install-app"], ["lh:desktop-update", "everything"], ["lh:desktop-update", "ready"], ["lh:desktop-update", "later"],
@@ -731,6 +746,34 @@ test("only main's own dialog starts a run: the page's calls alone never do, a re
 	assert.equal(f.ue.running(), false);
 	assert.equal(runOf(f), null);
 	assert.equal(f.prompts.length, 0);
+});
+
+test("after a Cancel the page can't ask again at once: a script can't keep putting the dialog up", async () => {
+	const f = fixture({ inApp: [false, false] });
+	assert.deepEqual(await f.ue.everything(), { started: false });
+	assert.deepEqual(await f.ue.everything(), { error: { title: "Update everything", detail: "Try again in a moment." } }, "refused, with a reason the page can show");
+	assert.equal(f.asked.length, 1, "no second dialog");
+	f.advance(ASK_COOLDOWN_MS);
+	assert.deepEqual(await f.ue.everything(), { started: false });
+	assert.equal(f.asked.length, 2, "it asks again later");
+	// The native confirmation's Cancel counts too.
+	const native = fixture({ answers: [1] });
+	await native.ue.install();
+	await native.ue.install();
+	assert.equal(native.prompts.length, 1);
+});
+
+test("main's native confirmations default to Cancel: Enter or Escape changes nothing", async () => {
+	for (const server of [V71, V72]) {
+		const f = fixture({ server, answers: [1] });
+		await f.ue.install();
+		const prompt = f.prompts[0] as Prompt & { defaultId?: number; cancelId?: number };
+		assert.equal(prompt.buttons[prompt.defaultId!], "Cancel", `${server}: the default`);
+		assert.equal(prompt.buttons[prompt.cancelId!], "Cancel");
+	}
+	const { installAppConfirmation } = require("../electron/update-everything.cjs");
+	const app = installAppConfirmation(V72);
+	assert.equal(app.buttons[app.defaultId], "Cancel");
 });
 
 test("main's dialog shows the plan: the server first, This app last, its running work", async () => {

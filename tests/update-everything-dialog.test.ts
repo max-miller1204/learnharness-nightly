@@ -16,7 +16,7 @@ import { parseHTML } from "linkedom";
 import { installModalDom } from "./modal-dom.ts";
 
 const require = createRequire(import.meta.url);
-const { createUpdateEverythingDialog, CHANNEL, PAGE } = require("../electron/update-everything-dialog.cjs");
+const { createUpdateEverythingDialog, CHANNEL, PAGE, PARTITION, UPDATE_ARM_MS } = require("../electron/update-everything-dialog.cjs");
 const PAGE_URL = pathToFileURL(PAGE).href;
 const PLAN = {
 	version: "0.6.1-nightly.20261118.72", running: 2, skipped: [], disabledReason: null,
@@ -35,7 +35,7 @@ class FakeContents extends EventEmitter {
 	async loadFile(file: string, options: { query: unknown }) { this.loaded = { file, query: options.query }; this.mainFrame = { url: `${pathToFileURL(file).href}?mode=dark` }; }
 }
 
-function electron() {
+function electron({ clock = { now: 0 } } = {}) {
 	const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
 	const views: Array<{ webContents: FakeContents; preferences: { webPreferences: Record<string, unknown> } }> = [];
 	class WebContentsView {
@@ -54,14 +54,18 @@ function electron() {
 	});
 	let destroyed = false;
 	const win = Object.assign(new EventEmitter(), { contentView, webContents: page, isDestroyed: () => destroyed, close: () => { destroyed = true; win.emit("closed"); } });
+	const partitions: string[] = [];
 	const dialog = createUpdateEverythingDialog({
 		ipcMain: { handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => unknown) => handlers.set(channel, fn) },
-		WebContentsView, session: { fromPartition: () => ({}) }, themeMode: () => "light",
+		WebContentsView, session: { fromPartition: (name: string) => { partitions.push(name); return {}; } }, themeMode: () => "light",
+		now: () => clock.now,
 	});
 	const handle = (event: unknown, ...args: unknown[]) => Promise.resolve().then(() => handlers.get(CHANNEL)!(event, ...args));
-	return { dialog, views, win, children, page, handle };
+	return { dialog, views, win, children, page, handle, partitions, clock };
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+/** Past the dialog page's own 500 ms before Update counts. */
+const armed = () => new Promise((resolve) => setTimeout(resolve, UPDATE_ARM_MS + 30));
 
 test("main's dialog: its own view over the window, the page's keys blocked, the plan only for that view at the app's page", async () => {
 	const e = electron();
@@ -88,12 +92,23 @@ test("main's dialog: its own view over the window, the page's keys blocked, the 
 	const frame = view.webContents.mainFrame;
 	frame.url = "https://evil.example/update-everything-dialog.html";
 	await assert.rejects(e.handle({ sender: view.webContents, senderFrame: frame }, "update"), /Untrusted dialog request/, "another page in the view");
+	frame.url = `${PAGE_URL}?mode=dark#x`;
+	await assert.rejects(e.handle({ sender: view.webContents, senderFrame: frame }, "update"), /Untrusted dialog request/, "a URL with a hash");
 	frame.url = `${PAGE_URL}?mode=dark`;
 	assert.deepEqual(await Promise.all([e.dialog.ask(e.win, PLAN)]), [false], "one at a time");
+	// Update counts only UPDATE_ARM_MS after the dialog showed (its plan was served).
+	e.clock.now += UPDATE_ARM_MS - 1;
+	await e.handle({ sender: view.webContents, senderFrame: frame }, "update");
+	assert.equal(e.children.size, 1, "too early: ignored, the dialog stays");
+	e.clock.now += 1;
 	await e.handle({ sender: view.webContents, senderFrame: frame }, "update");
 	assert.equal(await answer, true, "Update is the yes");
 	assert.equal(e.children.size, 0, "the view is gone");
 	assert.equal(e.page.listenerCount("before-input-event"), 0, "the page takes keys again");
+	assert.equal(e.win.listenerCount("focus"), 0, "no focus hook left");
+	assert.equal(e.win.listenerCount("closed"), 0);
+	assert.equal(e.win.contentView.listenerCount("bounds-changed"), 0, "no bounds hook left");
+	assert.deepEqual(e.partitions, [PARTITION], "one fixed session, the dialog's own");
 	assert.equal(view.webContents.destroyed, true);
 	await assert.rejects(e.handle({ sender: view.webContents, senderFrame: frame }, "update"), /Untrusted dialog request/, "a closed dialog answers nothing more");
 });
@@ -114,6 +129,20 @@ test("Cancel, a closed window or a gone view is a no", async () => {
 	await tick();
 	gone.views[0]!.webContents.close();
 	assert.equal(await going, false);
+	const crashed = electron();
+	const crashing = crashed.dialog.ask(crashed.win, PLAN);
+	await tick();
+	crashed.views[0]!.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+	assert.equal(await crashing, false, "a crashed dialog is a no");
+	assert.equal(crashed.children.size, 0);
+	// Every dialog shares the one partition.
+	const twice = electron();
+	void twice.dialog.ask(twice.win, PLAN);
+	await tick();
+	twice.views[0]!.webContents.close();
+	void twice.dialog.ask(twice.win, PLAN);
+	await tick();
+	assert.deepEqual(twice.partitions, [PARTITION, PARTITION]);
 	assert.equal(await gone.dialog.ask(null, PLAN), false, "no window, no dialog");
 });
 
@@ -130,15 +159,35 @@ async function page(plan: unknown) {
 	restores.push(installModalDom(dom));
 	const answers: string[] = [];
 	const api = { plan: async () => plan, update: async () => { answers.push("update"); }, cancel: async () => { answers.push("cancel"); } };
-	runInNewContext(await fs.readFile(path.join(shell, "update-everything-dialog.js"), "utf8"), { window: { updateEverything: api }, document });
+	runInNewContext(await fs.readFile(path.join(shell, "update-everything-dialog.js"), "utf8"), { window: { updateEverything: api }, document, setTimeout });
 	await tick();
 	await tick();
-	const key = (key: string, shiftKey = false) => {
-		const event = Object.assign(new window.Event("keydown", { bubbles: true, cancelable: true }), { key, shiftKey, isComposing: false });
+	const key = (key: string, shiftKey = false, modifiers: { metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean } = {}) => {
+		const event = Object.assign(new window.Event("keydown", { bubbles: true, cancelable: true }), { key, shiftKey, isComposing: false, metaKey: false, ctrlKey: false, altKey: false, ...modifiers });
 		(document.activeElement ?? document.body).dispatchEvent(event);
 	};
 	return { document, answers, key, $: (id: string) => document.getElementById(id)! };
 }
+
+test("the dialog's preload exposes only plan, update and cancel, each with no argument, and only in the main frame", () => {
+	const source = require("node:fs").readFileSync(path.join(import.meta.dirname, "../electron/update-everything-dialog-preload.cjs"), "utf8");
+	for (const isMainFrame of [false, true]) {
+		const exposed = new Map<string, Record<string, (...args: unknown[]) => unknown>>();
+		const invoked: unknown[][] = [];
+		new Function("require", "process", source)((name: string) => {
+			assert.equal(name, "electron");
+			return {
+				contextBridge: { exposeInMainWorld: (key: string, value: Record<string, (...args: unknown[]) => unknown>) => exposed.set(key, value) },
+				ipcRenderer: { invoke: (...args: unknown[]) => { invoked.push(args); return Promise.resolve(); } },
+			};
+		}, { isMainFrame });
+		if (!isMainFrame) { assert.deepEqual([...exposed.keys()], [], "a subframe gets nothing"); continue; }
+		const api = exposed.get("updateEverything")!;
+		assert.deepEqual(Object.keys(api), ["plan", "update", "cancel"]);
+		for (const method of ["plan", "update", "cancel"]) api[method]!("evil", { planId: 1 });
+		assert.deepEqual(invoked, [[CHANNEL, "plan"], [CHANNEL, "update"], [CHANNEL, "cancel"]], "nothing from the page goes on");
+	}
+});
 
 test("the dialog shows T3's Update N machines? with This app last, its running work, and Cancel focused", async () => {
 	const p = await page(PLAN);
@@ -152,11 +201,16 @@ test("the dialog shows T3's Update N machines? with This app last, its running w
 	assert.deepEqual([...p.document.querySelectorAll("#table [role=columnheader]")].map((cell) => cell.textContent), ["Machine", "LearnHarness", "Providers", "Running"]);
 	assert.equal(p.$("warning").textContent, "2 running tasks will be interrupted.");
 	assert.equal(focused(p.document, p.$("cancel")), true, "Cancel is focused first");
+	assert.equal((p.$("update") as HTMLButtonElement).disabled, true, "Update starts disabled, so a lured click isn't an answer");
+	p.$("update").click();
 	assert.deepEqual(p.answers, []);
+	await armed();
+	assert.equal((p.$("update") as HTMLButtonElement).disabled, false);
 });
 
 test("its keys: Tab and Shift+Tab cycle its buttons, Escape cancels, Enter presses the focused one", async () => {
 	const p = await page({ ...PLAN, skipped: [{ label: "laptop", reason: "needs a manual update" }] });
+	await armed();
 	assert.equal(focused(p.document, p.$("cancel")), true);
 	p.key("Tab");
 	assert.equal(focused(p.document, p.$("update")), true);
@@ -169,6 +223,16 @@ test("its keys: Tab and Shift+Tab cycle its buttons, Escape cancels, Enter press
 	assert.equal(focused(p.document, p.$("update")), true);
 	p.key("Enter");
 	assert.deepEqual(p.answers, ["update"]);
+	// A shortcut isn't the dialog's; from outside its buttons, Shift+Tab goes to the last one.
+	const shortcut = await page(PLAN);
+	await armed();
+	shortcut.key("Tab", false, { ctrlKey: true });
+	assert.equal(focused(shortcut.document, shortcut.$("cancel")), true, "Ctrl+Tab moved nothing");
+	shortcut.key("Enter", false, { metaKey: true });
+	assert.deepEqual(shortcut.answers, [], "Meta+Enter pressed nothing");
+	(shortcut.document.activeElement as HTMLElement).blur();
+	shortcut.key("Tab", true);
+	assert.equal(focused(shortcut.document, shortcut.$("update")), true, "Shift+Tab from outside: the last button");
 	const cancelled = await page(PLAN);
 	cancelled.key("Escape");
 	assert.deepEqual(cancelled.answers, ["cancel"]);
@@ -181,6 +245,7 @@ test("an app-only update shows no running work; a disabled reason blocks Update;
 	assert.equal(appOnly.$("title").textContent, "Update 1 machine?");
 	assert.equal(appOnly.$("warning").hidden, true);
 	const blocked = await page({ ...PLAN, rows: [{ label: "This app", app: "this-app", running: 0 }], disabledReason: "Update max-desktop from its own Settings first." });
+	await armed();
 	assert.equal(blocked.$("warning").textContent, "Update max-desktop from its own Settings first.");
 	assert.equal((blocked.$("update") as HTMLButtonElement).disabled, true);
 	blocked.$("update").click();

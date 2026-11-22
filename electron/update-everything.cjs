@@ -33,6 +33,9 @@ const INSTALL_VERSION_PATH = "/api/updates/install-version";
 // How long main waits for the server's page to show the capsule (revision PR 7) before it shows
 // its own native countdown or failure instead: a page from before PR 7 never does.
 const PAGE_READY_TIMEOUT_MS = 10_000;
+// After a Cancel, the page can't ask for the dialog again for this long.
+const ASK_COOLDOWN_MS = 3_000;
+const TOO_SOON = { title: "Update everything", detail: "Try again in a moment." };
 
 // The ghost dashboard's name for a server: its first label, or a whole IP.
 const { hostLabel: serverLabel } = require("./skeleton.cjs");
@@ -43,18 +46,19 @@ function plural(count, one, other) {
 
 /** The native confirmation's text (plan approved 2026-11-18). */
 function confirmation({ label, target, serverBehind, running }) {
+	// Cancel is the default and the cancel button: Enter or Escape changes nothing.
 	if (!serverBehind) {
 		return {
 			message: `Restart LearnHarness to update to ${target}?`,
 			detail: `${label} already runs ${target}. Only this app restarts.`,
-			buttons: ["Restart", "Cancel"],
+			buttons: ["Restart", "Cancel"], defaultId: 1, cancelId: 1,
 		};
 	}
 	const stops = running > 0 ? ` ${plural(running, "running task", "running tasks")} there will stop.` : "";
 	return {
 		message: "Update everything?",
 		detail: `Update ${label} and this app to ${target}.\n\n1. ${label} updates first and restarts. This takes a few minutes.${stops}\n2. Once ${label} is back, this app restarts to finish.`,
-		buttons: ["Update everything", "Cancel"],
+		buttons: ["Update everything", "Cancel"], defaultId: 1, cancelId: 1,
 	};
 }
 
@@ -65,7 +69,7 @@ function installAppConfirmation(version) {
 	return {
 		message: `Install update${version ? ` ${version}` : ""} and restart LearnHarness?`,
 		detail: "Any running tasks will be interrupted. Make sure you're ready before continuing.",
-		buttons: ["Install and restart", "Cancel"],
+		buttons: ["Install and restart", "Cancel"], defaultId: 1, cancelId: 1,
 	};
 }
 
@@ -130,6 +134,10 @@ function createUpdateEverything(deps) {
 	let results = 0;
 	let decideRestart = null;
 	let pageShown = null;
+	// When the user last said no (main's dialog, or the native confirmation): no repeat ask until ASK_COOLDOWN_MS.
+	let declinedAt = -Infinity;
+	const clock = () => (deps.now ? deps.now() : Date.now());
+	const tooSoon = () => clock() - declinedAt < ASK_COOLDOWN_MS;
 
 	/** What the page's capsule shows of an in-page run, or of a run kept after its failure.
 	 *  Labels and messages are main's own text, never the page's. */
@@ -306,7 +314,7 @@ function createUpdateEverything(deps) {
 				type: "warning",
 				message: "The app update didn’t finish.",
 				detail: `LearnHarness is still on ${deps.appVersion} and ${serverLabel(retry.updated ?? retry.server)} is on ${retry.target}. Install LearnHarness ${retry.target} again? Only this app restarts.`,
-				buttons: ["Try Again", "Later"],
+				buttons: ["Try Again", "Later"], defaultId: 1, cancelId: 1,
 			});
 		} finally { asking = false; }
 		if (choice !== 0) return;
@@ -371,7 +379,10 @@ function createUpdateEverything(deps) {
 		const text = confirmation({ label, target, serverBehind, running });
 		const choice = await deps.confirm(text);
 		answered();
-		if (choice !== 0) return;
+		if (choice !== 0) {
+			declinedAt = clock();
+			return;
+		}
 
 		run = { target, step: "downloading" };
 		let serverDone = false;
@@ -476,9 +487,13 @@ function createUpdateEverything(deps) {
 	async function confirmedInApp(selection, plan) {
 		if (plan.view.disabledReason) {
 			await deps.askInApp(selection, plan.view);
+			declinedAt = clock();
 			return false;
 		}
-		if (!(await deps.askInApp(selection, plan.view))) return false;
+		if (!(await deps.askInApp(selection, plan.view))) {
+			declinedAt = clock();
+			return false;
+		}
 		const now = deps.selection();
 		return !!now && now.win === selection.win && now.origin === selection.origin && now.token === selection.token;
 	}
@@ -614,6 +629,7 @@ function createUpdateEverything(deps) {
 		 *  window. Resolves { started }, or { error } for the page's toast. */
 		async everything() {
 			if (run || asking) return { started: false };
+			if (tooSoon()) return { error: TOO_SOON };
 			const selection = deps.selection();
 			if (!selection) return { started: false };
 			asking = true;
@@ -632,6 +648,7 @@ function createUpdateEverything(deps) {
 		 *  version and the same checks as the first plan. */
 		async retry() {
 			if (run || asking || !kept) return { started: false };
+			if (tooSoon()) return { error: TOO_SOON };
 			const selection = deps.selection();
 			if (!selection || selection.origin !== kept.origin) return { started: false };
 			asking = true;
@@ -697,6 +714,7 @@ function createUpdateEverything(deps) {
 		/** The page's install() (an older page): main asks in its own native dialog, and this
 		 *  resolves once that is answered. */
 		async install() {
+			if (tooSoon()) return;
 			if (run || asking) return;
 			asking = true;
 			let answered;
@@ -731,4 +749,4 @@ function createUpdateEverything(deps) {
 	};
 }
 
-module.exports = { createUpdateEverything, serverLabel, confirmation, installAppConfirmation, HANDOFF_TIMEOUT_MS, RESTART_DELAY_MS, SAVED_RESULT_MAX_AGE_MS, INSTALL_VERSION_PATH, PAGE_READY_TIMEOUT_MS };
+module.exports = { createUpdateEverything, serverLabel, confirmation, installAppConfirmation, HANDOFF_TIMEOUT_MS, RESTART_DELAY_MS, SAVED_RESULT_MAX_AGE_MS, INSTALL_VERSION_PATH, PAGE_READY_TIMEOUT_MS, ASK_COOLDOWN_MS };

@@ -8,30 +8,40 @@
  * only its Update, a click or key press in this surface, starts or retries a run. The page
  * can't reach it: another WebContents, loaded from file:, sandboxed, with its own preload
  * (update-everything-dialog-preload.cjs) and a channel main answers only for this view's
- * main frame at this page. While it is up the page takes no keys.
+ * main frame at this page. While it is up the page takes no keys. Its Update counts only from
+ * UPDATE_ARM_MS after the dialog shows, so a click the page lured to where Update appears
+ * doesn't start a run.
  */
 
 const path = require("node:path");
-const { randomUUID } = require("node:crypto");
 const { pathToFileURL } = require("node:url");
 
 const PAGE = path.join(__dirname, "update-everything-dialog.html");
 const PAGE_URL = pathToFileURL(PAGE).href;
 const CHANNEL = "lh:update-everything-dialog";
 const ACTIONS = new Set(["plan", "update", "cancel"]);
+// The dialog's Update is ignored this long after it shows (its page disables it as long).
+const UPDATE_ARM_MS = 500;
+// One session for every dialog: its own, never the server page's.
+const PARTITION = "update-everything-dialog";
 
 /** `ipcMain`, `WebContentsView` and `session` are Electron's; `themeMode()` the app theme's mode. */
-function createUpdateEverythingDialog({ ipcMain, WebContentsView, session, themeMode = () => "dark" }) {
-	let open = null; // { contents, plan, finish }
+function createUpdateEverythingDialog({ ipcMain, WebContentsView, session, themeMode = () => "dark", now = Date.now }) {
+	let open = null; // { contents, plan, finish, shownAt }
 	ipcMain.handle(CHANNEL, (event, action, ...extra) => {
 		const dialog = open;
 		const frame = event.senderFrame;
 		if (!dialog || dialog.contents.isDestroyed() || event.sender !== dialog.contents || frame !== dialog.contents.mainFrame ||
-			typeof frame?.url !== "string" || frame.url.split(/[?#]/)[0] !== PAGE_URL ||
+			typeof frame?.url !== "string" || frame.url.includes("#") || frame.url.split("?")[0] !== PAGE_URL ||
 			typeof action !== "string" || !ACTIONS.has(action) || extra.length > 0) {
 			throw new Error("Untrusted dialog request.");
 		}
-		if (action === "plan") return dialog.plan;
+		if (action === "plan") {
+			dialog.shownAt ??= now();
+			return dialog.plan;
+		}
+		// Too early to be the user's answer to this dialog: ignored, it stays open.
+		if (action === "update" && (dialog.shownAt === null || now() - dialog.shownAt < UPDATE_ARM_MS)) return;
 		dialog.finish(action === "update");
 	});
 
@@ -42,7 +52,7 @@ function createUpdateEverythingDialog({ ipcMain, WebContentsView, session, theme
 		return new Promise((resolve) => {
 			const view = new WebContentsView({
 				webPreferences: {
-					session: session.fromPartition(`update-everything-${randomUUID()}`, { cache: false }),
+					session: session.fromPartition(PARTITION, { cache: false }),
 					preload: path.join(__dirname, "update-everything-dialog-preload.cjs"),
 					sandbox: true, contextIsolation: true, nodeIntegration: false,
 				},
@@ -85,7 +95,8 @@ function createUpdateEverythingDialog({ ipcMain, WebContentsView, session, theme
 			const closed = () => finish(false);
 			win.once("closed", closed);
 			contents.once("destroyed", () => finish(false));
-			open = { contents, plan, finish };
+			contents.once("render-process-gone", () => finish(false));
+			open = { contents, plan, finish, shownAt: null };
 			void contents.loadFile(PAGE, { query: { mode: themeMode() === "light" ? "light" : "dark" } }).then(focus, () => finish(false));
 		});
 	}
@@ -93,4 +104,4 @@ function createUpdateEverythingDialog({ ipcMain, WebContentsView, session, theme
 	return { ask, isOpen: () => open !== null };
 }
 
-module.exports = { createUpdateEverythingDialog, CHANNEL, PAGE };
+module.exports = { createUpdateEverythingDialog, CHANNEL, PAGE, PARTITION, UPDATE_ARM_MS };
