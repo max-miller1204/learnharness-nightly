@@ -183,21 +183,30 @@ describe("session rows from the keyboard", () => {
 
 	it("plain Enter, Space and arrows on a row never reach an open question dock's document listener (#358 review)", async () => {
 		await mount();
-		// The built-in quiz dock listens on the document in the bubble phase (question-dock.tsx).
+		// The built-in quiz dock listens on the document in the bubble phase
+		// (question-dock.tsx), and Next.js hydrates the whole document, so React's
+		// root listener is on that same node. Here the root is `host`: the dock's
+		// listener goes on it too, registered after React's, as in the app.
 		const dock: string[] = [];
 		const onDock = (e: Event) => { dock.push((e as KeyboardEvent).key); };
-		dom.document.addEventListener("keydown", onDock);
+		host!.addEventListener("keydown", onDock);
 		try {
 			for (const key of ["Enter", " ", "ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight"]) {
 				assert.equal(await press(rowOf("c1"), key), false, `${JSON.stringify(key)} keeps the button's native default`);
 			}
 			assert.deepEqual(dock, [], "the dock saw none of the row's keys, so a quiz can't be submitted from a row");
+			// The review's path: Tab from the search, then Tab: the list's, not the dock's.
+			focused = byId("session-search");
+			await press(byId("session-search"), "Tab");
+			await press(byId("sidebar-folder-f1"), "Tab");
+			assert.equal(focusedName(), "c1");
+			assert.deepEqual(dock, [], "the dock didn't take the list's Tabs either");
 			await press(rowOf("c1"), "b", { metaKey: true });
 			await press(byId("rename-field"), "Enter");
 			await press(byId("session-search"), "ArrowDown");
 			assert.deepEqual(dock, ["b", "Enter", "ArrowDown"], "modified keys and keys from fields still go on");
 		} finally {
-			dom.document.removeEventListener("keydown", onDock);
+			host!.removeEventListener("keydown", onDock);
 		}
 	});
 
@@ -417,6 +426,9 @@ describe("sidebar.tsx wiring", () => {
 		assert.equal((source.match(/closeMenuToRow\("session-context-menu", ctxAnchorRef\.current, /g) ?? []).length, 3, "Esc (onClose), click-away, and closeSessionMenu for the items");
 		assert.equal((source.match(/closeMenuToRow\("folder-context-menu", folderAnchorRef\.current, /g) ?? []).length, 3);
 		assert.match(source, /returnFocusFallback=\{deleteReturn \?\? undefined\}/);
+		// The dialog takes the focused element as its opener: the row, not the page.
+		assert.match(source, /closeSessionMenu\(\(\) => \{ row\?\.focus\(\{ preventScroll: true \}\); if \(target\) setDeleting\(target\); \}\);/);
+		assert.match(source, /closeFolderMenu\(\(\) => row\?\.focus\(\{ preventScroll: true \}\)\);/);
 		assert.match(source, /returnFocusFallback=\{folderDeleteReturn \?\? undefined\}/);
 		assert.match(source, /focusKeeper\.afterRender\(searchRef\.current\)/);
 		assert.match(source, /swallowNextContextMenu\(\);/);

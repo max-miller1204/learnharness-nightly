@@ -43,7 +43,17 @@ export function sidebarStops(list: Element | null): HTMLElement[] {
 		!(stop as HTMLButtonElement).disabled && !stop.closest("[hidden], [aria-hidden='true']"));
 }
 
-type TabEvent = Keyish & { target: EventTarget | null; preventDefault(): void; stopPropagation(): void };
+type TabEvent = Keyish & { target: EventTarget | null; preventDefault(): void; stopPropagation(): void; nativeEvent?: { stopImmediatePropagation?(): void } };
+
+/** Stop a key the list takes. Next.js hydrates the whole document, so
+ *  React's root listener is on the document, and so are the question dock's
+ *  keydown listener and others registered after it: stopPropagation alone
+ *  only keeps the key from the window. stopImmediatePropagation on the native
+ *  event also keeps it from those later document listeners. */
+function stopHere(event: TabEvent): void {
+	event.stopPropagation();
+	event.nativeEvent?.stopImmediatePropagation?.();
+}
 
 const plainTab = (event: Keyish) => event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey;
 
@@ -57,7 +67,7 @@ export function tabIntoList(event: TabEvent, list: Element | null, walked: HTMLE
 	const next = walked && stops.includes(walked) ? walked : stops[0];
 	if (!next) return false;
 	event.preventDefault();
-	event.stopPropagation();
+	stopHere(event);
 	next.focus();
 	return true;
 }
@@ -72,7 +82,7 @@ export function tabThroughList(event: TabEvent, list: Element | null, search: HT
 	const next = event.shiftKey ? (at > 0 ? stops[at - 1] : search) : stops[at + 1];
 	if (!next) return false;
 	event.preventDefault();
-	event.stopPropagation();
+	stopHere(event);
 	next.focus();
 	return true;
 }
@@ -88,7 +98,7 @@ export function keepRowKeys(event: TabEvent): boolean {
 	if (notOurs(event) || event.altKey || event.ctrlKey || event.metaKey || !ROW_KEYS.has(event.key)) return false;
 	const target = event.target as Element | null;
 	if (!target?.hasAttribute?.(SIDEBAR_STOP)) return false;
-	event.stopPropagation();
+	stopHere(event);
 	return true;
 }
 

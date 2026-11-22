@@ -748,8 +748,10 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 		const folder = organization.folders.find((f) => f.id === id);
 		const scope = folderDeletionScope(directory, id);
 		if (!folder || !scope) return;
-		setFolderDeleteReturn(folderAnchorRef.current);
-		closeFolderMenu();
+		const row = folderAnchorRef.current;
+		setFolderDeleteReturn(row);
+		// The folder row is the Delete dialog's opener, as for a session's Delete.
+		closeFolderMenu(() => row?.focus({ preventScroll: true }));
 		clearFolderFailure();
 		if (scope.chatIds.length === 0) {
 			void fetch(`/api/graph/sources/folders/${encodeURIComponent(id)}?mode=preserve-graph`, {
@@ -1135,8 +1137,11 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 							data-testid="ctx-delete"
 							onClick={() => {
 								const target = chats?.find((c) => c.id === ctxChatId);
-								setDeleteReturn(ctxAnchorRef.current);
-								closeSessionMenu(() => { if (target) setDeleting(target); }); // the dialog takes focus
+								const row = ctxAnchorRef.current;
+								setDeleteReturn(row);
+								// The row is focused first, so the dialog takes it as its opener and gives
+								// focus back to it (it would take the page otherwise); then the dialog takes focus.
+								closeSessionMenu(() => { row?.focus({ preventScroll: true }); if (target) setDeleting(target); });
 							}}
 							className="flex items-center rounded-lg px-2.5 py-1.5 text-left text-muted-foreground/80 transition-colors hover:bg-accent hover:text-foreground"
 						>
