@@ -28,10 +28,12 @@ function target(name: string, text?: string, folder = "case-"): string {
 const temps = (file: string) => fs.readdirSync(path.dirname(file)).filter((f) => f.includes(".tmp-"));
 const fail = (code: string) => Object.assign(new Error(code), { code });
 
-/** Counts rename attempts and retry sleeps, with no clock: "fails at once"
- * means one rename and no sleep (the retry loop sleeps between attempts with
- * Atomics.wait). The sleeps return at once, so a test that does enter the
- * retry fails on its counts, not on time. `refuse` makes every rename throw
+/** Counts rename attempts and retry sleeps, with no real clock: "fails at
+ * once" means one rename and no sleep (the retry loop sleeps between attempts
+ * with Atomics.wait). The sleeps return at once and move a fake Date.now on by
+ * the delay they ask for, so code that does enter the retry reaches its
+ * deadline after a handful of attempts (5, 10, 20, 40, 40 ms) and fails on
+ * the counts, whatever the machine's load. `refuse` makes every rename throw
  * that error, as Windows does for a folder or a read-only file at the target. */
 function watchRetries(t: TestContext, refuse?: () => Error): { renames: () => number; sleeps: () => number } {
 	const rename = fs.renameSync;
@@ -39,7 +41,12 @@ function watchRetries(t: TestContext, refuse?: () => Error): { renames: () => nu
 		if (refuse) throw refuse();
 		return rename(...args);
 	});
-	const sleeps = t.mock.method(Atomics, "wait", (() => "timed-out") as unknown as typeof Atomics.wait);
+	let now = Date.now();
+	t.mock.method(Date, "now", () => now);
+	const sleeps = t.mock.method(Atomics, "wait", ((_array: Int32Array, _index: number, _value: number, timeout?: number) => {
+		now += timeout ?? 0;
+		return "timed-out";
+	}) as unknown as typeof Atomics.wait);
 	return { renames: () => renames.mock.callCount(), sleeps: () => sleeps.mock.callCount() };
 }
 
@@ -171,11 +178,11 @@ describe("writeFileAtomicSync", () => {
 	it("Windows: read-only files fail at once, like in-place writes", onWindows, (t) => {
 		const file = target("record.json", "old");
 		fs.chmodSync(file, 0o444);
+		t.after(() => fs.chmodSync(file, 0o666)); // restored even when an assertion fails
 		const retries = watchRetries(t);
 		assert.throws(() => writeFileAtomicSync(file, "new"), { code: "EPERM" });
 		assert.equal(retries.renames(), 1, "one rename, no retry on read-only files");
 		assert.equal(retries.sleeps(), 0, "no waiting on read-only files");
-		fs.chmodSync(file, 0o666);
 		assert.equal(fs.readFileSync(file, "utf-8"), "old");
 		assert.deepEqual(temps(file), []);
 	});
