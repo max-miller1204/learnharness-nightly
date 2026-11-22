@@ -92,6 +92,16 @@ async function openServerList(file, safeStorage, platform = process.platform) {
 			if (!pairings.has(saved)) pairings.set(saved, Object.freeze({}));
 			return pairings.get(saved);
 		},
+		/** Whether the file on disk still saves `origin` with the same credential as in memory:
+		 *  after a failed write, the pairing is verifiably still there. */
+		async persisted(origin) {
+			const saved = state.servers.find((entry) => entry.origin === origin);
+			if (!saved) return false;
+			try {
+				const disk = JSON.parse(await fs.readFile(file, "utf8"));
+				return Array.isArray(disk?.servers) && disk.servers.some((entry) => entry?.origin === origin && entry.credential === saved.credential);
+			} catch { return false; }
+		},
 		/** Forgets a saved server and its credential. The launch default falls back to none. */
 		async remove(origin) {
 			if (!this.origins.includes(origin)) return;

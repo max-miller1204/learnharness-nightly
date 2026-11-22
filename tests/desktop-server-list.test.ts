@@ -1300,6 +1300,10 @@ async function removalFixture(t: test.TestContext, { defaultServer = beta as str
 			ops: [] as string[], opened: [] as string[], port: 0, holdLogin: null as Promise<void> | null,
 			/** While set, `login` is refused with this reason, as the server's own public error. */
 			refuse: null as string | null,
+			/** While set, each `cancel` waits for this promise. */
+			holdCancel: null as Promise<void> | null,
+			/** While true, each `cancel` fails with a 500. */
+			failCancel: false,
 		},
 	};
 	// A held request ends as a real fetch does when its signal aborts.
@@ -1319,6 +1323,10 @@ async function removalFixture(t: test.TestContext, { defaultServer = beta as str
 		if (url.pathname === "/api/subscriptions") {
 			const body = JSON.parse(String(options?.body));
 			fixture.signIn.ops.push(`${url.origin} ${body.op}`);
+			if (body.op === "cancel") {
+				await hold(fixture.signIn.holdCancel, options?.signal);
+				if (fixture.signIn.failCancel) return new Response(null, { status: 500 });
+			}
 			if (body.op !== "login") return Response.json({ value: {} });
 			if (fixture.signIn.refuse) return Response.json({ value: { error: fixture.signIn.refuse } });
 			fixture.signIn.port = body.desktopRedirectPort;
@@ -1718,6 +1726,22 @@ test("a check's session retries stop once its server is being removed", async (t
 });
 
 const ENDED = { error: "ChatGPT sign-in ended. Try again." };
+const STALE = { error: "A sign-in started before this server was removed is still finishing on the server. Try again in a few minutes." };
+const PENDING = "A ChatGPT sign-in is already pending.";
+/** The server list's writes fail with a synthetic EACCES (not a chmod, which root and some
+ *  file systems ignore): opening the temporary file, or with `at: "cleanup"`, removing it
+ *  after the rename already took effect. */
+function refuseWrites(t: test.TestContext, file: string, { at = "open" as "open" | "cleanup" } = {}) {
+	const temporary = (target: unknown) => typeof target === "string" && target.startsWith(`${file}.`) && target.endsWith(".tmp");
+	const denied = () => Object.assign(new Error("synthetic write refusal"), { code: "EACCES" });
+	if (at === "open") {
+		const open = fs.open;
+		t.mock.method(fs, "open", (...args: Parameters<typeof fs.open>) => temporary(args[0]) ? Promise.reject(denied()) : Reflect.apply(open, fs, args));
+	} else {
+		const rm = fs.rm;
+		t.mock.method(fs, "rm", (...args: Parameters<typeof fs.rm>) => temporary(args[0]) ? Promise.reject(denied()) : Reflect.apply(rm, fs, args));
+	}
+}
 /** The requests sent since `from` that carry the removed server's bearer. */
 const removedBearer = (list: { calls: string[] }, from: number) => list.calls.slice(from).filter((call) => call.includes("beta-secret"));
 
@@ -1822,6 +1846,9 @@ test("a second Remove confirm left open never forgets the pairing made again aft
 	second();
 	await removals[1];
 	assert.deepEqual((await list.state()).servers, [alpha, beta], "the new pairing stays");
+	assert.equal((await list.state() as unknown as { notice: string }).notice, "This server was paired again, so it wasn’t removed.", "the confirm says why it did nothing");
+	const { document } = parseHTML(await fs.readFile(path.join(import.meta.dirname, "../electron/server-list.html"), "utf8"));
+	assert.equal(document.getElementById("notice")!.getAttribute("role"), "status", "a screen reader hears it");
 	assert.deepEqual((await openServerList(list.file, fakeSafeStorage)).origins, [alpha, beta]);
 	assert.equal(list.controller.current()?.origin, beta, "its window stays open");
 });
@@ -1832,12 +1859,8 @@ test("a removal whose save fails keeps the bearer and sends the sign-in's skippe
 	await list.controller.launch();
 	const signing = list.controller.chatgptSignIn();
 	await until(() => list.signIn.opened.length === 1);
-	// The list's folder refuses the write.
-	const directory = path.dirname(list.file);
-	await fs.chmod(directory, 0o500);
-	t.after(() => fs.chmod(directory, 0o700).catch(() => {}));
+	refuseWrites(t, list.file);
 	await list.send("remove", beta);
-	await fs.chmod(directory, 0o700);
 	assert.deepEqual(await signing, ENDED);
 	const state = await list.state() as unknown as { servers: string[]; notice: string; removing: boolean };
 	assert.deepEqual(state.servers, [alpha, beta], "nothing was forgotten");
@@ -1845,6 +1868,124 @@ test("a removal whose save fails keeps the bearer and sends the sign-in's skippe
 	assert.equal(state.removing, false);
 	assert.deepEqual(list.signIn.ops.filter((op) => op === `${beta} cancel`), [`${beta} cancel`], "the skipped cancel went out once the bearer was kept");
 	assert.equal(list.calls.filter((call) => call === `${beta} /api/subscriptions Bearer beta-secret`).length, 2, "login, then the cancel, both with the kept bearer");
+});
+
+test("a removal whose write fails after it took effect sends no cancel with the forgotten bearer", { timeout: 10000 }, async (t) => {
+	const list = await removalFixture(t);
+	t.after(() => { list.controller.close(); for (const window of TestWindow.all) if (!window.destroyed) window.destroy(); });
+	await list.controller.launch();
+	const signing = list.controller.chatgptSignIn();
+	await until(() => list.signIn.opened.length === 1);
+	const sent = list.calls.length;
+	// The rename went through, then removing the temporary file failed: the write rejects.
+	refuseWrites(t, list.file, { at: "cleanup" });
+	await list.send("remove", beta);
+	assert.deepEqual(await signing, ENDED);
+	await settle();
+	assert.deepEqual((await openServerList(list.file, fakeSafeStorage)).origins, [alpha], "forgotten on disk");
+	const state = await list.state() as unknown as { servers: string[]; notice: string };
+	assert.deepEqual(state.servers, [alpha], "and in memory");
+	assert.equal(state.notice, "", "it was removed, so no failure is shown");
+	assert.deepEqual(removedBearer(list, sent), [], "the forgotten bearer is never sent");
+	assert.equal(list.signIn.ops.includes(`${beta} cancel`), false);
+});
+
+test("removing during an in-flight login marks the server stale and never sends a blind cancel", { timeout: 10000 }, async (t) => {
+	for (const outcome of ["removed", "kept"]) {
+		const list = await removalFixture(t);
+		t.after(() => { list.controller.close(); for (const window of TestWindow.all) if (!window.destroyed) window.destroy(); });
+		await list.controller.launch();
+		let release = () => {};
+		list.signIn.holdLogin = new Promise<void>((resolve) => { release = resolve; });
+		const signing = list.controller.chatgptSignIn();
+		// The server has the login (its attempt may have started), but no reply yet: no attempt id.
+		await until(() => list.signIn.ops.includes(`${beta} login`));
+		if (outcome === "kept") refuseWrites(t, list.file);
+		await list.send("remove", beta);
+		assert.deepEqual(await signing, ENDED);
+		release();
+		list.signIn.holdLogin = null;
+		await settle();
+		assert.equal(list.signIn.ops.includes(`${beta} cancel`), false, `${outcome}: no cancel without an attempt id`);
+		if (outcome === "removed") await list.send("pair", { origin: beta, code });
+		else await list.send("connect", beta);
+		assert.equal(list.controller.current()?.origin, beta);
+		list.signIn.refuse = PENDING;
+		assert.deepEqual(await list.controller.chatgptSignIn(), STALE, `${outcome}: the server's "already pending" is that cut-off attempt`);
+		list.controller.close();
+		for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
+	}
+});
+
+test("a cancel the removal cuts off goes out again once a failed removal keeps the bearer", { timeout: 10000 }, async (t) => {
+	const list = await removalFixture(t);
+	t.after(() => { list.controller.close(); for (const window of TestWindow.all) if (!window.destroyed) window.destroy(); });
+	await list.controller.launch();
+	const signing = list.controller.chatgptSignIn();
+	await until(() => list.signIn.opened.length === 1);
+	// Switching away ends the acknowledged sign-in with its ordinary cancel, held in flight.
+	let release = () => {};
+	list.signIn.holdCancel = new Promise<void>((resolve) => { release = resolve; });
+	await list.send("connect", alpha);
+	await until(() => list.signIn.ops.includes(`${beta} cancel`));
+	list.signIn.holdCancel = null;
+	refuseWrites(t, list.file);
+	await list.send("remove", beta);
+	// The removal cut the held cancel off at once, not after its own 5 s timeout.
+	assert.deepEqual(await Promise.race([signing, settle().then(() => "still running")]), ENDED);
+	release();
+	await settle();
+	assert.deepEqual((await list.state()).servers, [alpha, beta], "the removal failed");
+	assert.deepEqual(list.signIn.ops.filter((op) => op === `${beta} cancel`), [`${beta} cancel`, `${beta} cancel`], "the cut-off cancel went out again");
+	assert.equal(list.calls.filter((call) => call === `${beta} /api/subscriptions Bearer beta-secret`).length, 3, "login and both cancels, with the kept bearer");
+});
+
+test("after a failed removal, the server counts as stale until its skipped cancel succeeds", { timeout: 10000 }, async (t) => {
+	const list = await removalFixture(t);
+	t.after(() => { list.controller.close(); for (const window of TestWindow.all) if (!window.destroyed) window.destroy(); });
+	await list.controller.launch();
+	const signing = list.controller.chatgptSignIn();
+	await until(() => list.signIn.opened.length === 1);
+	refuseWrites(t, list.file);
+	list.signIn.failCancel = true;
+	await list.send("remove", beta);
+	assert.deepEqual(await signing, ENDED);
+	assert.deepEqual(list.signIn.ops.filter((op) => op === `${beta} cancel`), [`${beta} cancel`], "the skipped cancel was tried");
+	await list.send("connect", beta);
+	list.signIn.refuse = PENDING;
+	assert.deepEqual(await list.controller.chatgptSignIn(), STALE, "it failed, so the old attempt may still be pending");
+});
+
+test("the stale window runs from the attempt's login, and expired markers go", async () => {
+	const { createRemoteChatGPTSignIn } = require("../electron/remote-chatgpt.cjs");
+	const { ServerProblem } = require("../electron/remote-server.cjs");
+	const { publicError, ATTEMPT_TIMEOUT_MS } = require("../electron/chatgpt.cjs");
+	assert.equal(ATTEMPT_TIMEOUT_MS, 300000, "the server's own sign-in timeout");
+	let clock = 0;
+	let removed!: () => void;
+	const cutOff = new Promise<void>((resolve) => { removed = resolve; });
+	let refusing = false;
+	const run = async (_origin: string, _token: string, options: { onLogin?: () => void; revoked: AbortSignal; deferCancel: (send: null) => void }) => {
+		if (refusing) throw new ServerProblem("sign-in", publicError({ code: "pending" }));
+		options.onLogin?.();
+		await new Promise<void>((resolve) => options.revoked.addEventListener("abort", () => resolve(), { once: true }));
+		removed();
+		options.deferCancel(null);
+		throw new ServerProblem("sign-in", "ChatGPT sign-in ended. Try again.");
+	};
+	const signIns = createRemoteChatGPTSignIn({ selection: () => ({ origin: beta, token: "beta-secret" }), openExternal: async () => {}, run, now: () => clock });
+	const first = signIns.signIn();
+	await settle();
+	// The removal comes four minutes after the login.
+	clock = 240_000;
+	signIns.forget(beta);
+	await cutOff;
+	await first;
+	refusing = true;
+	clock = ATTEMPT_TIMEOUT_MS - 1;
+	assert.deepEqual(await signIns.signIn(), STALE, "still within five minutes of the login");
+	clock = ATTEMPT_TIMEOUT_MS + 1;
+	assert.deepEqual(await signIns.signIn(), { error: publicError({ code: "pending" }) }, "five minutes after the login, the refusal is about something else");
 });
 
 test("a sign-in right after removing and pairing again says the old attempt is still finishing", { timeout: 10000 }, async (t) => {

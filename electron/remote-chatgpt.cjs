@@ -1,7 +1,7 @@
 "use strict";
 
 const http = require("node:http");
-const { AUTHORIZE, pastedCallback, publicError } = require("./chatgpt.cjs");
+const { AUTHORIZE, ATTEMPT_TIMEOUT_MS, pastedCallback, publicError } = require("./chatgpt.cjs");
 const { isBrowserAction } = require("./web-subscription-browser.cjs");
 const { requestServer, ServerProblem } = require("./remote-server.cjs");
 
@@ -12,17 +12,16 @@ const ENDED = "ChatGPT sign-in ended. Try again.";
 // The server's own refusal while another sign-in is pending (electron/chatgpt.cjs).
 const SERVER_PENDING = publicError({ code: "pending" });
 const STALE = "A sign-in started before this server was removed is still finishing on the server. Try again in a few minutes.";
-// The server's own sign-in timeout (createChatGPT's default): an attempt whose cancel was
-// skipped stays pending on the server at most this long.
-const SERVER_ATTEMPT_MS = 300000;
 
 // `accountId`: sign in again to that saved account (the server's own `login` id).
+// `onLogin()`: runs as the `login` request goes out (the server's attempt may start then).
 // `revoked`: aborts once `token` must never be sent again (its server is being removed).
-// The attempt then ends at once and sends nothing more, not even its own cancel. An
-// acknowledged attempt hands that cancel to `deferCancel(send)` instead, for the caller to
-// send only if the removal fails and the bearer is kept after all.
+// The attempt then ends at once and sends nothing more, not even its own cancel. It calls
+// `deferCancel(send)` instead whenever the server may still hold the attempt pending:
+// `send` is the cancel to send only if the removal fails and the bearer is kept after all,
+// or null when there is none to send.
 async function remoteChatGPTSignIn(origin, token, {
-	openExternal, signal, revoked, deferCancel, request, createListener = () => http.createServer(),
+	openExternal, signal, revoked, deferCancel, onLogin, request, createListener = () => http.createServer(),
 	timeoutMs = 180000, accountId,
 }) {
 	const listener = createListener();
@@ -52,6 +51,7 @@ async function remoteChatGPTSignIn(origin, token, {
 	});
 	let settling;
 	let consumed = false;
+	let loginSent = false;
 	let pending = false;
 	// The server's id for this attempt: the cancel below ends only it, never a newer sign-in.
 	// An older server sends none, and its cancel ends whatever is pending, as before.
@@ -64,6 +64,9 @@ async function remoteChatGPTSignIn(origin, token, {
 		const callbackUrl = `http://${callbackHost}${CALLBACK_PATH}`;
 		// Collect the login reply even if the user aborts during this request.
 		// Only an acknowledged browser action establishes an attempt to cancel.
+		revoked?.throwIfAborted();
+		loginSent = true;
+		onLogin?.();
 		const reply = await control("login", { ...(accountId && { id: accountId }), desktopRedirectPort: port }, AbortSignal.timeout(15000));
 		if (!isBrowserAction(reply?.browserAction)) {
 			// The server's own public reason (a sign-in already pending, disconnected), bounded.
@@ -120,11 +123,24 @@ async function remoteChatGPTSignIn(origin, token, {
 		listener.close();
 		listener.closeAllConnections();
 		const fields = attemptId ? { attemptId } : undefined;
+		const sendCancel = () => post("cancel", fields, AbortSignal.timeout(5000));
 		// A revoked credential is never sent, not even to cancel. The server's attempt then
 		// either finishes a `complete` already sent, or waits for a callback this closed
 		// listener never relays and ends at the server's own sign-in timeout.
-		if (pending && revoked?.aborted) deferCancel?.(() => post("cancel", fields, AbortSignal.timeout(5000)).catch(() => {}));
-		else if (pending) await control("cancel", fields, AbortSignal.timeout(5000)).catch(() => {});
+		if (revoked?.aborted && pending) deferCancel?.(sendCancel);
+		// The login went out but its reply was cut off: the server may have started an attempt
+		// this desktop never learned the id of. No cancel at all, not even later: without an
+		// id an older server would end whatever is pending, possibly another device's sign-in.
+		// That attempt ends at the server's own timeout.
+		else if (revoked?.aborted && loginSent) deferCancel?.(null);
+		else if (pending) {
+			try { await control("cancel", fields, AbortSignal.timeout(5000)); }
+			catch {
+				// The removal cut this cancel off, perhaps before the server saw it. Only one that
+				// names its attempt is safe to send again; a blind one could end a newer sign-in.
+				if (revoked?.aborted) deferCancel?.(attemptId ? sendCancel : null);
+			}
+		}
 	}
 }
 
@@ -140,8 +156,9 @@ function createRemoteChatGPTSignIn({ selection, openExternal, run = remoteChatGP
 	// Every attempt that hasn't settled, the current one and any older one still ending:
 	// { origin, operation, revoked, finished, deferred }.
 	const attempts = new Set();
-	// Origins with an attempt whose cancel a removal skipped: until when the server may still
-	// hold it pending, and refuse a new sign-in for it.
+	// Origins with an attempt a removal ended without its cancel: until when the server may
+	// still hold it pending (its `login` time plus the server's timeout), and so refuse a new
+	// sign-in for it.
 	const stale = new Map();
 	// Settles after the latest attempt, including any cancel it sends.
 	let last = Promise.resolve();
@@ -152,7 +169,8 @@ function createRemoteChatGPTSignIn({ selection, openExternal, run = remoteChatGP
 		const operation = new AbortController();
 		let settled;
 		const finished = new Promise((resolve) => { settled = resolve; });
-		const attempt = { origin: selected.origin, operation, revoked: new AbortController(), finished, deferred: null };
+		for (const [origin, until] of stale) if (until <= now()) stale.delete(origin);
+		const attempt = { origin: selected.origin, operation, revoked: new AbortController(), finished, loginAt: null, stale: false, deferred: null };
 		attempts.add(attempt);
 		current = operation;
 		const previous = last;
@@ -163,11 +181,14 @@ function createRemoteChatGPTSignIn({ selection, openExternal, run = remoteChatGP
 			// Queued behind a slow cancel: the window may have switched, or its server be held, by now.
 			const still = selection();
 			if (!still || still.origin !== selected.origin || still.token !== selected.token) return { error: ENDED };
+			const onLogin = () => { attempt.loginAt = now(); };
 			const deferCancel = (send) => {
 				attempt.deferred = send;
-				stale.set(selected.origin, now() + SERVER_ATTEMPT_MS);
+				attempt.stale = true;
+				const until = (attempt.loginAt ?? now()) + ATTEMPT_TIMEOUT_MS;
+				stale.set(selected.origin, Math.max(stale.get(selected.origin) ?? 0, until));
 			};
-			await run(selected.origin, selected.token, { ...options, accountId, openExternal, signal: operation.signal, revoked: attempt.revoked.signal, deferCancel });
+			await run(selected.origin, selected.token, { ...options, accountId, openExternal, signal: operation.signal, revoked: attempt.revoked.signal, deferCancel, onLogin });
 			return { ok: true };
 		} catch (error) {
 			if (operation.signal.aborted) return { error: ENDED };
@@ -188,8 +209,9 @@ function createRemoteChatGPTSignIn({ selection, openExternal, run = remoteChatGP
 		abort,
 		/** `origin` is being removed: every attempt for it ends now, also one still ending after
 		 *  a switch, and none sends another request with its bearer, not even its cancel.
-		 *  `kept()`: the removal failed and the bearer stays saved, so the cancels it skipped go
-		 *  out after all, with that kept bearer. Resolves once they have. */
+		 *  `kept()`: the removal failed and the bearer is verifiably still saved, so the cancels it
+		 *  skipped go out after all, with that kept bearer. Resolves once they have. The origin
+		 *  stops counting as stale only when every attempt it skipped has been cancelled. */
 		forget(origin) {
 			const forgotten = [...attempts].filter((attempt) => attempt.origin === origin);
 			for (const attempt of forgotten) {
@@ -200,9 +222,9 @@ function createRemoteChatGPTSignIn({ selection, openExternal, run = remoteChatGP
 			return {
 				async kept() {
 					await Promise.all(forgotten.map((attempt) => attempt.finished));
-					const sends = forgotten.map((attempt) => attempt.deferred).filter(Boolean);
-					if (sends.length) stale.delete(origin);
-					await Promise.all(sends.map((send) => send()));
+					const skipped = forgotten.filter((attempt) => attempt.stale);
+					const results = await Promise.allSettled(skipped.map((attempt) => attempt.deferred ? attempt.deferred() : Promise.reject(new Error("No cancel to send."))));
+					if (skipped.length && results.every(({ status }) => status === "fulfilled")) stale.delete(origin);
 				},
 			};
 		},
