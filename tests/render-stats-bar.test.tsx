@@ -78,6 +78,14 @@ describe("stats bar", () => {
 		assert.match(html, /data-testid="stats-context">11k</);
 	});
 
+	it("shows the known subtotal from a partly priced turn", () => {
+		const mixed = turn({ model: "openrouter:openrouter/auto", steps: [step(100, 50, { costUsd: 0.12 }), step(100, 50)] });
+		const html = renderToStaticMarkup(<StatsBar turns={[mixed]} pricing={sessionCost({ turns: [mixed] })} />);
+		assert.match(html, /data-testid="stats-cost">\$0\.1200</);
+		const zero = { ...mixed, steps: [step(100, 50, { costUsd: 0 }), step(100, 50)] };
+		assert.match(renderToStaticMarkup(<StatsBar turns={[zero]} pricing={sessionCost({ turns: [zero] })} />), /data-testid="stats-cost">\$0\.0000</);
+	});
+
 	it("unknown context is explicit; changing the selected limit preserves the measurement", () => {
 		assert.equal(formatContextMeasurement(null, 100_000), "? / 100k");
 		assert.equal(formatContextMeasurement(83_000, 100_000), "83k / 100k");

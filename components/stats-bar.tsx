@@ -92,12 +92,11 @@ export function StatsBar({
 	const contextLabel = formatContextMeasurement(contextTokens, limit);
 	const cacheHitRate = useMemo(() => sessionCacheHitRate({ turns }), [turns]);
 	const { cost = 0, unpriced = turns.length, subscription = 0 } = pricing ?? {};
-	// Honest cost: show dollars only when at least one turn priced;
-	// otherwise "—" (never a fake $0.0000).
+	// Include known calls within a partly priced turn in the subtotal.
 	const pricedCount = turns.length - unpriced - subscription;
 	const providers = pricing?.subscriptionProviders ?? subscriptionLabels(turns.map((turn) => turn.model));
 	const cliBilled = turns.some((turn) => turn.model.startsWith(`${CLAUDE_CODE_PROVIDER}:`));
-	const costLabel = planCostLabel(pricedCount > 0 ? cost : null, cliBilled ? [...providers, "CLI"] : providers);
+	const costLabel = planCostLabel(pricedCount > 0 || cost > 0 || (!!pricing && turns.some((turn) => turn.model.includes(":") && !subscriptionLabel(turn.model) && !turn.model.startsWith(`${CLAUDE_CODE_PROVIDER}:`) && !turn.model.startsWith("custom:") && turn.steps.some((step) => typeof step.costUsd === "number" && Number.isFinite(step.costUsd) && step.costUsd >= 0))) ? cost : null, cliBilled ? [...providers, "CLI"] : providers);
 
 	return (
 		<div

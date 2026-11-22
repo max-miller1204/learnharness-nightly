@@ -44,6 +44,7 @@ const rowSchema = z.object({
 	api: z.string(),
 	baseUrl: z.string(),
 	reasoning: z.boolean(),
+	free: z.boolean().optional(),
 	thinkingLevelMap: z.object({ off: thinking, minimal: thinking, low: thinking, medium: thinking, high: thinking, xhigh: thinking, max: thinking }).optional(),
 	input: z.array(z.enum(["text", "image"])).min(1).max(2).refine((values) => values.includes("text") && new Set(values).size === values.length),
 	inputLimits: z.strictObject({

@@ -247,3 +247,25 @@ test("zero-rate OpenRouter overlays are unknown unless explicitly free", async (
 		assert.equal(callCost({ ...usage, costUsd: 0.12 }, "openrouter:test/metadata-router"), 0.12);
 	} finally { setModelCatalogOverlay(new Map()); }
 });
+
+test("refresh and snapshot restore retain free metadata for pricing", async (t) => {
+	const { callCost } = await import("../src/server/pricing.ts");
+	const { setModelCatalogOverlay } = await import("../src/agent/models.ts");
+	for (const key of AUTH_PROVIDER_ENV_VARS) delete process.env[key];
+	process.env.OPENROUTER_API_KEY = "synthetic-openrouter-key";
+	const route = piModels().getModel("openrouter", "openrouter/auto")!;
+	const freeRow = { ...route, id: "test/metadata-comped", name: "Comped", free: true, cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } };
+	t.mock.method(globalThis, "fetch", async () => Response.json([freeRow]));
+	try {
+		assert.equal(await refreshModelCatalog(), "updated");
+		assert.equal(callCost({ inputTokens: 10000, outputTokens: 2000 }, "openrouter:test/metadata-comped"), 0);
+		const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+			const { initializeModelCatalog } = await import("./src/server/remote-model-catalog.ts");
+			const { callCost } = await import("./src/server/pricing.ts");
+			initializeModelCatalog();
+			console.log(JSON.stringify(callCost({ inputTokens: 10000, outputTokens: 2000 }, "openrouter:test/metadata-comped")));
+		`], { env: { ...process.env, LH_DATA_DIR: scratch }, encoding: "utf8", timeout: 15000 });
+		assert.equal(child.status, 0, child.stderr);
+		assert.equal(JSON.parse(child.stdout), 0);
+	} finally { setModelCatalogOverlay(new Map()); delete process.env.OPENROUTER_API_KEY; }
+});
