@@ -43,9 +43,9 @@ export interface SessionCoverage {
 	lastFoldedAt: string | null;
 }
 
-/** One session's coverage read — null on transport/404 (callers render
- *  nothing rather than a fake zero; the honest-render doctrine). */
 export const COVERAGE_ABORTED = Symbol("coverage aborted");
+/** One session's coverage read; null on transport/404, or COVERAGE_ABORTED
+ *  when the caller cancels. A deletion abort retries after a refused delete. */
 export async function fetchCoverage(chatId: string, signal?: AbortSignal): Promise<SessionCoverage | null | typeof COVERAGE_ABORTED> {
 	while (!signal?.aborted) {
 		const hold = sessionReadHold(chatId);
@@ -67,6 +67,7 @@ export async function fetchCoverage(chatId: string, signal?: AbortSignal): Promi
 		try {
 			if (controller.signal.aborted) continue;
 			const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`, { signal: controller.signal });
+			if (controller.signal.aborted) continue;
 			if (!res.ok) return null;
 			const body = (await res.json()) as { coverage?: SessionCoverage | null };
 			if (controller.signal.aborted) continue;
@@ -146,7 +147,7 @@ export function CoverageMenuBlock({ chatId }: { chatId: string }) {
 		const signal = lifetime.current?.signal;
 		if (!signal || signal.aborted) return;
 		const next = await fetchCoverage(chatId, signal);
-		if (next === null || next === COVERAGE_ABORTED) return;
+		if (signal.aborted || next === null || next === COVERAGE_ABORTED) return;
 		// The optimistic state stands down once the server says running, or
 		// once the fold moved coverage (the run finished).
 		if (
@@ -178,19 +179,27 @@ export function CoverageMenuBlock({ chatId }: { chatId: string }) {
 	// this bounded, run-scoped poll stays.
 	useEffect(() => {
 		if (coverage?.running !== true && !extracting) return;
-		const timer = setInterval(() => void load(), 2000);
+		let pending = false;
+		const timer = setInterval(() => {
+			if (pending) return;
+			pending = true;
+			void load().finally(() => { pending = false; });
+		}, 2000);
 		return () => clearInterval(timer);
 	}, [load, coverage?.running, extracting]);
 
 	if (coverage === null) return null;
 
 	const onExtract = async () => {
+		const signal = lifetime.current?.signal;
+		if (!signal || signal.aborted) return;
 		setExtracting(true);
 		// The dock's start-site nudge (the 202 registers the run before the
 		// response; a 409 means one is already in flight) — refresh so the
 		// run surfaces at once either way.
 		refreshActivity();
 		const started = await requestExtract(chatId);
+		if (signal.aborted) return;
 		if (!started) setExtracting(false);
 		void load();
 	};
@@ -321,10 +330,13 @@ export function CoverageRing({ chatId, refreshKey = 0 }: { chatId: string; refre
 	useEffect(() => {
 		if (coverage?.running !== true) return;
 		const controller = new AbortController();
+		let pending = false;
 		const timer = setInterval(() => {
+			if (pending) return;
+			pending = true;
 			void fetchCoverage(chatId, controller.signal).then((c) => {
-				if (c !== null && c !== COVERAGE_ABORTED) setCoverage(c);
-			});
+				if (!controller.signal.aborted && c !== null && c !== COVERAGE_ABORTED) setCoverage(c);
+			}).finally(() => { pending = false; });
 		}, 2000);
 		return () => { clearInterval(timer); controller.abort(); };
 	}, [chatId, coverage?.running]);
