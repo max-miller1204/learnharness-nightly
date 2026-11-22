@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { normalizeContext, type AssistantMessage, type AssistantMessageEvent, type SimpleStreamOptions, type Usage } from "@earendil-works/pi-ai";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { PiEngine } from "../agent/models.ts";
-import { isUnpricedModelId, recordDispatchedModel } from "../agent/pricing.ts";
+import { dispatchedModelOf, hasRecordableCost, isKnownFreeModelId, isUnpricedModelId, liveCatalogModel, recordDispatchedModel } from "../agent/pricing.ts";
 import { CLAUDE_CODE_PROVIDER } from "../agent/claude-code/constants.ts";
 import { markUnadmittedUsage, usageWasAdmitted, type SubscriptionDispatchLifecycle } from "../agent/subscription-request-cycle.ts";
 import type { PluginCallPurpose, PluginModelSpec } from "../core/plugin-agents.ts";
@@ -114,12 +114,16 @@ export function createPluginInference(
 	const onUsage = (model: PluginModelSpec, usage: Usage) => {
 		if (signal.aborted || !usageWasAdmitted(usage)) return;
 		const spec = modelSpec(model);
-		const unpriced = isUnpricedModelId(`${spec.provider}:${spec.id}`);
+		const modelId = `${spec.provider}:${spec.id}`;
+		const cost = dispatchedModelOf(usage)?.cost ?? liveCatalogModel(modelId)?.cost;
+		const recordable = cost
+			? hasRecordableCost({ provider: spec.provider, id: spec.id, cost })
+			: !isUnpricedModelId(modelId) && (usage.cost.total > 0 || isKnownFreeModelId(spec.id));
 		// Explicit projection: never serialize transport models, request content,
 		// account leases, arbitrary caller properties, or credentials.
 		const row = { timestamp: new Date().toISOString(), model: spec, usage: {
 			input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, totalTokens: usage.totalTokens,
-			...(unpriced ? {} : { cost: { input: usage.cost.input, output: usage.cost.output, cacheRead: usage.cost.cacheRead, cacheWrite: usage.cost.cacheWrite, total: usage.cost.total } }),
+			...(recordable ? { cost: { input: usage.cost.input, output: usage.cost.output, cacheRead: usage.cost.cacheRead, cacheWrite: usage.cost.cacheWrite, total: usage.cost.total } } : {}),
 		} };
 		fs.mkdirSync(directory, { recursive: true });
 		fs.appendFileSync(path.join(/* turbopackIgnore: true */ directory, "usage.jsonl"), `${JSON.stringify(row)}\n`, { mode: 0o600 });

@@ -9,7 +9,7 @@ import type { PluginTaskError, PluginTaskOutcome, PluginTaskRecord, PluginTaskSn
 import { validatePluginInferenceOptions, validatePluginSchema } from "../core/plugin-validation.ts";
 import { accumulateJobUsage } from "../core/contracts/jobs.ts";
 import type { PiEngine } from "./models.ts";
-import { captureJobUsageStep, dispatchedModelOf } from "./pricing.ts";
+import { captureJobUsageStep, dispatchedModelOf, recordDispatchedModel } from "./pricing.ts";
 import { usageWasAdmitted } from "./subscription-request-cycle.ts";
 import { runSubagent } from "./subagents/pi-run.ts";
 
@@ -212,10 +212,13 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 						const called = m.content.filter(c => c.type === "toolCall").map(c => c.id);
 						const usage = m.stopReason !== "aborted" && usageWasAdmitted(m.usage);
 						const modelId = `${m.provider}:${m.model}`;
+						const dispatched = dispatchedModelOf(m.usage) ?? engine.model;
 						commit(t, { ...t.record, messages: [...t.record.messages, m], turns: t.record.turns + 1,
-							...(usage ? { usage: accumulateJobUsage(t.record.usage, modelId, captureJobUsageStep(m.usage, dispatchedModelOf(m.usage) ?? engine.model)) } : {}) });
+							...(usage ? { usage: accumulateJobUsage(t.record.usage, modelId, captureJobUsageStep(m.usage, dispatched)) } : {}) });
 						if (usage) {
-							try { deps.onUsage?.(clone(t.record.model), clone(m.usage)); }
+							const reported = clone(m.usage);
+							recordDispatchedModel(reported, dispatched);
+							try { deps.onUsage?.(clone(t.record.model), reported); }
 							catch (error) { // Accounting writes are also host persistence, never a model-correctable error.
 								const failure = new Error(`Plugin task accounting storage failed: ${text(error)}`);
 								try { finish(t, "failed", { code: "storage_error", message: failure.message }); }

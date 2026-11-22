@@ -408,26 +408,39 @@ describe("per-call stored costUsd (issue #332)", () => {
 			});
 			const jobPromise = runner.runJob(job.id);
 
-			// 3. Plugin worker wired through createPluginInference held in flight.
+			// 3. Plugin worker wired through createPluginInference: attempt 1 is
+			// dispatched before the refresh (calls ping tool), attempt 2 is
+			// dispatched after the refresh (calls submit_result). Because the
+			// worker keeps the base engine across attempts, attempt 2 proves
+			// plugin-workers.ts reads each call's dispatched model from the
+			// WeakMap rather than only using engine.model.
 			const pluginDir = path.join(scratch, "inflight-plugin");
 			const pluginAc = new AbortController();
 			const dispatchedSignal = deferred();
+			let workerStreamCalls = 0;
 			const pluginInference = createPluginInference({ signal: pluginAc.signal, dataDirectory: pluginDir }, {
-				catalog: () => ({
-					models: [{ provider: dispatched.provider, id: dispatched.id, name: dispatched.name, reasoning: false, input: ["text"], supportedLevels: ["off"], cost: dispatched.cost, contextWindow: 128_000, maxTokens: 4_096 }],
-					providers: [{ id: dispatched.provider, envVar: "OPENROUTER_API_KEY", keyPresent: true }],
-					defaults: null,
-					rolePins: { researcher: null, demoBuilder: null, visualMaker: null, extractor: null, auditor: null, sideQuestion: null },
-					slots: { strong: null, cheap: null, vision: null },
-				}),
+				catalog: () => {
+					const latest = piModels().getModel(dispatched.provider, dispatched.id) ?? dispatched;
+					return {
+						models: [{ provider: latest.provider, id: latest.id, name: latest.name, reasoning: false, input: ["text"], supportedLevels: ["off"], cost: latest.cost, contextWindow: 128_000, maxTokens: 4_096 }],
+						providers: [{ id: latest.provider, envVar: "OPENROUTER_API_KEY", keyPresent: true }],
+						defaults: null,
+						rolePins: { researcher: null, demoBuilder: null, visualMaker: null, extractor: null, auditor: null, sideQuestion: null },
+						slots: { strong: null, cheap: null, vision: null },
+					};
+				},
 				providerKeyPresent: () => true,
 				engineForSpec: (pin) => {
 					const current = piModels().getModel(pin.provider, pin.id)!;
 					return {
 						model: current,
 						streamFn: () => {
-							dispatchedSignal.resolve();
-							return fixedStream(current, raw, [{ type: "toolCall", id: "sub_inflight", name: "submit_result", arguments: { result: { ok: true } } }], "toolUse", release.promise)();
+							workerStreamCalls += 1;
+							if (workerStreamCalls === 1) {
+								dispatchedSignal.resolve();
+								return fixedStream(current, raw, [{ type: "toolCall", id: "ping_inflight", name: "ping", arguments: {} }], "toolUse", release.promise)();
+							}
+							return fixedStream(current, raw, [{ type: "toolCall", id: "sub_inflight", name: "submit_result", arguments: { result: { ok: true } } }], "toolUse")();
 						},
 					};
 				},
@@ -440,7 +453,14 @@ describe("per-call stored costUsd (issue #332)", () => {
 			});
 			workers.register({
 				id: "inflight-worker",
-				instructions: "Submit.",
+				instructions: "Call ping then submit.",
+				tools: () => [{
+					name: "ping",
+					label: "Ping",
+					description: "Return ok.",
+					parameters: Type.Object({}, { additionalProperties: false }),
+					execute: async () => ({ content: [{ type: "text", text: "pong" }], details: {} }),
+				}],
 				resultSchema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }),
 			});
 			const workerTask = workers.start("inflight-worker", { prompt: "go", input: {}, model: { provider: dispatched.provider, id: dispatched.id }, requestId: "req_inflight_1", purpose: "background" });
@@ -459,6 +479,7 @@ describe("per-call stored costUsd (issue #332)", () => {
 			await jobPromise;
 			const workerOutcome = await workers.wait(workerTask.id);
 			assert.equal(workerOutcome.status, "succeeded");
+			assert.equal(workerStreamCalls, 2);
 			pluginAc.abort();
 
 			// Every in-flight call must store the dispatched price ($0.08), never the refreshed price ($0.18).
@@ -470,9 +491,12 @@ describe("per-call stored costUsd (issue #332)", () => {
 			assert.equal(savedJob.usage?.calls?.[0]?.costUsd, expectedDispatched);
 			assert.equal(jobCost(savedJob), expectedDispatched);
 
+			// Worker attempt 1 was dispatched before the refresh ($0.08); attempt 2 was dispatched after ($0.18).
 			const savedWorker = workers.get(workerTask.id);
+			assert.equal(savedWorker.usage?.calls?.length, 2);
 			assert.equal(savedWorker.usage?.calls?.[0]?.costUsd, expectedDispatched);
-			assert.equal(jobCost({ usage: savedWorker.usage }), expectedDispatched);
+			assert.equal(savedWorker.usage?.calls?.[1]?.costUsd, refreshedPrice);
+			assert.ok(Math.abs((jobCost({ usage: savedWorker.usage }) ?? 0) - (expectedDispatched + refreshedPrice)) < 1e-12);
 
 			// A fresh call dispatched after the refresh records the refreshed price ($0.18).
 			assert.equal(captureCallUsage(raw, updated).costUsd, refreshedPrice);
@@ -670,9 +694,13 @@ describe("per-call stored costUsd (issue #332)", () => {
 		ac.abort();
 	});
 
-	it("never freezes $0 placeholder prices or unpriced providers, preserves known free models, and rejects invalid costUsd", () => {
+	it("never freezes $0 placeholder prices or unpriced providers, preserves known free models by id only, and rejects invalid costUsd", async () => {
 		const raw = piUsage(100_000, 50_000);
 		const zeroRates = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+		const baseRoute = piModels().getModel("openrouter", "openrouter/auto")!;
+		assert.ok(baseRoute, "bundled $0 router placeholder exists");
+
+		// Drive unpriced providers through the shared job runner recording path.
 		for (const [provider, id] of [
 			["chatgpt", "gpt-5"],
 			["github-copilot-subscription", "gpt-5"],
@@ -680,45 +708,113 @@ describe("per-call stored costUsd (issue #332)", () => {
 			["custom", "local"],
 		] as const) {
 			const modelId = `${provider}:${id}`;
-			const captured = captureCallUsage(raw, { provider, id, cost: { input: 5, output: 10, cacheRead: 0, cacheWrite: 0 } });
-			assert.equal(captured.costUsd, undefined, `${modelId} must not store costUsd`);
-			assert.equal(callCost({ ...captured, costUsd: 0 }, modelId), null, `${modelId} must stay unpriced even with stray costUsd`);
+			const fakeModel: Model<Api> = { ...baseRoute, provider, id, cost: { input: 5, output: 10, cacheRead: 0, cacheWrite: 0 } };
+			const chat = chatStore.createChat(`unpriced-${provider}`);
+			const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: `tc_${provider}`, input: { question: "q" } });
+			const runner = createJobRunner({
+				chatStore,
+				jobStore,
+				deliver: async () => {},
+				engineFor: () => ({ model: fakeModel, streamFn: fixedStream(fakeModel, raw, [{ type: "text", text: "Done." }]) }),
+			});
+			await runner.runJob(job.id);
+			const savedCall = jobStore.getJob(job.id)!.usage?.calls?.[0]!;
+			assert.equal(savedCall.costUsd, undefined, `${modelId} must not store costUsd`);
+			assert.equal(callCost({ ...savedCall, costUsd: 0 }, modelId), null, `${modelId} must stay unpriced even with stray costUsd`);
 		}
 
-		// A $0 placeholder model (not known to be free) must NOT freeze costUsd: 0, so a later catalog price can price it at read time.
-		const placeholder = piModels().getModel("openrouter", "openrouter/auto")!;
-		assert.ok(placeholder, "bundled $0 router placeholder exists");
+		// Drive a $0 placeholder model (not known to be free) through real recording
+		// paths (job runner and compaction). Must leave costUsd absent so a later
+		// catalog price can price it at read time instead of freezing $0 forever.
+		const placeholder = baseRoute;
 		const placeholderId = `${placeholder.provider}:${placeholder.id}`;
 		const originalPlaceholderCost = structuredClone(placeholder.cost);
 		try {
-			const capturedPlaceholder = captureCallUsage(raw, placeholder);
-			assert.equal(capturedPlaceholder.costUsd, undefined, "$0 placeholder must leave costUsd absent");
+			const placeholderChat = chatStore.createChat("placeholder-zero");
+			const big = (label: string) => newUserMessage(`${label}: ${"x".repeat(100 * 1024)}`);
+			chatStore.saveMessages(placeholderChat.id, [big("a"), big("b"), big("c"), newUserMessage("recent")]);
+			await ensureCompacted({
+				chatStore,
+				engine: { model: placeholder } as never,
+				modelId: placeholderId,
+				kind: "teach",
+				thresholdTokens: 1_000,
+				systemPromptTokens: 100,
+				summarize: async () => ({ summary: "Compacted.", usage: structuredClone(raw) }),
+			}, placeholderChat.id);
+			const compactedStep = chatStore.getChat(placeholderChat.id)!.turns!.at(-1)!.steps[0]!;
+			assert.equal(compactedStep.costUsd, undefined, "$0 placeholder compaction must leave costUsd absent");
+
+			const placeholderJob = jobStore.createJob({ kind: "research", chatId: placeholderChat.id, toolCallId: "tc_placeholder", input: { question: "q" } });
+			const placeholderRunner = createJobRunner({
+				chatStore,
+				jobStore,
+				deliver: async () => {},
+				engineFor: () => ({ model: placeholder, streamFn: fixedStream(placeholder, raw, [{ type: "text", text: "Done." }]) }),
+			});
+			await placeholderRunner.runJob(placeholderJob.id);
+			const savedPlaceholderCall = jobStore.getJob(placeholderJob.id)!.usage?.calls?.[0]!;
+			assert.equal(savedPlaceholderCall.costUsd, undefined, "$0 placeholder job call must leave costUsd absent");
+
 			placeholder.cost.input = 2;
 			placeholder.cost.output = 6;
-			assert.equal(callCost(capturedPlaceholder, placeholderId), calculateCost(placeholder, structuredClone(raw)).total, "placeholder falls back to read-time lookup once priced");
+			const repriced = calculateCost(placeholder, structuredClone(raw)).total;
+			assert.equal(sessionCost(chatStore.getChat(placeholderChat.id)!).cost, repriced, "placeholder turn falls back to read-time lookup once priced");
+			assert.equal(jobCost(jobStore.getJob(placeholderJob.id)!), repriced, "placeholder job falls back to read-time lookup once priced");
 		} finally {
 			Object.assign(placeholder.cost, originalPlaceholderCost);
 		}
 
 		// Unknown/faux model with $0 rates omits costUsd and stays unpriced at read time.
-		const unknownCaptured = captureCallUsage(raw, { provider: "unknown", id: "model", cost: zeroRates });
-		assert.equal(unknownCaptured.costUsd, undefined, "unknown $0 placeholder must not store costUsd");
-		assert.equal(callCost(unknownCaptured, "unknown:model"), null, "unknown model without costUsd stays unpriced");
+		const unknownModel: Model<Api> = { ...baseRoute, provider: "unknown", id: "model", name: "Unknown", cost: zeroRates };
+		const unknownChat = chatStore.createChat("unknown-zero");
+		const unknownJob = jobStore.createJob({ kind: "research", chatId: unknownChat.id, toolCallId: "tc_unknown", input: { question: "q" } });
+		await createJobRunner({
+			chatStore,
+			jobStore,
+			deliver: async () => {},
+			engineFor: () => ({ model: unknownModel, streamFn: fixedStream(unknownModel, raw, [{ type: "text", text: "Done." }]) }),
+		}).runJob(unknownJob.id);
+		const savedUnknown = jobStore.getJob(unknownJob.id)!;
+		assert.equal(savedUnknown.usage?.calls?.[0]?.costUsd, undefined, "unknown $0 placeholder must not store costUsd");
+		assert.equal(jobCost(savedUnknown), null, "unknown model without costUsd stays unpriced");
 
-		// Known free API models store costUsd: 0 and stay $0 even if later repriced.
+		// Known free API models store costUsd: 0 via real recording paths and stay $0 even if later repriced.
 		for (const freeId of ["openrouter/free", "recursive/flint-v1.0:free"]) {
 			const freeModel = piModels().getModel("openrouter", freeId)!;
 			assert.ok(freeModel, `known free model exists: ${freeId}`);
 			const originalCost = structuredClone(freeModel.cost);
 			try {
-				const captured = captureCallUsage(raw, freeModel);
-				assert.equal(captured.costUsd, 0, `${freeId} stores known $0 costUsd`);
+				const freeChat = chatStore.createChat(`free-${freeId}`);
+				const freeJob = jobStore.createJob({ kind: "research", chatId: freeChat.id, toolCallId: `tc_free_${freeId}`, input: { question: "q" } });
+				await createJobRunner({
+					chatStore,
+					jobStore,
+					deliver: async () => {},
+					engineFor: () => ({ model: freeModel, streamFn: fixedStream(freeModel, raw, [{ type: "text", text: "Done." }]) }),
+				}).runJob(freeJob.id);
+				const savedFree = jobStore.getJob(freeJob.id)!;
+				assert.equal(savedFree.usage?.calls?.[0]?.costUsd, 0, `${freeId} stores known $0 costUsd`);
 				freeModel.cost.input = 5;
 				freeModel.cost.output = 10;
-				assert.equal(callCost(captured, `openrouter:${freeId}`), 0, `recorded free call on ${freeId} stays $0 after reprice`);
+				assert.equal(jobCost(savedFree), 0, `recorded free call on ${freeId} stays $0 after reprice`);
 			} finally {
 				Object.assign(freeModel.cost, originalCost);
 			}
+		}
+
+		// Free detection uses the model id only (a free path segment or :free/-free//free token), never the display name.
+		for (const freeVariant of ["vendor/free/preview", "free/preview", "vendor/model-free-v2", "vendor/model:free-beta", "beam-free"]) {
+			const model: Model<Api> = { ...baseRoute, id: freeVariant, name: "Preview", cost: zeroRates };
+			assert.equal(captureCallUsage(raw, model).costUsd, 0, `${freeVariant} must record $0 even when display name omits free`);
+		}
+		for (const nonFreeVariant of [
+			{ id: "vendor/preview", name: "Preview (free trial ended)" },
+			{ id: "vendor/freelance", name: "Freelance" },
+			{ id: "vendor/carefree-1", name: "Carefree" },
+		]) {
+			const model: Model<Api> = { ...baseRoute, id: nonFreeVariant.id, name: nonFreeVariant.name, cost: zeroRates };
+			assert.equal(captureCallUsage(raw, model).costUsd, undefined, `${nonFreeVariant.id} (${nonFreeVariant.name}) must not freeze $0`);
 		}
 
 		// Invalid stored costUsd is honestly unpriced (null).

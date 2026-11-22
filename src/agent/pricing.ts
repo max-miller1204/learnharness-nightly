@@ -17,7 +17,6 @@ export type PricedModel = { cost: Model<Api>["cost"] };
 export type DispatchedModel = {
 	provider: string;
 	id: string;
-	name?: string;
 	cost?: Model<Api>["cost"];
 };
 
@@ -52,17 +51,22 @@ function hasNonZeroRate(cost: Model<Api>["cost"]): boolean {
 	);
 }
 
-function isKnownFreeModel(model: Pick<DispatchedModel, "id" | "name">): boolean {
-	return /(?:^|[:/-])free$/i.test(model.id) || (typeof model.name === "string" && /\bfree\b/i.test(model.name));
+export function isKnownFreeModelId(id: string): boolean {
+	return /(?:^|[:/-])free(?:$|[:/-])/i.test(id);
+}
+
+/** Whether a model's rates are real and safe to persist (not an unpriced provider or $0 placeholder). */
+export function hasRecordableCost(model: DispatchedModel): boolean {
+	const modelId = `${model.provider}:${model.id}`;
+	if (isUnpricedModelId(modelId) || !model.cost) return false;
+	// Do not freeze $0 placeholder rates unless the model id marks it free;
+	// leaving costUsd absent lets later catalog updates price it at read time.
+	return hasNonZeroRate(model.cost) || isKnownFreeModelId(model.id);
 }
 
 function dispatchedCost(call: Partial<CallUsage>, model: DispatchedModel): number | null {
-	const modelId = `${model.provider}:${model.id}`;
-	if (isUnpricedModelId(modelId) || !model.cost) return null;
-	// Do not freeze $0 placeholder rates unless the model is explicitly free;
-	// leaving costUsd absent lets later catalog updates price it at read time.
-	if (!hasNonZeroRate(model.cost) && !isKnownFreeModel(model)) return null;
-	return computeCallCost(call, { cost: model.cost });
+	if (!hasRecordableCost(model)) return null;
+	return computeCallCost(call, { cost: model.cost! });
 }
 
 export function computeCallCost(call: Partial<CallUsage>, model: PricedModel | undefined): number | null {
