@@ -1,7 +1,9 @@
 /**
  * Issue #350: tests/helpers/auth-data-dir.ts removes the lh-auth-test-*
- * folder it made when the process exits, however it exits, and never a
- * folder it didn't make (an LH_DATA_DIR set beforehand). Each case runs the
+ * folder it made when the process exits (a normal exit, process.exit(), or
+ * an uncaught error; a signal such as an unhandled SIGTERM skips exit
+ * handlers and isn't covered), and never a folder it didn't make (an
+ * LH_DATA_DIR set beforehand). Each case runs the
  * helper in a child process with its own TMPDIR, so what's left behind is
  * exactly what the helper left.
  */
@@ -11,23 +13,29 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 
 const HELPER = path.resolve(import.meta.dirname, "helpers/auth-data-dir.ts");
 
 function runChild(tmp: string, body: string, env: Record<string, string> = {}) {
-	const script = `import { AUTH_TEST_DATA_DIR, mintToken } from ${JSON.stringify(HELPER)};\nconsole.log("DIR=" + AUTH_TEST_DATA_DIR);\nmintToken("cleanup");\n${body}`;
+	// A file URL, not a native path: on Windows a "C:\..." path reaches the ESM loader as a "c:" URL.
+	const script = `import { AUTH_TEST_DATA_DIR, mintToken } from ${JSON.stringify(pathToFileURL(HELPER).href)};\nconsole.log("DIR=" + AUTH_TEST_DATA_DIR);\nmintToken("cleanup");\n${body}`;
 	const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
 		cwd: path.resolve(import.meta.dirname, ".."),
-		env: { PATH: process.env.PATH ?? "", HOME: tmp, TMPDIR: tmp, TEMP: tmp, TMP: tmp, NODE_ENV: "test", ...env },
+		// SystemRoot: Node on Windows needs it to start.
+		env: { PATH: process.env.PATH ?? "", HOME: tmp, TMPDIR: tmp, TEMP: tmp, TMP: tmp, NODE_ENV: "test", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}), ...env },
 		encoding: "utf8",
 		timeout: 30000,
 	});
-	const dir = /DIR=(.+)/.exec(result.stdout)?.[1]?.trim();
-	return { status: result.status, dir, stderr: result.stderr };
+	// A launch failure or a timeout is the error to report, not a parse of missing output.
+	if (result.error) throw result.error;
+	if (result.signal) throw new Error(`the child was stopped by ${result.signal} (the 30 s timeout?): ${result.stderr?.slice(0, 300) ?? ""}`);
+	const dir = /DIR=(.+)/.exec(result.stdout ?? "")?.[1]?.trim();
+	return { status: result.status, dir, stderr: result.stderr ?? "" };
 }
 const leftovers = (tmp: string) => fs.readdirSync(tmp).filter((name) => name.startsWith("lh-auth-test-"));
 
-test("the helper removes the folder it made when the process exits, however it exits", () => {
+test("the helper removes the folder it made on a normal exit, process.exit() and an uncaught error", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "lh-auth-cleanup-check-"));
 	try {
 		for (const [label, body, status] of [
