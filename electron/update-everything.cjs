@@ -497,23 +497,40 @@ function createUpdateEverything(deps) {
 	 *  df09ced7): the rows of what this run would update. Main pins the version and reads the server
 	 *  itself; nothing comes from the page. `target` and `serverOnly`: a Retry of that server, with the
 	 *  same version, and this app left out (T3's retryFailedUpdateRunServers). Returns { plan },
-	 *  { done } (Retry: the server is already on the target) or { error } (what to tell). */
-	async function makePlan(selection, { target: pinned = null, serverOnly = false } = {}) {
+	 *  { done } (Retry: the server is already on the target) or { error } (what to tell).
+	 *
+	 *  Revision PR 8: with no newer app version, the target is this app's own version and the plan
+	 *  moves only the server, which this app never restarts for. T3 does the same: its target is
+	 *  `localUpdateVersion ?? APP_VERSION` and it offers the run while a server is behind it
+	 *  (useUpdateEverything.ts:55-56, :104 at df09ced7), installing locally only when the app has an
+	 *  update (SidebarUpdatePill.tsx:373-386). */
+	async function makePlan(selection, { target: pinned = null, serverOnly: retry = false } = {}) {
 		const label = serverLabel(selection.origin);
 		let target = pinned;
+		let serverOnly = retry;
+		// The app has nothing newer: the server catches up with the app, as in T3.
+		let appCurrent = false;
 		if (!target) {
 			try { target = await deps.updater.pin(); } catch { target = null; }
-			if (!target || !isNewerVersion(target, deps.appVersion)) return { error: { title: "LearnHarness is up to date.", detail: "No newer version of this app was found." } };
+			if (!target || !isNewerVersion(target, deps.appVersion)) {
+				target = deps.appVersion;
+				serverOnly = true;
+				appCurrent = true;
+			}
 		}
+		const upToDate = { error: { title: "LearnHarness is up to date.", detail: "No newer version of this app was found." } };
+		if (appCurrent && !EXACT.test(target)) return upToDate;
 		let server;
 		try { server = await serverUpdates(selection.origin, selection.token); } catch (error) {
 			return { error: { title: "Couldn’t update everything.", detail: error.message, kind: error instanceof RunProblem ? error.kind : "retry" } };
 		}
+		// Nothing to move: the server already runs this app's version, or a newer one.
+		if (appCurrent && !isNewerVersion(target, server.runningVersion)) return upToDate;
 		if (isNewerVersion(server.runningVersion, target)) {
 			return { error: { title: "Couldn’t update everything.", detail: `${label} runs ${server.runningVersion}, newer than this app’s update (${target}). Check for updates again.` } };
 		}
 		const serverBehind = compareVersions(server.runningVersion, target) < 0;
-		if (serverOnly && !serverBehind) return { done: true };
+		if (retry && !serverBehind) return { done: true };
 		// A server that can't update itself is skipped, and this app waits for it: an app newer
 		// than its server could stop speaking its protocol.
 		const manual = serverBehind && server.status === "disabled";
@@ -528,7 +545,7 @@ function createUpdateEverything(deps) {
 		];
 		return {
 			plan: {
-				target, label, serverBehind: serverBehind && !manual,
+				target, label, serverBehind: serverBehind && !manual, serverOnly,
 				before: typeof server.instance === "string" ? server.instance : null, beforeVersion: server.runningVersion,
 				view: { version: target, rows, running, skipped: manual ? [{ label, reason }] : [], disabledReason },
 			},
@@ -704,7 +721,8 @@ function createUpdateEverything(deps) {
 				let made;
 				try { made = await makePlan(selection); } finally { release(); }
 				if (made.error) return { error: { title: made.error.title, detail: made.error.detail } };
-				return await askThenRun(selection, made.plan);
+				// Only the server moves when this app has nothing newer (revision PR 8).
+				return await askThenRun(selection, made.plan, { serverOnly: made.plan.serverOnly });
 			} finally { asking = false; }
 		},
 		/** The page has drawn the capsule for the run (or the failure) main waits on. `from` is

@@ -11,7 +11,7 @@ import { InteractionLayersProvider, useInteractionLayer } from "../components/in
 import { installModalDom } from "./modal-dom.ts";
 import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
-import { aboutButton, desktopAppButton, UpdateSettings, readDesktopAppStatus, type UpdateState } from "../components/settings/update-settings.tsx";
+import { aboutButton, desktopAppButton, UpdateSettings, readDesktopAppStatus, type DesktopAppStatus, type UpdateState } from "../components/settings/update-settings.tsx";
 import { updateButtonTooltip } from "../components/update-tooltips.ts";
 import { AUTO_RELOAD_KEY, AUTO_RELOAD_MEMORY, claimAutoReload, downloadingTooltip, downloadRingOffset, hasUnsentMessage, resolveUpdateControl, retryTooltip, shownReleaseNotes, SidebarUpdatePill, updateControlTooltip } from "../components/sidebar-update-pill.tsx";
 import { createRequire } from "node:module";
@@ -1531,6 +1531,7 @@ describe("the update control's toasts (T3's desktopUpdate.toast.tsx and SidebarU
 describe("Update everything in the desktop app's window onto a server (roadmap item 23)", () => {
 	const V71 = "0.6.1-nightly.20261118.71";
 	const V72 = "0.6.1-nightly.20261118.72";
+	const V73 = "0.6.1-nightly.20261118.73";
 	type Status = { version: string; target: string | null; phase: string; error: string | null; downloadPercent?: number | null; releaseNotes?: unknown; omittedReleaseCount?: unknown };
 	function remote(status: Status, server: UpdateState, { installApp = true } = {}) {
 		let current = status;
@@ -1822,6 +1823,80 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		await click(ready.pill()); await settle();
 		assert.equal(ready.calls.install, 1, "through the app's confirmation, never the in-page dialog");
 		assert.equal(q(document, "install-update-title"), null);
+	});
+
+	// Revision PR 8: this app has nothing newer, but its server runs an older version.
+	describe("only the server is behind this app", () => {
+		const app = (over: Partial<Status & { run?: unknown; result?: number | null }> = {}): Status & { run?: unknown; result?: number | null } => ({ version: V72, target: null, phase: "up-to-date", error: null, ...over });
+
+		it("the control is everything, 'Update 1 server', and a click asks the app's own dialog with no argument", async () => {
+			const r = everythingRemote(app(), state({ status: "up-to-date", runningVersion: V71 }));
+			const host = await mount(<SidebarUpdatePill pageVersion={V71} />);
+			await settle();
+			const pill = q(host, "update-pill")!;
+			assert.equal(pill.getAttribute("data-action"), "everything");
+			assert.equal(pill.getAttribute("aria-label"), "Update 1 server", "T3's sentence for servers alone");
+			assert.ok(pill.querySelector(".lucide-circle-arrow-up"), "T3's CircleArrowUp icon");
+			assert.equal(pill.tagName, "BUTTON", "a real button: Tab reaches it and Enter or Space presses it");
+			assert.equal(pill.hasAttribute("aria-disabled"), false);
+			await click(pill); await settle();
+			assert.deepEqual(r.calls.everything, [[]], "the app plans, asks and starts: the page names nothing");
+			assert.equal(r.calls.install, 0);
+		});
+
+		it("with only the server behind there are no release notes: the hover is the plain tooltip, even if the app kept old ones", async () => {
+			everythingRemote(app({ releaseNotes: [{ version: V71, items: ["Old app change"] }], omittedReleaseCount: 0 }), state({ status: "up-to-date", runningVersion: V71, releaseNotes: [{ version: V72, items: ["Server notes"] }] }));
+			const host = await mount(<SidebarUpdatePill pageVersion={V71} />);
+			await settle();
+			await hover(q(host, "update-pill")!);
+			assert.equal(q(document, "update-pill-notes"), null);
+		});
+
+		it("an app that offers an update keeps T3's 'Update this app and 1 server' and its notes", async () => {
+			everythingRemote({ version: V71, target: V72, phase: "available", error: null, releaseNotes: [{ version: V72, items: ["App change"] }] }, state({ status: "up-to-date", runningVersion: V71 }));
+			const host = await mount(<SidebarUpdatePill pageVersion={V71} />);
+			await settle();
+			assert.equal(q(host, "update-pill")!.getAttribute("aria-label"), "Update this app and 1 server");
+			await hover(q(host, "update-pill")!);
+			assert.ok(q(document, "update-pill-notes"));
+		});
+
+		it("the capsule stands in while the run goes, with no app row, and the result reads 'Updated 1 server'", async () => {
+			toastManager.clear();
+			const r = everythingRemote(app({ phase: "updating", run: { phase: "servers", localVersion: null, restartAt: null, awaitingPage: false, keyboard: false, machines: [{ label: "max-desktop", status: "downloading", startedAt: Date.now(), failure: null }] } }), state({ status: "up-to-date", runningVersion: V71 }), { results: [{ localVersion: null, updatedServers: 1, failures: [] }] });
+			const host = await mount(<><SidebarUpdatePill pageVersion={V71} /><Toaster /></>);
+			await settle();
+			assert.equal(q(host, "update-pill"), null, "the capsule stands in for the control");
+			assert.equal(q(host, "update-capsule-label")!.textContent, "0 of 1 updated", "the server alone: no Downloading step for this app");
+			r.set(app({ run: null, result: 1 }));
+			await refreshDesktop(); await settle();
+			assert.deepEqual([...document.querySelectorAll("[data-testid='toast-title']")].map((node) => node.textContent), ["Updated 1 server"]);
+		});
+
+		it("resolveUpdateControl: the server's own states and every other case keep their place", () => {
+			const behind = state({ status: "up-to-date", runningVersion: V71 });
+			const desktop: DesktopAppStatus = { version: V72, target: null, phase: "up-to-date", error: null };
+			const kind = (server: UpdateState, status: typeof desktop | null = desktop, options: { installing?: boolean } = {}) => resolveUpdateControl(server, { pageVersion: server.runningVersion ?? V71, desktop: status, ...options });
+			assert.equal(kind(behind), "everything");
+			assert.equal(kind({ ...behind, status: "available", version: V72 }), "everything", "the run also covers a server that only offers its own update");
+			assert.equal(kind({ ...behind, status: "downloaded", version: V72, downloadedVersion: V72 }), "everything");
+			assert.equal(kind({ ...behind, status: "downloading" }), "downloading", "the server's own staging keeps its progress ring (T3 hides everything while downloading)");
+			assert.equal(kind(behind, desktop, { installing: true }), "check", "after a confirmed Install the restart state comes first");
+			assert.equal(kind({ ...behind, status: "disabled" }), "unavailable", "a server that can't update itself is no machine to update");
+			assert.equal(kind({ ...behind, notice: { kind: "rolled-back", version: V72, text: "x", at: 1 } }), "dismiss-notice", "the rollback notice is read first");
+			// Not behind: the server runs this app's version, a newer one, or no exact version.
+			assert.equal(kind(state({ status: "up-to-date", runningVersion: V72 }), desktop), "check");
+			assert.equal(kind(state({ status: "up-to-date", runningVersion: V73 }), desktop), "check");
+			assert.equal(kind(state({ status: "up-to-date", runningVersion: "dev" }), desktop), "check");
+			assert.equal(kind(behind, { ...desktop, version: "0.0.0-dev" }), "check", "an app with no exact version asks the server for nothing");
+			// Only the window onto a self-hosted server has this app's status.
+			assert.equal(kind(behind, null), "check");
+			// An offer that isn't newer than this app is no update either.
+			assert.equal(kind(behind, { ...desktop, target: V71, phase: "available" }), "everything");
+			assert.equal(updateControlTooltip(behind, "everything", V71, { ...desktop, target: V71, phase: "available" }), "Update 1 server");
+			assert.equal(updateControlTooltip(behind, "everything", V71, { ...desktop, version: V71, target: V72, phase: "available" }), "Update this app and 1 server");
+			assert.equal(updateControlTooltip(behind, "everything"), "Update this app and 1 server", "an older caller without the app's status");
+		});
 	});
 
 	it("while it runs the button stays everything and disabled; the check button checks the server and the app", async () => {

@@ -27,7 +27,9 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 	// Main's own dialog (askInApp): each answer in turn, true for Update; "wait" leaves it open until answer().
 	inApp = [true] as Array<boolean | "wait" | { update: boolean; keyboard: boolean }>,
 	// The page: "ready" says it shows the capsule at once, "manual" waits for the test, "none" never does (a page from before PR 7).
-	page: pageMode = "ready" as "ready" | "manual" | "none" } = {}) {
+	page: pageMode = "ready" as "ready" | "manual" | "none",
+	// The app's feed can't be read (pin() throws).
+	feedDown = false } = {}) {
 	const reconnects: string[] = [];
 	const asked: Array<{ plan: unknown; win: unknown }> = [];
 	let answerDialog: (update: boolean) => void = () => {};
@@ -69,7 +71,7 @@ function fixture({ server = V71, offered = V72 as string | null, answers = [0, 0
 			state: () => ({ status: offered ? "available" : "up-to-date", version: offered, releaseNotes: appNotes }),
 			check: () => log.push("check"),
 			download: () => log.push("download"),
-			pin: async () => { log.push("pin"); return offered; },
+			pin: async () => { log.push("pin"); if (feedDown) throw new Error("ENOTFOUND"); return offered; },
 			downloadPinned: async (v: string) => { duringDownload(); if (downloadFails) throw new Error("sha512 checksum mismatch"); log.push(`download ${v}`); },
 			// The app-only retry: exactly v, whatever the feed's newest is.
 			downloadExact: async (v: string) => { duringDownload(); log.push(`exact ${v}`); },
@@ -1168,4 +1170,96 @@ test("the result toast waits for the page main reloads: the page it replaces can
 	assert.deepEqual(rolled.ue.takeResult({ win: rolled.remote.win, generation: rolled.page.generation })!.failures, [`max-desktop: max-desktop couldn’t start ${V72} and went back to ${V71}. Your app wasn’t changed.`]);
 	// Another window (a switch, a reopen) is a page that stays.
 	assert.equal(f.ue.takeResult({ win: { id: 9 }, generation: 0 }), null, "nothing left there");
+});
+
+
+// ─── Revision PR 8: only the server is behind ─────────────────────────────────
+
+test("with no newer app version, the dialog plans the server alone, at this app's own version", async () => {
+	// The app is on V72 with nothing newer to install; its server is still on V71.
+	const f = fixture({ appVersion: V72, offered: null, server: V71, inApp: [false] });
+	assert.deepEqual(await f.ue.everything(), { started: false, keyboard: false, dialog: true });
+	assert.deepEqual(viewOf(f), { version: V72, rows: [{ label: "max-desktop", app: "server", running: 2 }], running: 2, skipped: [], disabledReason: null }, "no This app row: it restarts nothing");
+	assert.equal(f.asked[0]!.win, f.remote.win);
+	assert.deepEqual(f.log, ["pin"], "Cancel changes nothing: no download, no install");
+	assert.equal(f.requests.some((request) => request.path === "/api/updates/install-version"), false);
+
+	// The feed can't be read: the server still catches up with the app, as T3's target is
+	// `localUpdateVersion ?? APP_VERSION` and needs no feed.
+	const offline = fixture({ appVersion: V72, offered: null, feedDown: true, inApp: [false] });
+	await offline.ue.everything();
+	assert.deepEqual(viewOf(offline).rows, [{ label: "max-desktop", app: "server", running: 2 }]);
+
+	// An offered app version that is not newer than this app is no update either.
+	const stale = fixture({ appVersion: V72, offered: V71, inApp: [false] });
+	await stale.ue.everything();
+	assert.equal(viewOf(stale).version, V72);
+	assert.deepEqual(viewOf(stale).rows.length, 1);
+});
+
+test("a newer app version still plans this app too, last", async () => {
+	const f = fixture({ appVersion: V71, offered: V72, server: V71, inApp: [false] });
+	await f.ue.everything();
+	assert.deepEqual(viewOf(f).rows, [{ label: "max-desktop", app: "server", running: 2 }, { label: "This app", app: "this-app", running: 0 }]);
+	assert.equal(viewOf(f).version, V72);
+});
+
+test("with nothing to move there is no dialog: a server on this app's version or newer, or a build that isn't an exact version", async () => {
+	for (const server of [V72, V73]) {
+		const f = fixture({ appVersion: V72, offered: null, server, inApp: [true] });
+		const answer = await f.ue.everything() as { error: { title: string; detail: string } };
+		assert.equal(answer.error.title, "LearnHarness is up to date.", `server ${server}`);
+		assert.equal(f.asked.length, 0);
+		assert.equal(f.ue.running(), false, "nothing is reserved");
+	}
+	// A development build has no exact version to ask the server for.
+	const dev = fixture({ appVersion: "0.0.0-dev", offered: null, server: V71, inApp: [true] });
+	assert.equal((await dev.ue.everything() as { error: { title: string } }).error.title, "LearnHarness is up to date.");
+	assert.equal(dev.asked.length, 0);
+	assert.equal(dev.requests.some((request) => request.path === "/api/updates/install-version"), false);
+});
+
+test("a server that can't update itself isn't planned when only it is behind: Update from its own Settings", async () => {
+	const f = fixture({ appVersion: V72, offered: null, server: V71, inApp: [true] });
+	f.remote.status = "disabled";
+	const answer = await f.ue.everything() as { error: { title: string; detail: string } };
+	assert.deepEqual(answer, { error: { title: "Couldn’t update everything.", detail: "Update max-desktop from its own Settings first." } });
+	assert.equal(f.asked.length, 0, "nothing to show or press");
+});
+
+test("Update moves only the server to exactly this app's version: no download, no countdown, no app restart", async () => {
+	const f = fixture({ appVersion: V72, offered: null, server: V71 });
+	f.remote.onInstall = () => { f.remote.running = V72; f.remote.health = V72; f.remote.instance = "new"; };
+	assert.deepEqual(await f.ue.everything(), { started: true, keyboard: false, dialog: true });
+	assert.equal((f.ue.status() as { phase: string }).phase, "updating", "the run is reserved at once");
+	assert.equal(runOf(f)!.localVersion, null, "the capsule shows no app row");
+	await until(() => runOf(f) === null && resultOf(f) !== null);
+	const asks = f.requests.filter((request) => request.path === "/api/updates/install-version");
+	assert.deepEqual(asks.map((request) => request.body), [{ version: V72 }], "exactly the app's version, through install-version");
+	assert.deepEqual(f.log.filter((entry) => entry !== "pin" && !entry.startsWith("reconnect")), [], "this app downloads and installs nothing");
+	assert.equal(f.prompts.length, 0, "no native dialog, no countdown");
+	assert.deepEqual(f.ue.takeResult(), { localVersion: null, updatedServers: 1, failures: [] }, "T3's \"Updated 1 server\"");
+	assert.equal(f.results.length, 0, "nothing saved for a relaunch: this app doesn't restart");
+});
+
+test("a server-only run that fails stays in the capsule, and Retry asks again for the same version", async () => {
+	const f = await failedRun({ appVersion: V72, offered: null, server: V71, inApp: [true, true] });
+	assert.equal(runOf(f)!.localVersion, null);
+	assert.deepEqual(f.requests.find((request) => request.path === "/api/updates/install-version")!.body, { version: V72 });
+	f.remote.notice = null;
+	f.remote.status = "idle";
+	f.remote.pinned = null;
+	f.remote.onInstall = () => { f.remote.running = V72; f.remote.health = V72; f.remote.instance = "new"; };
+	assert.deepEqual(await f.ue.retry(), { started: true, keyboard: false, dialog: true });
+	assert.deepEqual(viewOf(f, 1).rows, [{ label: "max-desktop", app: "server", running: 2 }]);
+	await until(() => runOf(f) === null && resultOf(f) !== null);
+	assert.equal(f.log.some((entry) => entry.startsWith("install")), false);
+});
+
+test("a Cancel starts the cooldown for a server-only ask too", async () => {
+	const f = fixture({ appVersion: V72, offered: null, server: V71, inApp: [false, true] });
+	await f.ue.everything();
+	assert.deepEqual(await f.ue.everything(), { error: { title: "Update everything", detail: "Try again in a moment." } });
+	f.advance(ASK_COOLDOWN_MS);
+	assert.deepEqual(await f.ue.everything(), { started: true, keyboard: false, dialog: true });
 });

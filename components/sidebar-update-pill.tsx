@@ -20,8 +20,9 @@
  *
  * In the desktop app's window onto a self-hosted server (window.lh.desktopUpdate):
  *
- *   everything     circle-arrow-up: this app has a newer version and the server
- *                  is behind it. Opens the app's own Update everything confirmation
+ *   everything     circle-arrow-up: the server is behind this app's newest version
+ *                  (an update it offers, else the version it runs, serverBehindApp).
+ *                  Opens the app's own Update everything confirmation
  *   app-download   this app's update is available, the server already runs it
  *   app-install    this app's update is downloaded, the server already runs it
  *                  (also through the app's confirmation: just an app restart)
@@ -110,6 +111,15 @@ export function claimAutoReload(version: string): boolean {
 const serverKept = (state: UpdateState, version: string) =>
 	!!state.runningVersion && isExactVersion(state.runningVersion) && state.runningVersion === version && state.committed === true;
 
+/** Revision PR 8: this app has no newer version, but its server runs an older one (T3's
+ *  `targetVersion = localUpdateVersion ?? APP_VERSION`, whose servers behind it make
+ *  `hasUpdates`, `useUpdateEverything.ts:55-56` and `:104` at df09ced7). The run then asks the
+ *  server for exactly this app's version and restarts nothing here. A server that can't update
+ *  itself is no machine to update (T3 skips it too), and a rollback notice is read first. */
+export function serverBehindApp(state: UpdateState, desktop: DesktopAppStatus | null): boolean {
+	return !!desktop && !desktopOffer(desktop) && state.status !== "disabled" && state.notice?.kind !== "rolled-back" && isNewerVersion(desktop.version, state.runningVersion);
+}
+
 /** The one place that picks the button's state (T3's resolveSidebarUpdatePresentation order).
  *  `desktop` is this app's own update, only in its window onto a self-hosted server.
  *  `installing`: the user confirmed Install in this page and the restart hasn't happened. */
@@ -127,6 +137,7 @@ export function resolveUpdateControl(state: UpdateState | null, { showCheckIcon 
 		return desktop.phase === "downloaded" ? "app-install" : "app-download";
 	}
 	if (state.status === "downloading") return "downloading";
+	if (!installing && serverBehindApp(state, desktop)) return "everything";
 	// A failed install (T3's recovery: still downloaded, with the install context) leaves Restarting.
 	if (state.status === "downloaded") return installing && state.errorContext !== "install" ? "restarting" : "install";
 	if (state.status === "available") return "download";
@@ -143,7 +154,7 @@ export const UNAVAILABLE_TITLE = "Updates unavailable";
 export const UNAVAILABLE_DETAIL = "Automatic updates are not available in this build.";
 
 /** The tooltip, and the popover's title line (T3's wording, plus LearnHarness's notice and reload). */
-export function updateControlTooltip(state: UpdateState, kind: UpdateControlKind, pageVersion: string = APP_VERSION): string {
+export function updateControlTooltip(state: UpdateState, kind: UpdateControlKind, pageVersion: string = APP_VERSION, desktop: DesktopAppStatus | null = null): string {
 	switch (kind) {
 		case "reload": return isNewerVersion(state.runningVersion, pageVersion)
 			? `Updated to ${state.runningVersion}. Click to reload.`
@@ -157,7 +168,9 @@ export function updateControlTooltip(state: UpdateState, kind: UpdateControlKind
 		case "restarting": return restartingTooltip(state.version);
 		case "dismiss-notice": return state.notice?.text ?? "";
 		// T3's updateTargetsSentence for this app and one server (updateEverything.logic.ts:765-772).
-		case "everything": return "Update this app and 1 server";
+		// With no newer app version only the server is behind (revision PR 8): "Update 1 server", as
+		// T3's sentence for servers alone (updateEverything.logic.ts:826-832).
+		case "everything": return desktop && !desktopOffer(desktop) ? "Update 1 server" : "Update this app and 1 server";
 		default: return "Check for updates";
 	}
 }
@@ -201,6 +214,8 @@ export type ShownReleaseNotes = {
 
 export function shownReleaseNotes(state: UpdateState | null, kind: UpdateControlKind | null, desktop: DesktopAppStatus | null = null): ShownReleaseNotes | null {
 	if (!kind || !DETAIL_KINDS.has(kind) || desktop?.phase === "updating") return null;
+	// Only the server is behind (revision PR 8): this app offers nothing, so there are no notes to show.
+	if (kind === "everything" && !desktopOffer(desktop)) return null;
 	const appOwned = kind === "everything" || kind === "app-download" || kind === "app-install" || (kind === "downloading" && desktop?.phase === "downloading");
 	const source = appOwned ? desktop : state;
 	const releaseNotes = source?.releaseNotes ?? [];
@@ -558,7 +573,7 @@ export function SidebarUpdatePill({ reload = () => window.location.reload(), pag
 	const tooltip = (kind === "app-download" || kind === "app-install") && desktopStatus ? appUpdateTooltip(desktopStatus, kind)
 		: kind === "downloading" && desktopStatus?.phase === "downloading" ? downloadingTooltip(downloadPercent)
 		: kind === "restarting" && desktopStatus?.phase === "updating" ? restartingTooltip(desktopOffer(desktopStatus))
-		: updateControlTooltip(state, kind, pageVersion);
+		: updateControlTooltip(state, kind, pageVersion, desktopStatus);
 	const detail = kind === "unavailable" ? unavailableDetail(state) : null;
 	const disabled = kind === "checking" || kind === "downloading" || kind === "unavailable" || kind === "restarting" || pending || (kind === "everything" && desktopStatus?.phase === "updating");
 	const surface = kind !== "check" && kind !== "checking" && kind !== "unavailable";
