@@ -37,6 +37,8 @@ export type PathInputProps = Omit<React.HTMLAttributes<HTMLDivElement>, "childre
 type Controller = {
 	external: (value: string) => void;
 	remember: () => void;
+	/** Tell the owner about text adopted at mount, once. */
+	report: () => void;
 };
 
 /**
@@ -61,7 +63,14 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 	const [chips, setChips] = React.useState<ChipHost[]>([]);
 	// Keep this text child immutable: SSR/hydration gets the complete draft,
 	// while subsequent React renders leave the browser-owned editable DOM alone.
+	// The field is editable from the server render, so at hydration its text may
+	// be the learner's, not React's: suppressHydrationWarning is what stops
+	// React from patching a differing text child back to its own, and the mount
+	// effect below reads the DOM before painting.
 	const initial = React.useRef({ value: normalizePathInputValue(value, singleLine), autoFocus, singleLine });
+	// Set when mounting adopted text typed before hydration, so the owner's
+	// value from that same render (the server's) doesn't overwrite it.
+	const adoptedEdit = React.useRef(false);
 
 	React.useImperativeHandle(forwardedRef, () => rootRef.current!, []);
 	React.useLayoutEffect(() => { callbacks.current = { onValueChange, singleLine, fileInsertion }; }, [onValueChange, singleLine, fileInsertion]);
@@ -78,6 +87,8 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		let pendingPaste: string[] = [];
 		let pendingCitations: InsertCitationDetail[] = [];
 		let mounted = true;
+		// Text adopted at mount that the owner has not heard of yet (`report`).
+		let adopted = false;
 		const history = new PathInputHistory();
 
 		function remember() {
@@ -99,7 +110,7 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 			if (record) history.push(before);
 			current = next.value;
 			paint(next.selection, document.activeElement === root);
-			if (notify) callbacks.current.onValueChange(current);
+			if (notify) { adopted = false; callbacks.current.onValueChange(current); }
 		}
 		function replace(text: string) {
 			remember();
@@ -273,6 +284,11 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		}
 		controllerRef.current = {
 			remember,
+			report() {
+				if (!adopted) return;
+				adopted = false;
+				callbacks.current.onValueChange(current);
+			},
 			external(next) {
 				next = normalizePathInputValue(next, callbacks.current.singleLine);
 				if (composing.current) { pendingExternal = next; return; }
@@ -285,10 +301,34 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 				const selection = saved.anchor === current.length && saved.focus === current.length
 					? { anchor: next.length, focus: next.length } : clampPathSelection(next, saved);
 				current = next;
+				adopted = false; // the owner's value is now what the field shows
 				paint(selection, document.activeElement === root);
 			},
 		};
-		paint(saved, false);
+		// The field is editable from the server render, before any of this runs.
+		// What it holds now that differs from what React rendered is the
+		// learner's own typing (a client-only mount renders exactly `current`):
+		// keep it, so it beats a saved draft or any other value the owner would
+		// restore. The owner hears of it from a passive effect (`report`): its
+		// own mount layout effects, which reset state from its first value, run
+		// after this one in the same commit and would overwrite it.
+		// HTML parsing turns CRLF in the server's text into LF, so that alone is
+		// no edit.
+		const lineBreaks = (text: string) => text.replace(/\r\n?/g, "\n");
+		const live = readPathInput(root);
+		let edited = false;
+		if (lineBreaks(live) !== lineBreaks(current)) {
+			const caret = document.activeElement === root ? readPathSelection(root) : null;
+			const next = normalizePathEdit({ value: live, selection: caret ?? { anchor: live.length, focus: live.length } }, initial.current.singleLine);
+			edited = next.value !== current;
+			if (edited) {
+				current = next.value;
+				saved = clampPathSelection(current, next.selection);
+				adopted = true;
+				adoptedEdit.current = true;
+			}
+		}
+		paint(saved, edited && document.activeElement === root);
 		if (initial.current.autoFocus) { root.focus(); restorePathSelection(root, saved); }
 		root.addEventListener(INSERT_FILE_PATHS_EVENT, insertEvent);
 		root.addEventListener(INSERT_CITATION_EVENT, insertCitationEvent);
@@ -321,7 +361,14 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		};
 	}, []);
 
-	React.useLayoutEffect(() => { controllerRef.current?.external(value); }, [value, singleLine]);
+	// Child passive effects run after every layout effect of the commit (the
+	// owners' mount resets included) and before the owners' passive effects.
+	React.useEffect(() => { controllerRef.current?.report(); }, []);
+
+	React.useLayoutEffect(() => {
+		if (adoptedEdit.current) { adoptedEdit.current = false; return; }
+		controllerRef.current?.external(value);
+	}, [value, singleLine]);
 
 	return <>
 		<div
@@ -333,6 +380,7 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 			aria-placeholder={placeholder}
 			contentEditable
 			suppressContentEditableWarning
+			suppressHydrationWarning
 			data-file-path-input={fileInsertion ? "" : undefined}
 			data-empty={initial.current.value.length === 0 ? "true" : "false"}
 			data-file-path-default={fileInsertion && defaultDropTarget ? "" : undefined}

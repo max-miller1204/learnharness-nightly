@@ -1,5 +1,6 @@
 import React, { act, type ReactNode } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, hydrateRoot } from "react-dom/client";
+import { renderToString } from "react-dom/server";
 import { parseHTML } from "linkedom";
 import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime.js";
 import { PathnameContext } from "next/dist/shared/lib/hooks-client-context.shared-runtime.js";
@@ -15,8 +16,13 @@ export const pluginInfo = (id = "fixture"): PluginInfo => ({
 });
 
 /** In-memory plugins/fetch only: never opens a real data directory or provider. */
-export async function mountPluginChrome(frontend: PluginFrontendModule, children: ReactNode, { strictMode = false, pathname = "/plugins/fixture/overview", fetch: fixtureFetch = async () => { throw new Error("No real requests in chrome fixtures"); }, prepareDom }: { strictMode?: boolean; pathname?: string; fetch?: typeof globalThis.fetch; prepareDom?: (dom: ReturnType<typeof parseHTML>) => void | (() => void) } = {}) {
-	const dom = parseHTML("<html><head></head><body><div id='root'></div></body></html>");
+export async function mountPluginChrome(frontend: PluginFrontendModule, children: ReactNode, { strictMode = false, pathname = "/plugins/fixture/overview", fetch: fixtureFetch = async () => { throw new Error("No real requests in chrome fixtures"); }, prepareDom, hydrate }: { /** Server-render `children` into the page, call `beforeHydration` (the learner typing before the scripts ran), then hydrate it instead of rendering from scratch. */ hydrate?: { beforeHydration?: (document: Document) => void }; strictMode?: boolean; pathname?: string; fetch?: typeof globalThis.fetch; prepareDom?: (dom: ReturnType<typeof parseHTML>) => void | (() => void) } = {}) {
+	const router = { bfcacheId: "fixture", back() {}, forward() {}, refresh() {}, hmrRefresh() {}, push() {}, replace() {}, async prefetch() {} };
+	const connect = (): NotifySource => ({ close() {}, onOpen() {}, onEvent() {} });
+	const wrap = (content: ReactNode) => <InteractionLayersProvider><AppRouterContext.Provider value={router}><PathnameContext.Provider value={pathname}><ServerEventsProvider connect={connect}><PluginsProvider>{content}</PluginsProvider></ServerEventsProvider></PathnameContext.Provider></AppRouterContext.Provider></InteractionLayersProvider>;
+	// The server's markup, rendered before any DOM globals exist, as on the server.
+	const serverHtml = hydrate ? renderToString(wrap(children)) : "";
+	const dom = parseHTML(`<html><head></head><body><div id='root'>${serverHtml}</div></body></html>`);
 	const globals = {
 		window: dom.window, self: dom.window, document: dom.document, innerWidth: 900, innerHeight: 700,
 		HTMLElement: dom.window.HTMLElement, Element: dom.window.Element, Node: dom.window.Node,
@@ -54,16 +60,25 @@ export async function mountPluginChrome(frontend: PluginFrontendModule, children
 		importModule: async () => frontend, pathname: () => pathname, navigate() {},
 	});
 	window.__lhPluginWindow = owner;
-	const connect = (): NotifySource => ({ close() {}, onOpen() {}, onEvent() {} });
-	const router = { bfcacheId: "fixture", back() {}, forward() {}, refresh() {}, hmrRefresh() {}, push() {}, replace() {}, async prefetch() {} };
-	const root = createRoot(document.querySelector("#root")!);
+	const recoverableErrors: unknown[] = [];
+	let root: ReturnType<typeof createRoot> | undefined;
+	const container = () => document.querySelector("#root")!;
 	const render = async (content: ReactNode) => {
-		const tree = <InteractionLayersProvider><AppRouterContext.Provider value={router}><PathnameContext.Provider value={pathname}><ServerEventsProvider connect={connect}><PluginsProvider>{content}</PluginsProvider></ServerEventsProvider></PathnameContext.Provider></AppRouterContext.Provider></InteractionLayersProvider>;
-		await act(async () => { root.render(strictMode ? <React.StrictMode>{tree}</React.StrictMode> : tree); });
+		const tree = wrap(content);
+		await act(async () => { root!.render(strictMode ? <React.StrictMode>{tree}</React.StrictMode> : tree); });
 	};
-	try { await render(children); }
+	try {
+		if (hydrate) {
+			hydrate.beforeHydration?.(dom.document);
+			const tree = wrap(children);
+			await act(async () => { root = hydrateRoot(container(), strictMode ? <React.StrictMode>{tree}</React.StrictMode> : tree, { onRecoverableError: (error) => recoverableErrors.push(error) }); });
+		} else {
+			root = createRoot(container());
+			await render(children);
+		}
+	}
 	catch (error) {
-		await act(async () => { root.unmount(); });
+		if (root) await act(async () => { root!.unmount(); });
 		await new Promise(resolve => setTimeout(resolve, 5));
 		restore(); throw error;
 	}
@@ -75,11 +90,11 @@ export async function mountPluginChrome(frontend: PluginFrontendModule, children
 		}
 	}
 	return {
-		document: dom.document, owner, render,
+		document: dom.document, owner, render, recoverableErrors,
 		async resize(value: number) { width = value; Object.defineProperty(dom.window, "innerWidth", { configurable: true, value }); await act(async () => { window.dispatchEvent(new dom.window.Event("resize")); }); },
 		async click(element: HTMLElement) { await act(async () => { element.dispatchEvent(new dom.window.Event("click", { bubbles: true })); }); },
 		async close() {
-			await act(async () => { root.unmount(); });
+			await act(async () => { root?.unmount(); });
 			// FocusScope's delayed unmount event still needs the fixture DOM.
 			await new Promise(resolve => setTimeout(resolve, 5));
 			restore();

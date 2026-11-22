@@ -650,8 +650,12 @@ export function Chat({
 	/* The READING-THINKING channel (owner 2026-10-03): a draft field for
 	 * thinking while reading the teaching prose, mounted while a check waits
 	 * behind its reveal, riding the check answer (or its dismissal) as the
-	 * separate `readingThinking` field. Reset per pending question. */
-	const [readingThinkingSeed, setReadingThinkingSeed] = useState({ questionId: null as string | null, value: "", revision: 0 });
+	 * separate `readingThinking` field. Reset per pending question. The seed
+	 * starts on the question pending at mount, so mounting bumps no revision:
+	 * a bump resets the field, and the field may hold what the learner typed
+	 * before hydration (#366). */
+	const pendingQuestionId = pendingPlugin ? pluginQuestionOccurrenceKey(pendingPlugin.occurrence) : pending?.key ?? null;
+	const [readingThinkingSeed, setReadingThinkingSeed] = useState(() => ({ questionId: pendingQuestionId, value: "", revision: 0 }));
 	const readingThinkingRef = useRef("");
 
 	// ⌘T (toggle-user-thinking, owner round 2026-10-07): set EVERY user
@@ -671,7 +675,6 @@ export function Chat({
 		readingThinkingRef.current = "";
 		setReadingThinkingSeed((previous) => ({ ...previous, value: "", revision: previous.revision + 1 }));
 	}, []);
-	const pendingQuestionId = pendingPlugin ? pluginQuestionOccurrenceKey(pendingPlugin.occurrence) : pending?.key ?? null;
 	useLayoutEffect(() => {
 		// Different calls never share a draft; a failed submission of THIS
 		// call restores the reading channel alongside the form's snapshot.
