@@ -64,15 +64,21 @@ export function sessionCacheHitRate(record: Pick<ChatRecord, "turns">): number |
 		? cacheReadTokens / promptTokens : null;
 }
 
-export function turnCost(turn: Pick<TurnUsage, "model" | "steps">, price: CallPricer): number | null {
-	if (isSubscriptionModel(turn.model) || turn.steps.length === 0) return null;
+function turnCostParts(turn: Pick<TurnUsage, "model" | "steps">, price: CallPricer) {
 	let total = 0;
+	let unknown = turn.steps.length === 0;
 	for (const step of turn.steps) {
 		const cost = price(step, turn.model);
-		if (cost === null) return null;
-		total += cost;
+		if (cost === null) unknown = true;
+		else total += cost;
 	}
-	return total;
+	return { total, unknown };
+}
+
+export function turnCost(turn: Pick<TurnUsage, "model" | "steps">, price: CallPricer): number | null {
+	if (isSubscriptionModel(turn.model)) return null;
+	const { total, unknown } = turnCostParts(turn, price);
+	return unknown ? null : total;
 }
 
 export function sessionCost(record: Pick<ChatRecord, "turns">, price: CallPricer): SessionPricing {
@@ -81,11 +87,17 @@ export function sessionCost(record: Pick<ChatRecord, "turns">, price: CallPricer
 	let subscription = 0;
 	const turnCosts: Record<string, number | null> = {};
 	for (const turn of record.turns ?? []) {
-		const dollars = turnCost(turn, price);
-		turnCosts[turn.id] = dollars;
-		if (isSubscriptionModel(turn.model)) subscription++;
-		else if (dollars === null) unpriced++;
-		else cost += dollars;
+		if (isSubscriptionModel(turn.model)) {
+			subscription++;
+			turnCosts[turn.id] = null;
+			continue;
+		}
+		const parts = turnCostParts(turn, price);
+		cost += parts.total;
+		turnCosts[turn.id] = parts.unknown ? null : parts.total;
+		if (parts.unknown) {
+			unpriced++;
+		}
 	}
 	return { cost, unpriced, ...(subscription ? { subscription, subscriptionProviders: subscriptionLabels((record.turns ?? []).map((turn) => turn.model)) } : {}), turnCosts };
 }

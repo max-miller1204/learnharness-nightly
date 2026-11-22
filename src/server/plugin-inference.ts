@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { normalizeContext, type AssistantMessage, type AssistantMessageEvent, type SimpleStreamOptions, type Usage } from "@earendil-works/pi-ai";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { PiEngine } from "../agent/models.ts";
-import { dispatchedModelOf, hasRecordableCost, isKnownFreeModelId, isUnpricedModelId, liveCatalogModel, recordDispatchedModel } from "../agent/pricing.ts";
+import { dispatchedModelOf, providerCost, hasRecordableCost, isKnownFreeModelId, isUnpricedModelId, liveCatalogModel, recordDispatchedModel } from "../agent/pricing.ts";
 import { CLAUDE_CODE_PROVIDER } from "../agent/claude-code/constants.ts";
 import { markUnadmittedUsage, usageWasAdmitted, type SubscriptionDispatchLifecycle } from "../agent/subscription-request-cycle.ts";
 import type { PluginCallPurpose, PluginModelSpec } from "../core/plugin-agents.ts";
@@ -115,10 +115,13 @@ export function createPluginInference(
 		if (signal.aborted || !usageWasAdmitted(usage)) return;
 		const spec = modelSpec(model);
 		const modelId = `${spec.provider}:${spec.id}`;
-		const cost = dispatchedModelOf(usage)?.cost ?? liveCatalogModel(modelId)?.cost;
-		const recordable = cost
-			? hasRecordableCost({ provider: spec.provider, id: spec.id, cost })
-			: !isUnpricedModelId(modelId) && (usage.cost.total > 0 || isKnownFreeModelId(spec.id));
+		const dispatched = dispatchedModelOf(usage);
+		const catalog = liveCatalogModel(modelId);
+		const cost = dispatched?.cost ?? catalog?.cost;
+		const reported = providerCost(usage, { provider: spec.provider, id: spec.id });
+		const recordable = reported !== null || (cost
+			? hasRecordableCost({ provider: spec.provider, id: spec.id, cost, free: dispatched?.free ?? catalog?.free })
+			: !isUnpricedModelId(modelId) && (usage.cost.total > 0 || isKnownFreeModelId(spec.id)));
 		// Explicit projection: never serialize transport models, request content,
 		// account leases, arbitrary caller properties, or credentials.
 		const row = { timestamp: new Date().toISOString(), model: spec, usage: {

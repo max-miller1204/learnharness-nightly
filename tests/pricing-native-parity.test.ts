@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { calculateCost, type Usage } from "@earendil-works/pi-ai";
+import { isKnownFreeModelId } from "../src/agent/pricing.ts";
 import { piModels } from "../src/agent/models.ts";
 import { callCost, jobCost } from "../src/server/pricing.ts";
 import { accumulateJobUsage, piUsageToStep } from "../src/core/contracts/jobs.ts";
@@ -18,7 +19,9 @@ test("API catalog models price through Pi at every tier boundary; native CLI sta
 			const usage = nativeUsage(input);
 			const call = Object.freeze(saved(usage));
 			const before = structuredClone(call);
-			const expected = model.provider === "claude-code" ? null : calculateCost(model, usage).total;
+			const total = calculateCost(model, usage).total;
+			const free = (model as typeof model & { free?: boolean }).free === true || isKnownFreeModelId(model.id);
+			const expected = model.provider === "claude-code" || (model.provider === "openrouter" && !free && total === 0 && [model.cost, ...(model.cost.tiers ?? [])].every(r => r.input === 0 && r.output === 0 && r.cacheRead === 0 && r.cacheWrite === 0)) ? null : free ? 0 : total;
 			assert.equal(callCost(call, `${model.provider}:${model.id}`), expected, `${model.provider}:${model.id} input=${input}`);
 			assert.deepEqual(call, before);
 		}

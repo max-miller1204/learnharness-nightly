@@ -11,13 +11,14 @@ import type { CallUsage } from "../core/contracts.ts";
 import { piUsageToStep, type UsageStepLike } from "../core/contracts/jobs.ts";
 import { isSubscriptionModel } from "../core/prices.ts";
 
-export type PricedModel = { cost: Model<Api>["cost"] };
+export type PricedModel = { cost: Model<Api>["cost"]; free?: boolean };
 
 /** The dispatched model metadata available when a call completes. */
 export type DispatchedModel = {
 	provider: string;
 	id: string;
 	cost?: Model<Api>["cost"];
+	free?: boolean;
 };
 
 const dispatchedModels = new WeakMap<Usage, DispatchedModel>();
@@ -61,12 +62,15 @@ export function hasRecordableCost(model: DispatchedModel): boolean {
 	if (isUnpricedModelId(modelId) || !model.cost) return false;
 	// Do not freeze $0 placeholder rates unless the model id marks it free;
 	// leaving costUsd absent lets later catalog updates price it at read time.
-	return hasNonZeroRate(model.cost) || isKnownFreeModelId(model.id);
+	return model.free === true || hasNonZeroRate(model.cost) || isKnownFreeModelId(model.id);
 }
 
 function dispatchedCost(call: Partial<CallUsage>, model: DispatchedModel): number | null {
 	if (!hasRecordableCost(model)) return null;
-	return computeCallCost(call, { cost: model.cost! });
+	const cost = model.free === true || isKnownFreeModelId(model.id)
+		? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+		: model.cost!;
+	return computeCallCost(call, { cost });
 }
 
 export function computeCallCost(call: Partial<CallUsage>, model: PricedModel | undefined): number | null {
@@ -90,6 +94,12 @@ export function computeCallCost(call: Partial<CallUsage>, model: PricedModel | u
 	return Number.isFinite(total) && total >= 0 ? total : null;
 }
 
+export function providerCost(usage: Usage, model: DispatchedModel): number | null {
+	const total = usage.cost?.total;
+	return !isUnpricedModelId(`${model.provider}:${model.id}`) && usage.cost?.totalFromProvider === true &&
+		typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : null;
+}
+
 /** Capture one completed Pi model call's tokens and cost from the dispatched model. */
 export function captureCallUsage(usage: Usage, model: DispatchedModel): CallUsage {
 	const call: CallUsage = {
@@ -101,13 +111,15 @@ export function captureCallUsage(usage: Usage, model: DispatchedModel): CallUsag
 		// Optional in pi's Usage; persisted as 0, never dropped.
 		reasoningTokens: usage.reasoning ?? 0,
 	};
-	const costUsd = dispatchedCost(call, model);
+	const costUsd = providerCost(usage, model) ?? dispatchedCost(call, model);
 	return costUsd !== null ? { ...call, costUsd } : call;
 }
 
 /** Convert a Pi Usage into a JobUsage step carrying its dispatched model cost. */
 export function captureJobUsageStep(usage: Usage, model: DispatchedModel): UsageStepLike {
-	return priceJobUsageStep(piUsageToStep(usage), model);
+	const step = piUsageToStep(usage);
+	const costUsd = providerCost(usage, model);
+	return priceJobUsageStep(costUsd === null ? step : { ...step, costUsd }, model);
 }
 
 /** Attach the dispatched model cost to a job usage step when not already set. */

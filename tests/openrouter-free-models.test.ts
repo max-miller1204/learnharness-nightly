@@ -61,3 +61,50 @@ describe("bundled OpenRouter free catalog (offline, no live discovery)", { concu
 		assert.equal(callCost({ inputTokens: 1, outputTokens: 1 }, "openrouter:openai/gpt-3.5-turbo"), (0.5 + 1.5) / 1_000_000);
 	});
 });
+
+it("treats router placeholder rates as unknown while preserving recorded costs", () => {
+	const call = { inputTokens: 100, outputTokens: 50 };
+	assert.ok(piModels().getModel("openrouter", "openrouter/auto"));
+	for (const id of ["auto", "openrouter/auto", "openrouter/auto-beta", "openrouter/auto-code", "openrouter/fusion", "openrouter/pareto-code", "typesafe/jev-router"]) {
+		assert.equal(callCost(call, `openrouter:${id}`), null, id);
+	}
+	assert.equal(callCost(call, "google:gemma-4-26b-a4b-it"), 0);
+	assert.equal(callCost({ ...call, costUsd: 0.12 }, "openrouter:openrouter/auto"), 0.12);
+});
+
+it("records provider-reported billed costs for router calls and jobs", async () => {
+	const { captureCallUsage, captureJobUsageStep } = await import("../src/agent/pricing.ts");
+	const model = piModels().getModel("openrouter", "openrouter/auto")!;
+	const usage = { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: 150, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.12, totalFromProvider: true } };
+	assert.equal(captureCallUsage(usage, model).costUsd, 0.12);
+	assert.equal(captureJobUsageStep(usage, model).costUsd, 0.12);
+	assert.equal(captureCallUsage({ ...usage, cost: { ...usage.cost, totalFromProvider: false } }, model).costUsd, undefined);
+});
+
+it("validates reported totals and preserves explicitly unpriced providers", async () => {
+	const { captureCallUsage, captureJobUsageStep, hasRecordableCost } = await import("../src/agent/pricing.ts");
+	const model = piModels().getModel("openrouter", "openrouter/auto")!;
+	const usage = { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: 150, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, totalFromProvider: true } };
+	assert.equal(captureCallUsage(usage, model).costUsd, 0);
+	assert.equal(captureJobUsageStep(usage, model).costUsd, 0);
+	for (const total of [-1, NaN, Infinity]) {
+		const invalid = { ...usage, cost: { ...usage.cost, total } };
+		assert.equal(captureCallUsage(invalid, model).costUsd, undefined);
+		assert.equal(captureJobUsageStep(invalid, model).costUsd, undefined);
+	}
+	for (const provider of ["custom", "chatgpt", "claude-code"]) {
+		const unpriced = { ...model, provider, id: "fixture" };
+		assert.equal(captureCallUsage({ ...usage, cost: { ...usage.cost, total: 0.12 } }, unpriced).costUsd, undefined);
+		assert.equal(captureJobUsageStep({ ...usage, cost: { ...usage.cost, total: 0.12 } }, unpriced).costUsd, undefined);
+	}
+	const free = piModels().getModel("radius", "recursive/flint")!;
+	assert.equal(hasRecordableCost(free), true);
+	assert.equal(captureCallUsage({ ...usage, cost: { ...usage.cost, totalFromProvider: false } }, free).costUsd, 0);
+});
+
+it("preserves free catalog models and main's token plan cost", () => {
+	const call = { inputTokens: 100, outputTokens: 100 };
+	for (const id of ["google:gemma-4-26b-a4b-it", "google:gemma-4-31b-it", "radius:recursive/flint", "opencode:big-pickle", "qwen-token-plan:qwen3.7-max"]) {
+		assert.equal(callCost(call, id), 0, id);
+	}
+});

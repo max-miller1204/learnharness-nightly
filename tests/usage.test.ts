@@ -112,3 +112,21 @@ test("appendSourceUsage: idempotent; reimport keeps history; absent source is a 
 		else fs.rmSync(SOURCES_FILE, { force: true });
 	}
 });
+
+test("priced and unknown router calls stay partial in sessions and unknown within jobs", () => {
+	const step = call({ inputTokens: 100, outputTokens: 50 });
+	const turn: TurnUsage = { id: "priced", messageId: "m", at: "x", model: "openai:gpt-5", steps: [step] };
+	const totals = sessionCost({ turns: [turn, { ...turn, id: "router", model: "openrouter:openrouter/auto" }] });
+	assert.equal(totals.cost, callCost(step, turn.model));
+	assert.equal(totals.unpriced, 1);
+	assert.equal(totals.turnCosts.router, null);
+	assert.equal(jobCost({ usage: { model: "openrouter:openrouter/auto", steps: 2, inputTokens: 200, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, calls: [{ ...step, costUsd: 0.12 }, step] } }), null);
+});
+
+test("a mixed turn retains its known subtotal while remaining unpriced", () => {
+	const step = call({ inputTokens: 100, outputTokens: 50 });
+	const turn: TurnUsage = { id: "mixed", messageId: "m", at: "x", model: "openrouter:openrouter/auto", steps: [{ ...step, costUsd: 0.12 }, step] };
+	assert.deepEqual(sessionCost({ turns: [turn] }), { cost: 0.12, unpriced: 1, turnCosts: { mixed: null } });
+	assert.equal(turnCost(turn), null);
+	assert.equal(sessionCost({ turns: [{ ...turn, steps: [{ ...step, costUsd: 0 }, step] }] }).cost, 0);
+});

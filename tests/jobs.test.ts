@@ -1,3 +1,4 @@
+import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 /**
  * Job infrastructure tests — deterministic, zero network:
  *
@@ -594,6 +595,27 @@ function stubSearch(): SearchProvider & { queries: string[] } {
 }
 
 describe("research runner (async protocol §3)", () => {
+	it("records provider-reported router billing in a built-in research job", async () => {
+		const chat = chatStore.createChat("Test: router billing"); trackChat(chat.id);
+		const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-router-billing" }); trackJob(job.id);
+		const response = fauxAssistantMessage(BRIEF);
+		response.usage = { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: 150, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.12, totalFromProvider: true } };
+		const engine = fauxEngine([response]);
+		engine.model = { ...engine.model, provider: "openrouter", id: "openrouter/auto", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+		const sourceStream = engine.streamFn;
+		engine.streamFn = (model, context, options) => {
+			const source = sourceStream(model, context, options);
+			const stream = new AssistantMessageEventStream();
+			void (async () => { for await (const event of source) {
+				if (event.type === "done") event.message.usage = response.usage;
+				stream.push(event);
+			} stream.end(); })();
+			return stream;
+		};
+		const runner = createJobRunner({ chatStore, jobStore, deliver: fakeDeliver().deliver, searchProvider: () => stubSearch(), engineFor: () => engine });
+		await runner.runJob(job.id, RESEARCH_INPUT);
+		assert.equal(jobStore.getJob(job.id)?.usage?.calls?.[0]?.costUsd, 0.12);
+	});
 	it("runJob completes the job: result + sources on the job, brief on the steer, activity recorded", async () => {
 		const chat = chatStore.createChat("Test: runner completion");
 		trackChat(chat.id);

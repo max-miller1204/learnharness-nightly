@@ -1,12 +1,12 @@
 /** API-dollar estimates. Recorded calls store their record-time costUsd; older
  * records without it fall back to Pi's live catalog first, then the retired
  * models table. Catalog resolution is key-independent. */
-import { computeCallCost, isUnpricedModelId, liveCatalogModel } from "../agent/pricing.ts";
+import { computeCallCost, hasRecordableCost, isKnownFreeModelId, isUnpricedModelId, liveCatalogModel, type PricedModel } from "../agent/pricing.ts";
 import { RETIRED_MODELS } from "./retired-models.ts";
 import type { CallUsage, ChatRecord, JobRecord, TurnUsage } from "../core/contracts.ts";
 import { sessionCost as foldSessionCost, turnCost as foldTurnCost, jobCost as foldJobCost } from "../core/prices.ts";
 
-function catalogModel(id: string) {
+function catalogModel(id: string): PricedModel | undefined {
 	if (isUnpricedModelId(id)) return undefined;
 	// History on a model no catalog has (Pi's bundled one or a pi.dev
 	// refresh) keeps the estimate it had when Pi dropped it.
@@ -18,7 +18,13 @@ export function callCost(call: Partial<CallUsage>, modelId: string): number | nu
 	if (call.costUsd !== undefined) {
 		return typeof call.costUsd === "number" && Number.isFinite(call.costUsd) && call.costUsd >= 0 ? call.costUsd : null;
 	}
-	return computeCallCost(call, catalogModel(modelId));
+	const model = catalogModel(modelId);
+	const colon = modelId.indexOf(":");
+	if (model && (model.free === true || isKnownFreeModelId(modelId))) {
+		return computeCallCost(call, { cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
+	}
+	if (model && modelId.startsWith("openrouter:") && !hasRecordableCost({ provider: modelId.slice(0, colon), id: modelId.slice(colon + 1), cost: model.cost })) return null;
+	return computeCallCost(call, model);
 }
 
 export function turnCost(turn: TurnUsage): number | null {
