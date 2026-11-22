@@ -65,6 +65,9 @@ describe("the capsule's words (T3's describeUpdateCapsule, updateEverything.logi
 		const done = run({ machines: [machine({ status: "done" })] });
 		assert.equal(describeUpdateCapsule(done, { status: "downloading", percent: 42.7 }, NOW).label, "Downloading 42%");
 		assert.equal(describeUpdateCapsule(run({ machines: [] }), { status: "downloading", percent: null }, NOW).label, "Downloading");
+		// This app alone, waiting for its countdown to show: never "0 of 0 updated".
+		assert.deepEqual(describeUpdateCapsule(run({ machines: [], phase: "countdown", restartAt: null }), { status: "waiting" }, NOW), { tone: "default", label: "Updating this app", action: null });
+		assert.equal(describeUpdateCapsule(run({ machines: [], localVersion: null }), null, NOW).label, "0 of 0 updated", "no app and no server is not a run main starts");
 		assert.equal(describeUpdateCapsule(done, { status: "waiting" }, NOW).label, "1 of 1 updated");
 	});
 	it("<machine> failed with Retry", () => {

@@ -106,6 +106,8 @@ export function describeUpdateCapsule(run: UpdateEverythingRun, local: UpdateRun
 		// Every failed machine here is a server main can try again.
 		return { tone: "failed", label: failed.length === 1 ? `${failed[0]!.label} failed` : `${failed.length} failed`, action: "retry" };
 	}
+	// This app alone (no server to move): nothing to count while the countdown waits to show.
+	if (machines.length === 0 && run.localVersion !== null) return { tone: "default", label: "Updating this app", action: null };
 	return { tone: "default", label: `${done} of ${machines.length} updated`, action: null };
 }
 

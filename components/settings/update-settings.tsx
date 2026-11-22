@@ -81,6 +81,9 @@ export type DesktopAppStatus = {
 	/** The offered version's notes, newest first, as in UpdateState (the sidebar's hover). Older apps omit them. */
 	releaseNotes?: ReleaseNoteGroup[];
 	omittedReleaseCount?: number;
+	/** This app plans a server-only run when it has no update of its own. Older apps omit it, and
+	 *  their Update everything answers "up to date" then, so the page must not offer it. */
+	serverOnly?: boolean;
 	/** Update everything's run for the page's capsule (revision PR 7), or null. Older apps omit it. */
 	run?: UpdateEverythingRun | null;
 	/** A result toast waits for this page (takeResult): its number, new for each result. Older apps omit it. */
@@ -273,11 +276,14 @@ export function readDesktopAppStatus(value: unknown): DesktopAppStatus | null {
 	}));
 	const { releaseNotes } = capReleaseNoteGroups(groups);
 	const omitted = value.omittedReleaseCount;
-	return {
+	const status: DesktopAppStatus = {
 		...value, releaseNotes, omittedReleaseCount: typeof omitted === "number" && Number.isInteger(omitted) && omitted > 0 ? Math.min(omitted, MAX_OMITTED_RELEASE_COUNT) : 0,
 		run: readUpdateEverythingRun(value.run),
 		result: typeof value.result === "number" && Number.isInteger(value.result) && value.result > 0 ? value.result : null,
 	};
+	// Only a plain true counts; anything else reads as an app that doesn't plan the flow.
+	if (value.serverOnly !== true) delete status.serverOnly;
+	return status;
 }
 
 /** How often the page asks the app for its update status (the bridge has no push channel). */
@@ -344,6 +350,13 @@ export function useDesktopAppUpdate() {
 /** A newer app version the desktop offers, or null. */
 export function desktopOffer(status: DesktopAppStatus | null): string | null {
 	return status?.target && isNewerVersion(status.target, status.version) ? status.target : null;
+}
+
+/** The offer this app is acting on: `target` outlives a failed check, so only a phase that
+ *  has the update (offered, downloading, downloaded, or an Update everything run) counts. */
+export function activeDesktopOffer(status: DesktopAppStatus | null): string | null {
+	const phase = status?.phase;
+	return phase === "available" || phase === "downloading" || phase === "downloaded" || phase === "updating" ? desktopOffer(status) : null;
 }
 
 export const DESKTOP_APP_DESCRIPTION = "Current version of the application.";

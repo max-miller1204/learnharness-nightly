@@ -79,6 +79,8 @@ When the LearnHarness Nightly desktop app is connected to your server and a newe
 3. The app waits until the launcher has **kept** the new version, not just until it answers. A rollback, a refusal, or no answer after 32 minutes stops the run with the reason, and the app stays as it was (Retry, or Switch server…).
 4. Then the app restarts after 5 seconds. **Later** keeps you working, and the button then only restarts the app. After the restart it reopens the same server. If the app update didn't apply, it tells you once.
 
+When the app has no newer version but your server runs an older one, the button reads **Update 1 server**. The confirmation lists only the server, which moves to exactly the version the app runs, and the app doesn't restart.
+
 It works with the Mac, Windows and Linux (AppImage) desktop apps, and a Linux or Mac server. The server needs a version that has this request; an older one asks you to update it from its own Settings first. Provider updates aren't part of it.
 
 The launcher itself also updates by itself. An old launcher keeps working with newer servers, and when a version needs a newer launcher, the switch happens on its own the next time no agent is working (a restart of a few seconds onto the same, already-proven version).

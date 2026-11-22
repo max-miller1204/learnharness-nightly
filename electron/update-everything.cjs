@@ -20,8 +20,20 @@
 const { compareVersions, bridgeNotes } = require("./release-notes.cjs");
 const { hasDownloadableOffer, hasInstallableDownload } = require("./update-machine.cjs");
 
-const EXACT = /^\d+\.\d+\.\d+(?:-[a-z]+\.\d{8}\.\d+)?$/;
+const EXACT = /^\d+\.\d+\.\d+(?:-([a-z]+)\.\d{8}\.\d+)?$/;
 const isNewerVersion = (a, b) => typeof a === "string" && typeof b === "string" && EXACT.test(a) && EXACT.test(b) && compareVersions(a, b) > 0;
+// The release track of an exact version: its prerelease label ("nightly", "preview"), "" for a plain
+// release, null for anything else. T3 compares only within a channel (versionSkew.ts:62-70 and
+// updateEverything.logic.ts:121-130 at df09ced7): "0.7.0" sorts after every "0.7.0-nightly.*", and a
+// preview sorts against a nightly by its date, yet neither is an update for the other.
+const trackOf = (version) => {
+	const match = typeof version === "string" ? EXACT.exec(version) : null;
+	return match ? (match[1] ?? "") : null;
+};
+const sameTrack = (a, b) => trackOf(a) !== null && trackOf(a) === trackOf(b);
+/** A server that is behind `target` on the same track. An inexact version (a development build) or
+ *  another track is never behind: it is not compared, and not updated. */
+const behindTarget = (running, target) => sameTrack(running, target) && compareVersions(running, target) < 0;
 
 const HANDOFF_TIMEOUT_MS = 32 * 60 * 1000;
 const RESTART_DELAY_MS = 5_000;
@@ -127,6 +139,8 @@ function createUpdateEverything(deps) {
 	let run = null; // { target, step: "downloading" | "updating" | "restarting" }, plus the page's view of an in-page run
 	// A confirmation (native or main's own dialog) is open, or a run is being reserved: nothing else starts.
 	let asking = false;
+	// The plan being asked about moves only the server (the menu then says this app stays open).
+	let askingServerOnly = false;
 	// The server a run, its confirmation or its plan talks to with its bearer (Remove waits for it).
 	// Each hold is released only by whoever took it, never by another run's cleanup.
 	let holding = null;
@@ -223,6 +237,10 @@ function createUpdateEverything(deps) {
 		return result;
 	}
 
+	/** A dev or unpackaged build has no release of its own to move a server to, and a version that
+	 *  isn't exact can't be asked of one. */
+	const canPlanServerOnly = (state) => state?.status !== "disabled" && EXACT.test(deps.appVersion);
+
 	function status(from) {
 		const state = deps.updater.state();
 		// The sidebar's progress ring: how far this app's own download is, or null (not downloading, or no size).
@@ -231,7 +249,10 @@ function createUpdateEverything(deps) {
 		// plain download (T3's `!isRunningEverything`, SidebarUpdatePill.tsx:279-280).
 		// A run kept after its failure shows only on its own server's page, where Retry acts.
 		const shownKept = kept && deps.selection()?.origin === kept.origin ? kept : null;
-		const page = { run: runView(run?.inPage ? run : shownKept), result: resultFor(from)?.id ?? null };
+		// `serverOnly`: this app can plan a run that moves only the server when it has no update of
+		// its own (makePlan): its updater is on and its version is exact. An older app says "up to
+		// date" there, so the page offers the flow only where this is true.
+		const page = { run: runView(run?.inPage ? run : shownKept), result: resultFor(from)?.id ?? null, serverOnly: canPlanServerOnly(state) };
 		if (run) return { version: deps.appVersion, target: run.target, phase: run.step === "downloading" ? "downloading" : "updating", error: null, downloadPercent, releaseNotes: [], omittedReleaseCount: 0, ...page };
 		// The offered version's notes (the reducers keep them until a new check or "no update"
 		// clears them, electron/update-machine.cjs), bounded: the sidebar's hover shows them for this
@@ -423,11 +444,11 @@ function createUpdateEverything(deps) {
 			await deps.tell({ message: "Couldn’t update everything.", detail: error.message });
 			return;
 		}
-		if (isNewerVersion(server.runningVersion, target)) {
+		if (sameTrack(server.runningVersion, target) && isNewerVersion(server.runningVersion, target)) {
 			await deps.tell({ message: "Couldn’t update everything.", detail: `${label} runs ${server.runningVersion}, newer than this app’s update (${target}). Check for updates again.` });
 			return;
 		}
-		const serverBehind = compareVersions(server.runningVersion, target) < 0;
+		const serverBehind = behindTarget(server.runningVersion, target);
 		const running = serverBehind ? await runningCount(selection.origin, selection.token) : 0;
 		const text = confirmation({ label, target, serverBehind, running });
 		const choice = await deps.confirm(text);
@@ -497,23 +518,48 @@ function createUpdateEverything(deps) {
 	 *  df09ced7): the rows of what this run would update. Main pins the version and reads the server
 	 *  itself; nothing comes from the page. `target` and `serverOnly`: a Retry of that server, with the
 	 *  same version, and this app left out (T3's retryFailedUpdateRunServers). Returns { plan },
-	 *  { done } (Retry: the server is already on the target) or { error } (what to tell). */
-	async function makePlan(selection, { target: pinned = null, serverOnly = false } = {}) {
+	 *  { done } (Retry: the server is already on the target) or { error } (what to tell).
+	 *
+	 *  With no newer app version, the target is this app's own version and the plan moves only the
+	 *  server, which this app never restarts for. T3's target is `localUpdateVersion ?? APP_VERSION`
+	 *  and it offers the run while a server is behind it (`useUpdateEverything.ts:57`, `:104` at
+	 *  df09ced7), installing locally only when the app has an update (SidebarUpdatePill.tsx:373-386).
+	 *  Only for an app whose updater is on and a server on its own release track. */
+	async function makePlan(selection, { target: pinned = null, serverOnly: retry = false } = {}) {
 		const label = serverLabel(selection.origin);
+		const upToDate = { error: { title: "LearnHarness is up to date.", detail: "No newer version of this app was found." } };
 		let target = pinned;
+		let serverOnly = retry;
+		// The app has nothing newer: the server catches up with the app, as in T3.
+		let appCurrent = false;
 		if (!target) {
 			try { target = await deps.updater.pin(); } catch { target = null; }
-			if (!target || !isNewerVersion(target, deps.appVersion)) return { error: { title: "LearnHarness is up to date.", detail: "No newer version of this app was found." } };
+			if (!target || !isNewerVersion(target, deps.appVersion)) {
+				// A dev or unpackaged build has no release of its own to move a server to.
+				if (!canPlanServerOnly(deps.updater.state())) return upToDate;
+				target = deps.appVersion;
+				serverOnly = true;
+				appCurrent = true;
+			}
 		}
 		let server;
 		try { server = await serverUpdates(selection.origin, selection.token); } catch (error) {
 			return { error: { title: "Couldn’t update everything.", detail: error.message, kind: error instanceof RunProblem ? error.kind : "retry" } };
 		}
-		if (isNewerVersion(server.runningVersion, target)) {
-			return { error: { title: "Couldn’t update everything.", detail: `${label} runs ${server.runningVersion}, newer than this app’s update (${target}). Check for updates again.` } };
+		// Nothing to move: the server already runs this app's version, a newer one, or is on
+		// another release track.
+		if (appCurrent && !(sameTrack(target, server.runningVersion) && isNewerVersion(target, server.runningVersion))) return upToDate;
+		if (sameTrack(server.runningVersion, target) && isNewerVersion(server.runningVersion, target)) {
+			const newer = target === deps.appVersion ? `this app (${target})` : `this app’s update (${target})`;
+			return { error: { title: "Couldn’t update everything.", detail: `${label} runs ${server.runningVersion}, newer than ${newer}. Check for updates again.` } };
 		}
-		const serverBehind = compareVersions(server.runningVersion, target) < 0;
-		if (serverOnly && !serverBehind) return { done: true };
+		// A server on no exact version (a development build) or on another release track can't be
+		// compared: it isn't updated here, and never counts as updated.
+		const serverBehind = behindTarget(server.runningVersion, target);
+		if (retry && !serverBehind) {
+			if (server.runningVersion === target) return { done: true };
+			return { error: { title: "Couldn’t update everything.", detail: `${label} runs ${server.runningVersion}, which this app can’t update to ${target}.` } };
+		}
 		// A server that can't update itself is skipped, and this app waits for it: an app newer
 		// than its server could stop speaking its protocol.
 		const manual = serverBehind && server.status === "disabled";
@@ -528,7 +574,7 @@ function createUpdateEverything(deps) {
 		];
 		return {
 			plan: {
-				target, label, serverBehind: serverBehind && !manual,
+				target, label, serverBehind: serverBehind && !manual, serverOnly,
 				before: typeof server.instance === "string" ? server.instance : null, beforeVersion: server.runningVersion,
 				view: { version: target, rows, running, skipped: manual ? [{ label, reason }] : [], disabledReason },
 			},
@@ -592,7 +638,7 @@ function createUpdateEverything(deps) {
 	async function runInPage(selection, chosen, { serverOnly = false, keyboard = false } = {}) {
 		const { target, label, serverBehind } = chosen;
 		const machine = serverBehind ? { label, status: "waiting", startedAt: deps.now(), failure: null, covered: false } : null;
-		run = { target, step: serverOnly ? "updating" : "downloading", inPage: true, keyboard, phase: "servers", localVersion: serverOnly ? null : target, restartAt: null, machines: machine ? [machine] : [] };
+		run = { target, step: serverOnly ? "updating" : "downloading", inPage: true, serverOnly, keyboard, phase: "servers", localVersion: serverOnly ? null : target, restartAt: null, machines: machine ? [machine] : [] };
 		const release = hold(selection.origin);
 		let serverDone = false;
 		// The page load that shows the capsule again after the server's cover, when it reloaded.
@@ -678,7 +724,10 @@ function createUpdateEverything(deps) {
 	/** The page's everything control and the capsule's Retry: main's own dialog asks, and only its
 	 *  Update starts anything. The slot is taken before any await, so two calls can't both ask. */
 	async function askThenRun(selection, plan, options) {
-		const { confirmed, keyboard } = await confirmedInApp(selection, plan);
+		askingServerOnly = options?.serverOnly === true;
+		let answer;
+		try { answer = await confirmedInApp(selection, plan); } finally { askingServerOnly = false; }
+		const { confirmed, keyboard } = answer;
 		// `dialog`: this answer is the dialog's (the page puts focus back as T3 does after one).
 		if (!confirmed) return { started: false, keyboard, dialog: true };
 		kept = null;
@@ -704,7 +753,8 @@ function createUpdateEverything(deps) {
 				let made;
 				try { made = await makePlan(selection); } finally { release(); }
 				if (made.error) return { error: { title: made.error.title, detail: made.error.detail } };
-				return await askThenRun(selection, made.plan);
+				// Only the server moves when this app has nothing newer.
+				return await askThenRun(selection, made.plan, { serverOnly: made.plan.serverOnly });
 			} finally { asking = false; }
 		},
 		/** The page has drawn the capsule for the run (or the failure) main waits on. `from` is
@@ -768,6 +818,8 @@ function createUpdateEverything(deps) {
 		},
 		/** A run, or its confirmation, is going: the plain install and the menu wait. */
 		running: () => run !== null || asking,
+		/** Whether the run going restarts this app at its end (a run that only moves the server doesn't). */
+		restartsApp: () => (run ? run.serverOnly : asking && askingServerOnly) !== true,
 		/** Main recovered from an installer error (T3's recoverFailedInstall): a run waiting on its
 		 *  app install ends with a retryable failure instead of "Restarting" for good. */
 		installFailed() {

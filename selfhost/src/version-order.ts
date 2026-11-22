@@ -32,3 +32,22 @@ export function compareVersions(a: string, b: string): number {
 export function isNewerVersion(a: string | null | undefined, b: string | null | undefined): boolean {
 	return !!a && !!b && isExactVersion(a) && isExactVersion(b) && compareVersions(a, b) > 0;
 }
+
+/** The release track of an exact version: its prerelease label ("nightly", "preview"), or "" for a
+ *  plain release. Null for anything that isn't an exact version. */
+export function releaseTrack(version: string | null | undefined): string | null {
+	const match = version ? VERSION_RE.exec(version) : null;
+	return match ? (match[4] ?? "") : null;
+}
+
+/** True when both are exact versions on the same release track: both nightlies, both previews
+ *  (`lh preview`), or both plain releases. T3 never compares across channels
+ *  (`resolveVersionMismatch` compares full nightly versions only when both are nightlies,
+ *  `apps/web/src/versionSkew.ts:62-70`, and `collectServerUpdateTargets` skips a server on another
+ *  channel, `updateEverything.logic.ts:121-130`, at df09ced7). A plain "0.7.0" sorts after every
+ *  "0.7.0-nightly.*", and a preview sorts against a nightly by its date: neither is an update for
+ *  the other. */
+export function sameReleaseTrack(a: string | null | undefined, b: string | null | undefined): boolean {
+	const track = releaseTrack(a);
+	return track !== null && track === releaseTrack(b);
+}
