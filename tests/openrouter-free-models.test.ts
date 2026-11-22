@@ -61,3 +61,19 @@ describe("bundled OpenRouter free catalog (offline, no live discovery)", { concu
 		assert.equal(callCost({ inputTokens: 1, outputTokens: 1 }, "openrouter:openai/gpt-3.5-turbo"), (0.5 + 1.5) / 1_000_000);
 	});
 });
+
+it("treats router placeholder rates as unknown while preserving recorded costs", () => {
+	const call = { inputTokens: 100, outputTokens: 50 };
+	assert.ok(piModels().getModel("openrouter", "openrouter/auto"));
+	assert.equal(callCost(call, "openrouter:openrouter/auto"), null);
+	assert.equal(callCost({ ...call, costUsd: 0.12 }, "openrouter:openrouter/auto"), 0.12);
+});
+
+it("records provider-reported billed costs for router calls and jobs", async () => {
+	const { captureCallUsage, captureJobUsageStep } = await import("../src/agent/pricing.ts");
+	const model = piModels().getModel("openrouter", "openrouter/auto")!;
+	const usage = { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: 150, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.12, totalFromProvider: true } };
+	assert.equal(captureCallUsage(usage, model).costUsd, 0.12);
+	assert.equal(captureJobUsageStep(usage, model).costUsd, 0.12);
+	assert.equal(captureCallUsage({ ...usage, cost: { ...usage.cost, totalFromProvider: false } }, model).costUsd, undefined);
+});

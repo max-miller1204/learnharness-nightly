@@ -90,6 +90,12 @@ export function computeCallCost(call: Partial<CallUsage>, model: PricedModel | u
 	return Number.isFinite(total) && total >= 0 ? total : null;
 }
 
+function providerCost(usage: Usage, model: DispatchedModel): number | null {
+	const total = usage.cost?.total;
+	return !isUnpricedModelId(`${model.provider}:${model.id}`) && usage.cost?.totalFromProvider === true &&
+		typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : null;
+}
+
 /** Capture one completed Pi model call's tokens and cost from the dispatched model. */
 export function captureCallUsage(usage: Usage, model: DispatchedModel): CallUsage {
 	const call: CallUsage = {
@@ -101,13 +107,15 @@ export function captureCallUsage(usage: Usage, model: DispatchedModel): CallUsag
 		// Optional in pi's Usage; persisted as 0, never dropped.
 		reasoningTokens: usage.reasoning ?? 0,
 	};
-	const costUsd = dispatchedCost(call, model);
+	const costUsd = providerCost(usage, model) ?? dispatchedCost(call, model);
 	return costUsd !== null ? { ...call, costUsd } : call;
 }
 
 /** Convert a Pi Usage into a JobUsage step carrying its dispatched model cost. */
 export function captureJobUsageStep(usage: Usage, model: DispatchedModel): UsageStepLike {
-	return priceJobUsageStep(piUsageToStep(usage), model);
+	const step = piUsageToStep(usage);
+	const costUsd = providerCost(usage, model);
+	return priceJobUsageStep(costUsd === null ? step : { ...step, costUsd }, model);
 }
 
 /** Attach the dispatched model cost to a job usage step when not already set. */
