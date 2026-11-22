@@ -330,3 +330,20 @@ test("an opened step escapes bidirectional controls in its input and output", as
     act(() => tree.unmount());
   }
 });
+
+test("the Arabic letter mark and the left-to-right and right-to-left marks show as escapes, letters as written", async () => {
+  const letters = "ملف קובץ";
+  const tree = await render(createElement(ToolStep, { part: { type: "tool-read", state: "output-available", input: { path: `a؜b‎c‏d ${letters}` }, output: "x‏y" } }));
+  try {
+    const [row] = rows(tree.root);
+    assert.ok(row);
+    assert.ok(texts(row).includes(`a\\u061Cb\\u200Ec\\u200Fd ${letters}`));
+    assert.ok(!/[؜‎‏]/.test(row.props.accessibilityLabel as string));
+    await act(async () => row.props.onPress());
+    const shown = texts(tree.root).join("\n");
+    assert.ok(shown.includes("x\\u200Fy") && !/[؜‎‏]/.test(shown));
+    assert.ok(shown.includes(letters), "letters untouched");
+  } finally {
+    act(() => tree.unmount());
+  }
+});

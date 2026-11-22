@@ -52,4 +52,15 @@ describe("tool steps", () => {
 		assert.ok(isShowImageDetails(good));
 		for (const bad of [{ ...good, mimeType: "image/gif" }, { ...good, path: undefined }, { ...good, width: "4" }, { ...good, snapshotId: "x" }]) assert.ok(!isShowImageDetails(bad));
 	});
+
+	it("escapes the Arabic letter mark and the left-to-right and right-to-left marks too, never letters", () => {
+		const path = "a\u061Cb\u200Ec\u200Fd";
+		const html = renderToStaticMarkup(<ToolCallCard part={{ type: "tool-read", state: "output-available", toolCallId: "c", input: { path }, output: `x\u200Fy` } as never} />);
+		assert.ok(html.includes("a\\u061Cb\\u200Ec\\u200Fd"), "headline");
+		assert.ok(html.includes("x\\u200Fy"), "output");
+		assert.ok(!/[\u061C\u200E\u200F]/.test(html));
+		const letters = "\u0645\u0644\u0641 \u05E7\u05D5\u05D1\u05E5.txt";
+		assert.equal(toolStepHeadline("read", { path: letters }), letters, "Arabic and Hebrew letters stay as written");
+	});
 });
+

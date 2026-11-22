@@ -9,14 +9,16 @@ import type { ShowImageDetails } from "./contracts/chat.ts";
 /** The tools shown as a tool step: ToolCallCard's entries in the web's artifact registry. */
 export const TOOL_STEPS: readonly string[] = ["read", "ls", "find", "grep", "list_sessions", "list_propositions"];
 
-/** Bidirectional embedding, override and isolate controls, which can make a name read
- *  backwards (`txt.exe` under a right-to-left override shows as `exe.txt`). */
-const BIDI_CONTROLS = /[\u202A-\u202E\u2066-\u2069]/g;
+/** Bidirectional controls, which can make a name read backwards (`txt.exe` under a
+ *  right-to-left override shows as `exe.txt`): the embedding, override and isolate controls,
+ *  and the Arabic letter mark and left-to-right and right-to-left marks. Letters of any
+ *  script are left alone. The one list both platforms escape. */
+const BIDI_CONTROLS = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
 
 /** Text from a tool call with its bidirectional controls shown as escapes, so it reads in
  *  the order it was written. */
 export function plainToolText(text: string): string {
-	return text.replace(BIDI_CONTROLS, (control) => `\\u${control.charCodeAt(0).toString(16).toUpperCase()}`);
+	return text.replace(BIDI_CONTROLS, (control) => `\\u${control.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")}`);
 }
 
 /** The headline as the call gave it. */
