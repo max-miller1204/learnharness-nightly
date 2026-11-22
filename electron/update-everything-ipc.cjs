@@ -23,19 +23,21 @@ function fromRemoteWindow(event, current) {
 function registerDesktopUpdateIPC(ipcMain, { current, updateEverything, pageGeneration = () => 0 }) {
 	ipcMain.handle(CHANNEL, async (event, action, ...extra) => {
 		if (!fromRemoteWindow(event, current) || typeof action !== "string" || !ACTIONS.has(action) || extra.length > 0) throw new Error("Untrusted desktop request.");
-		if (action === "status") return updateEverything.status();
+		// Which window and page load asks: the result toast waits for the page that stays.
+		const from = () => {
+			const { win } = current();
+			return { win, generation: pageGeneration(win) };
+		};
+		if (action === "status") return updateEverything.status(from());
 		if (action === "check") return void updateEverything.check();
 		if (action === "download") return void updateEverything.download();
 		if (action === "install-app") return void await updateEverything.installApp();
 		if (action === "everything") return updateEverything.everything();
-		if (action === "ready") {
-			const { win } = current();
-			return void updateEverything.ready({ win, generation: pageGeneration(win) });
-		}
+		if (action === "ready") return void updateEverything.ready(from());
 		if (action === "later") return void updateEverything.later();
 		if (action === "retry") return updateEverything.retry();
 		if (action === "dismiss") return void updateEverything.dismiss();
-		if (action === "take-result") return updateEverything.takeResult();
+		if (action === "take-result") return updateEverything.takeResult(from());
 		return updateEverything.install();
 	});
 }

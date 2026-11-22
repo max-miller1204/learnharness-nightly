@@ -160,6 +160,9 @@ function createUpdateEverything(deps) {
 			machines: source.machines.map(({ label, status, startedAt, failure }) => ({ label, status, startedAt, failure })),
 			// Main waits for the page to say it shows this (ready()).
 			awaitingPage: source.awaitingPage === true,
+			// A key closed main's dialog with Update: the page that shows this puts focus on the
+			// capsule, also the one main reloads after the server's cover.
+			keyboard: source.keyboard === true,
 		};
 	}
 
@@ -210,7 +213,17 @@ function createUpdateEverything(deps) {
 		return !!now && now.win === selection.win && now.origin === selection.origin;
 	};
 
-	function status() {
+	/** The waiting result, unless `from` (the asking page, { win, generation }) is a page from
+	 *  before the reload that will replace it: that page goes, and its toast with it, so the
+	 *  result waits for the page that stays. */
+	function resultFor(from) {
+		if (!result) return null;
+		const page = result.page;
+		if (page && from && from.win === page.win && !(from.generation >= page.generation)) return null;
+		return result;
+	}
+
+	function status(from) {
 		const state = deps.updater.state();
 		// The sidebar's progress ring: how far this app's own download is, or null (not downloading, or no size).
 		const downloadPercent = state.status === "downloading" && typeof state.downloadPercent === "number" ? state.downloadPercent : null;
@@ -218,7 +231,7 @@ function createUpdateEverything(deps) {
 		// plain download (T3's `!isRunningEverything`, SidebarUpdatePill.tsx:279-280).
 		// A run kept after its failure shows only on its own server's page, where Retry acts.
 		const shownKept = kept && deps.selection()?.origin === kept.origin ? kept : null;
-		const page = { run: runView(run?.inPage ? run : shownKept), result: result ? result.id : null };
+		const page = { run: runView(run?.inPage ? run : shownKept), result: resultFor(from)?.id ?? null };
 		if (run) return { version: deps.appVersion, target: run.target, phase: run.step === "downloading" ? "downloading" : "updating", error: null, downloadPercent, releaseNotes: [], omittedReleaseCount: 0, ...page };
 		// The offered version's notes (the reducers keep them until a new check or "no update"
 		// clears them, electron/update-machine.cjs), bounded: the sidebar's hover shows them for this
@@ -566,16 +579,20 @@ function createUpdateEverything(deps) {
 		});
 	}
 
-	const newResult = (fields) => ({ id: ++results, localVersion: null, updatedServers: 0, failures: [], ...fields });
+	/** `after` (from reconnect()): only the page from that reload takes it. */
+	const newResult = (fields, selection = null, after = null) => ({
+		id: ++results, localVersion: null, updatedServers: 0, failures: [], ...fields,
+		page: selection && after ? { win: selection.win, generation: after.generation } : null,
+	});
 
 	/** An in-page run: the same steps as the native one (download, the server to exactly the
 	 *  target, its commit, then this app), shown in the page's capsule. `serverOnly` (Retry): only
 	 *  the server, as T3 retries a failed server; this app stays as it is. Everything up to the
 	 *  first await runs at once, so the run is reserved before the caller lets go. */
-	async function runInPage(selection, chosen, { serverOnly = false } = {}) {
+	async function runInPage(selection, chosen, { serverOnly = false, keyboard = false } = {}) {
 		const { target, label, serverBehind } = chosen;
 		const machine = serverBehind ? { label, status: "waiting", startedAt: deps.now(), failure: null, covered: false } : null;
-		run = { target, step: serverOnly ? "updating" : "downloading", inPage: true, phase: "servers", localVersion: serverOnly ? null : target, restartAt: null, machines: machine ? [machine] : [] };
+		run = { target, step: serverOnly ? "updating" : "downloading", inPage: true, keyboard, phase: "servers", localVersion: serverOnly ? null : target, restartAt: null, machines: machine ? [machine] : [] };
 		const release = hold(selection.origin);
 		let serverDone = false;
 		// The page load that shows the capsule again after the server's cover, when it reloaded.
@@ -598,13 +615,13 @@ function createUpdateEverything(deps) {
 			}
 			if (serverOnly) {
 				run = null;
-				result = newResult({ updatedServers: 1 });
+				result = newResult({ updatedServers: 1 }, selection, after);
 				return;
 			}
 			if (!(await countdown(selection, label, target, serverDone, after))) {
 				run = null;
 				// Later: the server is updated and this app stays as it is until its own Install.
-				if (serverDone) result = newResult({ updatedServers: 1 });
+				if (serverDone) result = newResult({ updatedServers: 1 }, selection, after);
 				return;
 			}
 			run.phase = "installing";
@@ -631,13 +648,16 @@ function createUpdateEverything(deps) {
 				// The server's page can show this: the capsule says "<server> failed" with Retry.
 				machine.status = "failed";
 				machine.failure = problem.message;
-				const failedRun = { origin: selection.origin, target, label, phase: "servers", localVersion: null, restartAt: null, machines: [machine] };
+				const failedRun = { origin: selection.origin, target, label, keyboard, phase: "servers", localVersion: null, restartAt: null, machines: [machine] };
 				kept = failedRun;
-				result = newResult({ failures: [`${label}: ${problem.message}`] });
-				if (machine.covered) {
+				const failures = [`${label}: ${problem.message}`];
+				if (!machine.covered) result = newResult({ failures });
+				else {
 					// The server isn't the run's any more: Remove needn't wait while the page loads.
 					release();
 					const shownAfter = await reconnect(selection, problem.version ?? chosen.beforeVersion ?? target);
+					// Its toast is the reloaded page's: the page now goes, and a toast with it.
+					if (kept === failedRun) result = newResult({ failures }, selection, shownAfter);
 					// The page it went back to may be one from before PR 7, with no capsule: then
 					// the server list shows the failure, with its Retry. Not after a Dismiss, nor in
 					// another window: the capsule shows it when this server's page opens again.
@@ -659,11 +679,12 @@ function createUpdateEverything(deps) {
 	 *  Update starts anything. The slot is taken before any await, so two calls can't both ask. */
 	async function askThenRun(selection, plan, options) {
 		const { confirmed, keyboard } = await confirmedInApp(selection, plan);
-		if (!confirmed) return { started: false, keyboard };
+		// `dialog`: this answer is the dialog's (the page puts focus back as T3 does after one).
+		if (!confirmed) return { started: false, keyboard, dialog: true };
 		kept = null;
 		result = null;
-		void runInPage(selection, plan, options).catch(() => {});
-		return { started: true, keyboard };
+		void runInPage(selection, plan, { ...options, keyboard }).catch(() => {});
+		return { started: true, keyboard, dialog: true };
 	}
 
 	return {
@@ -738,10 +759,11 @@ function createUpdateEverything(deps) {
 			kept = null;
 			for (const wait of [...waits]) if (wait.source === dropped) wait.settle(false);
 		},
-		/** The result toast, once (also after the restart that finished the run). */
-		takeResult() {
-			const taken = result;
-			result = null;
+		/** The result toast, once (also after the restart that finished the run), for the page that
+		 *  stays (`from`, as for ready()). */
+		takeResult(from) {
+			const taken = resultFor(from);
+			if (taken) result = null;
 			return taken && { localVersion: taken.localVersion, updatedServers: taken.updatedServers, failures: taken.failures };
 		},
 		/** A run, or its confirmation, is going: the plain install and the menu wait. */
