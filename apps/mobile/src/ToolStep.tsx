@@ -1,13 +1,17 @@
-import { useEffect, useState } from "react";
-import { Animated, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { createContext, useContext, useEffect, useState } from "react";
+import { Animated, Easing, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { toolActivityLabel } from "../../../src/core/pending.ts";
-import { capToolText, TOOL_STEPS, toolStepHeadline, toolStepOutput } from "../../../src/core/tool-steps.ts";
+import { capToolText, plainToolText, TOOL_STEPS, toolStepHeadline, toolStepOutput } from "../../../src/core/tool-steps.ts";
 import type { LhViewPart } from "../../../src/core/view.ts";
 import { fonts, radius, space, useTheme } from "./theme";
 import { useReduceMotion } from "./ui";
 
 /** The longest headline a screen reader is given, in characters. */
 const SPOKEN_HEADLINE = 200;
+
+/** Which steps are open, by tool call id, kept above the transcript's live and settled rows,
+ *  so a step opened while its turn runs stays open when the turn settles into the record. */
+export const OpenSteps = createContext<{ open: ReadonlySet<string>; toggle: (toolCallId: string) => void } | null>(null);
 
 /** Whether a transcript part is a tool step: a call to one of TOOL_STEPS, or a show_image
  *  call that hasn't shown its picture (still running, or failed), as on the web. */
@@ -25,7 +29,8 @@ export const isRunning = (part: LhViewPart) => part.state === "input-streaming" 
  *  which belongs to the transcript (docs/specs/mobile-session-open.md). */
 function Section({ heading, text, maxHeight, error }: { heading: string; text: string; maxHeight: number; error?: boolean }) {
   const { c, s } = useTheme();
-  const { text: shown, note } = capToolText(text);
+  const { text: cut, note } = capToolText(text);
+  const shown = plainToolText(cut);
   return (
     <View style={{ gap: space.xs }}>
       <Text style={s.label}>{heading}</Text>
@@ -39,22 +44,21 @@ function Section({ heading, text, maxHeight, error }: { heading: string; text: s
 
 /** A running step's activity label, as the web's live card shows it (live-tool-card.tsx),
  *  breathing as T3's running work-log row shimmers (thread-work-log.tsx's
- *  ShimmeringWorkContent): still when Reduce Motion is on. */
+ *  ShimmeringWorkContent): still when Reduce Motion is on. One native timing, looped
+ *  natively, so a busy JS thread can't stop it mid-fade. */
 function Working({ label }: { label: string }) {
   const { s } = useTheme();
   // Still until the system says motion is fine.
   const reduceMotion = useReduceMotion(true);
-  const [opacity] = useState(() => new Animated.Value(1));
+  const [progress] = useState(() => new Animated.Value(0));
   useEffect(() => {
-    opacity.setValue(1);
+    progress.setValue(0);
     if (reduceMotion) return;
-    const pulse = Animated.loop(Animated.sequence([
-      Animated.timing(opacity, { toValue: 0.45, duration: 800, useNativeDriver: true }),
-      Animated.timing(opacity, { toValue: 1, duration: 800, useNativeDriver: true }),
-    ]));
+    const pulse = Animated.loop(Animated.timing(progress, { toValue: 1, duration: 1600, easing: Easing.linear, useNativeDriver: true }));
     pulse.start();
     return () => pulse.stop();
-  }, [opacity, reduceMotion]);
+  }, [progress, reduceMotion]);
+  const opacity = reduceMotion ? 1 : progress.interpolate({ inputRange: [0, 0.5, 1], outputRange: [1, 0.45, 1] });
   return <Animated.Text numberOfLines={1} style={[s.meta, { opacity }]}>{label}</Animated.Text>;
 }
 
@@ -68,19 +72,23 @@ function Working({ label }: { label: string }) {
  *  but nothing for a closed one, so a closed row says "collapsed" as its value on iOS. */
 export function ToolStep({ part, running = false }: { part: LhViewPart; running?: boolean }) {
   const { c, s } = useTheme();
-  const [open, setOpen] = useState(false);
+  const shared = useContext(OpenSteps);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const id = part.toolCallId;
+  const open = shared && id ? shared.open.has(id) : ownOpen;
+  const toggle = () => { if (shared && id) shared.toggle(id); else setOwnOpen((value) => !value); };
   const tool = part.type.slice("tool-".length);
   const headline = toolStepHeadline(tool, part.input);
   const failed = part.state === "output-error" || typeof part.errorText === "string";
   const output = toolStepOutput(part.output);
-  const spoken = headline.length > SPOKEN_HEADLINE ? `${headline.slice(0, SPOKEN_HEADLINE)}…` : headline;
+  const spoken = toolStepHeadline(tool, part.input, SPOKEN_HEADLINE);
   const said = [running ? toolActivityLabel(tool) : tool, spoken].filter(Boolean).join(" ");
   return (
     <View>
       <Pressable accessibilityRole="button" accessibilityLabel={failed ? `${said}, tool call failed` : said}
         accessibilityHint={open ? "Hides the call's input and output." : "Shows the call's input and output."}
         accessibilityState={{ expanded: open }} accessibilityValue={Platform.OS === "ios" && !open ? { text: "collapsed" } : undefined}
-        hitSlop={4} onPress={() => setOpen((value) => !value)}
+        hitSlop={4} onPress={toggle}
         style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 6, minHeight: 28, paddingHorizontal: 2, borderRadius: radius.sm, backgroundColor: pressed ? c.hover : "transparent" })}>
         {running ? <Working label={toolActivityLabel(tool)} />
           : <Text numberOfLines={1} style={[s.label, failed && { color: c.error }]}>{tool}</Text>}

@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronRight } from "lucide-react";
-import { capToolText, toolStepHeadline, toolStepOutput, type ArtifactPartProps } from "@/src/core";
+import { capToolText, plainToolText, toolStepHeadline, toolStepOutput, type ArtifactPartProps } from "@/src/core";
 
 /**
  * The generic tool-call card (sources v1, 2026-09-19): a quiet, collapsed
@@ -15,12 +15,13 @@ import { capToolText, toolStepHeadline, toolStepOutput, type ArtifactPartProps }
  * its start, with a note of how much (capToolText).
  */
 
-/** A step's text, cut by capToolText, and its note when it was cut. */
+/** A step's text, cut by capToolText with its bidirectional controls escaped, and its note
+ *  when it was cut. */
 function Capped({ text, className }: { text: string; className: string }) {
 	const { text: shown, note } = capToolText(text);
 	return (
 		<>
-			<pre className={className}>{shown}</pre>
+			<pre className={className}>{plainToolText(shown)}</pre>
 			{note && <div className="mt-1 text-muted-foreground">{note}</div>}
 		</>
 	);

@@ -6,15 +6,20 @@ import test from "node:test";
 import { createElement } from "react";
 import { Platform } from "react-native";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
-import type { LhMessage } from "../../../src/client-protocol/index.ts";
+import type { LhMessage, TurnStreamEvent } from "../../../src/client-protocol/index.ts";
 import { TOOL_STEPS } from "../../../src/core/tool-steps.ts";
 import { projectView, type LhViewPart } from "../../../src/core/view.ts";
 import { isToolStep, ToolStep } from "../src/ToolStep.tsx";
-import { Transcript } from "../src/Transcript.tsx";
+import { Snapshot, Transcript } from "../src/Transcript.tsx";
+import { turnReplay } from "../src/live-turn.ts";
 import { useTheme } from "../src/theme.ts";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-declare global { var startedLoops: number | undefined; }
+declare global {
+  var startedLoops: number | undefined;
+  var loopedAnimation: unknown;
+  var reduceMotionListener: unknown;
+}
 
 const quiz = () => JSON.parse(readFileSync(new URL("../../../tests/fixtures/mobile-quiz/chat_zzmobilequiz.json", import.meta.url), "utf8")) as { messages: LhMessage[] };
 const flat = (style: unknown) => [style].flat(Infinity).reduce<Record<string, unknown>>((all, part) => ({ ...all, ...(part as object) }), {});
@@ -176,7 +181,8 @@ test("a step's name can't be disguised, its spoken headline is capped, and a clo
       const label = row.props.accessibilityLabel as string;
       assert.ok(!/[‪-‮⁦-⁩]/.test(label + texts(row).join("")), "no bidirectional controls shown or spoken");
       assert.ok(texts(row).some((text) => text.startsWith("a\\u202Etxt.exe")));
-      assert.ok(label.length <= "read ".length + 201 && label.endsWith("…"), `spoken headline capped: ${label.length}`);
+      // 200 code points of the path, cut before escaping: its one control adds five characters.
+      assert.ok(label.length <= "read ".length + 200 + 5 + 1 && label.endsWith("…"), `spoken headline capped: ${label.length}`);
       assert.deepEqual(row.props.accessibilityValue, { text: "collapsed" });
       await act(async () => row.props.onPress());
       const [open] = rows(tree.root);
@@ -196,6 +202,130 @@ test("a finished show_image whose picture can't be shown says so, as the web's c
   try {
     assert.ok(texts(tree.root).includes("Image shown, but it could not be displayed."));
     assert.equal(rows(tree.root).length, 0);
+  } finally {
+    act(() => tree.unmount());
+  }
+});
+
+/** The tail the session hook keeps, from turn stream events, through the real replay. */
+function replayed(events: TurnStreamEvent[]) {
+  const consume = turnReplay();
+  let tail: LhMessage[] = [];
+  for (const event of events) tail = consume(event) ?? tail;
+  return tail;
+}
+const streamed = (content: unknown[]) => ({ ...assistant("unused", content), id: undefined }) as unknown as LhMessage;
+const message = (type: "message_start" | "message_end", content: unknown[]) => ({ type, message: streamed(content) }) as unknown as TurnStreamEvent;
+const finished = (toolCallId: string, toolName: string, details: unknown, isError = false) => ({ type: "tool_execution_end", toolCallId, toolName,
+  result: { content: [{ type: "text", text: typeof details === "string" ? details : "failed" }], details }, isError }) as unknown as TurnStreamEvent;
+const readCall = [{ type: "text", text: "Let me look." }, { type: "toolCall", id: "call_live", name: "read", arguments: { path: "notes.md" } }];
+const live = (tail: LhMessage[], settled: LhMessage[] = []) => transcript(settled, tail);
+
+test("a step settles as soon as its tool finishes, while the teacher is still going", async () => {
+  globalThis.startedLoops = 0;
+  const tail = replayed([message("message_start", readCall), message("message_end", readCall), finished("call_live", "read", "# Notes"),
+    message("message_start", [{ type: "text", text: "Now the quiz." }])]);
+  const tree = await render(live(tail));
+  try {
+    const [row] = rows(tree.root);
+    assert.equal(row?.props.accessibilityLabel, "read notes.md");
+    assert.equal(row?.findAll((node) => String(node.type) === "AnimatedText").length, 0, "no longer breathing");
+    assert.ok(texts(tree.root).includes("Now the quiz."));
+    await act(async () => row?.props.onPress());
+    assert.ok(texts(tree.root).includes("# Notes"));
+  } finally {
+    act(() => tree.unmount());
+  }
+  const failedTail = replayed([message("message_start", readCall), message("message_end", readCall), finished("call_live", "read", "No such file", true)]);
+  const failedTree = await render(live(failedTail));
+  try {
+    assert.equal(rows(failedTree.root)[0]?.props.accessibilityLabel, "read notes.md, tool call failed");
+  } finally {
+    act(() => failedTree.unmount());
+  }
+});
+
+test("a step opened during the turn stays open when the turn settles into the record", async () => {
+  const tail = replayed([message("message_start", readCall), message("message_end", readCall), finished("call_live", "read", "# Notes")]);
+  const tree = await render(live(tail));
+  try {
+    await act(async () => rows(tree.root)[0]?.props.onPress());
+    assert.deepEqual(rows(tree.root)[0]?.props.accessibilityState, { expanded: true });
+    // The record arrives with the same call and the live tail empties.
+    const record = [assistant("a_saved", readCall), result("call_live", "read", "# Notes")];
+    await act(async () => tree.update(live([], record)));
+    const [row] = rows(tree.root);
+    assert.deepEqual(row?.props.accessibilityState, { expanded: true });
+    assert.ok(texts(tree.root).includes("# Notes"));
+  } finally {
+    act(() => tree.unmount());
+  }
+});
+
+test("a shown image stays in place mid-turn, as its picture or the web's message", async () => {
+  const showCall = [{ type: "toolCall", id: "call_img", name: "show_image", arguments: { path: "a.png" } }];
+  const details = { snapshotId: "a".repeat(64), mimeType: "image/png", path: "a.png", width: 40, height: 30 };
+  const api = { get: () => new Promise(() => {}) } as never;
+  const shown = replayed([message("message_start", showCall), message("message_end", showCall), finished("call_img", "show_image", details)]);
+  let tree = await render(createElement(Transcript, { settled: [], tail: shown, api, chatId: "chat", jobs: [], liveHelpers: false, openPlan: () => {}, files: new Map(), unavailableFiles: new Set<string>() }));
+  try {
+    assert.equal(tree.root.findAllByType(Snapshot).length, 1);
+  } finally {
+    act(() => tree.unmount());
+  }
+  // Details the web can't show (no type, no size) say so, live and in the record.
+  const bad = { snapshotId: "a".repeat(64), path: "a.png" };
+  tree = await render(live(replayed([message("message_start", showCall), message("message_end", showCall), finished("call_img", "show_image", bad)])));
+  try {
+    assert.ok(texts(tree.root).includes("Image shown, but it could not be displayed."));
+  } finally {
+    act(() => tree.unmount());
+  }
+  tree = await render(live([], [assistant("a_img", showCall), result("call_img", "show_image", bad)]));
+  try {
+    assert.equal(tree.root.findAllByType(Snapshot).length, 0);
+    assert.ok(texts(tree.root).includes("Image shown, but it could not be displayed."));
+  } finally {
+    act(() => tree.unmount());
+  }
+});
+
+test("a running step's breathing is one native timing, looped natively", async () => {
+  globalThis.loopedAnimation = undefined;
+  const tree = await render(live(replayed([message("message_start", readCall)])));
+  try {
+    const looped = globalThis.loopedAnimation as { kind?: string; config?: { useNativeDriver?: boolean } } | undefined;
+    assert.equal(looped?.kind, "timing");
+    assert.equal(looped?.config?.useNativeDriver, true);
+  } finally {
+    act(() => tree.unmount());
+  }
+});
+
+test("a Reduce Motion change that arrives before the first lookup answers wins", async () => {
+  let answer: (value: boolean) => void = () => {};
+  Object.assign(globalThis, { reduceMotionLookup: new Promise<boolean>((resolve) => { answer = resolve; }) });
+  const tree = await render(live(replayed([message("message_start", readCall)])));
+  try {
+    const opacity = () => flat(tree.root.findAll((node) => String(node.type) === "AnimatedText")[0]?.props.style).opacity;
+    assert.equal(opacity(), 1, "still until the system says");
+    await act(async () => (globalThis.reduceMotionListener as (value: boolean) => void)(false));
+    assert.notEqual(opacity(), 1, "motion turned on");
+    await act(async () => answer(true));
+    assert.notEqual(opacity(), 1, "the older lookup doesn't turn it off again");
+  } finally {
+    act(() => tree.unmount());
+    Object.assign(globalThis, { reduceMotionLookup: undefined });
+  }
+});
+
+test("an opened step escapes bidirectional controls in its input and output", async () => {
+  const tree = await render(createElement(ToolStep, { part: { type: "tool-read", state: "output-available", input: { path: "a‮b" }, output: "x⁧y" } }));
+  try {
+    await act(async () => rows(tree.root)[0]?.props.onPress());
+    const shown = texts(tree.root).join("\n");
+    assert.ok(!/[‪-‮⁦-⁩]/.test(shown));
+    assert.ok(shown.includes("x\\u2067y") && shown.includes("a\\u202Eb"));
   } finally {
     act(() => tree.unmount());
   }

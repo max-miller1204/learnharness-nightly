@@ -7,6 +7,7 @@ import type { PlanBlockData } from "../../../src/core/contracts/chat.ts";
 import { blockLayout, GRAPH_PAD, TEXT_CAP_SCALE } from "../../../src/core/plan-layout.ts";
 import { projectView, type LhViewMessage, type LhViewPart } from "../../../src/core/view.ts";
 import type { QuestionAnswerData } from "../../../src/core/question-core.ts";
+import { isShowImageDetails } from "../../../src/core/tool-steps.ts";
 import type { MobileApi } from "./protocol";
 import { helperCard, isSubagentSteer, teachSeam } from "./lesson";
 import { CompactionCut, CompactionNote, DispatchCard, GraphContextCard, ReasoningRow, SeamDivider, SteerCard, ThinkingRow } from "./LessonParts";
@@ -14,7 +15,7 @@ import { confirmExternalLink, Markdown } from "./Markdown";
 import { NativeMarkdown } from "./NativeMarkdown";
 import { blocksOf, equationsIn, equationsInTokens, type Equation } from "./message-math";
 import { AnswerLine } from "./AnswerLine";
-import { isRunning, isToolStep, ToolStep } from "./ToolStep";
+import { isRunning, isToolStep, OpenSteps, ToolStep } from "./ToolStep";
 import { SavedChips } from "./Attachments";
 import { PlanDiagram } from "./PlanDiagram";
 import { Label } from "./ui";
@@ -251,8 +252,8 @@ function Part({ part, context, blocks }: { part: LhViewPart; context: PartContex
   if (part.type === "data-practice-next") return <Text style={s.muted}>Next problem</Text>;
   if (part.type === "data-graph-context") return <GraphContextCard data={part.data as Parameters<typeof GraphContextCard>[0]["data"]} />;
   if (part.type === "tool-show_image" && part.state === "output-available") {
-    const image = part.output as { snapshotId?: string; caption?: string; width?: unknown; height?: unknown } | undefined;
-    if (image?.snapshotId && /^[a-f0-9]{64}$/.test(image.snapshotId)) {
+    const image = part.output;
+    if (isShowImageDetails(image)) {
       return <Snapshot api={api} chatId={chatId} snapshotId={image.snapshotId} caption={image.caption} width={image.width} height={image.height} />;
     }
     // image-card.tsx: a finished call whose details can't be shown says so.
@@ -297,6 +298,16 @@ export function Transcript({ settled, batches, eager, batchWidth = 0, onBatchLay
   const live = useMemo(() => projectView(tail), [tail]);
   const seam = useMemo(() => teachSeam(settled), [settled]);
   const context = { api, chatId, jobs, liveHelpers, openPlan };
+  // Tool steps' open state, by call id, shared by the live rows and the record's.
+  const [openSteps, setOpenSteps] = useState<ReadonlySet<string>>(() => new Set());
+  const steps = useMemo(() => ({
+    open: openSteps,
+    toggle: (toolCallId: string) => setOpenSteps((open) => {
+      const next = new Set(open);
+      if (!next.delete(toolCallId)) next.add(toolCallId);
+      return next;
+    }),
+  }), [openSteps]);
 
   /** A message, or its items `from` up to `to` when it is split between batches. */
   function message(message: LhViewMessage, from = 0, to = Infinity) {
@@ -345,7 +356,7 @@ export function Transcript({ settled, batches, eager, batchWidth = 0, onBatchLay
   const ordered = batches ? [...batches.filter((batch) => batch.placed), ...batches.filter((batch) => !batch.placed)] : [];
   const end: Position = { message: settled.length, item: 0 };
   return (
-    <>
+    <OpenSteps.Provider value={steps}>
       {batches ? ordered.map((batch) => {
         const next = batches[batches.indexOf(batch) + 1]?.start ?? end;
         if (!batch.placed && !batchWidth) return null;
@@ -363,10 +374,12 @@ export function Transcript({ settled, batches, eager, batchWidth = 0, onBatchLay
               return <ReasoningRow key={part.id ?? index} text={part.text ?? ""} streaming={last} />;
             }
             if (isToolStep(part)) return <ToolStep key={part.toolCallId ?? index} part={part} running={isRunning(part)} />;
+            // A shown image settles into its picture mid-turn too, as in the record.
+            if (part.type === "tool-show_image") return <Part key={part.toolCallId ?? index} part={part} context={context} />;
             return part.type === "text" && !!part.text ? <Text key={part.id ?? index} selectable style={s.prose}>{part.text}</Text> : null;
           })}
         </View>
       ))}
-    </>
+    </OpenSteps.Provider>
   );
 }

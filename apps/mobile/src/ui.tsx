@@ -58,8 +58,13 @@ export function useReduceMotion(assume = false): boolean {
   const [reduce, setReduce] = useState(assume);
   useEffect(() => {
     let live = true;
-    AccessibilityInfo.isReduceMotionEnabled().then((value) => { if (live) setReduce(value); }, () => {});
-    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduce);
+    // A change that arrives first is newer than the lookup's answer.
+    let changed = false;
+    AccessibilityInfo.isReduceMotionEnabled().then((value) => { if (live && !changed) setReduce(value); }, () => {});
+    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", (value) => {
+      changed = true;
+      setReduce(value);
+    });
     return () => {
       live = false;
       subscription.remove();

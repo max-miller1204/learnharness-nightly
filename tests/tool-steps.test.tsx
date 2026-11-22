@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { artifactRenderers } from "../components/artifacts/index.ts";
 import { ToolCallCard } from "../components/artifacts/tool-call-card.tsx";
-import { TOOL_STEPS, toolStepHeadline, toolStepOutput } from "../src/core/tool-steps.ts";
+import { capToolText, isShowImageDetails, TOOL_STEPS, toolStepHeadline, toolStepOutput } from "../src/core/tool-steps.ts";
 
 describe("tool steps", () => {
 	it("TOOL_STEPS is exactly the web registry's ToolCallCard entries, so the phone shows the same tools", () => {
@@ -32,5 +32,24 @@ describe("tool steps", () => {
 		assert.doesNotMatch(card({ path: "a.md" }, "short"), /Showing the first/);
 		const disguised = card({ path: "a\u202Etxt.exe" }, "");
 		assert.ok(disguised.includes("a\\u202Etxt.exe") && !/[\u202A-\u202E\u2066-\u2069]/.test(disguised.replace(/<pre[^]*<\/pre>/, "")));
+	});
+
+	it("counts lines without a final newline, cuts on code points, and never splits an escape", () => {
+		const lines = (n: number, end = "") => Array.from({ length: n }, (_, at) => `l${at}`).join("\n") + end;
+		assert.deepEqual(capToolText(lines(200, "\n")), { text: lines(200, "\n") }, "200 lines and a final newline are all shown");
+		assert.equal(capToolText(lines(300, "\n")).note, "Showing the first 200 of 300 lines.");
+		const emoji = "\u{1F600}".repeat(9000);
+		const cut = capToolText(emoji);
+		assert.equal(cut.note, "Showing the first 8,192 of 9,000 characters.");
+		assert.equal([...cut.text].length, 8192);
+		assert.ok(!/[\uD800-\uDBFF]$/.test(cut.text), "no half of a pair left at the end");
+		assert.equal(toolStepHeadline("read", { path: "abcd\u202Exyz" }, 5), "abcd\\u202E…", "cut before escaping");
+		assert.equal(toolStepHeadline("read", { path: "\u{1F600}".repeat(5) + "x" }, 5), `${"\u{1F600}".repeat(5)}…`);
+	});
+
+	it("isShowImageDetails accepts only what the web's image card can draw", () => {
+		const good = { snapshotId: "a".repeat(64), mimeType: "image/png", path: "a.png", width: 4, height: 3 };
+		assert.ok(isShowImageDetails(good));
+		for (const bad of [{ ...good, mimeType: "image/gif" }, { ...good, path: undefined }, { ...good, width: "4" }, { ...good, snapshotId: "x" }]) assert.ok(!isShowImageDetails(bad));
 	});
 });

@@ -3,7 +3,7 @@
 import { ChevronRight } from "lucide-react";
 import { BrailleSpinner } from "@/components/braille-spinner";
 import { Shimmer } from "@/components/ai-elements/shimmer";
-import { toolActivityLabel } from "@/src/core";
+import { plainToolText, toolActivityLabel } from "@/src/core";
 import type { ArtifactPartProps } from "@/src/core";
 
 /**
@@ -34,9 +34,9 @@ export function LiveToolCard({ part }: ArtifactPartProps) {
 	// The headline argument (ToolCallCard's rule, shown as given): path for
 	// read/ls, pattern for find/grep, session for list_propositions.
 	let arg = "";
-	if (typeof inp.path === "string" && inp.path) arg = inp.path;
-	else if (typeof inp.pattern === "string" && inp.pattern) arg = inp.pattern;
-	else if (typeof inp.session === "string" && inp.session) arg = inp.session;
+	if (typeof inp.path === "string" && inp.path) arg = plainToolText(inp.path);
+	else if (typeof inp.pattern === "string" && inp.pattern) arg = plainToolText(inp.pattern);
+	else if (typeof inp.session === "string" && inp.session) arg = plainToolText(inp.session);
 
 	const hasInput = p.input != null && Object.keys(inp).length > 0;
 
