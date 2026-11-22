@@ -10,8 +10,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
 import {
-	createFauxCore, createModels, fauxAssistantMessage, fauxText, fauxToolCall,
-	type JsonObject, type TranscriptContext, type Usage,
+	createFauxCore, createModels, fauxAssistantMessage, fauxText, fauxToolCall, normalizeContext,
+	type Context, type JsonObject, type TranscriptContext, type Usage,
 } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { APP_IDENTITY, piEngineForSpec, type PiEngine } from "../src/agent/models.ts";
@@ -130,6 +130,89 @@ function assertSuccess(loop: Loop, run: Awaited<ReturnType<typeof runLoop>>) {
 }
 
 // All global/env cases in this file are deliberately serial.
+describe("Anthropic message threads and the key", () => {
+	it("a fixed key keeps its thread's session id; another key gets its own; the key never appears", async () => {
+		const { anthropicThreadSession } = await import("../src/agent/models.ts");
+		const first = anthropicThreadSession("chat_1", "sk-ant-first-secret");
+		assert.equal(anthropicThreadSession("chat_1", "sk-ant-first-secret"), first, "the same key continues the same thread");
+		assert.notEqual(anthropicThreadSession("chat_1", "sk-ant-rotated-secret"), first, "a rotated key starts another");
+		assert.notEqual(anthropicThreadSession("chat_1", undefined, { authorization: "Bearer other" }), first, "header auth counts as the credential too");
+		assert.notEqual(anthropicThreadSession("chat_1", "sk-ant-first-secret", { "x-api-key": "sk-ant-override" }), first, "so does a header override");
+		assert.equal(anthropicThreadSession("chat_1", "k", { "X-Api-Key": "o" }), anthropicThreadSession("chat_1", "k", { "x-api-key": "o" }), "header names are case-insensitive");
+		assert.ok(first.startsWith("chat_1:key-"));
+		assert.ok(!first.includes("secret"), "a hash, never the key");
+	});
+
+	const anthropic = TRANSPORTS.find((transport) => transport.provider === "anthropic")!;
+	/** Every request's thread type and sent key, answered by the offline SSE. */
+	function threadFetch(requests: { thread?: string; key: string | null }[], onRequest?: (index: number) => void): typeof fetch {
+		return async (input, init) => {
+			const request = new Request(input, init);
+			assert.equal(new URL(request.url).origin, anthropic.origin);
+			const body = JSON.parse(await request.text()) as { thread?: { type?: string } };
+			const index = requests.length;
+			requests.push({ thread: body.thread?.type, key: request.headers.get("x-api-key") });
+			onRequest?.(index);
+			return sseResponse(anthropic, [], index);
+		};
+	}
+
+	it("a key rotated between the fingerprint and the send never reaches the old key's thread", async () => {
+		await isolated({ ANTHROPIC_API_KEY: "dummy-key-first" }, async () => {
+			const { piModels } = await import("../src/agent/models.ts");
+			const models = piModels();
+			// The rotation lands right after the wrapper resolves the credential for
+			// request 1, before Pi's own request code reads it again.
+			let rotate = false;
+			const getAuth = models.getAuth.bind(models);
+			models.getAuth = (async (...args: Parameters<typeof getAuth>) => {
+				const resolved = await getAuth(...args);
+				if (rotate) { rotate = false; process.env.ANTHROPIC_API_KEY = "dummy-key-rotated"; }
+				return resolved;
+			}) as typeof models.getAuth;
+			try {
+				const requests: { thread?: string; key: string | null }[] = [];
+				globalThis.fetch = threadFetch(requests, (index) => { if (index === 0) rotate = true; });
+				const engine = piEngineForSpec({ provider: "anthropic", id: anthropic.id, thinkingLevel: "off" });
+				await converse(engine, "chat_rotation_race", 3);
+				assert.deepEqual(requests, [
+					{ thread: "create", key: "dummy-key-first" },
+					{ thread: "continue", key: "dummy-key-first" },
+					{ thread: "create", key: "dummy-key-rotated" },
+				], "the request sends the key its thread was fingerprinted with; the rotated key starts its own thread");
+			} finally {
+				delete (models as { getAuth?: unknown }).getAuth;
+			}
+		});
+	});
+
+	it("a per-request x-api-key override is the credential the thread belongs to", async () => {
+		await isolated({ ANTHROPIC_API_KEY: "dummy-key-env" }, async () => {
+			const requests: { thread?: string; key: string | null }[] = [];
+			globalThis.fetch = threadFetch(requests);
+			const engine = piEngineForSpec({ provider: "anthropic", id: anthropic.id, thinkingLevel: "off" });
+			await converse(engine, "chat_header_override", 3, (round) => ({ "x-api-key": round === 0 ? "dummy-override-one" : "dummy-override-two" }));
+			assert.deepEqual(requests, [
+				{ thread: "create", key: "dummy-override-one" },
+				{ thread: "create", key: "dummy-override-two" },
+				{ thread: "continue", key: "dummy-override-two" },
+			], "another override key starts its own thread, and the same one continues it");
+		});
+	});
+});
+
+/** `rounds` turns of one conversation straight through the engine's stream,
+ *  each a new user message after the previous reply. */
+async function converse(engine: PiEngine, sessionId: string, rounds: number, headers?: (round: number) => Record<string, string>) {
+	const messages: Context["messages"] = [];
+	for (let round = 0; round < rounds; round++) {
+		messages.push({ role: "user", content: `turn ${round}`, timestamp: round });
+		const reply = await engine.streamFn(engine.model, normalizeContext({ systemPrompt: "offline", messages: [...messages] }), { sessionId, ...(headers ? { headers: headers(round) } : {}) }).result();
+		assert.equal(reply.stopReason, "stop", JSON.stringify(reply.errorMessage));
+		messages.push(reply);
+	}
+}
+
 describe("provider-neutral raw agent loops", { concurrency: false }, () => {
 	for (const loop of LOOPS) {
 		it(`${loop}: every actual stream request has NO credential override (recording faux engine)`, async () => {
@@ -217,6 +300,12 @@ describe("provider-neutral raw agent loops", { concurrency: false }, () => {
 						const expected = transport.provider === "openrouter" ? OR_KEY : round === 0 ? "dummy-selected-key-first" : "dummy-selected-key-rotated";
 						assert.equal(request.headers.get(transport.authHeader), transport.authHeader === "authorization" ? `Bearer ${expected}` : expected);
 						if (transport.provider !== "openrouter") assert.ok(!JSON.stringify({ ...request, headers: Object.fromEntries(request.headers) }).includes(OR_KEY));
+						if (transport.provider === "anthropic") {
+							// Upstream's concern: a rotated key never continues the old key's thread.
+							if (round === 1) assert.equal((request.body.thread as { type?: string } | undefined)?.type, "create", "key rotation starts a new server-side thread");
+							assert.match(request.headers.get("anthropic-beta") ?? "", /message-threads/);
+							assert.match(JSON.stringify(request.body), /cache_control/, "native prompt caching is independent of threads");
+						}
 						assertPayload(transport, loop, round, request.body);
 					}
 				});
@@ -285,11 +374,13 @@ function closedFetch(transport: Transport, loop: Loop, requests: RecordedRequest
 
 function assertPayload(transport: Transport, loop: Loop, round: number, body: Record<string, unknown>) {
 	if (transport.api !== "google-generative-ai") assert.equal(body.model, transport.id);
-	// Only Anthropic's own endpoint gets message threads: later rounds
-	// continue the thread, sending just the new turn, and the server keeps
-	// the tools and earlier messages.
+	// Only Anthropic's own endpoint gets message threads: a later round with the
+	// same key continues the thread, sending just the new turn, and the server
+	// keeps the tools and earlier messages. This suite rotates the key after
+	// round 0, so round 1 starts a new thread for the new key and round 2
+	// continues it (src/agent/models.ts anthropicThreadSession).
 	const thread = body.thread as { type?: string; previous_message_id?: string } | undefined;
-	assert.equal(thread?.type, transport.provider === "anthropic" ? (round === 0 ? "create" : "continue") : undefined);
+	assert.equal(thread?.type, transport.provider === "anthropic" ? (round < 2 ? "create" : "continue") : undefined, `round ${round}`);
 	const json = JSON.stringify(body);
 	if (thread?.type === "continue") {
 		// A continue builds on the previous reply and carries exactly that

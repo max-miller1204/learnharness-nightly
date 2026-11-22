@@ -10,7 +10,7 @@ import { DictationBar, joinDictation, useDictation } from "@/components/dictatio
 import { useFieldCycle } from "@/components/field-cycle";
 import { useOptionalInteractionLayers } from "./interaction-layers";
 import { isInteractionScopeEligible } from "./plugin-input-focus";
-import { SidebarToggle } from "@/components/sidebar";
+import { SidebarToggle } from "@/components/sidebar-toggle";
 import { SetupDialog } from "@/components/setup-dialog";
 import { useModelSetup, selectedModelUnavailable, openModelPicker, ZeroKeysPill } from "@/components/setup-cta";
 import { StatsBar } from "@/components/stats-bar";

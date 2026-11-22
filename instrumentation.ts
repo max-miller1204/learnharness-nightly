@@ -19,6 +19,8 @@ export async function register() {
 			sweep();
 			setInterval(sweep, 15 * 60_000).unref();
 		}
+		const { initializeModelCatalog } = await import("./src/server/remote-model-catalog.ts");
+		initializeModelCatalog();
 		const { initializePlugins } = await import("./src/server/plugins.ts");
 		try { await initializePlugins(); }
 		catch (error) { console.error("[plugins] Initialization failed; plugin management will report the error:", error); }

@@ -15,7 +15,8 @@ function catalogModel(id: string) {
 	// Native CLI routing determines billing. Adapter zero-rate placeholders
 	// must never become an apparent $0 estimate or subscription classification.
 	if (colon < 0 || isSubscriptionModel(id) || [CLAUDE_CODE_PROVIDER, CUSTOM_PROVIDER.id].includes(id.slice(0, colon))) return undefined;
-	// History on a model the catalog dropped keeps its estimate.
+	// History on a model no catalog has (Pi's bundled one or a pi.dev
+	// refresh) keeps the estimate it had when Pi dropped it.
 	return piModels().getModel(id.slice(0, colon), id.slice(colon + 1)) ?? (Object.hasOwn(RETIRED_MODELS, id) ? RETIRED_MODELS[id] : undefined);
 }
 

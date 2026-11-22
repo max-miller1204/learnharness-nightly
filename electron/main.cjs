@@ -339,7 +339,7 @@ function openExternalLink(target) {
  *  - will-navigate pinned to the app origin; window.open always denied —
  *    external links go to the real browser via shell.openExternal, for
  *    http, https and mailto only (openExternalLink). */
-function createWindow(url) {
+function createWindow(url, beforeLoad) {
 	const win = new BrowserWindow({
 		width: 1440,
 		height: 900,
@@ -434,6 +434,7 @@ function createWindow(url) {
 		return win.loadURL(target);
 	};
 	windowLoaders.set(win, load);
+	beforeLoad?.(win);
 	if (url) void load(url);
 	// Zoom truth reaches the renderer for EVERY load (reload, nav): the
 	// renderer's --lh-zoom must never go stale. The fallback catcher below

@@ -22,6 +22,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { absorbed, pendingCallTool, SessionModel } from "../components/session-core.ts";
+import { beginSessionDelete } from "../components/session-deletion.ts";
 import type { ChatInput } from "../src/core/input-events.ts";
 import type { LhMessage } from "../src/core/native-messages.ts";
 import { newUserMessage, newAnswerResult, newThinkingMessage, needsContinuation, endsInDismissal, pendingQuestionOf } from "../src/core/native-messages.ts";
@@ -29,6 +30,47 @@ import { endsInFailedTurn, newCompactionMarker, newPlanBlockMessage, projectView
 import { buildProbeHandoffSteer, buildSubagentSteer } from "../src/core/contracts/jobs.ts";
 import { dismissedAnswer } from "../src/core/question-core.ts";
 import { buildAnswer, type QuestionData } from "../src/core/question-core.ts";
+
+it("usage-only reads neither adopt a transcript nor supersede a canonical read", async () => {
+	const transcript = Promise.withResolvers<Response>();
+	const lateStats = Promise.withResolvers<Response>();
+	let calls = 0;
+	const m = new SessionModel({ chatId: "chat_stats", initialMessages: [], fetch: async url => {
+		if (url === "/api/chats/chat_stats") return transcript.promise;
+		assert.equal(url, "/api/chats/chat_stats?view=stats");
+		return ++calls === 1 ? Response.json({ turns: [], messages: [newUserMessage("not canonical")] }) : lateStats.promise;
+	} });
+	const adoption = m.readRecord();
+	assert.deepEqual((await m.readStats())?.turns, []);
+	assert.deepEqual(m.getState().nativeMessages, []);
+	transcript.resolve(Response.json({ messages: [newUserMessage("canonical")] }));
+	assert.ok(await adoption, "a newer stats request did not invalidate the canonical read");
+	const cancel = new AbortController();
+	const read = m.readStats(cancel.signal);
+	cancel.abort();
+	lateStats.resolve(Response.json({ turns: [] }));
+	assert.equal(await read, undefined, "ignore a late stats response even if the fetch completed despite cancellation");
+});
+
+it("a usage-only read holds while this window deletes the session, like the record reads", async () => {
+	const urls: string[] = [];
+	const fetch = (async (url: RequestInfo | URL) => { urls.push(String(url)); return Response.json({ turns: [] }); }) as typeof globalThis.fetch;
+	const settled = async (read: Promise<unknown>) => Promise.race([read.then(() => "ran"), new Promise((resolve) => setTimeout(() => resolve("held"), 30))]);
+	// Deleted: the stats read never reaches the server (it would 404).
+	const settleDeleted = beginSessionDelete("chat_stats_deleted");
+	const deletedRead = new SessionModel({ chatId: "chat_stats_deleted", initialMessages: [], fetch }).readStats();
+	assert.equal(await settled(deletedRead), "held", "in flight: the stats read waits");
+	settleDeleted(true);
+	assert.equal(await settled(deletedRead), "held", "deleted: it never runs");
+	assert.deepEqual(urls, []);
+	// Refused: it runs as normal.
+	const settleRefused = beginSessionDelete("chat_stats_kept");
+	const keptRead = new SessionModel({ chatId: "chat_stats_kept", initialMessages: [], fetch }).readStats();
+	assert.equal(await settled(keptRead), "held");
+	settleRefused(false);
+	assert.deepEqual((await keptRead)?.turns, []);
+	assert.deepEqual(urls, ["/api/chats/chat_stats_kept?view=stats"]);
+});
 
 const realFetch = globalThis.fetch;
 afterEach(() => {

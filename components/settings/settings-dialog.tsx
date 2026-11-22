@@ -40,7 +40,6 @@ import { isInteractionScopeEligible } from "@/components/plugin-input-focus";
 import { useInteractionLayers, type CloseOutcome } from "@/components/interaction-layers";
 import {
 	CURRENT_SETTINGS_VERSION,
-	type AgentSettings,
 	type AppearanceSettings,
 	type CompactionSettings,
 	type GraphSettings,
@@ -49,7 +48,7 @@ import {
 import { useAppearance } from "./appearance.tsx";
 import { SettingsSection } from "./controls.tsx";
 import { UpdateSettings } from "./update-settings.tsx";
-import { AgentSection } from "./agent-section.tsx";
+import { AgentSection, composePromptSwitch } from "./agent-section.tsx";
 import type { ModelsSettings } from "@/src/core";
 import { MENU_CLOSE_EVENT, MENU_OPEN_EVENT } from "@/components/menu-shell";
 import { notifySettingsSaved } from "@/components/settings-signal";
@@ -63,6 +62,7 @@ import { PluginSettingsPage } from "./plugin-settings-page.tsx";
 import { usePlugins } from "@/components/plugins";
 import { ChatGPTUIProvider } from "./chatgpt-connection.tsx";
 import { NativeSubscriptionUIProvider } from "./subscription-connections.tsx";
+import { SettingsDialogContext, useSettingsDialog } from "./settings-dialog-context.ts";
 
 /** Owner (2026-09-20): hints earn their place — mechanics-explaining
  *  prose is out; only the keyboard note stays (storage location is a
@@ -78,12 +78,6 @@ const SECTIONS = [
 ] as const;
 type SectionId = (typeof SECTIONS)[number]["id"] | "plugins" | "core-plugins" | `plugin:${string}`;
 
-/** `open(section?, row?)` — the optional ROW deep-links into the Keys
- *  section with that row unfolded (zero-keys wave: the dictation error's
- *  click lands on the Deepgram row). `row` is the KEY ID (the env-var
- *  name, e.g. DEEPGRAM_API_KEY — KeysSection's openRow state), not the
- *  row's testid. */
-const DialogContext = createContext<{ open: (section?: string, row?: string) => void }>({ open: () => {} });
 // Authority belongs to the persistent Settings host, not a particular field or
 // open/close lifetime: a delayed response must not roll back a newer ACK.
 interface SettingsWriteOrder {
@@ -91,7 +85,16 @@ interface SettingsWriteOrder {
 	acknowledged: number;
 	record?: UserSettings;
 	fileAccessError?: string | null;
+	pendingWrites: number;
+	promptDeletion?: Promise<void>;
 	listeners: Set<(record: UserSettings, fileAccessError: string | null) => void>;
+}
+const newWriteOrder = (): SettingsWriteOrder => ({ issued: 0, acknowledged: 0, pendingWrites: 0, listeners: new Set() });
+// Settings runs on supported browsers that predate Promise.withResolvers.
+function settingsCompletion() {
+	let resolve!: () => void;
+	const promise = new Promise<void>(done => { resolve = done; });
+	return { promise, resolve };
 }
 const WriteOrderContext = createContext<RefObject<SettingsWriteOrder> | null>(null);
 
@@ -105,7 +108,7 @@ export function SettingsDialogProvider({
 }) {
 	const interactions = useInteractionLayers();
 	const layerId = useId();
-	const writeOrder = useRef<SettingsWriteOrder>({ issued: 0, acknowledged: 0, listeners: new Set() });
+	const writeOrder = useRef(newWriteOrder());
 	const [show, setShow] = useState(false);
 	const [landOn, setLandOn] = useState<SectionId>("keys");
 	const [landOnRow, setLandOnRow] = useState<string | null>(null);
@@ -130,18 +133,16 @@ export function SettingsDialogProvider({
 		return () => window.removeEventListener("lh:open-plugin-settings", onPluginSettings);
 	}, [open]);
 	return (
-		<ChatGPTUIProvider><NativeSubscriptionUIProvider><WriteOrderContext.Provider value={writeOrder}><DialogContext.Provider value={{ open }}>
+		<ChatGPTUIProvider><NativeSubscriptionUIProvider><WriteOrderContext.Provider value={writeOrder}><SettingsDialogContext.Provider value={{ open }}>
 			{children}
 			{show && (
 				<SettingsDialog onClose={close} initialSection={landOn} initialRow={landOnRow} navigationRequest={navigationRequest} layerId={layerId} />
 			)}
-		</DialogContext.Provider></WriteOrderContext.Provider></NativeSubscriptionUIProvider></ChatGPTUIProvider>
+		</SettingsDialogContext.Provider></WriteOrderContext.Provider></NativeSubscriptionUIProvider></ChatGPTUIProvider>
 	);
 }
 
-export function useSettingsDialog() {
-	return useContext(DialogContext);
-}
+export { useSettingsDialog };
 
 function SettingsDialog({
 	onClose,
@@ -154,7 +155,7 @@ function SettingsDialog({
 	initialSection: SectionId;
 	navigationRequest: number;
 	layerId: string;
-	/** The keys-section row to unfold (see DialogContext above). */
+	/** The keys-section row to unfold (see SettingsDialogContext). */
 	initialRow: string | null;
 }) {
 	// Keep the original visual frame and plain dim backdrop. The shared
@@ -201,7 +202,7 @@ export function SettingsDialogBody({
 }) {
 	const { onAppearanceChange } = useAppearance();
 	const inheritedWriteOrder = useContext(WriteOrderContext);
-	const standaloneWriteOrder = useRef<SettingsWriteOrder>({ issued: 0, acknowledged: 0, listeners: new Set() });
+	const standaloneWriteOrder = useRef(newWriteOrder());
 	const writeOrder = inheritedWriteOrder ?? standaloneWriteOrder;
 	const { snapshot } = usePlugins();
 	const [record, setRecord] = useState<UserSettings | null | undefined>(
@@ -295,6 +296,10 @@ export function SettingsDialogBody({
 		const applyLoaded = (loaded: UserSettings | null, fileAccessError: string | null = null) => {
 			if (!alive) return;
 			const unchanged = authority.acknowledged === acknowledgedAtRead;
+			if (unchanged && loaded) {
+				authority.record = loaded;
+				authority.fileAccessError = fileAccessError;
+			}
 			setRecord(unchanged ? loaded : authority.record ?? loaded);
 			setFileAccessError(unchanged ? fileAccessError : authority.fileAccessError ?? null);
 		};
@@ -316,8 +321,12 @@ export function SettingsDialogBody({
 		async (
 			section: "general" | "agent" | "models" | "appearance" | "graph" | "compaction",
 			body: object,
+			confirms?: (stored: UserSettings) => boolean,
 		): Promise<boolean> => {
-			const ticket = ++writeOrder.current.issued;
+			const authority = writeOrder.current;
+			while (authority.promptDeletion) await authority.promptDeletion;
+			const ticket = ++authority.issued;
+			authority.pendingWrites++;
 			setError(null);
 			try {
 				const res = await fetch(`/api/settings/${section}`, {
@@ -351,14 +360,39 @@ export function SettingsDialogBody({
 					onAppearanceChange(stored.appearance);
 				}
 				notifySettingsSaved(section);
-				return true;
+				return confirms?.(stored) ?? true;
 			} catch (error) {
 				if (ticket === writeOrder.current.issued) setError(`${section}: ${error instanceof Error ? error.message : String(error)}`);
 				return false;
+			} finally {
+				authority.pendingWrites--;
 			}
 		},
 		[onAppearanceChange, writeOrder],
 	);
+
+	async function deletePromptOverride(path: string, remove: () => Promise<boolean>) {
+		const authority = writeOrder.current;
+		// DELETE only acknowledges a key removal. Don't patch a mirror that
+		// hasn't seen preceding full-record ACKs, and never queue a delete.
+		if (authority.promptDeletion || authority.pendingWrites) return "settings-busy" as const;
+		const settled = settingsCompletion();
+		authority.promptDeletion = settled.promise;
+		try {
+			if (!await remove()) return "delete-failed" as const;
+			const stored = authority.record;
+			if (stored?.agent?.prompts?.[path] !== undefined) {
+				const patched = { ...stored, agent: composePromptSwitch(stored.agent, path, false) };
+				authority.acknowledged = ++authority.issued;
+				authority.record = patched;
+				for (const apply of authority.listeners) apply(patched, authority.fileAccessError ?? null);
+			}
+			return "deleted" as const;
+		} finally {
+			authority.promptDeletion = undefined;
+			settled.resolve();
+		}
+	}
 
 	const frame = (
 		<div
@@ -495,9 +529,10 @@ export function SettingsDialogBody({
 										onModelsChange={(next: ModelsSettings) =>
 											void write("models", next)
 										}
-										onSectionChange={(next: AgentSettings) =>
-											write("agent", next)
+										onSectionChange={(next, confirms) =>
+											write("agent", next, confirms && (stored => confirms(stored.agent ?? {})))
 										}
+										onDeletePromptOverride={deletePromptOverride}
 										onCompactionChange={(next: CompactionSettings) =>
 											write("compaction", next)
 										}
