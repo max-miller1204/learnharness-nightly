@@ -3,6 +3,7 @@
 import { createContext, Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { SavedAttachmentChips, useAttachmentDraft } from "./attachment-draft";
+import { clearComposerDraftIfSent, flushComposerDrafts, readComposerDraft, writeComposerDraft } from "@/lib/composer-drafts";
 import { useChatSession } from "@/components/session";
 import { usePlugins } from "./plugins";
 import { PluginSubmissionRunner, SubmissionModelEpoch, type SubmissionAttempt } from "./plugin-submission-runner";
@@ -694,13 +695,34 @@ export function Chat({
 	 * resets still bump a revision so the local field can sync. */
 	const textRef = useRef("");
 	const composerEditRevision = useRef(0);
-	const applyText = useCallback((v: string) => {
+	const showText = useCallback((v: string) => {
 		textRef.current = v; composerEditRevision.current++;
 		setComposerDraftRevision((revision) => revision + 1);
 	}, []);
+	// Every edit is also the session's saved draft (lib/composer-drafts.ts,
+	// #347), so it survives navigating away and back; sending empties it.
+	const applyText = useCallback((v: string) => {
+		showText(v);
+		writeComposerDraft(chatId, v);
+	}, [chatId, showText]);
 	const recordComposerText = useCallback((v: string) => {
 		textRef.current = v; composerEditRevision.current++;
-	}, []);
+		writeComposerDraft(chatId, v);
+	}, [chatId]);
+	// Restore the saved draft after mount (the server render has no storage)
+	// without saving it back: only edits are saved. Not when the composer
+	// already has text, or when an opening message is owed: decided once, from
+	// the sources the opening submission below reads (?prompt= or
+	// SessionStarter's sessionStorage handover, and the session's messages).
+	// Leaving the session saves what is unsaved.
+	const openingAtMount = useRef({ initialMessages, initialPrompt });
+	useEffect(() => {
+		const { initialMessages: messages, initialPrompt: prompt } = openingAtMount.current;
+		const openingOwed = initialPromptOwed(messages, prompt || readOpeningPromptEntry(chatId)?.text);
+		const saved = readComposerDraft(chatId);
+		if (saved && textRef.current === "" && !openingOwed) showText(saved);
+		return () => flushComposerDrafts();
+	}, [chatId, showText]);
 	// Saved slot completeness is live, but the session's selected route
 	// comes from its own ordinary model control, never today's Strong pin.
 	const { catalog, configured, zeroKeys } = useModelSetup(initialConfigured);
@@ -835,7 +857,10 @@ export function Chat({
 			draftRef.current = captured;
 			const accepted = () => {
 				if (upload) attachments.accept(upload);
-				if (composerEditRevision.current === capturedRevision && textRef.current.trim() === captured) applyText("");
+				// Left the session meanwhile: clear its saved draft only if it is still
+				// the sent text, never a newer one typed since, and touch no state.
+				if (!submissionMounted.current) clearComposerDraftIfSent(chatId, captured);
+				else if (composerEditRevision.current === capturedRevision && textRef.current.trim() === captured) applyText("");
 				openingAccepted?.();
 				attempt.accepted();
 			};
@@ -888,13 +913,20 @@ export function Chat({
 				}
 				openingDraftRef.current = prompt!;
 				if (entry?.attempted || initiallyInFlight) {
-					applyText(prompt!); // Interrupted start: the learner explicitly resends.
+					// Interrupted or failed start: never reposted, the learner resends.
+					// A draft saved for this session wins over the stashed opening text:
+					// it is the opening text or the learner's edit of it, saved after the
+					// attempt (only this session's Chat writes it, and the attempt is the
+					// first thing its first mount does).
+					const saved = readComposerDraft(chatId);
+					if (saved) showText(saved);
+					else applyText(prompt!);
 					return;
 				}
 				deliverOpeningPrompt(prompt!);
 			},
 		);
-	}, [chatId, initialPrompt, initialMessages, initiallyInFlight, surfaceTarget, deliverOpeningPrompt, applyText]);
+	}, [chatId, initialPrompt, initialMessages, initiallyInFlight, surfaceTarget, deliverOpeningPrompt, applyText, showText]);
 
 	useEffect(() => {
 		if (!hasConfirmedConversation) return;
