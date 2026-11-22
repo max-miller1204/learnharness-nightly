@@ -18,6 +18,10 @@ const reads = new Map<string, Set<AbortController>>();
 
 /** Register a cancellable read after checking sessionReadHold. */
 export function registerSessionRead(chatId: string, controller: AbortController): () => void {
+	if (deleted.has(chatId) || inFlight.has(chatId)) {
+		controller.abort();
+		return () => {};
+	}
 	let active = reads.get(chatId);
 	if (!active) reads.set(chatId, active = new Set());
 	active.add(controller);
@@ -37,7 +41,9 @@ export function beginSessionDelete(chatId: string): (wasDeleted: boolean) => voi
 	let settle!: (wasDeleted: boolean) => void;
 	const pending = new Promise<boolean>((resolve) => { settle = resolve; });
 	inFlight.set(chatId, pending);
-	for (const controller of reads.get(chatId) ?? []) controller.abort();
+	const active = reads.get(chatId);
+	reads.delete(chatId);
+	for (const controller of active ?? []) controller.abort();
 	let done = false;
 	return (wasDeleted) => {
 		if (done) return; // the first outcome stands

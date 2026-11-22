@@ -45,24 +45,40 @@ export interface SessionCoverage {
 
 /** One session's coverage read — null on transport/404 (callers render
  *  nothing rather than a fake zero; the honest-render doctrine). */
-export async function fetchCoverage(chatId: string): Promise<SessionCoverage | null> {
-	let hold = sessionReadHold(chatId);
-	while (hold) {
-		await hold;
-		hold = sessionReadHold(chatId);
+export const COVERAGE_ABORTED = Symbol("coverage aborted");
+export async function fetchCoverage(chatId: string, signal?: AbortSignal): Promise<SessionCoverage | null | typeof COVERAGE_ABORTED> {
+	while (!signal?.aborted) {
+		const hold = sessionReadHold(chatId);
+		if (hold) {
+			if (!signal) await hold;
+			else {
+				await new Promise<void>((resolve) => {
+					const stop = () => resolve();
+					signal.addEventListener("abort", stop, { once: true });
+					void hold.then(() => { signal.removeEventListener("abort", stop); resolve(); });
+				});
+			}
+			continue;
+		}
+		const controller = new AbortController();
+		const cancel = () => controller.abort();
+		signal?.addEventListener("abort", cancel, { once: true });
+		const unregister = registerSessionRead(chatId, controller);
+		try {
+			if (controller.signal.aborted) continue;
+			const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`, { signal: controller.signal });
+			if (!res.ok) return null;
+			const body = (await res.json()) as { coverage?: SessionCoverage | null };
+			if (controller.signal.aborted) continue;
+			return body.coverage ?? null;
+		} catch {
+			if (!controller.signal.aborted) return null;
+		} finally {
+			unregister();
+			signal?.removeEventListener("abort", cancel);
+		}
 	}
-	const controller = new AbortController();
-	const unregister = registerSessionRead(chatId, controller);
-	try {
-		const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`, { signal: controller.signal });
-		if (!res.ok) return null;
-		const body = (await res.json()) as { coverage?: SessionCoverage | null };
-		return body.coverage ?? null;
-	} catch {
-		return null;
-	} finally {
-		unregister();
-	}
+	return COVERAGE_ABORTED;
 }
 
 /** The ring's denominator + visibility, resolved through the SAME core
@@ -125,9 +141,12 @@ export function CoverageMenuBlock({ chatId }: { chatId: string }) {
 	const [extracting, setExtracting] = useState(false); // optimistic until the server says running
 	const lastUncoveredRef = useRef<number | null>(null);
 
+	const lifetime = useRef<AbortController | null>(null);
 	const load = useCallback(async () => {
-		const next = await fetchCoverage(chatId);
-		if (next === null) return;
+		const signal = lifetime.current?.signal;
+		if (!signal || signal.aborted) return;
+		const next = await fetchCoverage(chatId, signal);
+		if (next === null || next === COVERAGE_ABORTED) return;
 		// The optimistic state stands down once the server says running, or
 		// once the fold moved coverage (the run finished).
 		if (
@@ -143,9 +162,12 @@ export function CoverageMenuBlock({ chatId }: { chatId: string }) {
 	// On MENU OPEN (the block mounts with the menu — on-demand, never
 	// eagerly): one read, then the 2s poll below takes over while running.
 	useEffect(() => {
+		const controller = new AbortController();
+		lifetime.current = controller;
 		lastUncoveredRef.current = null;
 		setExtracting(false);
 		void load();
+		return () => { controller.abort(); if (lifetime.current === controller) lifetime.current = null; };
 	}, [load]);
 
 	// While a run is in flight the block polls at 2s (the old panel's
@@ -282,9 +304,11 @@ export function CoverageRing({ chatId, refreshKey = 0 }: { chatId: string; refre
 
 	useEffect(() => {
 		let alive = true;
-		void fetchCoverage(chatId).then((c) => alive && setCoverage(c));
+		const controller = new AbortController();
+		void fetchCoverage(chatId, controller.signal).then((c) => { if (alive && c !== COVERAGE_ABORTED) setCoverage(c); });
 		return () => {
 			alive = false;
+			controller.abort();
 		};
 	}, [chatId, refreshKey, nonce, runHere]);
 
@@ -296,12 +320,13 @@ export function CoverageRing({ chatId, refreshKey = 0 }: { chatId: string; refre
 	// this bounded, run-scoped poll stays.
 	useEffect(() => {
 		if (coverage?.running !== true) return;
+		const controller = new AbortController();
 		const timer = setInterval(() => {
-			void fetchCoverage(chatId).then((c) => {
-				if (c !== null) setCoverage(c);
+			void fetchCoverage(chatId, controller.signal).then((c) => {
+				if (c !== null && c !== COVERAGE_ABORTED) setCoverage(c);
 			});
 		}, 2000);
-		return () => clearInterval(timer);
+		return () => { clearInterval(timer); controller.abort(); };
 	}, [chatId, coverage?.running]);
 
 	// Vanishes entirely when the graph is off, or before the first honest
