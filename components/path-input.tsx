@@ -61,7 +61,14 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 	const [chips, setChips] = React.useState<ChipHost[]>([]);
 	// Keep this text child immutable: SSR/hydration gets the complete draft,
 	// while subsequent React renders leave the browser-owned editable DOM alone.
+	// The field is editable from the server render, so at hydration its text may
+	// be the learner's, not React's: suppressHydrationWarning is what stops
+	// React from patching a differing text child back to its own, and the mount
+	// effect below reads the DOM before painting.
 	const initial = React.useRef({ value: normalizePathInputValue(value, singleLine), autoFocus, singleLine });
+	// Set when mounting adopted text typed before hydration, so the owner's
+	// value from that same render (the server's) doesn't overwrite it.
+	const adoptedEdit = React.useRef(false);
 
 	React.useImperativeHandle(forwardedRef, () => rootRef.current!, []);
 	React.useLayoutEffect(() => { callbacks.current = { onValueChange, singleLine, fileInsertion }; }, [onValueChange, singleLine, fileInsertion]);
@@ -288,7 +295,21 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 				paint(selection, document.activeElement === root);
 			},
 		};
-		paint(saved, false);
+		// The field is editable from the server render, before any of this runs.
+		// What it holds now that differs from what React rendered is the
+		// learner's own typing (a client-only mount renders exactly `current`):
+		// keep it, and tell the owner, so it beats a saved draft or any other
+		// value the owner would restore.
+		const typed = normalizePathInputValue(readPathInput(root), initial.current.singleLine);
+		const edited = typed !== current;
+		if (edited) {
+			const caret = document.activeElement === root ? readPathSelection(root) : null;
+			current = typed;
+			saved = clampPathSelection(current, caret ?? { anchor: current.length, focus: current.length });
+			adoptedEdit.current = true;
+		}
+		paint(saved, edited && document.activeElement === root);
+		if (edited) callbacks.current.onValueChange(current);
 		if (initial.current.autoFocus) { root.focus(); restorePathSelection(root, saved); }
 		root.addEventListener(INSERT_FILE_PATHS_EVENT, insertEvent);
 		root.addEventListener(INSERT_CITATION_EVENT, insertCitationEvent);
@@ -321,7 +342,10 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		};
 	}, []);
 
-	React.useLayoutEffect(() => { controllerRef.current?.external(value); }, [value, singleLine]);
+	React.useLayoutEffect(() => {
+		if (adoptedEdit.current) { adoptedEdit.current = false; return; }
+		controllerRef.current?.external(value);
+	}, [value, singleLine]);
 
 	return <>
 		<div
@@ -333,6 +357,7 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 			aria-placeholder={placeholder}
 			contentEditable
 			suppressContentEditableWarning
+			suppressHydrationWarning
 			data-file-path-input={fileInsertion ? "" : undefined}
 			data-empty={initial.current.value.length === 0 ? "true" : "false"}
 			data-file-path-default={fileInsertion && defaultDropTarget ? "" : undefined}

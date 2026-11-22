@@ -30,3 +30,7 @@ Copy the shape of `scripts/web-teach.mjs`: same instance file, same `result.json
 ## Deleted sessions
 
 `node scripts/web-delete.mjs "$H"` drives the single-session and folder delete dialogs while viewing a session. It also checks the graph's source delete with “delete sessions too” selected. The graph drive holds the browser's DELETE response and visits the cached session while the real server has already deleted it. Each case checks that the open view clears after success, then revisits an older entry with Back and asserts not-found, no transcript and no composer. The receipt `$RUN/head/web-delete.json` records every session API 404 from confirmation through the Back check. The answer keys are #343 and item 4 of `docs/specs/polish-first-load.md`.
+
+## Typing before hydration
+
+`node scripts/web-hydration.mjs "$B"` and then `"$H"` hold every `/_next/static` script request, type into the server-rendered composer while React has not attached, release the scripts, and read the field and the saved draft after hydration. It does that on a session without a saved draft, on a session with one, and on `/chat/new`. Its `observations` diff with `compare.mjs` like the other drives. Run it when a change touches `components/path-input.tsx`, `components/composer.tsx`, `lib/composer-drafts.ts` or how a field gets its first value (#366).
