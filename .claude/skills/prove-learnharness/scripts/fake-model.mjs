@@ -197,7 +197,10 @@ const server = http.createServer((req, res) => {
 				} else finish();
 			};
 			// `delayMs` holds the reply back before it starts (a slow model).
-			if (Number.isSafeInteger(reply.delayMs) && reply.delayMs > 0) setTimeout(stream, reply.delayMs); else stream();
+			if (Number.isSafeInteger(reply.delayMs) && reply.delayMs > 0) {
+				const delay = setTimeout(() => { if (!res.destroyed) stream(); }, reply.delayMs);
+				res.once("close", () => clearTimeout(delay));
+			} else stream();
 		});
 		return;
 	}

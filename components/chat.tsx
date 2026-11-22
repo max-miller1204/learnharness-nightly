@@ -13,7 +13,7 @@ import { usePageSurfaceBoundary, SurfaceRegion } from "./plugin-surfaces";
 import { findSurfaceBoundary } from "./plugin-surface-targets";
 import { scheduleOpeningSubmission } from "./plugin-submission-opening";
 import { activeProblemOccurrenceOf, buildAnswer, toClientQuestion, type PluginSubmission, type PluginSubmissionTarget, type QuestionData } from "@/src/core";
-import { failedCallShowsItsError, validatePluginBuiltinSubmissionAnswer } from "@/src/core";
+import { failedCallShowsItsError, isAbortedCall, validatePluginBuiltinSubmissionAnswer } from "@/src/core";
 import { SessionNotFoundError, visibleQueuedSteers } from "@/components/session-core";
 import { SetupDialog } from "@/components/setup-dialog";
 import { Hint } from "@/components/ui/hint";
@@ -1959,17 +1959,26 @@ export function Chat({
 													phases[mi] === "teach" &&
 													phases[mi - 1] !== "teach" &&
 													teachStepIndex(m.parts) === pi;
-												// A failed tool call. An aborted one is terminal, nothing retries it, so
-												// it stays silent for every tool. Any other failure of a tool that shows
-												// its own error (read, grep, a shared image) falls through to its card.
-												// A call that errored BACK TO THE AGENT (a question, a practice problem,
-												// a plugin problem, a job dispatch: validation failure, malformed args)
-												// is invisible work: the agent reads the error and retries, and its card
-												// would hold hidden answers or draw nothing. Owner ruling 2026-09-26:
-												// surface that retry loop as one quiet line.
+												// A failed tool call. A stopped one (the learner stopped the turn) shows a
+												// quiet "Stopped" line, once per run of stopped calls, never red and never
+												// "Retrying…": nothing retries it. A tool step whose call ran and failed (a
+												// missing file) falls through to its card with the Error section. A call
+												// that errored BACK TO THE AGENT (a question, a practice problem, a plugin
+												// problem, a job dispatch, any call rejected before it ran: validation
+												// failure, malformed args) is invisible work: the agent reads the error and
+												// retries, and its card would hold hidden answers or draw nothing. Owner
+												// ruling 2026-09-26: surface that retry loop as one quiet line.
 												if (part.state === "output-error" && part.type.startsWith("tool-")) {
-													if (part.errorText === "Operation aborted") return null;
-													if (!failedCallShowsItsError(part.type.slice("tool-".length))) {
+													if (isAbortedCall(part.errorText)) {
+														const before = m.parts[pi - 1];
+														if (before?.state === "output-error" && before.type.startsWith("tool-") && isAbortedCall(before.errorText)) return null;
+														return (
+															<SystemLine key={`stopped-${pi}`} testId="tool-stopped">
+																Stopped
+															</SystemLine>
+														);
+													}
+													if (!failedCallShowsItsError(part.type.slice("tool-".length), part.errorText)) {
 														return (
 															<SystemLine key={`retry-${pi}`} testId="tool-retry">
 																Retrying…

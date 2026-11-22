@@ -144,9 +144,7 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 	// Output calls become text rather than tool parts, so read settled
 	// failures up front: a failed call must retain the normal error path.
 	const outputErrors = new Map<string, ToolResultMessage>();
-	const failedCalls = new Set<string>();
 	for (const message of messages) {
-		if (message.role === "toolResult" && message.isError) failedCalls.add(message.toolCallId);
 		if (message.role === "toolResult" && message.toolName === SEND_TO_USER_TOOL && message.isError) {
 			outputErrors.set(message.toolCallId, message);
 		}
@@ -220,7 +218,9 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 		}
 
 		if (role === "toolResult") {
-			applyResultTo(findToolPart(m as LhMessage & ToolResultMessage), m as ToolResultMessage);
+			const paired = findToolPart(m as LhMessage & ToolResultMessage);
+			applyResultTo(paired, m as ToolResultMessage);
+			if (paired?.type === `tool-${PRACTICE_CONCLUDE_TOOL}` && !(m as ToolResultMessage).isError) joinConcludeReveal(paired, messages);
 			continue;
 		}
 
@@ -286,12 +286,14 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 					}
 					// The conclusion's reveal join (owner round, 2026-10-05): the
 					// hero of a conclude card is the modelSolution committed at POSE
-					// time — a record fold, enriched here so the card renders pure.
-					// A conclusion that failed reveals nothing: the problem is still
-					// open and its solution must not reach the learner.
-					if (block.name === PRACTICE_CONCLUDE_TOOL && !failedCalls.has(block.id) && part.state !== "output-error") {
-						part.reveal = modelSolutionForConclude(messages, block.id);
-						part.problemInput = problemInputForConclude(messages, block.id);
+					// time, a record fold enriched here so the card renders pure. Only
+					// a conclusion whose own result settled without an error reveals
+					// it: a stopped, still-running or failed one leaves the problem
+					// open. Live, that is its execution's clean end; in the record,
+					// its paired result (the toolResult branch above).
+					if (block.name === PRACTICE_CONCLUDE_TOOL) {
+						const exec = live?.executions.get(block.id);
+						if (exec && !exec.isError) joinConcludeReveal(part, messages);
 					}
 					rest.push(part);
 				}
@@ -381,6 +383,13 @@ function toolPartOf(
 		part.state = streamingMessage ? "input-streaming" : "input-available";
 	}
 	return part;
+}
+
+/** Join a settled conclusion's reveal and the pose-side fold onto its part. */
+function joinConcludeReveal(part: LhViewPart, messages: readonly LhMessage[]): void {
+	if (!part.toolCallId) return;
+	part.reveal = modelSolutionForConclude(messages, part.toolCallId);
+	part.problemInput = problemInputForConclude(messages, part.toolCallId);
 }
 
 function applyResultTo(part: LhViewPart | undefined, result: ToolResultMessage): void {

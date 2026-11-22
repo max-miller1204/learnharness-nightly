@@ -66,8 +66,22 @@ try {
 	if (!seenPrompt) setupError("the sent prompt is not in the transcript intact", GOAL);
 	// The model must have been asked for the failing read, or there is nothing to judge.
 	const modelLog = () => fs.existsSync(inst.MODEL_LOG) ? fs.readFileSync(inst.MODEL_LOG, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
-	const fired = await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="tool-call-card"] .text-error, [data-testid="tool-retry"]')), { timeout: turnMs }).then(() => true, () => false);
-	if (!fired || !modelLog().some((r) => r.rule === "read-missing-file")) setupError("the fake model never called read", `rules fired: ${modelLog().map((r) => r.rule).join(",")}`);
+	// A rule that never fired is a setup error. A rule that fired but left neither a card nor
+	// a retry line on the page is the product losing the failed call: a FAIL, not a setup error.
+	const ruleFired = async () => {
+		const deadline = Date.now() + turnMs;
+		while (Date.now() < deadline) {
+			if (modelLog().some((r) => r.rule === "read-missing-file")) return true;
+			await new Promise((r) => setTimeout(r, 250));
+		}
+		return false;
+	};
+	if (!(await ruleFired())) setupError("the fake model never called read", `rules fired: ${modelLog().map((r) => r.rule).join(",")}`);
+	const shown = await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="tool-call-card"] .text-error, [data-testid="tool-retry"]')), { timeout: 15_000 }).then(() => true, () => false);
+	if (!shown) {
+		step("the failed read left no card and no retry line on the page", false, JSON.stringify({ text: (await page.evaluate(() => document.body.innerText)).slice(0, 400) }));
+		throw new Error("the failed call vanished");
+	}
 
 	const observe = async (label) => {
 		if (label === "live") {

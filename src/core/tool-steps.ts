@@ -9,14 +9,50 @@ import type { ShowImageDetails } from "./contracts/chat.ts";
 /** The tools shown as a tool step: ToolCallCard's entries in the web's artifact registry. */
 export const TOOL_STEPS: readonly string[] = ["read", "ls", "find", "grep", "list_sessions", "list_propositions"];
 
+/** The input fields each tool step's schema declares (src/agent/tools). A step shows only
+ *  these: a call that got past its schema carries no others, and one that didn't (the
+ *  model's arguments can hold anything) must never put its extras on the page. */
+export const TOOL_STEP_INPUT_FIELDS: Readonly<Record<string, readonly string[]>> = {
+	read: ["path", "offset", "limit"],
+	ls: ["path", "limit"],
+	find: ["pattern", "path", "limit"],
+	grep: ["pattern", "path", "glob", "ignoreCase", "literal", "context", "limit"],
+	list_sessions: [],
+	list_propositions: ["session"],
+	show_image: ["path", "caption"],
+};
+
+/** A step's input as the card shows it: only the tool's declared fields. Other tools' input
+ *  passes through. */
+export function toolStepInput(tool: string, input: unknown): unknown {
+	const fields = TOOL_STEP_INPUT_FIELDS[tool];
+	if (!fields || typeof input !== "object" || input === null || Array.isArray(input)) return input;
+	return Object.fromEntries(Object.entries(input).filter(([key]) => fields.includes(key)));
+}
+
+/** What a stopped call's result says: pi's own wording, and the Node and fetch wordings that
+ *  a tool's own rejection can carry when the run's signal fired mid-call. */
+export function isAbortedCall(errorText: unknown): boolean {
+	return errorText === "Operation aborted" || errorText === "The operation was aborted" || errorText === "This operation was aborted";
+}
+
+/** A failure the agent is told about because its call never ran: pi's schema check (its
+ *  text echoes the received arguments), the tool's own refinement check, an unknown tool,
+ *  a call cut off by the token limit. The agent retries these, so the transcript shows the
+ *  retry line, never the call's arguments. */
+export function isRejectedCall(errorText: unknown): boolean {
+	return typeof errorText === "string" && /^(Validation failed for tool |Invalid tool input for tool |Tool \S+ not found|Tool call ".*" was not executed)/.test(errorText);
+}
+
 /** The tool a failed call is shown for with its own error (the tool step's card, red, with
  *  the Error section): the learner filesystem and graph tools, and a picture the learner
- *  shared. Every other failed call goes back to the agent, which reads the error and retries,
- *  and its card could hold hidden answers or draw nothing for a call that failed (a question,
- *  a practice problem or its verdict, a plugin problem, a job dispatch), so the transcript
- *  shows a quiet retry line for it. */
-export function failedCallShowsItsError(tool: string): boolean {
-	return TOOL_STEPS.includes(tool) || tool === "show_image";
+ *  shared, when the call itself ran and failed (a missing file). Every other failed call, and
+ *  any call that was rejected before it ran, goes back to the agent, which reads the error and
+ *  retries, and its card could hold hidden answers or draw nothing for a call that failed (a
+ *  question, a practice problem or its verdict, a plugin problem, a job dispatch), so the
+ *  transcript shows a quiet retry line for it. */
+export function failedCallShowsItsError(tool: string, errorText?: unknown): boolean {
+	return (TOOL_STEPS.includes(tool) || tool === "show_image") && !isRejectedCall(errorText);
 }
 
 /** Bidirectional controls, which can make a name read backwards (`txt.exe` under a

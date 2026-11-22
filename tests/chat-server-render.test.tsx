@@ -86,7 +86,7 @@ describe("the chat view's server render", () => {
 	const renderFailed = (name: string, args: unknown, text: string, kind: "teach" | "practice" = "teach") => renderCalls(kind, [{ id: "call_fail", name, args, error: text }]);
 	const SECRET = "HIDDEN-MODEL-SOLUTION-7731";
 	const hidden = { statement: "Compute 1 + 1.", mode: "recall", modelSolution: SECRET, payload: { tests: [SECRET] } };
-	for (const [tool, args] of [["read", { path: "missing.md" }], ["grep", { pattern: "x" }], ["ls", {}], ["find", { pattern: "x" }], ["list_sessions", {}], ["list_propositions", { sessionId: "x" }], ["show_image", { path: "missing.png" }]] as const) {
+	for (const [tool, args] of [["read", { path: "missing.md" }], ["grep", { pattern: "x" }], ["ls", {}], ["find", { pattern: "x" }], ["list_sessions", {}], ["list_propositions", { session: "x" }], ["show_image", { path: "missing.png" }]] as const) {
 		it(`shows a failed ${tool} call's card and its error, not Retrying`, () => {
 			const html = renderFailed(tool, args, "ENOENT: no such file or directory, open 'missing.md'");
 			assert.ok(html.includes('data-testid="tool-call-card"'), "the card renders");
@@ -112,13 +112,36 @@ describe("the chat view's server render", () => {
 			assert.ok(!html.includes(SECRET), "the hidden solution never reaches the page");
 		});
 	}
-	it("shows no card and no retry line for an aborted call, whatever the tool", () => {
-		for (const [tool, args] of [["read", { path: "missing.md" }], ["quiz", quiz1], ["pdf", { path: "x.pdf" }], ["coding_problem", hidden]] as const) {
-			const html = renderFailed(tool, args, "Operation aborted");
-			assert.ok(!html.includes('data-testid="tool-call-card"'), `${tool}: no card`);
-			assert.ok(!html.includes('data-testid="tool-retry"'), `${tool}: no retry line`);
-			assert.ok(!html.includes("Operation aborted"), `${tool}: no error text`);
+	it("shows a quiet Stopped line, no card, no retry and no error text, for a stopped call of any tool", () => {
+		for (const text of ["Operation aborted", "The operation was aborted", "This operation was aborted"]) {
+			for (const [tool, args] of [["read", { path: "missing.md" }], ["show_image", { path: "x.png" }], ["visual", { title: "t", code: "x" }], ["quiz", quiz1], ["pdf", { path: "x.pdf" }], ["coding_problem", hidden]] as const) {
+				const html = renderFailed(tool, args, text);
+				assert.ok(html.includes('data-testid="tool-stopped"'), `${tool} (${text}): Stopped shows`);
+				assert.ok(!html.includes('data-testid="tool-call-card"'), `${tool}: no card`);
+				assert.ok(!html.includes('data-testid="tool-retry"'), `${tool}: no retry line`);
+				assert.ok(!html.includes(text), `${tool}: no error text`);
+				assert.ok(!html.includes(SECRET), `${tool}: no hidden solution`);
+			}
 		}
+	});
+	it("shows one Stopped line for several stopped calls in a row", () => {
+		const html = renderCalls("teach", [{ id: "a", name: "read", args: { path: "a" }, error: "Operation aborted" }, { id: "b", name: "read", args: { path: "b" }, error: "Operation aborted" }]);
+		assert.equal(html.split('data-testid="tool-stopped"').length - 1, 1);
+	});
+	it("shows the retry line, never the call's arguments, for a tool step rejected before it ran", () => {
+		const rejected = `Validation failed for tool "read":\n  - path: required\n\nReceived arguments:\n{"modelSolution":"${SECRET}"}`;
+		for (const [tool, args] of [["read", { modelSolution: SECRET }], ["grep", { modelSolution: SECRET }], ["show_image", { modelSolution: SECRET }]] as const) {
+			const html = renderFailed(tool, args, rejected);
+			assert.ok(html.includes('data-testid="tool-retry"'), `${tool}: the retry line shows`);
+			assert.ok(!html.includes('data-testid="tool-call-card"'), `${tool}: no card`);
+			assert.ok(!html.includes(SECRET), `${tool}: the arguments never reach the page`);
+		}
+	});
+	it("shows only the declared input fields on a failed tool step's card", () => {
+		const html = renderFailed("read", { path: "missing.md", modelSolution: SECRET, payload: { tests: [SECRET] } }, "ENOENT: no such file or directory, open 'missing.md'");
+		assert.ok(html.includes('data-testid="tool-call-card"'));
+		assert.ok(html.includes("missing.md"), "the path shows");
+		assert.ok(!html.includes(SECRET), "an extra argument never shows");
 	});
 	it("does not reveal the active problem's solution when its conclusion failed", () => {
 		const html = renderToString(<Shell pathname="/chat/chat_failed"><Chat chatId="chat_failed" title="Failed call" kind="practice" initialMessages={[user, assistant("m_pose", [call("call_pose", "problem", hidden)]), result("m_pose_result", "call_pose", "problem"), assistant("m_end", [call("call_end", "conclude", { outcome: "solved", verdict: "Done." })]), failure("r_end", "call_end", "conclude", "No active problem.")] as never} /></Shell>);
