@@ -8,7 +8,7 @@
 			},
 			"times": 1,
 			"reply": {
-				"text": "The first pair fits, since $4 < 8$. The second does not, since $0.20 > -0.10$. The third fits too: $-0.10 < 0.20$.\n\nA plain line comes first\n$\\rule{1em}{4em}$\n\nAnother plain line\nThen a rule: $\\rule{1em}{4em}$ on this line.\n\nCounting the windows:\n\n$$\\text{output size} = \\underbrace{\\left\\lfloor \\frac{i+2p-k}{s} \\right\\rfloor}_{\\text{moves that fit}} + \\underbrace{1}_{\\text{first window}}.$$\n\nEach move is a step $x \\xrightarrow{\\text{stride } s} x + s$ along the row."
+				"text": "The first pair fits, since $4 < 8$. The second does not, since $0.20 > -0.10$. The third fits too: $-0.10 < 0.20$.\n\nA plain line comes first\n$\\rule{1em}{4em}$\n\nAnother plain line\nThen a rule: $\\rule{1em}{4em}$ on this line.\n\nCounting the windows:\n\n$$\\text{output size} = \\underbrace{\\left\\lfloor \\frac{i+2p-k}{s} \\right\\rfloor}_{\\text{moves that fit}} + \\underbrace{1}_{\\text{first window}}.$$\n\nEach move is a step $x \\xrightarrow{\\text{stride } s} x + s$ along the row.\n\nThe count to keep: $\\fcolorbox{red}{yellow}{4}$ windows."
 			}
 		}
 	],

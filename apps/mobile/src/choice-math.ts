@@ -16,7 +16,8 @@ import type { LiteText } from "mathjax-full/js/adaptors/lite/Text.js";
 import { readContentSpans } from "../../../src/core/content-reader.ts";
 import { indented, repairMathForDisplay } from "../../../src/core/math-delims.ts";
 import { resolveTheme, shiftHex } from "../../../src/core/themes.ts";
-import { flattenSvg, safeMarkup, SVG_NUMBER, type SvgNode } from "./svg-flatten";
+import { parseColor } from "./math-colors";
+import { flattenSvg, frameBorder, safeMarkup, SVG_NUMBER, type SvgNode } from "./svg-flatten";
 
 /** AI-written math is untrusted. `html` makes links, styles and ids; `bussproofs` needs
  * an output that measures boxes; `action` adds event handlers, which the drawing can't
@@ -57,6 +58,9 @@ export const tagClassCount = () => tagClasses.size;
 let adaptor: LiteAdaptor | undefined;
 let mathml: SerializedMmlVisitor | undefined;
 
+/** \fcolorbox's border width: the web's KaTeX draws it at \fboxrule, 0.04em. */
+const FBOX_RULE = "0.04em";
+
 /** A fresh TeX input and document for every equation, so nothing one label defines
  * (\newcommand, \definecolor, \label, tags) reaches another. Set up on first use. */
 function freshDocument() {
@@ -65,7 +69,7 @@ function freshDocument() {
     RegisterHTMLHandler(adaptor);
     mathml = new SerializedMmlVisitor();
   }
-  const document = mathjax.document("", { InputJax: new TeX({ packages: PACKAGES }), OutputJax: new SVG({ fontCache: "none" }) });
+  const document = mathjax.document("", { InputJax: new TeX({ packages: PACKAGES, color: { borderWidth: FBOX_RULE } }), OutputJax: new SVG({ fontCache: "none" }) });
   return { adaptor, document, mathml: mathml as SerializedMmlVisitor };
 }
 
@@ -96,7 +100,9 @@ function trusted(node: MmlNode): boolean {
     // Input may only give the unit class to exactly what gensymb draws with it.
     const unit = name === "class" && value === "mathml-unit" && node.isKind("mi") && GENSYMB_UNITS.includes(tokenText(node))
       && names.every((other) => other === "class" || other === "mathvariant");
-    if (UNTRUSTED_ATTRIBUTES.includes(name) && !unit) return false;
+    // \fcolorbox's border, the only style a drawing may carry (frameBorder).
+    const frame = name === "style" && node.isKind("mpadded") && frameBorder(String(node.attributes.getExplicit(name))) !== undefined;
+    if (UNTRUSTED_ATTRIBUTES.includes(name) && !unit && !frame) return false;
   }
   return node.isToken || children(node).every((child) => !child || trusted(child));
 }
@@ -142,19 +148,9 @@ export function readAloud(node: MmlNode | null): string {
   }
 }
 
-const NAMED_COLORS: Record<string, string> = {
-  black: "#000000", white: "#ffffff", red: "#ff0000", green: "#008000", blue: "#0000ff", yellow: "#ffff00",
-  cyan: "#00ffff", aqua: "#00ffff", magenta: "#ff00ff", fuchsia: "#ff00ff", gray: "#808080", grey: "#808080",
-  silver: "#c0c0c0", maroon: "#800000", olive: "#808000", lime: "#00ff00", teal: "#008080", navy: "#000080",
-  purple: "#800080", orange: "#ffa500", brown: "#a52a2a", pink: "#ffc0cb", violet: "#ee82ee", gold: "#ffd700",
-  indigo: "#4b0082", darkgreen: "#006400", darkblue: "#00008b", darkred: "#8b0000", lightgray: "#d3d3d3", lightgrey: "#d3d3d3",
-};
-
 function luminance(color: string): number | undefined {
-  const named = NAMED_COLORS[color.toLowerCase()] ?? color;
-  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(named)?.[1];
-  if (!hex) return;
-  const full = hex.length === 3 ? [...hex].map((digit) => digit + digit).join("") : hex;
+  const full = parseColor(color)?.hex.slice(1);
+  if (!full) return;
   const [r, g, b] = [0, 2, 4].map((at) => {
     const channel = parseInt(full.slice(at, at + 2), 16) / 255;
     return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
@@ -231,6 +227,65 @@ export function offsetsAsGroups(adaptor: LiteAdaptor, node: LiteElement): boolea
   return true;
 }
 
+/** Each framed box's border written back from its parsed parts (frameBorder), so MathJax
+ *  draws it from nothing but a number, a unit and a color. */
+function framesNormalized(node: MmlNode) {
+  if (node.isKind("mpadded")) {
+    const frame = frameBorder(String(node.attributes?.getExplicit("style") ?? ""));
+    if (frame) node.attributes.set("style", `border: ${frame.width} solid ${frame.color}`);
+  }
+  if (!node.isToken) for (const child of children(node)) if (child) framesNormalized(child);
+}
+
+/** MathJax draws a framed box's border (\fcolorbox) as four polygons in a group that keeps
+ *  the style it came from. Each polygon becomes a path from its parsed points and color, and
+ *  the style goes, so the picture holds only drawing. False when a frame's points or color
+ *  don't parse, so the picture isn't drawn. */
+export function framesAsPaths(adaptor: LiteAdaptor, node: LiteElement): boolean {
+  for (const child of [...adaptor.childNodes(node)]) {
+    if (adaptor.kind(child) === "#text") continue;
+    const element = child as LiteElement;
+    if (!framesAsPaths(adaptor, element)) return false;
+    if (adaptor.kind(element) !== "g" || adaptor.getAttribute(element, "data-mml-node") !== "mpadded") continue;
+    const style = adaptor.getAttribute(element, "style");
+    if (style === null || style === undefined) continue;
+    if (!frameBorder(String(style))) return false;
+    adaptor.removeAttribute(element, "style");
+    for (const side of [...adaptor.childNodes(element)]) {
+      if (adaptor.kind(side) !== "polygon") continue;
+      const polygon = side as LiteElement;
+      // Points are "x,y" pairs apart by spaces; an empty or extra value fails the picture.
+      const points = String(adaptor.getAttribute(polygon, "points") ?? "").trim().split(/\s+/).map((point) => point.split(","));
+      const fill = parseColor(String(adaptor.getAttribute(polygon, "fill") ?? ""));
+      if (points.length < 3 || !fill || !points.every((point) => point.length === 2 && point.every((value) => SVG_NUMBER.test(value) && Number.isFinite(Number(value))))) return false;
+      const pairs = points.map((point) => point.map((value) => String(Number(value))).join(" "));
+      const path = adaptor.node("path", { d: `M${pairs.join("L")}Z`, fill: fill.css, stroke: "none" }) as LiteElement;
+      adaptor.insert(path, polygon);
+      adaptor.remove(polygon);
+    }
+  }
+  return true;
+}
+
+/** Each fill and stroke color MathJax wrote as parseColor writes it (a trimmed, lowercase name,
+ *  lowercase hex or rgb(r,g,b)), the form the contrast check measured: React Native's color
+ *  parser rejects " navy " or "RED" and would leave the shape unfilled. A color parseColor
+ *  doesn't know is only trimmed; it is dropped wherever the contrast check can't measure it. */
+function colorsNormalized(adaptor: LiteAdaptor, node: LiteElement) {
+  for (const child of adaptor.childNodes(node)) {
+    if (adaptor.kind(child) === "#text") continue;
+    const element = child as LiteElement;
+    for (const name of ["fill", "stroke"]) {
+      const value = adaptor.getAttribute(element, name);
+      if (value === null || value === undefined) continue;
+      const text = String(value).trim();
+      if (/^(?:currentColor|none)$/.test(text)) continue;
+      adaptor.setAttribute(element, name, parseColor(text)?.css ?? text);
+    }
+    colorsNormalized(adaptor, element);
+  }
+}
+
 /** The color of each visible glyph or rule and the box drawn behind it, if any. */
 function inks(node: MmlNode, color: string | undefined, behind: string | undefined, found: { color?: string; behind?: string }[]) {
   if (node.isKind("mphantom")) return found;
@@ -241,6 +296,9 @@ function inks(node: MmlNode, color: string | undefined, behind: string | undefin
     found.push({ color: rule === "currentColor" ? undefined : rule, behind });
     return found;
   }
+  // A framed box's border is ink against what is behind the box.
+  const frame = node.isKind("mpadded") ? frameBorder(String(explicit(["style"]) ?? "")) : undefined;
+  if (frame) found.push({ color: frame.color, behind });
   color = (explicit(["mathcolor", "color"]) as string | undefined) ?? color;
   behind = (explicit(["mathbackground", "background"]) as string | undefined) ?? behind;
   if (node.isToken) {
@@ -292,6 +350,7 @@ export function drawTex(tex: string, display: boolean): DrawnMath | undefined {
     item.convert(document, STATE.COMPILED);
     const root = item.root;
     if (!trusted(root)) return;
+    framesNormalized(root);
     rulesInTextColor(root);
     item.convert(document);
     const svg = adaptor.firstChild(item.typesetRoot) as LiteElement;
@@ -299,6 +358,8 @@ export function drawTex(tex: string, display: boolean): DrawnMath | undefined {
     for (const name of ["width", "height", "style"]) adaptor.removeAttribute(svg, name);
     rulesAsInk(adaptor, svg);
     if (!offsetsAsGroups(adaptor, svg)) return;
+    if (!framesAsPaths(adaptor, svg)) return;
+    colorsNormalized(adaptor, svg);
     const original = adaptor.outerHTML(svg);
     if (/data-mml-node="merror"|data-mjx-error/.test(original) || /\s(?:style|id)=/.test(original)) return;
     // The same picture without its groups draws far faster (svg-flatten.ts).
