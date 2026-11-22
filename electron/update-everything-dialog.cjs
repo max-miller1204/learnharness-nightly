@@ -10,7 +10,8 @@
  * (update-everything-dialog-preload.cjs) and a channel main answers only for this view's
  * main frame at this page. While it is up the page takes no keys. Its Update counts only from
  * UPDATE_ARM_MS after the dialog shows, so a click the page lured to where Update appears
- * doesn't start a run.
+ * doesn't start a run. Its answer says whether a key closed it, as T3 returns focus to the
+ * trigger only then (UpdateEverythingDialog.tsx:78-82, `finalFocus` on a keyboard close).
  */
 
 const path = require("node:path");
@@ -45,10 +46,11 @@ function createUpdateEverythingDialog({ ipcMain, WebContentsView, session, theme
 		dialog.finish(action === "update");
 	});
 
-	/** Shows `plan` over `win` until the user answers: true only for Update. One at a time; a
-	 *  window that closes, or a view that goes away, answers no. */
+	/** Shows `plan` over `win` until the user answers: { update, keyboard }, `update` true only for
+	 *  Update and `keyboard` when a key press, not a click, closed it. One at a time; a window that
+	 *  closes, or a view that goes away, answers no. */
 	function ask(win, plan) {
-		if (open || !win || win.isDestroyed()) return Promise.resolve(false);
+		if (open || !win || win.isDestroyed()) return Promise.resolve({ update: false, keyboard: false });
 		return new Promise((resolve) => {
 			const view = new WebContentsView({
 				webPreferences: {
@@ -61,6 +63,12 @@ function createUpdateEverythingDialog({ ipcMain, WebContentsView, session, theme
 			contents.on("will-navigate", (event) => event.preventDefault());
 			contents.setWindowOpenHandler(() => ({ action: "deny" }));
 			contents.on("will-attach-webview", (event) => event.preventDefault());
+			// What the user last pressed in the dialog, a key or the pointer: main's own record.
+			let byKey = false;
+			contents.on("input-event", (_event, input) => {
+				if (input.type === "rawKeyDown" || input.type === "keyDown") byKey = true;
+				else if (input.type === "mouseDown" || input.type === "touchStart" || input.type === "gestureTapDown") byKey = false;
+			});
 			// Clear behind the dialog's own dim backdrop: the page shows through it.
 			view.setBackgroundColor("#00000000");
 			const fit = () => {
@@ -90,13 +98,14 @@ function createUpdateEverythingDialog({ ipcMain, WebContentsView, session, theme
 					win.webContents.focus();
 				}
 				if (!contents.isDestroyed()) contents.close();
-				resolve(answer);
+				resolve({ update: answer, keyboard: answered && byKey });
 			};
+			let answered = false;
 			const closed = () => finish(false);
 			win.once("closed", closed);
 			contents.once("destroyed", () => finish(false));
 			contents.once("render-process-gone", () => finish(false));
-			open = { contents, plan, finish, shownAt: null };
+			open = { contents, plan, finish: (answer) => { answered = true; finish(answer); }, shownAt: null };
 			void contents.loadFile(PAGE, { query: { mode: themeMode() === "light" ? "light" : "dark" } }).then(focus, () => finish(false));
 		});
 	}

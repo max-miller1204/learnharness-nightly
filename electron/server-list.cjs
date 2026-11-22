@@ -436,7 +436,8 @@ async function createServerList({
 			updating = state;
 		},
 		/** The run ended without a restart: show its problem in the list (kind "retry" or "pair"),
-		 *  or show the server's new page after Later. `version` is the one the server is now on. */
+		 *  or show the server's new page after Later. `version` is the one the server is now on.
+		 *  Resolves true when this reloaded the page (Update everything then waits for the new one). */
 		async endUpdate(origin, problem, { version } = {}) {
 			// Only the covered window of the server the run moved: after a switch, the
 			// current window belongs to another server and stays.
@@ -458,12 +459,15 @@ async function createServerList({
 			if (covered) {
 				covered.cover.reveal();
 				covered.win.focus();
-				if (covered.reloaded) return;
+				if (covered.reloaded) return false;
 				if (typeof version === "string" && EXACT_VERSION.test(version)) {
 					await covered.win.webContents.executeJavaScript(claimReloadScript(version)).catch(() => {});
 				}
-				if (!covered.win.isDestroyed()) covered.win.webContents.reload();
+				if (covered.win.isDestroyed()) return false;
+				covered.win.webContents.reload();
+				return true;
 			}
+			return false;
 		},
 		reopen() {
 			if (ghosting) {

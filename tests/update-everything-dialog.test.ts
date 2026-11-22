@@ -95,14 +95,14 @@ test("main's dialog: its own view over the window, the page's keys blocked, the 
 	frame.url = `${PAGE_URL}?mode=dark#x`;
 	await assert.rejects(e.handle({ sender: view.webContents, senderFrame: frame }, "update"), /Untrusted dialog request/, "a URL with a hash");
 	frame.url = `${PAGE_URL}?mode=dark`;
-	assert.deepEqual(await Promise.all([e.dialog.ask(e.win, PLAN)]), [false], "one at a time");
+	assert.deepEqual(await Promise.all([e.dialog.ask(e.win, PLAN)]), [{ update: false, keyboard: false }], "one at a time");
 	// Update counts only UPDATE_ARM_MS after the dialog showed (its plan was served).
 	e.clock.now += UPDATE_ARM_MS - 1;
 	await e.handle({ sender: view.webContents, senderFrame: frame }, "update");
 	assert.equal(e.children.size, 1, "too early: ignored, the dialog stays");
 	e.clock.now += 1;
 	await e.handle({ sender: view.webContents, senderFrame: frame }, "update");
-	assert.equal(await answer, true, "Update is the yes");
+	assert.deepEqual(await answer, { update: true, keyboard: false }, "Update is the yes, here not from a key");
 	assert.equal(e.children.size, 0, "the view is gone");
 	assert.equal(e.page.listenerCount("before-input-event"), 0, "the page takes keys again");
 	assert.equal(e.win.listenerCount("focus"), 0, "no focus hook left");
@@ -118,22 +118,22 @@ test("Cancel, a closed window or a gone view is a no", async () => {
 	const answered = cancel.dialog.ask(cancel.win, PLAN);
 	await tick();
 	await cancel.handle({ sender: cancel.views[0]!.webContents, senderFrame: cancel.views[0]!.webContents.mainFrame }, "cancel");
-	assert.equal(await answered, false);
+	assert.deepEqual(await answered, { update: false, keyboard: false });
 	const closed = electron();
 	const closing = closed.dialog.ask(closed.win, PLAN);
 	await tick();
 	closed.win.close();
-	assert.equal(await closing, false);
+	assert.deepEqual(await closing, { update: false, keyboard: false });
 	const gone = electron();
 	const going = gone.dialog.ask(gone.win, PLAN);
 	await tick();
 	gone.views[0]!.webContents.close();
-	assert.equal(await going, false);
+	assert.deepEqual(await going, { update: false, keyboard: false });
 	const crashed = electron();
 	const crashing = crashed.dialog.ask(crashed.win, PLAN);
 	await tick();
 	crashed.views[0]!.webContents.emit("render-process-gone", {}, { reason: "crashed" });
-	assert.equal(await crashing, false, "a crashed dialog is a no");
+	assert.deepEqual(await crashing, { update: false, keyboard: false }, "a crashed dialog is a no");
 	assert.equal(crashed.children.size, 0);
 	// Every dialog shares the one partition.
 	const twice = electron();
@@ -143,7 +143,36 @@ test("Cancel, a closed window or a gone view is a no", async () => {
 	void twice.dialog.ask(twice.win, PLAN);
 	await tick();
 	assert.deepEqual(twice.partitions, [PARTITION, PARTITION]);
-	assert.equal(await gone.dialog.ask(null, PLAN), false, "no window, no dialog");
+	assert.deepEqual(await gone.dialog.ask(null, PLAN), { update: false, keyboard: false }, "no window, no dialog");
+});
+
+test("the answer says whether a key closed the dialog (T3 returns focus to the trigger only then)", async () => {
+	const keyed = electron();
+	const byKey = keyed.dialog.ask(keyed.win, PLAN);
+	await tick();
+	const contents = keyed.views[0]!.webContents;
+	const own = { sender: contents, senderFrame: contents.mainFrame };
+	contents.emit("input-event", {}, { type: "mouseDown" });
+	contents.emit("input-event", {}, { type: "rawKeyDown" });
+	await keyed.handle(own, "cancel");
+	assert.deepEqual(await byKey, { update: false, keyboard: true }, "Escape or Enter on Cancel");
+	const clicked = electron();
+	const byClick = clicked.dialog.ask(clicked.win, PLAN);
+	await tick();
+	const view = clicked.views[0]!.webContents;
+	await clicked.handle({ sender: view, senderFrame: view.mainFrame }, "plan");
+	view.emit("input-event", {}, { type: "rawKeyDown" });
+	view.emit("input-event", {}, { type: "mouseDown" });
+	clicked.clock.now += UPDATE_ARM_MS;
+	await clicked.handle({ sender: view, senderFrame: view.mainFrame }, "update");
+	assert.deepEqual(await byClick, { update: true, keyboard: false }, "a click on Update");
+	// A window closed under it is no key's answer, whatever was pressed last.
+	const closed = electron();
+	const closing = closed.dialog.ask(closed.win, PLAN);
+	await tick();
+	closed.views[0]!.webContents.emit("input-event", {}, { type: "keyDown" });
+	closed.win.close();
+	assert.deepEqual(await closing, { update: false, keyboard: false });
 });
 
 const restores: Array<() => void> = [];
