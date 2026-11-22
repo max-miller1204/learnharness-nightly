@@ -3,6 +3,7 @@
 import { createContext, Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { SavedAttachmentChips, useAttachmentDraft } from "./attachment-draft";
+import { flushComposerDrafts, readComposerDraft, writeComposerDraft } from "@/lib/composer-drafts";
 import { useChatSession } from "@/components/session";
 import { usePlugins } from "./plugins";
 import { PluginSubmissionRunner, SubmissionModelEpoch, type SubmissionAttempt } from "./plugin-submission-runner";
@@ -694,13 +695,25 @@ export function Chat({
 	 * resets still bump a revision so the local field can sync. */
 	const textRef = useRef("");
 	const composerEditRevision = useRef(0);
+	// Every change is also the session's saved draft (lib/composer-drafts.ts,
+	// #347), so it survives navigating away and back; sending empties it.
 	const applyText = useCallback((v: string) => {
 		textRef.current = v; composerEditRevision.current++;
 		setComposerDraftRevision((revision) => revision + 1);
-	}, []);
+		writeComposerDraft(chatId, v);
+	}, [chatId]);
 	const recordComposerText = useCallback((v: string) => {
 		textRef.current = v; composerEditRevision.current++;
-	}, []);
+		writeComposerDraft(chatId, v);
+	}, [chatId]);
+	// Restore the saved draft after mount (the server render has no storage),
+	// unless the composer already has text or an opening prompt is on its way.
+	// Leaving the session saves any write still pending.
+	useEffect(() => {
+		const saved = readComposerDraft(chatId);
+		if (saved && textRef.current === "" && !initialPrompt) applyText(saved);
+		return () => flushComposerDrafts();
+	}, [chatId, initialPrompt, applyText]);
 	// Saved slot completeness is live, but the session's selected route
 	// comes from its own ordinary model control, never today's Strong pin.
 	const { catalog, configured, zeroKeys } = useModelSetup(initialConfigured);

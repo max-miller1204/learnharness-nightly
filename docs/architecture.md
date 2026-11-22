@@ -53,7 +53,7 @@ Settlement persists new native messages, plan snapshots, and usage, including pa
 
 Disconnecting a browser detaches a view, not the agent. Explicit abort is separate. [`session-core.ts`](../components/session-core.ts) owns reattachment, bounded 409 recovery, and adoption of canonical state. One recovery attachment is allowed after premature EOF/read failure; repeated transport failure shows an error.
 
-Question drafts survive optimistic unmount in memory. Uncertain submissions reconcile the saved record and running state before resending, scoped to the same question occurrence. Provider-response retry is explicit: it preserves failed attempts on disk while omitting the eligible failed tail from temporary model context. It is not mount-time replay or automatic retry of arbitrary failures.
+Question drafts survive optimistic unmount in memory. The composer's unsent text is saved per session in browser storage ([`composer-drafts.ts`](../lib/composer-drafts.ts), after T3 Code's composer draft store), so it survives navigating away and back and a reload; sending the message or deleting the session clears it, and an unreadable stored value reads as no draft. Uncertain submissions reconcile the saved record and running state before resending, scoped to the same question occurrence. Provider-response retry is explicit: it preserves failed attempts on disk while omitting the eligible failed tail from temporary model context. It is not mount-time replay or automatic retry of arbitrary failures.
 
 ### Side questions
 
