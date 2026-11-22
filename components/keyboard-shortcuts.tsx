@@ -41,6 +41,7 @@ import { dispatchFocusedPluginShortcut, hasLegacyInteractionForeground, isIntera
 import { useSettingsDialog } from "@/components/settings/settings-dialog-context";
 import { usePlugins } from "./plugins";
 import { dispatchPluginActionShortcut, pluginShortcutScopeLabel, usePluginShortcutRows } from "./plugin-shortcuts";
+import { rememberUsageFocus } from "./usage-keyboard";
 
 // Re-exported for the contract pin (tests/keyboard-toggle-sidebar.test.ts):
 // the dispatcher composes event names through the ONE helper — a second
@@ -148,6 +149,17 @@ export function KeyboardShortcuts() {
 					e.preventDefault();
 					window.dispatchEvent(new CustomEvent(kbdEventForAction(action)));
 					break;
+				case "focus-usage": {
+					const active = document.activeElement as HTMLElement | null;
+					if (e.repeat || e.isComposing || e.getModifierState?.("AltGraph") ||
+						(controller && controller.getEventOwner(e) !== controller.getTopLayer()) ||
+						active?.closest('[role="dialog"], [role="alertdialog"], dialog[open], [data-testid="plugin-question-dock"], [data-testid="plugin-problem-dock"]') ||
+						(!controller && hasLegacyInteractionForeground(document, active))) break;
+					const target = Array.from(document.querySelectorAll<HTMLElement>("[data-lh-usage-control]"))
+						.find((element) => isInteractionScopeEligible(element, controller));
+					if (target && target !== active) { e.preventDefault(); rememberUsageFocus(target, active); target.focus(); }
+					break;
+				}
 				default:
 					if (dispatchFocusedPluginShortcut(action, controller)) break;
 					// Core dictation is a background-page service, not a modal

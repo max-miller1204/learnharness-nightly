@@ -6,6 +6,7 @@ import { formatTokens, formatUsd, planCostLabel, prettyModel } from "@/component
 import { ModelControl, catalogLimits, useModelCatalog } from "@/components/model-picker";
 import { usePopoverDismiss } from "@/components/popover-dismiss";
 import { INTERACTION_LAYER_Z_BASE } from "@/components/host-dialog";
+import { useUsageKeyboard } from "@/components/usage-keyboard";
 
 export function formatContextMeasurement(tokens: number | null, limit: number | null): string {
 	const numerator = tokens === null ? "?" : formatTokens(tokens);
@@ -80,7 +81,9 @@ export function StatsBar({
 	// stats round 1): close on any pointerdown outside the bar or on Escape.
 	const barRef = useRef<HTMLDivElement>(null);
 	const panelRef = useRef<HTMLDivElement>(null);
-	const popupLayer = usePopoverDismiss(barRef, open && !!(chatId || turns.length), () => setOpen(false), { layerRootRef: panelRef });
+	const toggleRef = useRef<HTMLButtonElement>(null);
+	const keyboard = useUsageKeyboard(toggleRef, panelRef, open, setOpen);
+	const popupLayer = usePopoverDismiss(barRef, open && !!(chatId || turns.length), (reason) => { setOpen(false); if (reason === "escape") toggleRef.current?.focus(); }, { layerRootRef: panelRef });
 	// The picker reports its effective selection. CLI windows are session-
 	// scoped; unknown metadata always means usage-only, never a guessed maximum.
 	const { catalog } = useModelCatalog();
@@ -117,15 +120,17 @@ export function StatsBar({
 			{/* The left side: the session-data summary — only once a session
 			    exists (turns). Pre-chat renders nothing (see the header). */}
 			{(chatId || turns.length > 0) && (
-			<div ref={barRef} className="relative">
+			<div ref={barRef} data-lh-usage-scope="" data-lh-usage-open={open ? "" : undefined} className="relative" onKeyDown={keyboard.onKeyDown}>
 				{/* No tooltip — the numbers describe themselves and the popover
 			    speaks on click (owner, subtlety round 2026-09-25). */}
 			<button
 				type="button"
-				onClick={() => setOpen((o) => !o)}
+				ref={toggleRef}
+				onClick={keyboard.onClick}
 				aria-expanded={open}
 				data-testid="stats-summary"
-				className="flex items-center gap-1.5 tabular-nums transition-colors hover:text-foreground"
+				data-lh-usage-control=""
+				className="flex items-center gap-1.5 rounded px-1 py-0.5 tabular-nums transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
 			>
 				<span data-testid="stats-context">
 					{contextLabel}
@@ -163,7 +168,7 @@ export function StatsBar({
 									<span className="tabular-nums text-card-foreground">{(cacheHitRate * 100).toFixed(1)}%</span>
 								</div>
 							)}
-							{providers.includes("ChatGPT") && <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer" className="underline underline-offset-2">Manage ChatGPT usage</a>}
+							{providers.includes("ChatGPT") && <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer" className="rounded underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-ring">Manage ChatGPT usage</a>}
 							{unpriced > 0 && (
 								<div className="flex justify-between gap-2">
 									<span>Unpriced turns</span>

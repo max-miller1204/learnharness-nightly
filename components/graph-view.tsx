@@ -76,6 +76,7 @@ import { planCostLabel } from "@/components/usage-format";
 import { CLUSTER_LIGHTNESS, GraphCanvasRenderer, type GraphRenderSettings } from "./graph-canvas.ts";
 import { useAppearance } from "@/components/settings/appearance";
 import { usePopoverDismiss } from "@/components/popover-dismiss";
+import { useUsageKeyboard } from "@/components/usage-keyboard";
 import { INTERACTION_LAYER_Z_BASE } from "@/components/host-dialog";
 import { useActivity } from "@/components/activity-dock";
 import { useServerEvent, useServerResync } from "@/components/server-events";
@@ -327,19 +328,24 @@ export function GraphCostControl({ costs }: { costs: GraphCostSummary }) {
 	// wraps button + panel, so the toggle itself keeps working.
 	const rootRef = useRef<HTMLDivElement>(null);
 	const panelRef = useRef<HTMLDivElement>(null);
-	const popupLayer = usePopoverDismiss(rootRef, open, () => setOpen(false), { layerRootRef: panelRef });
+	const toggleRef = useRef<HTMLButtonElement>(null);
+	const keyboard = useUsageKeyboard(toggleRef, panelRef, open, setOpen);
+	const popupLayer = usePopoverDismiss(rootRef, open, (reason) => { setOpen(false); if (reason === "escape") toggleRef.current?.focus(); }, { layerRootRef: panelRef });
 	return (
-		<div ref={rootRef} className="relative">
+		<div ref={rootRef} data-lh-usage-scope="" data-lh-usage-open={open ? "" : undefined} className="relative" onKeyDown={keyboard.onKeyDown}>
 			<Hint
 				// Trimmed (owner, subtlety round 2026-09-25).
 				label="Graph costs — click for details"
+				action="focus-usage"
 				side="bottom"
 			>
 				<button
+				ref={toggleRef}
 				type="button"
 				aria-expanded={open}
-				onClick={() => setOpen((o) => !o)}
-				className={`rounded-lg px-2 py-1 text-xs tabular-nums transition-colors hover:bg-accent ${
+				data-lh-usage-control=""
+				onClick={keyboard.onClick}
+				className={`rounded-lg px-2 py-1 text-xs tabular-nums transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${
 					open ? "text-foreground" : "text-muted-foreground hover:text-foreground"
 				}`}
 			>
