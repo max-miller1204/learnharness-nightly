@@ -3,7 +3,7 @@ import { isAttachmentId } from "../core/attachments.ts";
 import { titleFromPrompt } from "../core/contracts.ts";
 import { ChatInputError, parseChatInput } from "../core/input-events.ts";
 import { folderFileCountError, MAX_FOLDER_FILES } from "../core/attachment-folders.ts";
-import { AttachmentError, discardAttachment, receiveAttachment, renewAttachmentFolder, reserveAttachment, reserveAttachmentFolder } from "../store/attachments.ts";
+import { AttachmentError, attachmentSendable, discardAttachment, receiveAttachment, renewAttachmentFolder, reserveAttachment, reserveAttachmentFolder } from "../store/attachments.ts";
 import { newChatRecord } from "../store/chats.ts";
 import { assertAttachmentOwner, attachmentOperation, attachmentSubmission, openingAttachmentChatId } from "./attachment-submissions.ts";
 import { initialChatSettings, initialGraphContext } from "./chat-creation.ts";
@@ -56,6 +56,20 @@ export function discardAttachmentRequest(request: Request, params: Promise<{ id:
 		const { id } = await params;
 		assertAttachmentOwner(request, owner);
 		discardAttachment(id, owner);
+		return new Response(null, { status: 204 });
+	});
+}
+
+/** 204 when a send could claim the pending file or folder now, else 404 (also
+ * for another pairing's or another chat's), so a restored draft can drop a
+ * chip whose upload expired or was removed. */
+export function attachmentStatusRequest(request: Request, params: Promise<{ id: string }>) {
+	return attachmentOperation(request, async owner => {
+		const { id } = await params;
+		assertAttachmentOwner(request, owner);
+		const chatId = new URL(request.url).searchParams.get("chatId");
+		if (!chatId || !/^[\w-]+$/.test(chatId)) throw new AttachmentError(400, "Provide the chat ID.");
+		if (!attachmentSendable(id, owner, { chatId })) throw new AttachmentError(404, "Pending attachment not found.");
 		return new Response(null, { status: 204 });
 	});
 }

@@ -14,6 +14,7 @@ A paired browser, or the desktop app connected to a remote server, uploads files
 - `renew`: Retry, or an upload that outlives its 10-minute grants, calls `POST /api/attachments/:id` and re-sends only the files that have not arrived.
 - `send`: the folder id rides in `attachmentUploadIds`; the saved message carries `{ id, name, fileCount }` and the chip reads "Notes · 3 files" after reload.
 - `agent-browse`: `ls attachment:<id>`, `find`, `grep` and `read attachment:<id>/<path>` work in restricted File access mode with no allowed folders, and no output or error contains the storage path.
+- `draft-back`: an unsent upload comes back after leaving the session and pressing Back or reloading (`lib/attachment-drafts.ts`, stored per session under `lh:composer-attachments:v1:<chatId>`). A restored chip is checked with `GET /api/attachments/:id?chatId=` (capability `attachment-status-v1`) and drops quietly on 404. An upload still running when the learner leaves is cancelled and released.
 - `cleanup`: deleting the chat removes `claimed/<id>/` on the next sweep; an unsent folder expires with its files.
 
 ## How to get to it
@@ -49,6 +50,8 @@ $RUN/fixtures/Notes/sub/Thumbs.db       (skipped)
    - Remove the chip mid-upload: no further PUTs start, then one `DELETE /api/attachments/:id`, and `pending/` loses the folder and its files.
    - From a second chat, `read attachment:<id>/week1/intro.md` is refused as not part of the current chat; `read attachment:<id>/../x` is "Path not found"; `ls` of the claimed directory path is a protected location.
    - Delete the chat: after the sweep `claimed/<id>/` is gone.
+
+7. Unsent attachment and Back (`draft-back`): `node scripts/web-attachment-draft.mjs "$H"` attaches in session A, goes to session B and presses Back (chip restored, status check 204, sends with the attachment), reloads with a finished upload, leaves and reloads during a throttled upload (CDP `Network.emulateNetworkConditions`: nothing stored, transfer aborted, reservation released, no second grant), deletes the server's pending files while away (the chip drops with no alert and the text still sends) and loads corrupt stored state. The base has no status route: run it there and the Back step fails, which is the bug.
 
 Evidence: screenshots of the chip, skipped line and alerts, the network log of attachment requests, `model-requests.jsonl`, the saved `data/chats/<id>.json` attachments entry and a listing of `claimed/<id>/`.
 

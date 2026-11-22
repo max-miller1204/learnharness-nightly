@@ -2,9 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { FolderIcon, PaperclipIcon } from "lucide-react";
-import { ATTACHMENT_FOLDERS, ATTACHMENT_UPLOADS, hasCapability, PROTOCOL_ROUTES, type AttachmentFolderGrantResponse, type AttachmentGrantResponse, type AttachmentSend, type AttachmentTarget, type ServerInfo } from "@/src/core";
+import { ATTACHMENT_FOLDERS, ATTACHMENT_STATUS, ATTACHMENT_UPLOADS, hasCapability, PROTOCOL_ROUTES, type AttachmentFolderGrantResponse, type AttachmentGrantResponse, type AttachmentSend, type AttachmentTarget, type ServerInfo } from "@/src/core";
 import { attachmentLimitError, ATTACHMENT_UNAVAILABLE, folderFilesAsAttachments, folderLimitError, folderPathError, randomUuid, skippedFolderNotice } from "@/src/core";
 import type { AttachmentReference } from "@/src/core";
+import { dropStoredAttachments, onStoredAttachmentsDropped, readStoredAttachments, storeAttachment, storedLimitInputs, type StoredAttachment } from "@/lib/attachment-drafts";
 import { droppedAttachments, folderFromFiles, type FolderPick, type PickedFolder } from "./attachment-folder";
 
 /** Dispatched by the page drop zone on an uploading composer's chips. */
@@ -16,6 +17,8 @@ interface DraftFile {
 	name: string;
 	file?: File;
 	folder?: PickedFolder;
+	/** A finished upload restored from the session's draft: no bytes here, only what its chip and the limits need. */
+	stored?: StoredAttachment;
 	/** `deadline` is the upload start deadline on this device's clock. */
 	grant?: { id: string; deadline: number; uploadUrl?: string };
 	uploads: Set<XMLHttpRequest>;
@@ -34,6 +37,7 @@ function folderManifest(folder: PickedFolder) {
 function limitInputs(rows: readonly DraftFile[]) {
 	return rows.flatMap(row => row.folder
 		? folderFilesAsAttachments(folderManifest(row.folder))
+		: row.stored ? storedLimitInputs(row.stored)
 		: [{ name: row.file!.name, mimeType: row.file!.type, size: row.file!.size }]);
 }
 
@@ -50,6 +54,18 @@ async function deleteGrant(id: string): Promise<void> {
 	const response = await fetch(PROTOCOL_ROUTES.removeAttachment(id), { method: "DELETE" });
 	if (!response.ok && response.status !== 404) throw new Error(await attachmentResponseError(response));
 }
+
+/** Wait for running puts to settle before asking the server to release the
+ * reservation. A released folder starts no further files. */
+function releaseGrant(row: DraftFile): void {
+	void (async () => {
+		await row.work;
+		if (row.grant) await deleteGrant(row.grant.id);
+	})().catch(() => { /* The server also expires abandoned grants. */ });
+}
+
+/** The number of files in a folder row; undefined for a single file. */
+const folderCount = (row: DraftFile): number | undefined => row.folder?.files.length ?? row.stored?.files?.length;
 
 function putBytes(row: DraftFile, file: File, url: string, progress: (loaded: number) => void): Promise<void> {
 	return new Promise((resolve, reject) => {
@@ -94,6 +110,7 @@ async function postGrant<T extends { expiresAt: number }>(url: string, body?: un
 export function useAttachmentDraft(chatId?: string) {
 	const [enabled, setEnabled] = useState(false);
 	const [folders, setFolders] = useState(false);
+	const [statusChecks, setStatusChecks] = useState(false);
 	const [validation, setValidation] = useState<string>();
 	const [, redraw] = useState(0);
 	const files = useRef<DraftFile[]>([]);
@@ -109,16 +126,31 @@ export function useAttachmentDraft(chatId?: string) {
 				if (!info || !Array.isArray(info.capabilities)) return;
 				setEnabled(hasCapability(info, ATTACHMENT_UPLOADS));
 				setFolders(hasCapability(info, ATTACHMENT_FOLDERS));
+				setStatusChecks(hasCapability(info, ATTACHMENT_STATUS));
 			})
 			.catch(() => {});
 		return () => {
 			controller.abort();
-			for (const row of files.current) for (const upload of row.uploads) upload.abort();
+			// Leaving with an upload still running cancels it and releases its
+			// reservation: it is never half kept. Finished uploads stay with the
+			// session's draft (lib/attachment-drafts.ts), and Back restores them.
+			const leaving = files.current.filter(row => !row.ready);
+			files.current = files.current.filter(row => row.ready);
+			for (const row of leaving) {
+				for (const upload of row.uploads) upload.abort();
+				releaseGrant(row);
+			}
 		};
 	}, []);
 
 	const target = (): AttachmentTarget => chatId ? { chatId } : { draftId: openingDraft.current ??= randomUuid() };
 	const live = (row: DraftFile) => files.current.includes(row);
+	/** Keep a finished upload with the session's draft. */
+	const keep = (row: DraftFile) => {
+		if (!chatId || !row.grant) return;
+		const base = { id: row.grant.id, name: row.name, at: Date.now() };
+		storeAttachment(chatId, row.folder ? { ...base, files: folderManifest(row.folder) } : { ...base, mimeType: row.file!.type, size: row.file!.size });
+	};
 	const uploadFile = async (row: DraftFile) => {
 		if (!row.grant?.uploadUrl || row.grant.deadline <= Date.now()) {
 			if (row.grant) {
@@ -191,7 +223,10 @@ export function useAttachmentDraft(chatId?: string) {
 		row.progress = 0;
 		row.work = (async () => {
 			try {
-				if (await (row.folder ? uploadFolder(row) : uploadFile(row))) row.ready = true;
+				if (await (row.folder ? uploadFolder(row) : uploadFile(row))) {
+					row.ready = true;
+					if (live(row)) keep(row);
+				}
 			} catch (error) {
 				row.error = error instanceof Error ? error.message : "Upload failed. Try again.";
 			} finally {
@@ -233,12 +268,8 @@ export function useAttachmentDraft(chatId?: string) {
 	};
 	const remove = (row: DraftFile) => {
 		files.current = files.current.filter(file => file !== row);
-		// Wait for running puts to settle before asking the server to release
-		// the reservation. A removed folder starts no further files.
-		void (async () => {
-			await row.work;
-			if (row.grant) await deleteGrant(row.grant.id);
-		})().catch(() => { /* The server also expires abandoned grants. */ });
+		if (chatId && row.grant) dropStoredAttachments(chatId, [row.grant.id]);
+		releaseGrant(row);
 		setValidation(undefined);
 		changed();
 	};
@@ -256,9 +287,42 @@ export function useAttachmentDraft(chatId?: string) {
 	};
 	const accept = (send: AttachmentSend) => {
 		files.current = files.current.filter(row => !row.grant || !send.attachmentUploadIds.includes(row.grant.id));
+		if (chatId) dropStoredAttachments(chatId, send.attachmentUploadIds);
 		setValidation(undefined);
 		changed();
 	};
+	// Restore the session's finished uploads when Back returns to it. Each
+	// chip shows at once and Send waits for the server's answer, like for a
+	// running upload: a 404 (expired, removed, sent meanwhile) drops the chip
+	// quietly and a send waiting on it stops, keeping the draft. Any other
+	// failure keeps the chip; the send checks it again.
+	const restorable = enabled && statusChecks;
+	useEffect(() => {
+		if (!chatId || !restorable) return;
+		const restored = readStoredAttachments(chatId)
+			.filter(stored => !files.current.some(row => row.grant?.id === stored.id))
+			.map((stored): DraftFile => ({ key: randomUuid(), name: stored.name, stored, grant: { id: stored.id, deadline: 0 }, uploads: new Set(), ready: true, progress: 100 }));
+		if (!restored.length) return;
+		files.current = [...files.current, ...restored];
+		for (const row of restored) {
+			row.work = (async () => {
+				try {
+					const response = await fetch(PROTOCOL_ROUTES.attachmentStatus(row.grant!.id, chatId));
+					if (response.status !== 404 || !live(row)) return;
+					files.current = files.current.filter(file => file !== row);
+					dropStoredAttachments(chatId, [row.grant!.id]);
+				} catch { /* Offline: keep the chip. */ }
+				finally { row.work = undefined; changed(); }
+			})();
+		}
+		changed();
+	}, [chatId, restorable]);
+	// A send accepted after the learner left and came back dropped these.
+	useEffect(() => onStoredAttachmentsDropped((id, ids) => {
+		if (id !== chatId || !files.current.some(row => row.grant && ids.includes(row.grant.id))) return;
+		files.current = files.current.filter(row => !row.grant || !ids.includes(row.grant.id));
+		changed();
+	}), [chatId]);
 	return {
 		enabled, folders: enabled && folders, files: files.current, validation, getDraftId: () => openingDraft.current ??= randomUuid(),
 		select, selectFolder, drop, remove, retry: start, prepare, accept,
@@ -292,8 +356,9 @@ export function DraftAttachmentChips({ draft, disabled = false }: { draft: Attac
 		<div ref={root} data-attachment-upload={disabled ? "busy" : ""} className={empty ? "w-full" : "w-full space-y-1 px-2.5 pt-2"}>
 			{!empty && <div className="flex max-h-28 flex-wrap gap-1 overflow-y-auto">
 				{draft.files.map(row => {
-					const Icon = row.folder ? FolderIcon : PaperclipIcon;
-					const label = row.folder ? folderLabel(row.name, row.folder.files.length) : row.name;
+					const count = folderCount(row);
+					const Icon = count === undefined ? PaperclipIcon : FolderIcon;
+					const label = count === undefined ? row.name : folderLabel(row.name, count);
 					return (
 						<div key={row.key} className="flex min-w-0 items-center gap-2 rounded border px-2 py-1 text-xs">
 							<Icon className="size-3 shrink-0" aria-hidden="true" />

@@ -337,28 +337,45 @@ export function unavailableAttachmentIds(messages: readonly LhMessage[]): string
 	return missing.length ? missing : undefined;
 }
 
+/** A pending file whose bytes have all arrived, for this owner and target. */
+function uploadedPending(id: string, owner: string, target: AttachmentTarget, folder?: string): PendingAttachment | undefined {
+	const upload = pending(id);
+	const bytes = stat(pendingFile(id, ".body"));
+	if (!upload || upload.owner !== owner || !sameTarget(upload.target, target) || upload.folder !== folder ||
+		uploads.has(id) || !bytes || bytes.size !== upload.size || bytes.mtimeMs + PENDING_MS <= Date.now()) return;
+	return upload;
+}
+
+/** A pending folder whose files have all arrived, for this owner and target. */
+function uploadedFolder(folder: PendingFolder, owner: string, target: AttachmentTarget): boolean {
+	return folder.owner === owner && sameTarget(folder.target, target) && folder.files.every(file => {
+		const member = uploadedPending(file.member, owner, target, folder.id);
+		return member && member.size === file.size && member.mimeType === file.mimeType;
+	});
+}
+
+/** Whether a send could claim this pending file or folder right now: a
+ *  restored draft chip asks this before it keeps a stored upload. */
+export function attachmentSendable(id: string, owner: string, target: AttachmentTarget): boolean {
+	const folder = pendingFolder(id);
+	return folder ? uploadedFolder(folder, owner, target) : !!uploadedPending(id, owner, target);
+}
+
 export function claimAttachments(
 	ids: readonly string[], owner: string, target: AttachmentTarget, messages: readonly LhMessage[],
 	save: (refs: AttachmentReference[]) => void,
 ): void {
 	const current = new Set(attachmentReferences(messages).map(({ id }) => id));
 	const unavailable = () => new AttachmentError(409, "A file is unavailable for this draft or chat. Attach it again to use it.");
-	const uploaded = (id: string, folder?: string) => {
-		const upload = pending(id);
-		const bytes = stat(pendingFile(id, ".body"));
-		if (!upload || upload.owner !== owner || !sameTarget(upload.target, target) || upload.folder !== folder ||
-			uploads.has(id) || !bytes || bytes.size !== upload.size || bytes.mtimeMs + PENDING_MS <= Date.now()) throw unavailable();
-		return upload;
-	};
 	const items = ids.map(id => {
 		if (current.has(id)) throw unavailable();
 		const folder = pendingFolder(id);
-		if (!folder) return { upload: uploaded(id), folder: undefined };
-		if (folder.owner !== owner || !sameTarget(folder.target, target)) throw unavailable();
-		for (const file of folder.files) {
-			const member = uploaded(file.member, folder.id);
-			if (member.size !== file.size || member.mimeType !== file.mimeType) throw unavailable();
+		if (!folder) {
+			const upload = uploadedPending(id, owner, target);
+			if (!upload) throw unavailable();
+			return { upload, folder: undefined };
 		}
+		if (!uploadedFolder(folder, owner, target)) throw unavailable();
 		return { folder };
 	});
 	const limitError = attachmentLimitError(items.flatMap(item => item.folder ? folderFilesAsAttachments(item.folder.files) : [item.upload]));

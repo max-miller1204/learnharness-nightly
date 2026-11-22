@@ -22,6 +22,7 @@ The capability gates these routes and fields. UUIDs are version 4. Clients reuse
 | --- | --- |
 | Reserve one upload | `POST /api/attachments` with `name`, `mimeType`, `size` in bytes, and either `draftId` or `chatId`. Returns `201 { id, uploadUrl, expiresAt }`. The upload start deadline is Unix time in milliseconds. |
 | Stream bytes | `PUT` to the returned relative URL with raw file bytes and the same pairing credential. Returns `204`. |
+| Check a pending file | The optional `attachment-status-v1` capability adds `GET /api/attachments/:id?chatId=` for a file or a folder. Returns `204` while a send in that chat could claim it, else `404` (it expired, was removed, belongs to another pairing or another chat, or is still uploading). A composer that restores an unsent attachment asks this before it keeps the chip. |
 | Remove pending file | `DELETE /api/attachments/:id` with the same pairing credential. Returns `204`. |
 | Open a chat and send | `POST /api/attachments/start` with `draftId`, `sendId`, `attachmentUploadIds`, and the session creation fields. `title` carries the full opening text. Returns `{ id, title }`. |
 | Send in an idle chat | `POST /api/chat` with the existing text input and optional top-level `attachmentUploadIds` and `sendId`. Watch the existing turn stream. |

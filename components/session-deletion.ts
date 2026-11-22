@@ -12,6 +12,7 @@
  *   - refused or failed: they run as normal, so nothing is lost.
  */
 
+import { forgetStoredAttachments } from "@/lib/attachment-drafts";
 import { forgetComposerDraft } from "@/lib/composer-drafts";
 
 const inFlight = new Map<string, Promise<boolean>>(); // resolves true = deleted
@@ -53,6 +54,7 @@ export function beginSessionDelete(chatId: string): (wasDeleted: boolean) => voi
 		if (wasDeleted) {
 			deleted.add(chatId);
 			forgetComposerDraft(chatId); // its unsent draft goes with it, for good (#347)
+			forgetStoredAttachments(chatId); // and its unsent attachments (#367)
 		}
 		if (inFlight.get(chatId) === pending) inFlight.delete(chatId); // never a newer delete's mark
 		settle(wasDeleted);

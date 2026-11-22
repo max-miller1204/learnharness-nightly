@@ -57,6 +57,7 @@ export interface ProtocolIncompatibleResponse {
 /** Public, no credential. A client reads it before pairing and on every connect. */
 export const ATTACHMENT_UPLOADS = "attachment-uploads-v1";
 export const ATTACHMENT_FOLDERS = "attachment-folders-v1";
+export const ATTACHMENT_STATUS = "attachment-status-v1";
 
 export const SERVER_INFO_PATH = "/.well-known/learnharness/server";
 
@@ -128,6 +129,8 @@ export const PROTOCOL_ROUTES = {
 	/** attachment-uploads-v1 */
 	attachments: "/api/attachments",
 	removeAttachment: (id: string) => `/api/attachments/${segment(id)}`,
+	/** attachment-status-v1: GET -> 204 while the pending file or folder can still be sent in this chat, 404 once it can't. */
+	attachmentStatus: (id: string, chatId: string) => `/api/attachments/${segment(id)}?chatId=${segment(chatId)}`,
 	/** attachment-folders-v1: POST renews grants for a pending folder's missing files. */
 	renewAttachmentFolder: (id: string) => `/api/attachments/${segment(id)}`,
 	startWithAttachments: "/api/attachments/start",
