@@ -18,8 +18,8 @@ class TabStorage {
 	failSet = false;
 	/** Keys whose reads throw. */
 	failKeys = new Set<string>();
-	/** At most this many keys: a new one beyond it is refused (a full store). */
-	limit: number | null = null;
+	/** Storage's quota, in characters of keys and values: a write that needs more is refused. */
+	quota: number | null = null;
 	/** Runs before each read (another tab writing in between). */
 	beforeGet: ((key: string) => void) | null = null;
 	constructor(readonly shared: Map<string, string>) { this.catchUp(); }
@@ -27,8 +27,10 @@ class TabStorage {
 	get length() { return this.view.size; }
 	key(i: number) { return [...this.view.keys()][i] ?? null; }
 	getItem(key: string) { this.beforeGet?.(key); if (this.failGet || this.failKeys.has(key)) throw new Error("SecurityError"); return this.view.get(key) ?? null; }
+	used() { let total = 0; for (const [key, value] of this.view) total += key.length + value.length; return total; }
 	setItem(key: string, value: string) {
-		if (this.failSet || (this.limit !== null && !this.view.has(key) && this.view.size >= this.limit)) throw new Error("QuotaExceededError");
+		const after = this.used() - (this.view.has(key) ? key.length + this.view.get(key)!.length : 0) + key.length + value.length;
+		if (this.failSet || (this.quota !== null && after > this.quota)) throw new Error("QuotaExceededError");
 		this.view.set(key, value); this.shared.set(key, value);
 	}
 	removeItem(key: string) { if (this.failSet) throw new Error("SecurityError"); this.view.delete(key); this.shared.delete(key); }
@@ -62,11 +64,11 @@ function asTab<T>(tab: TabStorage, fn: () => T): T {
 }
 
 beforeEach(() => {
-	tabA.failGet = false; tabA.failSet = false; tabA.failKeys.clear(); tabA.limit = null; tabA.beforeGet = null;
+	tabA.failGet = false; tabA.failSet = false; tabA.failKeys.clear(); tabA.quota = null; tabA.beforeGet = null;
 	flushComposerDrafts();
 	shared.clear(); tabA.catchUp();
 });
-afterEach(() => { tabA.failGet = false; tabA.failSet = false; tabA.failKeys.clear(); tabA.limit = null; tabA.beforeGet = null; flushComposerDrafts(); });
+afterEach(() => { tabA.failGet = false; tabA.failSet = false; tabA.failKeys.clear(); tabA.quota = null; tabA.beforeGet = null; flushComposerDrafts(); });
 const ids = () => [...shared.keys()].filter((key) => key.startsWith(COMPOSER_DRAFT_KEY_PREFIX)).map((key) => key.slice(COMPOSER_DRAFT_KEY_PREFIX.length));
 const put = (id: string, text: string, at: number) => { shared.set(keyOf(id), JSON.stringify({ text, at })); };
 
@@ -170,25 +172,36 @@ describe("composer drafts per session", () => {
 		assert.equal(stored("chat_x")?.text, "saved by another tab meanwhile", "no stale clear was kept to remove it");
 	});
 
-	it("take a new draft into a store already at the cap, or full, by evicting the oldest first (#362 round 2)", () => {
+	it("keep the cap by evicting the oldest after a new draft is saved", () => {
 		for (let i = 0; i < MAX_COMPOSER_DRAFTS; i++) put(`old_${i}`, `old ${i}`, 100 + i);
 		tabA.catchUp();
-		tabA.limit = MAX_COMPOSER_DRAFTS; // and storage refuses a 51st key
 		writeComposerDraft("chat_new", "the new draft");
 		flushComposerDrafts();
 		assert.equal(stored("chat_new")?.text, "the new draft");
 		assert.equal(ids().length, MAX_COMPOSER_DRAFTS);
 		assert.ok(!ids().includes("old_0"), "the oldest went");
-		// Full for another reason (other keys fill it): evict the oldest draft and try once more.
-		shared.clear();
-		for (let i = 0; i < 3; i++) put(`small_${i}`, `small ${i}`, 10 + i);
-		shared.set("some-other-app-key", "x".repeat(10));
+	});
+
+	it("never delete another saved draft when storage refuses a write: the new draft waits in memory (#362 prove)", () => {
+		put("chat_b", "B's saved draft", 1);
+		shared.set("some-other-app-key", "x".repeat(200));
 		tabA.catchUp();
-		tabA.limit = 4;
-		writeComposerDraft("chat_full", "fits after one eviction");
+		tabA.quota = tabA.used() + 20; // full: no new draft fits
+		const long = "a long draft typed in A ".repeat(20);
+		writeComposerDraft("chat_a", long);
 		flushComposerDrafts();
-		assert.equal(stored("chat_full")?.text, "fits after one eviction");
-		assert.ok(!ids().includes("small_0") && ids().includes("small_2"));
+		assert.equal(stored("chat_b")?.text, "B's saved draft", "B survives a quota refusal");
+		assert.equal(stored("chat_a"), undefined);
+		assert.equal(readComposerDraft("chat_a"), long, "A's draft waits in memory");
+		tabA.quota = null;
+		tabA.failSet = true; // a SecurityError on every write
+		writeComposerDraft("chat_a", `${long}, more`);
+		flushComposerDrafts();
+		assert.equal(stored("chat_b")?.text, "B's saved draft", "B survives a refused write of any kind");
+		tabA.failSet = false;
+		flushComposerDrafts();
+		assert.equal(stored("chat_a")?.text, `${long}, more`, "saved once storage takes it");
+		assert.equal(stored("chat_b")?.text, "B's saved draft");
 	});
 
 	it("evict unreadable drafts first, and never a draft another tab changed since the scan (#362 round 2)", () => {
@@ -204,7 +217,7 @@ describe("composer drafts per session", () => {
 		// old_0 is the oldest, but another tab saves it again between the scan and the eviction.
 		let reads = 0;
 		tabA.beforeGet = (key) => {
-			if (key !== keyOf("old_0") || ++reads !== 2) return;
+			if (key !== keyOf("old_0") || ++reads !== 3) return; // after both scans: right before its eviction
 			put("old_0", "saved again in another tab", 999_999_999_999_999); tabA.catchUp();
 		};
 		writeComposerDraft("chat_newer", "one more");

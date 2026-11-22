@@ -20,9 +20,9 @@
  * the draft at once; deleting the session clears it for good. Reads are
  * tolerant (AGENTS.md): a missing, unparsable or other-shape value, or
  * storage that throws, reads as no draft. Storage that is blocked or full
- * keeps this tab's drafts in memory, for this tab only, and they are saved
- * at a later flush if storage works again. Text only: attachments are not
- * part of it.
+ * keeps this page's unsaved drafts in its memory (lost if the page is
+ * reloaded or closed), and they are saved at a later flush if storage works
+ * again; a refused write deletes no other draft. Text only: attachments are not part of it.
  */
 
 export const COMPOSER_DRAFT_KEY_PREFIX = "lh:composer-draft:v1:";
@@ -80,18 +80,6 @@ function evict(store: Storage, key: string, seenAt: number): boolean {
 	} catch { return false; }
 }
 
-/** setItem; when storage refuses it (full), evict the oldest stored draft
- *  that isn't one of this flush's and try once more. */
-function saveWithRoom(store: Storage, key: string, value: string, ours: Set<string>): void {
-	try {
-		store.setItem(key, value);
-	} catch (error) {
-		const oldest = [...storedDrafts(store)].map(([other, at]) => ({ key: other, at })).filter((draft) => !ours.has(draft.key)).sort(newestFirst).pop();
-		if (!oldest || !evict(store, oldest.key, oldest.at)) throw error;
-		store.setItem(key, value);
-	}
-}
-
 /** This tab's drafts not yet saved: edits and clears (""), oldest edit first,
  *  each kept until its own write succeeds. This tab's reads prefer them. */
 const unsaved = new Map<string, string>();
@@ -128,26 +116,23 @@ export function flushComposerDrafts(): void {
 	}
 	if (unsaved.size === 0) return;
 	try {
-		const stored = storedDrafts(store);
 		// Later than every stored draft, so the newest write is never the one
 		// evicted, however the clock moved or whatever another tab stamped.
 		let at = Math.max(Date.now(), lastAt + 1);
-		for (const seen of stored.values()) at = Math.max(at, seen + 1);
+		for (const seen of storedDrafts(store).values()) at = Math.max(at, seen + 1);
 		const writes = [...unsaved].map(([id, text]) => ({ id, key: COMPOSER_DRAFT_KEY_PREFIX + id, text, at: text.trim() === "" ? null : at++ }));
 		lastAt = at;
-		// Make room first, so a store already at the cap still takes the new drafts.
-		const kept = new Map(stored);
-		for (const write of writes) { if (write.at === null) kept.delete(write.key); else kept.set(write.key, write.at); }
-		const ours = new Set(writes.map((write) => write.key));
-		const order = [...kept].map(([key, seenAt]) => ({ key, at: seenAt })).sort(newestFirst);
-		for (const { key, at: seenAt } of order.slice(MAX_COMPOSER_DRAFTS)) if (!ours.has(key)) evict(store, key, seenAt);
 		for (const write of writes) {
 			try {
 				if (write.at === null) store.removeItem(write.key);
-				else saveWithRoom(store, write.key, JSON.stringify({ text: write.text, at: write.at } satisfies Entry), ours);
+				else store.setItem(write.key, JSON.stringify({ text: write.text, at: write.at } satisfies Entry));
 				unsaved.delete(write.id);
-			} catch { /* full or blocked: it stays in memory and is tried again at the next flush */ }
+			} catch { /* full or blocked: it stays in memory and is tried again at the next flush; nothing else is touched */ }
 		}
+		// Then the cap, over what is stored now: only the oldest beyond it go.
+		// Never a recovery step for a refused write, so that never deletes another draft.
+		const order = [...storedDrafts(store)].map(([key, seenAt]) => ({ key, at: seenAt })).sort(newestFirst);
+		for (const { key, at: seenAt } of order.slice(MAX_COMPOSER_DRAFTS)) evict(store, key, seenAt);
 	} catch { /* storage refused a read: what is unsaved stays in memory */ }
 }
 
