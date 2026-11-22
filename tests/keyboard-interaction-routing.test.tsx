@@ -79,6 +79,19 @@ function Shortcuts() {
 	return <AppRouterContext.Provider value={router}><KeyboardShortcuts /></AppRouterContext.Provider>;
 }
 
+it("focuses the available usage control from a field without crossing a modal", async () => {
+	const f = fixture();
+	await f.render(<><Shortcuts /><input data-testid="field" /><button data-lh-usage-control data-testid="usage">Usage</button><div data-testid="modal" /></>);
+	get("field").focus();
+	const event = await f.key(get("field"), "u", { ctrlKey: true, shiftKey: true });
+	assert.equal(event.defaultPrevented, true); assert.equal(f.focus(), get("usage"));
+	const remove = f.addLayer("modal", "modal", get("modal"));
+	get("modal").focus();
+	await f.key(get("modal"), "u", { ctrlKey: true, shiftKey: true });
+	assert.equal(f.focus(), get("modal"));
+	remove();
+});
+
 it("one Escape closes only the cheat sheet's original owner and cannot reach abort fallback until the next event", async () => {
 	const f = fixture(); let aborts = 0;
 	await f.render(<Shortcuts />);

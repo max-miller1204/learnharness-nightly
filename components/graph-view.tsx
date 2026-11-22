@@ -338,6 +338,7 @@ export function GraphCostControl({ costs }: { costs: GraphCostSummary }) {
 				<button
 				type="button"
 				aria-expanded={open}
+				data-lh-usage-control=""
 				onClick={() => setOpen((o) => !o)}
 				className={`rounded-lg px-2 py-1 text-xs tabular-nums transition-colors hover:bg-accent ${
 					open ? "text-foreground" : "text-muted-foreground hover:text-foreground"

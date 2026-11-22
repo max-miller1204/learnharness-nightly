@@ -125,6 +125,7 @@ export function StatsBar({
 				onClick={() => setOpen((o) => !o)}
 				aria-expanded={open}
 				data-testid="stats-summary"
+				data-lh-usage-control=""
 				className="flex items-center gap-1.5 tabular-nums transition-colors hover:text-foreground"
 			>
 				<span data-testid="stats-context">

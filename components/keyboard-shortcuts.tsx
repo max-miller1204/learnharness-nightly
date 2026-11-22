@@ -148,6 +148,12 @@ export function KeyboardShortcuts() {
 					e.preventDefault();
 					window.dispatchEvent(new CustomEvent(kbdEventForAction(action)));
 					break;
+				case "focus-usage": {
+					const target = Array.from(document.querySelectorAll<HTMLElement>("[data-lh-usage-control]"))
+						.find((element) => isInteractionScopeEligible(element, controller));
+					if (target) { e.preventDefault(); target.focus(); }
+					break;
+				}
 				default:
 					if (dispatchFocusedPluginShortcut(action, controller)) break;
 					// Core dictation is a background-page service, not a modal
