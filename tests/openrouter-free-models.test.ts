@@ -13,7 +13,7 @@ const specimens = [
 	{ id: "openrouter/free", input: ["text", "image"] },
 ];
 
-describe("native 1.4 OpenRouter free catalog (offline, no live discovery)", { concurrency: false }, () => {
+describe("bundled OpenRouter free catalog (offline, no live discovery)", { concurrency: false }, () => {
 	for (const { id, input } of specimens) {
 		it(`${id}: shared listing, validation, tool-capable engine, native modality, and zero cost`, async () => {
 			const before = process.env;
@@ -52,7 +52,12 @@ describe("native 1.4 OpenRouter free catalog (offline, no live discovery)", { co
 		});
 	}
 	it("removed/unknown native models remain unpriced and unresolvable, never aliased to a paid fallback", () => {
+		for (const id of ["openai/gpt-3.5-turbo", "removed/no-such-model"]) {
+			assert.throws(() => piEngineForSpec({ provider: "openrouter", id }), /is no longer available/);
+		}
 		assert.equal(callCost({ inputTokens: 1, outputTokens: 1 }, "openrouter:removed/no-such-model"), null);
-		assert.throws(() => piEngineForSpec({ provider: "openrouter", id: "removed/no-such-model" }), /is no longer available/);
+		// A model Pi's catalog retired keeps its recorded price for usage already spent
+		// (src/server/retired-models.ts), but never runs.
+		assert.equal(callCost({ inputTokens: 1, outputTokens: 1 }, "openrouter:openai/gpt-3.5-turbo"), (0.5 + 1.5) / 1_000_000);
 	});
 });

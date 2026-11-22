@@ -3,7 +3,7 @@ import { Text, View, useWindowDimensions, type HostInstance, type LayoutChangeEv
 import { drawingsOf, equationOf } from "./message-math";
 import { useLivePictures } from "./math-window";
 import type { LabelPiece } from "./choice-math";
-import { fit, inlineLift, lineHeightFor, MathPicture, MATH_SCALE, MAX_LINES, useScreenReader, useSpeech, type InlineFonts, type Size, type TextRun } from "./MathLabel";
+import { bottomPadding, depthRoom, fit, inlineLift, lineHeightFor, MathPicture, MATH_SCALE, MAX_LINES, useScreenReader, useSpeech, type InlineFonts, type Size, type TextRun } from "./MathLabel";
 import { spokenLabel, spokenMath } from "./math-speech";
 import { httpsLink, type MarkdownToken } from "./render-markdown";
 import { fonts, radius, space, useTheme } from "./theme";
@@ -119,7 +119,7 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
     };
     walk(nodes);
     const text = lines.flat();
-    return new Map([...lineOf].map(([token, at]) => [token, { line: lines[at] ?? [], text }]));
+    return new Map([...lineOf].map(([token, at]) => [token, { line: lines[at] ?? [], text, last: at === lines.length - 1 }]));
   }
 
   /** A line of text whose line height leaves room for the inline math in it. Inline math
@@ -127,12 +127,14 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
   function line(key: number, nodes: Node[], style: { fontSize: number; lineHeight: number }, extra?: object, role?: "header", width = maxWidth) {
     const sizes = mathSizes(nodes, style.fontSize, style.lineHeight, width);
     const lineHeight = sizes.size ? lineHeightFor([...sizes.values()], style.fontSize, style.lineHeight, fontScale) : style.lineHeight;
+    const fonts = inlineFonts(nodes, sizes, style.fontSize);
+    const below = depthRoom([...fonts].map(([token, around]) => ({ size: sizes.get(token) as Size, fonts: around })), fontScale);
     return (
       <Live key={key} pictures={sizes.size}>
         {(live, ref, onLayout) => (
-          <Text ref={ref} onLayout={onLayout} accessibilityRole={role} selectable style={[s.prose, style, extra, { lineHeight }]}
+          <Text ref={ref} onLayout={onLayout} accessibilityRole={role} selectable style={[s.prose, style, extra, { lineHeight, ...bottomPadding([s.prose, style, extra], below) }]}
             accessibilityLabel={sizes.size ? spokenLabel(pieces(nodes, sizes), speech && live) : undefined}>
-            {inline(nodes, { sizes, live, fonts: inlineFonts(nodes, sizes, style.fontSize), lineHeight })}
+            {inline(nodes, { sizes, live, fonts, lineHeight })}
           </Text>
         )}
       </Live>
@@ -166,8 +168,9 @@ export const NativeMarkdown = memo(function NativeMarkdown({ tokens, openLink }:
           const drawn = size && pictures.get(token);
           // Math that can't be drawn shows its source.
           if (!size || !drawn) return token.markup === "$" ? `$${token.content}$` : `\\(${token.content}\\)`;
+          const around = math.fonts.get(token);
           const picture = <MathPicture key={index} svg={drawn.svg[c.mode]} drawn={drawn} size={size} scale={fontScale} color={c.text} live={math.live} inline
-            lift={inlineLift(math.lineHeight, size, math.fonts.get(token) ?? { line: [], text: [] }, fontScale)} />;
+            lift={around ? inlineLift(math.lineHeight, size, around, fontScale) : 0} />;
           // A period or comma right after the math never wraps away from it.
           const after = nodes[index + 1]?.token;
           return after?.type === "text" && CLINGS.test(after.content) ? [picture, JOIN] : picture;
