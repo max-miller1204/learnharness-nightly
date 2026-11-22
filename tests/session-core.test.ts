@@ -670,7 +670,10 @@ describe("provider-error banner (live and saved)", () => {
 		assert.equal(m.getState().error?.message, "Google 500: fixture failure");
 	});
 
-	for (const input of [{ type: "text", text: "retry" }, { type: "continue" }, { type: "retry" }] as const) {
+	const inputs: Array<{ type: "text"; text: string } | { type: "continue" } | { type: "retry" }> = [
+		{ type: "text", text: "retry" }, { type: "continue" }, { type: "retry" },
+	];
+	for (const input of inputs) {
 		it(`hides the old failure during the optimistic ${input.type} wait, then shows a new live failure`, async () => {
 			let acknowledge!: (response: Response) => void;
 			const ack = new Promise<Response>((resolve) => { acknowledge = resolve; });
