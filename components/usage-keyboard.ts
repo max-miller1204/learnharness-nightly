@@ -39,7 +39,7 @@ export function useUsageKeyboard(toggle: RefObject<HTMLButtonElement | null>, pa
 			event.preventDefault(); event.stopPropagation();
 			if (open) {
 				setOpen(false);
-				if (event.target === button) deferRestore(button); else button.focus();
+				button.focus();
 			} else restore(button);
 			return;
 		}

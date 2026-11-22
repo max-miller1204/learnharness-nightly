@@ -128,8 +128,27 @@ it("a deferred focus return never overrides a newer focus change", async () => {
 	const button = get("stats-summary");
 	const click = new f.dom.window.Event("click", { bubbles: true, cancelable: true }); Object.assign(click, { detail: 0 });
 	await act(async () => button.dispatchEvent(click));
-	await f.key(button, "Escape"); get("other").focus(); f.controller().observeFocus();
+	await act(async () => button.dispatchEvent(click)); get("other").focus(); f.controller().observeFocus();
 	await new Promise(resolve => setTimeout(resolve, 10)); assert.ok(f.focus() === get("other"));
+});
+
+it("usage shortcut, Enter, Tab, Shift+Tab and Escape close before returning to the field", async () => {
+	for (const kind of ["stats", "graph"] as const) {
+		const f = fixture();
+		const costs = graphCostSummary({ chats: [], sources: [] }, () => null);
+		await f.render(<><Shortcuts /><input data-testid="field" />{kind === "stats" ? <StatsBar chatId="fixture" turns={[]} pricing={{ cost: 0, unpriced: 0, subscriptionProviders: ["ChatGPT"], turnCosts: {} }} /> : <GraphCostControl costs={costs} />}</>);
+		try {
+			get("field").focus(); await f.key(get("field"), "F8", { ctrlKey: true, shiftKey: true });
+			const button = document.querySelector<HTMLButtonElement>("[data-lh-usage-control]")!;
+			await f.key(button, "Enter");
+			const click = new f.dom.window.Event("click", { bubbles: true, cancelable: true }); Object.assign(click, { detail: 0 });
+			await act(async () => button.dispatchEvent(click));
+			await f.key(button, "Tab"); await f.key(f.focus(), "Tab", { shiftKey: true });
+			assert.ok(f.focus() === button); await f.key(button, "Escape");
+			assert.equal(button.getAttribute("aria-expanded"), "false"); assert.ok(f.focus() === button);
+			await f.key(button, "Escape"); assert.ok(f.focus() === get("field"));
+		} finally { await act(async () => root?.unmount()); root = undefined; cleanup?.(); cleanup = undefined; }
+	}
 });
 
 it("real usage controls own press, Tab and Escape and restore the invoking field", async () => {
@@ -154,7 +173,8 @@ it("real usage controls own press, Tab and Escape and restore the invoking field
 				assert.ok(f.focus() === button, "Escape from details returns to toggle");
 			} else { assert.ok(f.focus() === button, "empty details wrap to toggle"); await f.key(button, "Escape"); }
 			assert.equal(button.getAttribute("aria-expanded"), "false");
-			if (kind === "stats") await f.key(button, "Escape");
+			assert.ok(f.focus() === button, "first Escape returns to toggle");
+			await f.key(button, "Escape");
 			await new Promise(resolve => setTimeout(resolve, 10)); assert.ok(f.focus() === get("field"), `${kind}: ${f.focus()?.outerHTML?.slice(0, 120)}; connected ${get("field").isConnected}`);
 		} finally {
 			document.removeEventListener("keydown", onKey);

@@ -58,7 +58,8 @@ handling; this is not a guarantee for every OS/IME or layout-specific key.
   and menus). Connection dialogs can own their own Tab trap.
 - **Mod+Shift+F8** focuses Session stats in a session or the graph cost pill
   when available. Enter or Space opens it. Tab and Shift+Tab cycle its controls;
-  Esc from the details returns to the toggle, and Esc there returns to the field.
+  the first Esc closes either panel and focuses its toggle. A second Esc returns
+  to the field or other control focused before the shortcut.
 - **Esc** acts on the active field or topmost surfaced layer first: for example,
   leave a field, dismiss a menu/dialog, or close Find. Handlers claim the event
   so one Esc does not also act on lower layers. With no layer claiming it, the
