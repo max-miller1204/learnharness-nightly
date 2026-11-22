@@ -167,7 +167,17 @@ export function useAttachmentDraft(chatId?: string) {
 				.catch(() => { if (!unmounted) setInfoFailed(true); })
 				.finally(() => { bound.stop(); if (!unmounted) setInfoDone(true); });
 		}
+		// A reload or close while an upload runs: the page can't release it
+		// afterwards, so ask now. keepalive outlives the page; the server removes
+		// the files once it sees the transfer end.
+		const releaseUnfinished = () => {
+			for (const row of files.current) {
+				if (!row.ready && row.grant) void fetch(PROTOCOL_ROUTES.removeAttachment(row.grant.id), { method: "DELETE", keepalive: true }).catch(() => {});
+			}
+		};
+		window.addEventListener("pagehide", releaseUnfinished);
 		return () => {
+			window.removeEventListener("pagehide", releaseUnfinished);
 			unmounted = true;
 			controller.abort();
 			wakeRestoreWaiters(); // a waiting Send finds the composer gone and does nothing

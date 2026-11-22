@@ -852,20 +852,24 @@ export function Chat({
 			if (beforePost && !beforePost(captured)) { attempt.cancel(); return false; }
 			const input: ChatInput = { type: "text", text: prepared.content.text, ...(prepared.content.images.length ? { images: prepared.content.images.map(image => ({ ...image })) } : {}) };
 			let selected = attached?.rows;
+			// A send that waited for attachments (still loading, or a restored one's
+			// status check) was captured at the click: an edit or a change of scope
+			// meanwhile cancels it and keeps the draft.
+			const changedWhileWaiting = () => composerEditRevision.current !== capturedRevision || !isInteractionScopeEligible(sessionFindScopeRef.current, controller);
 			if (attached?.waiting) {
 				// The saved attachments were still loading when Send was pressed: wait
 				// inside this submission (it already holds the runner, with the text
-				// captured then). Anything the learner changed meanwhile cancels the
-				// send and keeps the draft.
+				// captured then).
 				await attachments.restored();
 				attempt.check();
-				if (composerEditRevision.current !== capturedRevision || !isInteractionScopeEligible(sessionFindScopeRef.current, controller)) { attempt.cancel(); return false; }
+				if (changedWhileWaiting()) { attempt.cancel(); return false; }
 				selected = attachments.current();
 			}
 			if (selected?.length && !input.text.trim()) throw new Error("Message text is required when attaching files.");
 			const upload = selected?.length ? await attachments.prepare(JSON.stringify(input), () => attempt.cancel(), selected) : undefined;
 			if (upload === null) return false;
 			attempt.check();
+			if (upload && changedWhileWaiting()) { attempt.cancel(); return false; }
 			if (upload && busyRef.current) throw new Error("A turn is already running — try again in a moment.");
 			draftRef.current = captured;
 			const accepted = () => {

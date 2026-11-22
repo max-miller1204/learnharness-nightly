@@ -35,7 +35,7 @@ const storage = {
 const keyOf = (id: string) => ATTACHMENT_DRAFT_KEY_PREFIX + id;
 const stored = (id: string) => values.has(keyOf(id)) ? (JSON.parse(values.get(keyOf(id))!) as { rows: { id: string; name: string }[] }).rows : [];
 
-interface Call { method: string; url: string }
+interface Call { method: string; url: string; keepalive?: boolean }
 
 /** What a real fetch does: a request waiting on `held` ends when its signal aborts. */
 const heldUntilAborted = (held: Promise<void> | null, signal?: AbortSignal | null) => held === null ? Promise.resolve() : new Promise<void>((resolve, reject) => {
@@ -97,7 +97,7 @@ beforeEach(async () => {
 		fetch: async (input: string, init?: RequestInit) => {
 			const method = init?.method ?? "GET";
 			const url = String(input);
-			calls.push({ method, url });
+			calls.push({ method, url, keepalive: init?.keepalive });
 			if (url === "/.well-known/learnharness/server") {
 				await heldUntilAborted(holdInfo, init?.signal);
 				if (infoFailure) throw new TypeError("offline");
@@ -428,6 +428,20 @@ describe("round 1 review of #410", () => {
 		assert.equal(calls.filter(call => call.method === "DELETE" && call.url === `/api/attachments/${id}`).length, 1);
 	});
 
+	it("a reload or close while an upload runs releases it with a keepalive DELETE, and leaves finished uploads alone", async () => {
+		await render("reloader");
+		await attach(pdf("done.pdf"));
+		await finishUploads();
+		await attach(pdf("running.pdf"));
+		const running = latest.files.find(row => row.name === "running.pdf")!.grant!.id;
+		const done = latest.files.find(row => row.name === "done.pdf")!.grant!.id;
+		await act(async () => { window.dispatchEvent(new window.Event("pagehide")); });
+		const deletes = calls.filter(call => call.method === "DELETE");
+		assert.deepEqual(deletes.map(call => [call.url, call.keepalive]), [[`/api/attachments/${running}`, true]]);
+		assert.equal(deletes.some(call => call.url.endsWith(done)), false);
+		assert.deepEqual(stored("reloader").map(row => row.id), [done], "the finished one is still saved");
+	});
+
 	it("Remove aborts a running transfer and releases it", async () => {
 		await render("remover");
 		await attach(pdf());
@@ -474,8 +488,10 @@ describe("round 1 review of #410", () => {
 	it("Chat sends what the learner saw, and not before the saved attachments are loaded (wiring; the hook tests cover the rules)", () => {
 		const source = readFileSync(new URL("../components/chat.tsx", import.meta.url), "utf8");
 		assert.match(source, /const rows = attachments\.current\(\), waiting = attachments\.restoring\(\);\n\t+void prepareText\(undefined, undefined, undefined, rows\.length \|\| waiting \? \{ rows, waiting \} : undefined\);/);
-		// The wait is inside the submission: text captured at the click, and a change while waiting cancels.
-		assert.match(source, /if \(attached\?\.waiting\) \{[\s\S]*?await attachments\.restored\(\);\s*attempt\.check\(\);\s*if \(composerEditRevision\.current !== capturedRevision \|\| !isInteractionScopeEligible\(sessionFindScopeRef\.current, controller\)\) \{ attempt\.cancel\(\); return false; \}\s*selected = attachments\.current\(\);/);
+		// The wait is inside the submission: text captured at the click, and a change while waiting cancels (also while a restored chip's check is pending; tests/chat-attachment-send.test.tsx drives that).
+		assert.match(source, /const changedWhileWaiting = \(\) => composerEditRevision\.current !== capturedRevision \|\| !isInteractionScopeEligible\(sessionFindScopeRef\.current, controller\);/);
+		assert.match(source, /await attachments\.restored\(\);\s*attempt\.check\(\);\s*if \(changedWhileWaiting\(\)\) \{ attempt\.cancel\(\); return false; \}\s*selected = attachments\.current\(\);/);
+		assert.match(source, /if \(upload && changedWhileWaiting\(\)\) \{ attempt\.cancel\(\); return false; \}/);
 		assert.match(source, /attachments\.prepare\(JSON\.stringify\(input\), \(\) => attempt\.cancel\(\), selected\)/);
 		assert.doesNotMatch(source, /attachments\.restored\(\)\.then/, "no deferred send outside the submission runner");
 	});

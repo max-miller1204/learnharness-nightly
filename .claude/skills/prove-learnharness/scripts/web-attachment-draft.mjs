@@ -218,10 +218,12 @@ try {
 	await attach(big);
 	await page.waitForSelector("[data-attachment-upload] progress");
 	await delay(1000);
+	const reloadedId = seen.findLast(item => item.method === "PUT")?.url.split("id=")[1]?.split("&")[0];
 	await reload();
 	await throttle(-1);
-	await delay(800);
-	step("4. a reload mid-upload leaves no chip and no stored row", (await chips()).length === 0 && await stored("s4") === null);
+	await delay(3000);
+	step("4a. a reload mid-upload leaves no chip and no stored row", (await chips()).length === 0 && await stored("s4") === null);
+	step("4b. and the server keeps nothing staged for it (the page released it as it went)", Boolean(reloadedId) && !pendingFiles().some(file => file.startsWith(reloadedId)), JSON.stringify({ reloadedId, pending: pendingFiles() }));
 
 	await fresh("s5");
 	await open("s5");
@@ -334,6 +336,34 @@ try {
 	const plainAfter = await messageWith(ids.s9, "after removing the hung chip");
 	await releaseCheck();
 	step("9b. Send is not stuck: the text goes with no attachment", Boolean(plainAfter) && !plainAfter.attachments?.length);
+
+	// 10. Send pressed while a restored chip's status check is pending, then an edit before it answers: the send is cancelled.
+	await fresh("s10");
+	await open("s10");
+	await attach(small);
+	await waitChips(["zz-prove-it-notes.txt"]);
+	const edited = JSON.parse(await stored("s10")).rows[0];
+	let heldCheck;
+	await page.setRequestInterception(true);
+	const holdCheck = request => {
+		if (request.method() === "GET" && request.url().includes(`/api/attachments/${edited.id}?chatId=`)) heldCheck = request;
+		else request.continue().catch(() => {});
+	};
+	page.on("request", holdCheck);
+	await page.goto(`${APP}/chat/${ids.s10}`, { waitUntil: "domcontentloaded" });
+	await page.waitForSelector('[data-testid="composer"] [contenteditable="true"]', { timeout: 30_000 });
+	await waitChips(["zz-prove-it-notes.txt"]);
+	await sendText("zz-prove-it original text");
+	await delay(500);
+	await page.click('[data-testid="composer"] [contenteditable="true"]');
+	await page.keyboard.type(" edited");
+	await heldCheck?.continue();
+	await delay(2500);
+	page.off("request", holdCheck);
+	await page.setRequestInterception(false);
+	const sentOriginal = ((await record(ids.s10)).messages ?? []).some(message => message.role === "user");
+	const composerText = await page.$eval('[data-testid="composer"] [contenteditable="true"]', element => element.textContent);
+	step("10. an edit while a Send waits on a restored chip's check cancels it and keeps the edited text and the chip", Boolean(heldCheck) && !sentOriginal && composerText.includes("original text edited") && (await chips()).length === 1, JSON.stringify({ held: Boolean(heldCheck), sentOriginal, composerText, chips: await chips() }));
 
 	// Chrome logs each non-2xx fetch: the known 503 (/api/stt/token, no Deepgram key, budgets.json) and one 404 per status check the server answered 404 (the dropped chips).
 	const answered404 = seen.filter(item => item.method === "GET" && item.status === 404).length;
