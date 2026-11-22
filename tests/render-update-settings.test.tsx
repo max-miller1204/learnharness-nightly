@@ -18,6 +18,8 @@ import { createRequire } from "node:module";
 import { ServerEventsProvider } from "../components/server-events.tsx";
 import { formatReleaseAge, ReleaseNoteSections, UpdateReleaseNotes } from "../components/release-notes-view.tsx";
 import WhatsNewDialog, { WhatsNewBody } from "../components/whats-new-dialog.tsx";
+import { trackInputModality } from "../components/sidebar-keyboard.ts";
+import { holdWhatsNew } from "../components/whats-new-hold.ts";
 import { InstallUpdateDialog } from "../components/install-update-dialog.tsx";
 import { SettingsDialogBody } from "../components/settings/settings-dialog.tsx";
 import nextConfig from "../next.config.ts";
@@ -1650,6 +1652,56 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 		r.set({ version: V71, target: V72, phase: "downloaded", error: null, run: null });
 		await refreshDesktop(); await settle();
 		assert.equal(q(document, "whats-new-dialog") !== null, true, "held back, not lost");
+	});
+
+	it("Later then Got it returns keyboard focus to the replacement update pill", async () => {
+		const server = state({ status: "up-to-date", runningVersion: V72 });
+		const counting = { version: V71, target: V72, phase: "updating", error: null, run: { phase: "countdown", localVersion: V72, restartAt: Date.now() + 30_000, awaitingPage: false, keyboard: true, machines: [] } };
+		const r = everythingRemote(counting, server);
+		const stop = trackInputModality(window);
+		holdWhatsNew(true);
+		globalThis.fetch = async (input) => String(input) === "/api/whats-new"
+			? Response.json({ version: V72, releaseNotes: [], omittedReleaseCount: 0 })
+			: Response.json(server);
+		(window.lh!.desktopUpdate as unknown as { later: () => Promise<void> }).later = async () => {
+			r.set({ version: V71, target: V72, phase: "downloaded", error: null, run: null });
+		};
+		try {
+			const host = await mount(<><SidebarUpdatePill pageVersion={V72} /><WhatsNewDialog pageVersion={V72} /></>);
+			await settle(); await settle();
+			const capsule = keyboardFocusable(q(host, "update-capsule-button")!);
+			capsule.focus();
+			await key(capsule, "Enter"); await settle();
+			const later = q(document, "update-capsule-details-action")!;
+			assert.equal(document.activeElement, later);
+			await key(later, " "); await click(later); await settle(); await settle();
+			const done = q(document, "whats-new-done")!;
+			assert.ok(done, "the deferred dialog appears");
+			assert.equal(document.activeElement, done);
+			await key(done, "Enter"); await click(done); await settle(); await settle();
+			assert.equal(document.activeElement, q(host, "update-pill"));
+		} finally { stop(); holdWhatsNew(false); }
+	});
+
+	it("What's new restores its actual opener on a keyboard close, but not on a pointer close", async () => {
+		for (const modality of ["keyboard", "pointer"] as const) {
+			const response = deferred<Response>();
+			globalThis.fetch = async (input) => String(input) === "/api/whats-new" ? response.promise : new Response(null, { status: 204 });
+			const stop = trackInputModality(window);
+			try {
+				const host = await mount(<><button data-testid="before-whats-new">Before</button><WhatsNewDialog pageVersion={V72} /></>);
+				const before = q(host, "before-whats-new")!;
+				before.focus();
+				await act(async () => { response.resolve(Response.json({ version: V72, releaseNotes: [], omittedReleaseCount: 0 })); });
+				await settle(); await settle();
+				const done = q(document, "whats-new-done")!;
+				assert.equal(document.activeElement, done);
+				if (modality === "keyboard") await key(done, "Enter");
+				else window.dispatchEvent(new dom.window.Event("pointerdown", { bubbles: true }));
+				await click(done); await settle(); await settle();
+				assert.equal(document.activeElement === before, modality === "keyboard");
+			} finally { stop(); await unmountAllRoots(); }
+		}
 	});
 
 	it("a run started with a click moves no focus on the reloaded page", async () => {

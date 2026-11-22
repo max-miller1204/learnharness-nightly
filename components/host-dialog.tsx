@@ -25,7 +25,9 @@ export interface HostDialogProps {
 	openingLease?: OpeningLease;
 	initialFocusRef?: RefObject<HTMLElement | null>;
 	/** Context to focus if the original opener is no longer eligible. */
-	returnFocusFallback?: HTMLElement;
+	returnFocusFallback?: HTMLElement | (() => HTMLElement | null);
+	/** An optional close-modality rule for dialogs with no explicit opener. */
+	restoreFocusOnClose?: () => boolean;
 	headingRef?: RefObject<HTMLElement | null>;
 	/** Existing visual root: classes, styles, ref and test IDs are retained. */
 	frame?: ReactElement<FrameProps>;
@@ -47,7 +49,7 @@ function assignRef(ref: Ref<HTMLElement> | undefined, node: HTMLElement | null) 
 }
 
 function OpenHostDialog({
-	onClose, layerId, ownerId, openingLease, initialFocusRef, headingRef, returnFocusFallback,
+	onClose, layerId, ownerId, openingLease, initialFocusRef, headingRef, returnFocusFallback, restoreFocusOnClose,
 	frame = <div />, backdropProps = {}, children, ...labels
 }: HostDialogProps) {
 	const controller = useInteractionLayers();
@@ -91,7 +93,7 @@ function OpenHostDialog({
 
 	useLayoutEffect(() => {
 		const active = document.activeElement;
-		openerRef.current = active instanceof HTMLElement ? active : null;
+		openerRef.current = active instanceof HTMLElement && (active !== document.body || !returnFocusFallback) ? active : null;
 		setPortalTarget(document.body);
 	}, []);
 
@@ -115,11 +117,12 @@ function OpenHostDialog({
 		// return authority; a newer modal also revokes an old closing ticket.
 		const authority = focusAuthorityRef.current;
 		if (!authority.active || (controller.getActiveModal()?.order ?? 0) > authority.order) return;
+		if (restoreFocusOnClose && !restoreFocusOnClose()) return;
 		const generation = controller.getGeneration();
 		const focusRevision = controller.getFocusRevision();
 		const opener = openerRef.current;
-		setTimeout(() => { controller.restoreFocus(opener, generation, focusRevision, openingLease, returnFocusFallback); }, 0);
-	}, [controller, openingLease, returnFocusFallback]);
+		setTimeout(() => { controller.restoreFocus(opener, generation, focusRevision, openingLease, typeof returnFocusFallback === "function" ? returnFocusFallback() ?? undefined : returnFocusFallback); }, 0);
+	}, [controller, openingLease, returnFocusFallback, restoreFocusOnClose]);
 
 	const originalRef = frame.props.ref;
 	const frameRef = useCallback((node: HTMLElement | null) => {
