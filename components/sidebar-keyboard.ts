@@ -19,6 +19,7 @@
  * skips those too).
  */
 import { composingQuestionKey, pluginQuestionKeySuppressed } from "./plugin-question-keys.ts";
+import { buttonKeepsNativeEnter } from "./enter-submits";
 
 /** Marks a row the list's Tab walks: session rows and folder rows. */
 export const SIDEBAR_STOP = "data-sidebar-stop";
@@ -56,15 +57,15 @@ function stopHere(event: TabEvent): void {
 }
 
 const plainTab = (event: Keyish) => event.key === "Tab" && !event.altKey && !event.ctrlKey && !event.metaKey;
+const PRESS_KEYS = new Set(["Enter", " "]);
+const ARROW_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
 
-/** Tab in the sessions search: enter the walked row if the search's ↑/↓
- *  walked to one, else the first row. False when it isn't ours (no rows,
- *  Shift+Tab, a modifier, a plugin dock's or an IME's key), so the app's own
- *  Tab goes on. */
-export function tabIntoList(event: TabEvent, list: Element | null, walked: HTMLElement | null = null): boolean {
+/** Tab in the sessions search enters the walked row, the first row, or the
+ *  footer when no rows are shown. Modified and claimed keys stay with the app. */
+export function tabIntoList(event: TabEvent, list: Element | null, walked: HTMLElement | null = null, footer: Element | null = null): boolean {
 	if (notOurs(event) || !plainTab(event) || event.shiftKey) return false;
 	const stops = sidebarStops(list);
-	const next = walked && stops.includes(walked) ? walked : stops[0];
+	const next = (walked && stops.includes(walked) ? walked : stops[0]) ?? footerStops(footer)[0];
 	if (!next) return false;
 	event.preventDefault();
 	stopHere(event);
@@ -89,13 +90,18 @@ export function tabThroughList(event: TabEvent, list: Element | null, search: HT
 
 /** Footer order follows T3: Settings, then update.
  * https://github.com/pingdotgg/t3code/blob/df09ced7688dec80a9c66c80181144cfb50f62ce/apps/web/src/components/sidebar/SidebarChrome.tsx#L270-L311 */
-export function tabThroughFooter(event: TabEvent, footer: Element, list: Element | null): boolean {
+export function footerStops(footer: Element | null): HTMLElement[] {
+	if (!footer) return [];
+	return Array.from(footer.querySelectorAll<HTMLElement>('[data-testid="settings-entry"], [data-testid="update-pill"], [data-testid="update-capsule-button"], [data-testid="update-capsule-action"]'))
+		.filter((el) => !el.closest('[hidden], [aria-hidden="true"], [inert]') && !(el as HTMLButtonElement).disabled && (typeof el.checkVisibility !== 'function' || el.checkVisibility()));
+}
+
+export function tabThroughFooter(event: TabEvent, footer: Element, list: Element | null, search: HTMLElement | null = null): boolean {
 	if (notOurs(event) || !plainTab(event)) return false;
-	const stops = Array.from(footer.querySelectorAll<HTMLElement>('[data-testid="settings-entry"], [data-testid="update-pill"], [data-testid="update-capsule-button"], [data-testid="update-capsule-action"]'))
-		.filter((el) => !el.closest('[hidden], [aria-hidden="true"]') && el.getAttribute('aria-disabled') !== 'true' && !(el as HTMLButtonElement).disabled && (typeof el.checkVisibility !== 'function' || el.checkVisibility()));
+	const stops = footerStops(footer);
 	const at = stops.indexOf(event.target as HTMLElement);
 	if (at < 0) return false;
-	const next = event.shiftKey ? (at ? stops[at - 1] : sidebarStops(list).at(-1)) : stops[at + 1];
+	const next = event.shiftKey ? (at ? stops[at - 1] : sidebarStops(list).at(-1) ?? search) : stops[at + 1];
 	if (!next) return false;
 	event.preventDefault();
 	stopHere(event);
@@ -105,11 +111,11 @@ export function tabThroughFooter(event: TabEvent, footer: Element, list: Element
 
 /** Footer buttons retain native activation and do not submit a question. */
 export function keepFooterKeys(event: TabEvent): void {
-	if (!notOurs(event) && !event.altKey && !event.ctrlKey && !event.metaKey && PRESS_KEYS.has(event.key) && (event.target as Element | null)?.closest?.('[data-testid="sidebar-footer"]')) stopHere(event);
+	if (notOurs(event) || event.altKey || event.ctrlKey || event.metaKey) return;
+	const target = event.target as HTMLElement | null;
+	if (!target || !buttonKeepsNativeEnter(target)) return;
+	if (PRESS_KEYS.has(event.key) || (!event.shiftKey && ARROW_KEYS.has(event.key))) stopHere(event);
 }
-
-const PRESS_KEYS = new Set(["Enter", " "]);
-const ARROW_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
 
 /** Enter and Space (with or without Shift) and plain arrows on a focused row
  *  are the row's: the button's native press opens it, and an open question
@@ -182,6 +188,40 @@ export function trackInputModality(target: EventTarget = window): () => void {
  *  so a click on the transcript never leaves a row focused for the next
  *  Enter. */
 export const closedFromKeyboard = (): boolean => lastInput === "keyboard";
+
+/** Restore keyboard focus when an update control is replaced or hidden. */
+export function watchFooterFocus(footer: HTMLElement, doc: Document = document): () => void {
+	let last: HTMLElement | null = null;
+	const onFocus = (event: Event) => {
+		const target = event.target as HTMLElement;
+		last = footer.contains(target) && lastInput !== "pointer" ? target : null;
+	};
+	const onPointer = () => { last = null; };
+	const onKey = (event: Event) => {
+		const key = event as KeyboardEvent;
+		const target = key.target as HTMLElement | null;
+		if (!MODIFIER_KEYS.has(key.key) && target && footer.contains(target)) last = target;
+	};
+	const reconcile = () => {
+		if (!last || lastInput === "pointer" || footer.closest('[inert], [aria-hidden="true"]')) return;
+		const active = doc.activeElement;
+		if (active && active !== doc.body && active !== last && active.isConnected) { last = null; return; }
+		if (footerStops(footer).includes(last)) return;
+		const stops = footerStops(footer);
+		const replacement = stops.find((el) => el.matches('[data-testid="update-pill"], [data-testid="update-capsule-button"]')) ?? stops[0];
+		last = null;
+		replacement?.focus({ preventScroll: true });
+	};
+	const observer = new MutationObserver(reconcile);
+	observer.observe(footer, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "hidden", "aria-hidden", "style"] });
+	const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reconcile);
+	resize?.observe(footer);
+	doc.addEventListener("focusin", onFocus, true);
+	doc.addEventListener("pointerdown", onPointer, true);
+	doc.addEventListener("keydown", onKey, true);
+	window.addEventListener("resize", reconcile);
+	return () => { observer.disconnect(); resize?.disconnect(); doc.removeEventListener("focusin", onFocus, true); doc.removeEventListener("pointerdown", onPointer, true); doc.removeEventListener("keydown", onKey, true); window.removeEventListener("resize", reconcile); };
+}
 
 /** A dialog whose opener is `row` (it gives focus back to its opener) has
  *  closed. A pointer close leaves focus where the pointer put it: when the

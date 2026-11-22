@@ -221,6 +221,21 @@ describe("the capsule (T3's SidebarUpdateCapsule.tsx at df09ced7)", () => {
 		assert.equal(document.activeElement === capsule, true);
 		assert.deepEqual(calls, [], "keys alone did nothing to the run");
 	});
+	it("details keep keyboard events from later document listeners and show focus rings", async () => {
+		await mount(<SidebarUpdateCapsule run={run({ localVersion: null, machines: [machine({ status: "failed" })] })} local={null} icon={null} actions={actions().actions} clock={() => NOW} />);
+		await press(q("update-capsule-button"), "Enter");
+		const action = q("update-capsule-details-action")!;
+		const dismiss = q("update-capsule-dismiss")!;
+		assert.match(action.className, /focus-visible:ring-2/);
+		assert.match(dismiss.className, /focus-visible:ring-2/);
+		let leaked = 0;
+		const listener = () => { leaked++; };
+		document.addEventListener("keydown", listener);
+		try {
+			for (const key of ["Enter", " ", "ArrowDown", "Tab"]) await press(action, key);
+			assert.equal(leaked, 0);
+		} finally { document.removeEventListener("keydown", listener); }
+	});
 	it("T3's narrow-sidebar fits: it grows from the icon, its label from 5rem, the countdown's only from 12rem, the icon kept", async () => {
 		const classes = (id: string) => q(id)?.getAttribute("class") ?? "";
 		await mount(<SidebarUpdateCapsule run={run({ localVersion: null, machines: [machine({ status: "failed" })] })} local={null} icon={null} actions={actions().actions} clock={() => NOW} />);

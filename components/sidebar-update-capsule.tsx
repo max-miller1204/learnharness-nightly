@@ -28,6 +28,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent
 import { createPortal } from "react-dom";
 import * as Popper from "@radix-ui/react-popper";
 import { useOptionalInteractionLayers } from "@/components/interaction-layers";
+import { keepFooterKeys } from "@/components/sidebar-keyboard";
 import { hasLegacyInteractionForeground } from "@/components/plugin-input-focus";
 import {
 	describeUpdateCapsule, formatUpdateElapsed, localStatusLabel, restartSecondsLeft, RUN_STATUS_LABELS,
@@ -164,11 +165,13 @@ export function SidebarUpdateCapsule({ run, local, icon, actions, clock = Date.n
 	// The app has no native Tab: within the details, Tab and Shift+Tab move between their
 	// buttons, and past either end focus goes back to the capsule, which closes them.
 	const onDetailsKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-		if (event.key !== "Tab") return;
+		if (event.key !== "Tab") { keepFooterKeys(event); return; }
+		if (event.altKey || event.ctrlKey || event.metaKey) return;
 		const inside = [...(popoverRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
 		const at = inside.indexOf(document.activeElement as HTMLButtonElement);
 		event.preventDefault();
 		event.stopPropagation();
+		event.nativeEvent.stopImmediatePropagation();
 		const next = at + (event.shiftKey ? -1 : 1);
 		if (at < 0 || next < 0 || next >= inside.length) {
 			setOpen(false);
@@ -274,11 +277,11 @@ export function SidebarUpdateCapsule({ run, local, icon, actions, clock = Date.n
 						))}
 						{view.action !== null ? (
 							<div className="mt-1 flex justify-end gap-1">
-								<button type="button" data-testid="update-capsule-details-action" onClick={runAction} className="rounded-sm border border-border px-2 py-1 text-xs hover:bg-accent">
+								<button type="button" data-testid="update-capsule-details-action" onClick={runAction} className="rounded-sm border border-border px-2 py-1 text-xs hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
 									{actionLabel}
 								</button>
 								{settled && failed && view.action !== "dismiss" ? (
-									<button type="button" data-testid="update-capsule-dismiss" onClick={() => { setOpen(false); actions.dismiss(); }} className="rounded-sm px-2 py-1 text-xs text-muted-foreground hover:text-foreground">
+									<button type="button" data-testid="update-capsule-dismiss" onClick={() => { setOpen(false); actions.dismiss(); }} className="rounded-sm px-2 py-1 text-xs text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
 										Dismiss
 									</button>
 								) : null}

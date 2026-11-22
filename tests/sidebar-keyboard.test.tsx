@@ -18,7 +18,7 @@ import { SidebarFolderRow } from "../components/sidebar-folders.tsx";
 import { InteractionLayersProvider } from "../components/interaction-layers.tsx";
 import { MenuShell } from "../components/menu-shell.tsx";
 import { capturePluginQuestionKey, ownPluginQuestionKeys } from "../components/plugin-question-keys.ts";
-import { closeMenuToRow, createNeighborHandoff, createRowFocusKeeper, focusWhenLost, isMenuKey, keepFooterKeys, keepRowKeys, releaseRowAfterPointerClose, sidebarStops, swallowNextContextMenu, tabIntoList, tabThroughFooter, tabThroughList, trackInputModality } from "../components/sidebar-keyboard.ts";
+import { closeMenuToRow, createNeighborHandoff, createRowFocusKeeper, focusWhenLost, footerStops, isMenuKey, keepFooterKeys, keepRowKeys, releaseRowAfterPointerClose, sidebarStops, swallowNextContextMenu, tabIntoList, tabThroughFooter, tabThroughList, trackInputModality, watchFooterFocus } from "../components/sidebar-keyboard.ts";
 import type { ChatListItem } from "../src/core/contracts.ts";
 
 const dom = parseHTML("<html><body></body></html>");
@@ -94,17 +94,57 @@ const focusedName = () => {
 };
 const tick = (ms = 5) => act(async () => { await new Promise((r) => setTimeout(r, ms)); });
 
-function FooterHarness({ capsule = false }: { capsule?: boolean }) {
+function FooterHarness({ capsule = false, empty = false, disabled = false, missing = false, noAction = false }: { capsule?: boolean; empty?: boolean; disabled?: boolean; missing?: boolean; noAction?: boolean }) {
 	const list = React.useRef<HTMLDivElement>(null);
 	const footer = React.useRef<HTMLDivElement>(null);
-	return <><div ref={list} onKeyDown={(e) => tabThroughList(e, list.current, null, footer.current?.querySelector('[data-testid="settings-entry"]') ?? null)}><button data-sidebar-stop="" data-testid="last-row">row</button></div>
-		<div ref={footer} data-testid="sidebar-footer" onKeyDown={(e) => { if (!tabThroughFooter(e, e.currentTarget, list.current)) keepFooterKeys(e); }}>
+	const search = React.useRef<HTMLInputElement>(null);
+	React.useEffect(() => footer.current ? watchFooterFocus(footer.current) : undefined, []);
+	return <><input ref={search} data-testid="footer-search" onKeyDown={(e) => tabIntoList(e, list.current, null, footer.current)} /><div ref={list} onKeyDown={(e) => tabThroughList(e, list.current, search.current, footerStops(footer.current)[0])}>{!empty && <button data-sidebar-stop="" data-testid="last-row">row</button>}</div>
+		<div ref={footer} data-testid="sidebar-footer" onKeyDown={(e) => { if (!tabThroughFooter(e, e.currentTarget, list.current, search.current)) keepFooterKeys(e); }}>
 			<button data-testid="settings-entry">Settings</button>
-			{capsule ? <><button data-testid="update-capsule-button">Update</button><button data-testid="update-capsule-action">Later</button></> : <button data-testid="update-pill">Update</button>}
+			{missing ? null : capsule ? <><button data-testid="update-capsule-button">Update</button>{!noAction && <button data-testid="update-capsule-action">Later</button>}</> : <button aria-disabled={disabled} data-testid="update-pill">Update</button>}
 		</div></>;
 }
 
 describe("sidebar footer keyboard order", () => {
+	it("walks from empty search through an aria-disabled update and back", async () => {
+		await render(<FooterHarness empty disabled />);
+		byId("footer-search").focus();
+		await press(byId("footer-search"), "Tab");
+		assert.equal(focusedName(), "settings-entry");
+		await press(byId("settings-entry"), "Tab");
+		assert.equal(focusedName(), "update-pill");
+		assert.equal(await press(byId("update-pill"), "Tab"), false);
+		await press(byId("update-pill"), "Tab", { shiftKey: true });
+		await press(byId("settings-entry"), "Tab", { shiftKey: true });
+		assert.equal(focusedName(), "footer-search");
+	});
+	it("hands keyboard focus to the replacement and then Settings", async () => {
+		await render(<FooterHarness />); usingKeyboard(); byId("update-pill").focus();
+		await act(async () => { root!.render(<FooterHarness capsule />); }); await tick();
+		assert.equal(focusedName(), "update-capsule-button");
+		await act(async () => { root!.render(<FooterHarness missing />); }); await tick();
+		assert.equal(focusedName(), "settings-entry");
+	});
+	it("returns a removed action to the capsule, but never restores pointer focus", async () => {
+		await render(<FooterHarness capsule />); usingKeyboard(); byId("update-capsule-action").focus();
+		await act(async () => { root!.render(<FooterHarness capsule noAction />); }); await tick();
+		assert.equal(focusedName(), "update-capsule-button");
+		usingPointer(byId("update-capsule-button")); byId("update-capsule-button").focus();
+		await act(async () => { root!.render(<FooterHarness />); }); await tick();
+		assert.equal(focusedName(), null);
+	});
+	it("isolates keyboard-focused footer keys while leaving pointer Enter to the app", async () => {
+		await render(<FooterHarness />);
+		const button = byId("settings-entry");
+		const matches = button.matches.bind(button);
+		button.matches = (selector) => selector === ":focus-visible" || matches(selector);
+		for (const key of ["Enter", " ", "ArrowDown"]) {
+			reachedWindow = 0; await press(button, key); assert.equal(reachedWindow, 0, key);
+		}
+		button.matches = (selector) => selector === ":focus-visible" ? false : matches(selector);
+		reachedWindow = 0; await press(button, "Enter"); assert.equal(reachedWindow, 1);
+	});
 	for (const capsule of [false, true]) it(capsule ? "walks capsule actions" : "walks the update pill", async () => {
 		await render(<FooterHarness capsule={capsule} />);
 		byId("last-row").focus();
@@ -673,8 +713,9 @@ describe("a row deleted from the keyboard hands focus to its neighbour (#358 rou
 describe("sidebar.tsx wiring", () => {
 	it("uses the same handlers in the real list, search and menus", () => {
 		const source = readFileSync(new URL("../components/sidebar.tsx", import.meta.url), "utf8");
-		assert.match(source, /tabThroughList\(e, e\.currentTarget, searchRef\.current, footerRef\.current/);
-		assert.match(source, /if \(tabIntoList\(e, listRef\.current, walked\)\) \{ setKbdIndex\(null\); return; \}/);
+		assert.match(source, /if \(!tabThroughList\(e, e\.currentTarget, searchRef\.current, footerStops\(footerRef\.current\)\[0\]\)\) keepRowKeys\(e\);/);
+		assert.match(source, /if \(tabIntoList\(e, listRef\.current, walked, footerRef\.current\)\) \{ setKbdIndex\(null\); return; \}/);
+		assert.match(source, /if \(!tabThroughFooter\(e, e\.currentTarget, listRef\.current, searchRef\.current\)\) keepFooterKeys\(e\);/);
 		const search = source.slice(source.indexOf('data-testid="session-search"'));
 		assert.ok(search.indexOf("tabIntoList") < search.indexOf('e.key === "Escape"'), "the search's Tab is handled first");
 		// Every close of either menu goes through closeMenuToRow.

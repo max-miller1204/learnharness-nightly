@@ -133,8 +133,9 @@ submission conventions above.
   walked row, or the first match if none was walked, then leaves the field.
   **Esc** leaves the field without clearing the query.
 - **Sessions list:** **Tab** from the sessions search focuses the row the
-  **↑/↓** walk is on, else the list's first row; with no rows shown, Tab goes on
-  to the app's own Tab. In the list, **Tab** and **Shift+Tab** move through
+  **↑/↓** walk is on, else the list's first row; with no rows shown, Tab goes to
+  Settings. Shift+Tab from Settings returns to the search when no rows are shown.
+  In the list, **Tab** and **Shift+Tab** move through
   folder and session rows in order (Shift+Tab here moves back rather than
   cycling the thinking level); Shift+Tab on the first row returns to the search,
   and Tab on the last row goes to Settings, then the update control and its
