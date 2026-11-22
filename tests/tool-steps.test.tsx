@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { artifactRenderers } from "../components/artifacts/index.ts";
+import { LiveToolCard } from "../components/artifacts/live-tool-card.tsx";
 import { ToolCallCard } from "../components/artifacts/tool-call-card.tsx";
 import { capToolText, isShowImageDetails, TOOL_STEPS, toolStepHeadline, toolStepOutput } from "../src/core/tool-steps.ts";
 
@@ -61,6 +62,14 @@ describe("tool steps", () => {
 		assert.ok(!/[\u061C\u200E\u200F]/.test(html));
 		const letters = "\u0645\u0644\u0641 \u05E7\u05D5\u05D1\u05E5.txt";
 		assert.equal(toolStepHeadline("read", { path: letters }), letters, "Arabic and Hebrew letters stay as written");
+	});
+
+	it("the live card escapes every direction control in its headline and its streaming input", () => {
+		const controls = "\u061C\u200E\u200F\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069";
+		assert.equal([...controls].length, 12);
+		const html = renderToStaticMarkup(<LiveToolCard part={{ type: "tool-read", state: "input-streaming", toolCallId: "c", input: { path: `a${controls}b`, note: controls } } as never} />);
+		assert.ok(!/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/.test(html), "no raw control anywhere in the card");
+		for (const control of controls) assert.ok(html.includes(`\\u${control.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")}`), control.charCodeAt(0).toString(16));
 	});
 });
 
