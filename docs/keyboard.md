@@ -137,7 +137,8 @@ submission conventions above.
   level); Shift+Tab on the first row returns to the search, and Tab on the last
   row goes on to the app's own Tab. A focused row shows a focus ring. **Enter**
   or **Space** opens a session or expands a folder, and the **Menu** key or
-  **Shift+F10** opens the row's menu (Rename, Delete), as right-clicking does.
+  **Shift+F10** opens the row's menu (Rename, Delete), as right-clicking does;
+  **Esc** closes the menu back onto the row.
 - **Model search menus:** focus stays in search. **↑/↓** walk filtered results
   without wrap; the first ↓ starts at the first result, the first ↑ at the last.
   **Enter** picks the walked result or the first result. Editing the query resets

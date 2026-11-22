@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { MenuShell } from "@/components/menu-shell";
-import { isMenuKey, sidebarStopProps, tabIntoList, tabThroughList } from "@/components/sidebar-keyboard";
+import { closeMenuToRow, isMenuKey, sidebarStopProps, tabIntoList, tabThroughList } from "@/components/sidebar-keyboard";
 import { DeleteFolderDialog, DeleteSessionDialog, folderDeleteCopy, type DeleteDialogCopy } from "@/components/delete-session-dialog";
 import { leaveDeletedSession, SESSIONS_DELETED_EVENT } from "@/components/session-deletion";
 import type { ChatDeleteMode, ThemeMode } from "@/src/core";
@@ -1061,7 +1061,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 				    (owner ruling — no more). MenuShell owns placement/focus/arrow
 				    cycling; the dismissal effect above owns the contract. */}
 				{ctxChatId !== null && (
-					<MenuShell onClose={() => { setCtxChatId(null); return "closed"; }}
+					<MenuShell onClose={() => { closeMenuToRow("session-context-menu", ctxAnchorRef.current, () => setCtxChatId(null)); return "closed"; }}
 						anchorRef={ctxAnchorRef}
 						testid="session-context-menu"
 						preferredSide="down"
@@ -1127,7 +1127,7 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 				    Delete only removes folders that are empty everywhere and
 				    otherwise explains why, keeping the menu open. */}
 				{ctxFolderId !== null && (
-					<MenuShell onClose={() => { setCtxFolderId(null); return "closed"; }}
+					<MenuShell onClose={() => { closeMenuToRow("folder-context-menu", folderAnchorRef.current, () => setCtxFolderId(null)); return "closed"; }}
 						anchorRef={folderAnchorRef}
 						testid="folder-context-menu"
 						preferredSide="down"

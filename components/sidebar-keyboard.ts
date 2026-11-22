@@ -62,3 +62,19 @@ export function tabThroughList(event: TabEvent, list: Element | null, search: HT
 	next.focus();
 	return true;
 }
+
+/** Close a row's context menu; when focus was in it (the keyboard was using
+ *  it), focus goes back to the row, as T3's native context menus give it
+ *  back. MenuShell popups leave focus return to their owner
+ *  (docs/dialog-overlay-contract.md); a pointer that closed the menu by
+ *  focusing something else keeps that focus. */
+export function closeMenuToRow(menuTestid: string, row: HTMLElement | null, close: () => void): void {
+	const menu = document.querySelector(`[data-testid="${menuTestid}"]`);
+	const focusInMenu = !!menu && menu.contains(document.activeElement);
+	close();
+	if (!focusInMenu || !row) return;
+	setTimeout(() => {
+		const now = document.activeElement;
+		if ((!now || now === document.body || !now.isConnected) && row.isConnected) row.focus({ preventScroll: true });
+	}, 0);
+}

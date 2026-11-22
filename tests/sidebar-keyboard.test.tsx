@@ -15,7 +15,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
 import { SessionRow } from "../components/sidebar.tsx";
 import { SidebarFolderRow } from "../components/sidebar-folders.tsx";
-import { isMenuKey, sidebarStops, tabIntoList, tabThroughList } from "../components/sidebar-keyboard.ts";
+import { closeMenuToRow, isMenuKey, sidebarStops, tabIntoList, tabThroughList } from "../components/sidebar-keyboard.ts";
 import type { ChatListItem } from "../src/core/contracts.ts";
 
 const dom = parseHTML("<html><body></body></html>");
@@ -138,11 +138,44 @@ describe("session rows from the keyboard", () => {
 		assert.equal(isMenuKey({ key: "F10", shiftKey: true, altKey: false, ctrlKey: false, metaKey: false }), true);
 	});
 
+	it("a menu the keyboard was using gives focus back to its row when it closes; a pointer's new focus stays", async () => {
+		await mount();
+		const tick = () => act(async () => { await new Promise((r) => setTimeout(r, 5)); });
+		const menuFor = () => {
+			const menu = document.createElement("div");
+			menu.setAttribute("data-testid", "session-context-menu");
+			const item = document.createElement("button");
+			menu.appendChild(item);
+			document.body.appendChild(menu);
+			return { menu, item };
+		};
+		// Esc with focus in the menu: the menu unmounts, focus returns to the row.
+		let { menu, item } = menuFor();
+		focused = item;
+		closeMenuToRow("session-context-menu", rowOf("c1"), () => { menu.remove(); focused = undefined; });
+		await tick();
+		assert.equal(focusedName(), "c1");
+		// A click elsewhere moved focus first: it stays there.
+		({ menu, item } = menuFor());
+		focused = byId("session-search");
+		closeMenuToRow("session-context-menu", rowOf("c1"), () => menu.remove());
+		await tick();
+		assert.equal(focusedName(), "session-search");
+		// Focus in the menu, but the close put it somewhere real: not taken back.
+		({ menu, item } = menuFor());
+		focused = item;
+		closeMenuToRow("session-context-menu", rowOf("c1"), () => { menu.remove(); focused = byId("rename-field"); });
+		await tick();
+		assert.equal(focusedName(), "rename-field", "Rename's own field keeps focus");
+	});
+
 	it("sidebar.tsx wires the same handlers into the real list and search", () => {
 		const source = readFileSync(new URL("../components/sidebar.tsx", import.meta.url), "utf8");
 		assert.match(source, /data-testid="session-rows" onKeyDown=\{\(e\) => \{ tabThroughList\(e, e\.currentTarget, searchRef\.current\); \}\}/);
 		assert.match(source, /if \(tabIntoList\(e, listRef\.current\)\) return;/);
 		const search = source.slice(source.indexOf('data-testid="session-search"'));
 		assert.ok(search.indexOf("tabIntoList") < search.indexOf('e.key === "Escape"'), "the search's Tab is handled first");
+		assert.match(source, /closeMenuToRow\("session-context-menu", ctxAnchorRef\.current, /);
+		assert.match(source, /closeMenuToRow\("folder-context-menu", folderAnchorRef\.current, /);
 	});
 });
