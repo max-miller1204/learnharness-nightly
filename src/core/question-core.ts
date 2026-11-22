@@ -503,6 +503,15 @@ export interface AnswerRequest {
 export const CONFIDENCE_STOPS: readonly number[] = [0, 30, 50, 70, 90, 100];
 export const DEFAULT_CONFIDENCE_INDEX = 2;
 
+/** The confidence an answered card shows: a quiz answer's own, rounded to a whole number as
+ * buildAnswer stores it, when it is a finite number from 0 to 100. A skipped quiz, an "I don't
+ * know" answer, other kinds, a record without one and any other value show none. */
+export function shownConfidence(answer: Partial<Pick<QuestionAnswerData, "kind" | "dismissed" | "dontKnow" | "confidence">>): number | undefined {
+	const value = answer.confidence;
+	if (answer.kind !== "quiz" || answer.dismissed || answer.dontKnow || typeof value !== "number" || !Number.isFinite(value)) return;
+	return value >= 0 && value <= 100 ? Math.round(value) : undefined;
+}
+
 // ─── dock selection (the client state machine, pure for tests) ─────────────
 
 /** The question dock's selection state (0-based indices in display order). */

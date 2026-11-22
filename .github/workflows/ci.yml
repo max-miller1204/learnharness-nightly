@@ -65,8 +65,9 @@ jobs:
           fi
           # A pull request checks out GitHub's merge commit, so its first parent
           # is the base branch and the diff is the PR's change. --no-renames
-          # lists a rename as both its old and new path.
-          if ! git diff --name-only --no-renames HEAD^1 HEAD > "$RUNNER_TEMP/changed-paths"; then
+          # lists a rename as both its old and new path, and -z separates the
+          # paths with NUL so Git never quotes a name.
+          if ! git diff -z --name-only --no-renames HEAD^1 HEAD > "$RUNNER_TEMP/changed-paths"; then
             echo "Could not diff against the base. Running every job."
             decide
           fi
