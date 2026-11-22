@@ -141,10 +141,14 @@ submission conventions above.
   focus ring. **Enter** or **Space** opens a session, or expands or collapses a
   folder. The **Menu** key or **Shift+F10** opens the row's menu, as
   right-clicking does: Rename, Export as Markdown…, Delete… and the extraction
-  block for a session; Rename, New subfolder and Delete for a folder. **Esc**
-  closes the menu back onto the row, and so do its actions once they finish
-  (Rename's field, New subfolder's field and the Delete dialog give focus back to
-  the row). A focused row that disappears hands focus to the next row.
+  block for a session; Rename, New subfolder and Delete for a folder. A menu
+  opened or closed from the keyboard gives focus back to its row: **Esc** closes
+  it onto the row, and so do its actions once they finish (Rename's field, New
+  subfolder's field and the Delete dialog). A menu opened by a right-click and
+  closed with the pointer leaves focus where the pointer put it. A row deleted
+  from the keyboard hands focus to the next row still shown, else the previous
+  one, and so does a focused row that disappears. Shift, Ctrl, Alt and Meta
+  chords on a row go on to the app's shortcuts.
 - **Model search menus:** focus stays in search. **↑/↓** walk filtered results
   without wrap; the first ↓ starts at the first result, the first ↑ at the last.
   **Enter** picks the walked result or the first result. Editing the query resets

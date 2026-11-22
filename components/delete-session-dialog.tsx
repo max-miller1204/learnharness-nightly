@@ -81,12 +81,9 @@ export function DeleteSessionDialog({
 	chat,
 	onClose,
 	onDeleted,
-	returnFocusFallback,
 }: {
 	/** The session up for deletion; null = closed. */
 	chat: Pick<ChatListItem, "id" | "title"> | null;
-	/** Where focus goes on close when the opener (a menu item) is gone: the row (#302). */
-	returnFocusFallback?: HTMLElement;
 	onClose: () => void;
 	/** Success path — the sidebar owns navigation + list patching. */
 	onDeleted: (id: string, mode: ChatDeleteMode, graphRevision: number) => void;
@@ -152,7 +149,7 @@ export function DeleteSessionDialog({
 				onTraces={(next) => setTraces(next)}
 				onClose={onClose}
 				onRun={() => void run()}
-				renderFrame={(frame) => <HostDialog open frame={frame} returnFocusFallback={returnFocusFallback} onClose={() => {
+				renderFrame={(frame) => <HostDialog open frame={frame} onClose={() => {
 					if (busy) return "blocked";
 					onClose(); return "closed";
 				}} backdropProps={{ className: "fixed inset-0 z-50 flex items-center justify-center bg-background/80" }}>{frame.props.children}</HostDialog>}
@@ -275,11 +272,8 @@ export function DeleteFolderDialog({
 	onDeleted,
 	onPartlyDeleted,
 	onStale,
-	returnFocusFallback,
 }: {
 	folder: { id: string; name: string; copy: DeleteDialogCopy; scope: FolderDeletionScope } | null;
-	/** Where focus goes on close when the opener (a menu item) is gone: the folder row (#302). */
-	returnFocusFallback?: HTMLElement;
 	onStale: (message: string) => void;
 	onClose: () => void;
 	onDeleted: (result: { deletedChatIds: string[]; graphRevision: number }) => void;
@@ -344,7 +338,7 @@ export function DeleteFolderDialog({
 				onTraces={(next) => setTraces(next)}
 				onClose={onClose}
 				onRun={() => void run()}
-				renderFrame={(frame) => <HostDialog open frame={frame} returnFocusFallback={returnFocusFallback} onClose={() => {
+				renderFrame={(frame) => <HostDialog open frame={frame} onClose={() => {
 					if (busy) return "blocked";
 					onClose(); return "closed";
 				}} backdropProps={{ className: "fixed inset-0 z-50 flex items-center justify-center bg-background/80" }}>{frame.props.children}</HostDialog>}
