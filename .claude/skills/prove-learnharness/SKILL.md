@@ -141,6 +141,7 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 **Could fool you**:
 - the transcript can show text before it is stored: `web-teach.mjs` also reads `data/chats/<id>.json`.
 - the question card shuffles its options on purpose: compare them as a set.
+- a single-select option's text includes its letter badge ("ABlue", since c3ff55ff): a read of `textContent` sees no "Blue", the pick never happens and the drive times out on both sides (every plan from #322 to this fix was BLOCKED that way). `scripts/question-options.mjs` reads the label without the badge and the letters on their own (`optionLetters`, diffed against base).
 - one session hides "lists only the newest": the drive uses a unique goal per run and checks the count before and after.
 - one session also hides the list's order: a list sorted oldest first passed every drive (audit 2026-11-21). `api-check.mjs` makes three sessions, then a turn on the first, and records the order before and after (`listOrder`); `web-teach.mjs` does the same in the rendered sidebar (`sidebarOrder`). The turn tells ordering by last activity from ordering by creation.
 - a Retry button that is there but does nothing passed a probe that only looked for it (audit 2026-11-21): `probes.mjs` C presses Retry by mouse and from the keyboard (focus, Enter), and each counts only once its one `POST /api/chat` stream has closed, the question card is up and Retry is gone.

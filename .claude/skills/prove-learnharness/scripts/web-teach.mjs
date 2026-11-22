@@ -44,6 +44,7 @@ const SIDE_DIR = path.dirname(instPath);
 const OUT = path.join(SIDE_DIR, "web-teach");
 fs.mkdirSync(OUT, { recursive: true });
 import { signIn, signInPage } from "./sign-in.mjs";
+import { clickOption, readOptions } from "./question-options.mjs";
 signIn(inst);
 const APP = inst.APP_URL;
 const REPO = path.resolve(import.meta.dirname, "../../../..");
@@ -217,10 +218,13 @@ try {
 	// Exact, not "contains": a lost final newline or last line is a different file.
 	step("read tool results sent back to the model are the fixture files, byte for byte", toolMsg?.role === "tool" && toolText === fixture && nonlMsg?.role === "tool" && nonl !== null && nonlText === nonl, { note: `fixture ${toolText.length}/${fixture.length} chars, no-final-newline fixture ${nonlText.length}/${nonl?.length ?? "missing"} chars` });
 	result.observations.readResults = [`fixture equal ${toolText === fixture} (${toolText.length} chars)`, `no-final-newline fixture equal ${nonl !== null && nonlText === nonl} (${nonlText.length} chars)`];
-	const options = await page.$$eval('[data-testid="question-dock"] [role="radio"]', (els) => els.map((e) => e.textContent.trim()));
+	// Labels without their letter badges (scripts/question-options.mjs).
+	const shown = await readOptions(page);
 	// The card shuffles options on purpose, so compare them as a set.
-	options.sort();
+	const options = shown.map((o) => o.label).sort();
 	step("question card shows the scenario's options", JSON.stringify(options) === JSON.stringify(["Blue", "Red"]), { note: JSON.stringify(options) });
+	// The badges follow on-screen order (A, B, ...), whatever the shuffle.
+	result.observations.optionLetters = shown.map((o) => o.letter ?? "none");
 	await budgetsHere("/chat/<chat> (question)");
 	await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
 	const dock = await page.evaluate(() => ({ shifts: window.__proveDockShifts, afterEnterMs: window.__proveDockAt === null ? null : Math.round(window.__proveDockAt - window.__proveEnterAt) }));
@@ -229,8 +233,7 @@ try {
 	step("no layout shift comes from the dock while the question arrives", outsideInput && dock.shifts.length === 0, { note: `question dock mounted ${dock.afterEnterMs ?? "?"} ms after Enter (needs > 1000); dock shifts ${JSON.stringify(dock.shifts)}` });
 
 	// 3. answer it
-	const radios = await page.$$('[data-testid="question-dock"] [role="radio"]');
-	for (const r of radios) if ((await r.evaluate((e) => e.textContent.trim())) === "Blue") await r.click();
+	if (!(await clickOption(page, "Blue"))) step("the option Blue can be picked", false, { note: JSON.stringify(shown) });
 	await page.click('[data-testid="question-dock"] form button[type="submit"]');
 	await page.waitForFunction(() => document.body.innerText.includes("zz-prove-it acknowledged your answer"), { timeout: turnMs });
 	await shot("03-answered");
