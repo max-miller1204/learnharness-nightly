@@ -21,6 +21,7 @@ const inst = Object.fromEntries(fs.readFileSync(instPath, "utf8").split("\n").fi
 const OUT = path.join(path.dirname(instPath), "probes");
 fs.mkdirSync(OUT, { recursive: true });
 import { signIn, signInPage } from "./sign-in.mjs";
+import { clickOption } from "./question-options.mjs";
 signIn(inst);
 const APP = inst.APP_URL;
 const puppeteer = createRequire(path.join(REPO, "package.json"))("puppeteer-core");
@@ -97,7 +98,7 @@ try {
 	await fake("/__prove/reset");
 	const idB = await newSession(`zz-prove-it ${Date.now().toString(36)} double submit probe`);
 	await page.waitForFunction(() => document.querySelector('[data-testid="question-dock"]')?.textContent?.includes("zz-prove-it: which colour"), { timeout: 60_000 });
-	for (const r of await page.$$('[data-testid="question-dock"] [role="radio"]')) if ((await r.evaluate((e) => e.textContent.trim())) === "Blue") await r.click();
+	if (!(await clickOption(page, "Blue"))) throw new Error("no option labelled Blue (scripts/question-options.mjs reads labels without their letter badge)");
 	await page.focus('[data-testid="question-dock"] form button[type="submit"]');
 	await page.keyboard.press("Enter");
 	await page.keyboard.press("Enter");
