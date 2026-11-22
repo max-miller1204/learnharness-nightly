@@ -27,6 +27,7 @@ const mapStorage = (map: Map<string, string>) => ({
 	removeItem: (key: string) => { map.delete(key); },
 });
 const keyOf = (id: string) => COMPOSER_DRAFT_KEY_PREFIX + id;
+const writes: string[] = []; // every request that isn't a read (a send would be one)
 const storedText = (id: string) => { const raw = values.get(keyOf(id)); return raw === undefined ? undefined : (JSON.parse(raw) as { text: string }).text; };
 const saveDraft = (id: string, text: string) => values.set(keyOf(id), JSON.stringify({ text, at: Date.now() }));
 
@@ -34,7 +35,7 @@ let fixture: Awaited<ReturnType<typeof mountPluginChrome>> | undefined;
 let savedObserver: PropertyDescriptor | undefined;
 let savedSession: PropertyDescriptor | undefined;
 beforeEach(async () => {
-	values.clear(); session.clear();
+	values.clear(); session.clear(); writes.length = 0;
 	savedObserver = Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver");
 	savedSession = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
 	Object.assign(globalThis, { ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } });
@@ -49,8 +50,9 @@ beforeEach(async () => {
 			Object.defineProperty(prototype, "getAnimations", { configurable: true, value: () => [] });
 			return () => { for (const { object, key, descriptor } of saved) { if (descriptor) Object.defineProperty(object, key, descriptor); else Reflect.deleteProperty(object, key); } };
 		},
-		fetch: async (input) => {
+		fetch: async (input, init) => {
 			const url = String(input);
+			if ((init?.method ?? "GET") !== "GET") writes.push(`${init?.method} ${url}`);
 			const chat = /^\/api\/chats\/(\w+)$/.exec(url);
 			if (chat) return Response.json({ id: chat[1], messages: [] });
 			if (url === "/api/models") return Response.json({ providers: [], models: [], slots: {} });
@@ -129,12 +131,28 @@ describe("the composer draft in the production Chat", () => {
 		assert.equal(storedText("a"), "the opening message", "it is now the session's draft");
 	});
 
-	it("puts an interrupted opening (already attempted) ahead of an older draft", async () => {
-		saveDraft("a", "an older draft");
+	it("shows an interrupted opening (already attempted) for the learner to resend, never reposting it", async () => {
 		assert.ok(stashOpeningPrompt("a", "the opening message", true));
 		await open("a"); // the session the page is on: its opening runs
 		await settle();
 		assert.equal(composer().textContent, "the opening message");
+		assert.deepEqual(writes, [], "nothing was sent");
+	});
+
+	it("keeps the learner's edit of a failed opening over the stashed opening text when they come back (#362 round 2)", async () => {
+		assert.ok(stashOpeningPrompt("a", "the opening message"));
+		await open("a");
+		await settle();
+		assert.equal(composer().textContent, "the opening message", "delivery failed: the text waits for a retry");
+		await type("the opening message, edited for the retry");
+		await open("b"); // leaving saves the edit
+		assert.equal(storedText("a"), "the opening message, edited for the retry");
+		await open("a"); // back: the attempted handover is still stashed
+		await settle();
+		assert.equal(composer().textContent, "the opening message, edited for the retry", "the edit wins");
+		await open("b");
+		assert.equal(storedText("a"), "the opening message, edited for the retry", "and isn't overwritten");
+		assert.deepEqual(writes, [], "a failed opening is never reposted");
 	});
 
 	it("restores the draft of an established session opened from an old ?prompt= link", async () => {

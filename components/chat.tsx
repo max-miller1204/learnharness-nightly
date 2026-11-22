@@ -913,13 +913,20 @@ export function Chat({
 				}
 				openingDraftRef.current = prompt!;
 				if (entry?.attempted || initiallyInFlight) {
-					applyText(prompt!); // Interrupted start: the learner explicitly resends.
+					// Interrupted or failed start: never reposted, the learner resends.
+					// A draft saved for this session wins over the stashed opening text:
+					// it is the opening text or the learner's edit of it, saved after the
+					// attempt (only this session's Chat writes it, and the attempt is the
+					// first thing its first mount does).
+					const saved = readComposerDraft(chatId);
+					if (saved) showText(saved);
+					else applyText(prompt!);
 					return;
 				}
 				deliverOpeningPrompt(prompt!);
 			},
 		);
-	}, [chatId, initialPrompt, initialMessages, initiallyInFlight, surfaceTarget, deliverOpeningPrompt, applyText]);
+	}, [chatId, initialPrompt, initialMessages, initiallyInFlight, surfaceTarget, deliverOpeningPrompt, applyText, showText]);
 
 	useEffect(() => {
 		if (!hasConfirmedConversation) return;

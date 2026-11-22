@@ -16,12 +16,21 @@ class TabStorage {
 	view = new Map<string, string>();
 	failGet = false;
 	failSet = false;
+	/** Keys whose reads throw. */
+	failKeys = new Set<string>();
+	/** At most this many keys: a new one beyond it is refused (a full store). */
+	limit: number | null = null;
+	/** Runs before each read (another tab writing in between). */
+	beforeGet: ((key: string) => void) | null = null;
 	constructor(readonly shared: Map<string, string>) { this.catchUp(); }
 	catchUp() { this.view = new Map(this.shared); }
 	get length() { return this.view.size; }
 	key(i: number) { return [...this.view.keys()][i] ?? null; }
-	getItem(key: string) { if (this.failGet) throw new Error("SecurityError"); return this.view.get(key) ?? null; }
-	setItem(key: string, value: string) { if (this.failSet) throw new Error("QuotaExceededError"); this.view.set(key, value); this.shared.set(key, value); }
+	getItem(key: string) { this.beforeGet?.(key); if (this.failGet || this.failKeys.has(key)) throw new Error("SecurityError"); return this.view.get(key) ?? null; }
+	setItem(key: string, value: string) {
+		if (this.failSet || (this.limit !== null && !this.view.has(key) && this.view.size >= this.limit)) throw new Error("QuotaExceededError");
+		this.view.set(key, value); this.shared.set(key, value);
+	}
 	removeItem(key: string) { if (this.failSet) throw new Error("SecurityError"); this.view.delete(key); this.shared.delete(key); }
 }
 const shared = new Map<string, string>();
@@ -53,11 +62,13 @@ function asTab<T>(tab: TabStorage, fn: () => T): T {
 }
 
 beforeEach(() => {
-	tabA.failGet = false; tabA.failSet = false;
+	tabA.failGet = false; tabA.failSet = false; tabA.failKeys.clear(); tabA.limit = null; tabA.beforeGet = null;
 	flushComposerDrafts();
 	shared.clear(); tabA.catchUp();
 });
-afterEach(() => { tabA.failGet = false; tabA.failSet = false; flushComposerDrafts(); });
+afterEach(() => { tabA.failGet = false; tabA.failSet = false; tabA.failKeys.clear(); tabA.limit = null; tabA.beforeGet = null; flushComposerDrafts(); });
+const ids = () => [...shared.keys()].filter((key) => key.startsWith(COMPOSER_DRAFT_KEY_PREFIX)).map((key) => key.slice(COMPOSER_DRAFT_KEY_PREFIX.length));
+const put = (id: string, text: string, at: number) => { shared.set(keyOf(id), JSON.stringify({ text, at })); };
 
 describe("composer drafts per session", () => {
 	it("keep each session's draft apart, under its own key, and bring it back", () => {
@@ -107,6 +118,99 @@ describe("composer drafts per session", () => {
 		writeComposerDraft("chat_b", "the sent text, and more typed after");
 		clearComposerDraftIfSent("chat_b", "the sent text");
 		assert.equal(readComposerDraft("chat_b"), "the sent text, and more typed after", "a newer draft stays");
+	});
+
+	it("clear a sent draft whose read failed at that moment once storage can be read again, unless it changed (#362 round 2)", () => {
+		put("chat_a", "the sent text", 1);
+		put("chat_b", "the sent text", 1);
+		put("chat_c", "the sent text", 1);
+		tabA.catchUp();
+		for (const id of ["chat_a", "chat_b", "chat_c"]) tabA.failKeys.add(keyOf(id));
+		for (const id of ["chat_a", "chat_b", "chat_c"]) assert.doesNotThrow(() => clearComposerDraftIfSent(id, "the sent text"));
+		assert.equal(stored("chat_a")?.text, "the sent text", "nothing could be done yet");
+		tabA.failKeys.clear();
+		assert.equal(readComposerDraft("chat_a"), "", "the next read applies the waiting clear");
+		assert.equal(stored("chat_a"), undefined);
+		put("chat_b", "edited in another tab since", 2); tabA.catchUp();
+		flushComposerDrafts();
+		assert.equal(stored("chat_b")?.text, "edited in another tab since", "a draft that changed stays");
+		writeComposerDraft("chat_c", "typed here since");
+		flushComposerDrafts();
+		assert.equal(stored("chat_c")?.text, "typed here since", "a newer edit replaces the waiting clear");
+		put("chat_d", "the sent text", 1); tabA.catchUp();
+		tabA.failKeys.add(keyOf("chat_d"));
+		clearComposerDraftIfSent("chat_d", "the sent text");
+		tabA.failKeys.clear();
+		flushComposerDrafts();
+		assert.equal(stored("chat_d"), undefined, "a flush applies it too");
+	});
+
+	it("save a re-edited draft as the newest when storage comes back, keep at most the cap unsaved, and keep no clear with no storage at all (#362 round 2)", () => {
+		tabA.failSet = true;
+		writeComposerDraft("chat_a", "first");
+		writeComposerDraft("chat_b", "second");
+		writeComposerDraft("chat_a", "first, edited last");
+		flushComposerDrafts();
+		tabA.failSet = false;
+		flushComposerDrafts();
+		assert.ok(stored("chat_a")!.at > stored("chat_b")!.at, "the last edit is stamped newest");
+		shared.clear(); tabA.catchUp();
+		tabA.failSet = true;
+		for (let i = 0; i < MAX_COMPOSER_DRAFTS + 5; i++) writeComposerDraft(`unsaved_${i}`, `draft ${i}`);
+		tabA.failSet = false;
+		flushComposerDrafts();
+		assert.equal(ids().length, MAX_COMPOSER_DRAFTS);
+		assert.ok(!ids().includes("unsaved_0") && ids().includes(`unsaved_${MAX_COMPOSER_DRAFTS + 4}`), "the newest unsaved drafts were kept");
+		shared.clear(); tabA.catchUp();
+		win.localStorage = null as unknown as Storage; // no storage at all
+		writeComposerDraft("chat_x", "");
+		put("chat_x", "saved by another tab meanwhile", 1); tabA.catchUp();
+		win.localStorage = tabA as unknown as Storage;
+		flushComposerDrafts();
+		assert.equal(stored("chat_x")?.text, "saved by another tab meanwhile", "no stale clear was kept to remove it");
+	});
+
+	it("take a new draft into a store already at the cap, or full, by evicting the oldest first (#362 round 2)", () => {
+		for (let i = 0; i < MAX_COMPOSER_DRAFTS; i++) put(`old_${i}`, `old ${i}`, 100 + i);
+		tabA.catchUp();
+		tabA.limit = MAX_COMPOSER_DRAFTS; // and storage refuses a 51st key
+		writeComposerDraft("chat_new", "the new draft");
+		flushComposerDrafts();
+		assert.equal(stored("chat_new")?.text, "the new draft");
+		assert.equal(ids().length, MAX_COMPOSER_DRAFTS);
+		assert.ok(!ids().includes("old_0"), "the oldest went");
+		// Full for another reason (other keys fill it): evict the oldest draft and try once more.
+		shared.clear();
+		for (let i = 0; i < 3; i++) put(`small_${i}`, `small ${i}`, 10 + i);
+		shared.set("some-other-app-key", "x".repeat(10));
+		tabA.catchUp();
+		tabA.limit = 4;
+		writeComposerDraft("chat_full", "fits after one eviction");
+		flushComposerDrafts();
+		assert.equal(stored("chat_full")?.text, "fits after one eviction");
+		assert.ok(!ids().includes("small_0") && ids().includes("small_2"));
+	});
+
+	it("evict unreadable drafts first, and never a draft another tab changed since the scan (#362 round 2)", () => {
+		for (let i = 0; i < MAX_COMPOSER_DRAFTS - 1; i++) put(`old_${i}`, `old ${i}`, 100 + i);
+		shared.set(keyOf("corrupt_1"), "{bad");
+		shared.set(keyOf("corrupt_2"), JSON.stringify({ text: "x", at: "soon" }));
+		tabA.catchUp();
+		writeComposerDraft("chat_new", "the new draft");
+		flushComposerDrafts();
+		assert.ok(!ids().includes("corrupt_1") && !ids().includes("corrupt_2"), "unreadable ones count as oldest");
+		assert.ok(ids().includes("old_0") && ids().includes("chat_new"));
+		assert.equal(ids().length, MAX_COMPOSER_DRAFTS);
+		// old_0 is the oldest, but another tab saves it again between the scan and the eviction.
+		let reads = 0;
+		tabA.beforeGet = (key) => {
+			if (key !== keyOf("old_0") || ++reads !== 2) return;
+			put("old_0", "saved again in another tab", 999_999_999_999_999); tabA.catchUp();
+		};
+		writeComposerDraft("chat_newer", "one more");
+		flushComposerDrafts();
+		assert.equal(stored("old_0")?.text, "saved again in another tab", "skipped: it changed since it was looked at");
+		assert.ok(ids().includes("chat_newer"));
 	});
 
 	it("read anything missing, corrupt or of another shape as an empty draft", () => {
