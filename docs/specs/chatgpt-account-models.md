@@ -1,6 +1,6 @@
 # ChatGPT account models missing from Pi's catalog
 
-Replaces the Codex CLI part of roadmap item 20. The Codex CLI spike (see [codex-cli-provider.md](codex-cli-provider.md), parked) showed that the models the owner was missing are already offered to the ChatGPT sign-in. LearnHarness just drops them.
+Replaces the Codex CLI part of roadmap item 20. The Codex CLI spike (see [codex-cli-provider.md](https://github.com/max-miller1204/learnharness-nightly/issues/390), parked) showed that the models the owner was missing are already offered to the ChatGPT sign-in. LearnHarness just drops them.
 
 ## Problem
 

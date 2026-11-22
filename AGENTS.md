@@ -10,7 +10,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 ## Specs and docs
 
-- Specs are files at `docs/specs/<topic>.md`, and idea-to-spec publishes there.
+- New specs are GitHub issues titled `Spec: <topic>`, published by idea-to-spec and revised in place. `docs/specs/` keeps the specs of shipped work.
 - Docs and code comments hold only what stays true: no status tables, done or later lists, counts, or "currently", "not yet" or "today" claims. Specs are exempt.
 
 ## User data

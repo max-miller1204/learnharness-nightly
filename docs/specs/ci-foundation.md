@@ -90,7 +90,7 @@ The classifier gets a small `node:test` suite (`.github/scripts/ci-changes.test.
 
 ### PR-Agent (`.github/workflows/pr-agent.yml`)
 
-The approved [PR-Agent on the ChatGPT plan through a self-hosted LiteLLM](pr-agent-litellm.md) spec will replace this design when it is built.
+The approved [PR-Agent on the ChatGPT plan through a self-hosted LiteLLM](https://github.com/max-miller1204/learnharness-nightly/issues/393) spec will replace this design when it is built.
 
 - Action pinned by image digest: `docker://pragent/pr-agent:0.50.0-github_action@sha256:548e894a88071180832b2f4233f734d0acd0db1a879e2fcbaa70bac8b8372ebe` (latest release, 2026-11-07). The upstream docs' `@main` is not used.
 - Triggers: `pull_request` (`opened`, `reopened`, `ready_for_review`, `synchronize`) and `issue_comment` for `/review`, `/improve`, `/ask`. A comment runs it only when the commenter is `OWNER`, `MEMBER` or `COLLABORATOR`, so strangers on this public repo can't spend the key. Skips bot senders and PRs from forks (no secrets there).

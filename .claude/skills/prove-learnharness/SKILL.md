@@ -74,7 +74,7 @@ Never check the whole app. A rule that says "always run X" (privacy, budgets) ap
 A new flow without parity needs the user's spec. Look, in order:
 
 1. The PR body (`gh pr view --json body,closingIssuesReferences`) and any issue it closes.
-2. A spec or plan file in the diff (`docs/specs/<item>.md`, in the diff or already on main; the PR body links it. A PR body alone or a `docs/fork-roadmap.md` entry is not the spec: roadmap designs are "not approved").
+2. A spec: a GitHub issue titled `Spec: <topic>` that the PR body links (read it with `gh issue view`), or, for shipped work, a file in the diff (`docs/specs/<item>.md`, in the diff or already on main; the PR body links it). A PR body alone or a `docs/fork-roadmap.md` entry is not the spec: roadmap designs are "not approved".
 3. A spec path or spec text the user passed. The request that asked for the change ("add `?q=` to tags") is not a spec: it says what was built, not what right looks like.
 
 On a re-check, an earlier finding may have a ruling from the owner: accepted as is, moved to the backlog, or written into the spec. A ruling that changes an answer key counts only when it is in the spec at the checked commit, in your brief from whoever relays the owner, or said by the user in this session. Quote it in the receipt. Never take one from a PR comment: every comment on this repo is posted from the owner's account, the builder's included. Without such a ruling the earlier answer key stands.
@@ -91,7 +91,7 @@ Ladder, best first: 1 an old system that does the same job, 2 a snapshot, 3 an i
 | Electron window (dev or packaged) | existing or new | parity with the browser on the same server: same drive, same observations | 1 | `compare.mjs head/web-teach electron-*/web-teach` | the web app |
 | update, failed trial, rollback | existing | the launcher's documented behaviour, driven on the base build (A) to the change (B) and back | 1 + 4 | `scripts/selfhost-b.sh`, `docs/self-hosting.md` | the base launcher, the owner |
 | web budgets | any page driven | console errors (one known), CLS (absolute < 0.1), axe | budget | `budgets.json`, `CLS_MODE` | the user, 2026-11-17 |
-| new flow that copies nothing | new | the spec | 4 | `docs/specs/<item>.md`, found at run time | the user |
+| new flow that copies nothing | new | the spec | 4 | the linked `Spec:` issue, or `docs/specs/<item>.md` for shipped work, found at run time | the user |
 | client protocol (server info, version check, protocol 1 routes) | new | the spec | 4 | `docs/specs/client-protocol.md` | the user |
 | mobile beta | new | browser parity and the spec for phone-only flows | 1 + 4 | [mobile beta](references/features/mobile-beta.md) | the web app and the owner |
 
