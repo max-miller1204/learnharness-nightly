@@ -35,14 +35,29 @@ export function beginSessionDelete(chatId: string): (wasDeleted: boolean) => voi
 	};
 }
 
-/** Whether this window already knows the session was deleted. */
+/** Mark a batch of sessions as being deleted; call the returned function with
+ *  the ids the server actually removed once the DELETE settles. */
+export function beginSessionDeletes(chatIds: readonly string[]): (deletedIds: readonly string[]) => void {
+	const settles = chatIds.map((id) => [id, beginSessionDelete(id)] as const);
+	return (deletedIds) => {
+		const gone = new Set(deletedIds);
+		for (const [id, done] of settles) done(gone.has(id));
+	};
+}
+
+/** Whether this window already confirmed the session was deleted. */
 export function isSessionDeleted(chatId: string): boolean {
 	return deleted.has(chatId);
 }
 
-/** Record a session as deleted (for example when a cached view discovers 404). */
-export function markSessionDeleted(chatId: string): void {
-	deleted.add(chatId);
+/** Window event carrying session ids deleted outside the sidebar (for example,
+ *  the graph source table's deleteSessions flow) so the sidebar patches its
+ *  list and refreshes the client router cache through the same helper. */
+export const SESSIONS_DELETED_EVENT = "lh:sessions-deleted";
+
+export function notifySessionsDeleted(ids: readonly string[]): void {
+	if (ids.length === 0 || typeof window === "undefined") return;
+	window.dispatchEvent(new CustomEvent<{ ids: string[] }>(SESSIONS_DELETED_EVENT, { detail: { ids: [...ids] } }));
 }
 
 /** null for a session nobody is deleting (read now, no extra tick).

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { MenuShell } from "@/components/menu-shell";
 import { DeleteFolderDialog, DeleteSessionDialog, folderDeleteCopy, type DeleteDialogCopy } from "@/components/delete-session-dialog";
-import { leaveDeletedSession } from "@/components/session-deletion";
+import { leaveDeletedSession, SESSIONS_DELETED_EVENT } from "@/components/session-deletion";
 import type { ChatDeleteMode, ThemeMode } from "@/src/core";
 import { DumbbellIcon, FolderPlusIcon, PanelLeftCloseIcon, PlusIcon, SearchIcon, SettingsIcon } from "lucide-react";
 import { ActivitySection } from "@/components/activity-dock";
@@ -623,12 +623,22 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 	// (first-load polish). replace, not push (T3 Code's rule): Back must not
 	// lead to a session that no longer exists, and refresh drops older
 	// history entries for deleted sessions from Next's client router cache.
-	// Then announce the graph revision so the graph view refetches.
+	// Then announce the graph revision so the graph view refetches (deletion
+	// is the one writer the status poll can't see - no run ever transitions
+	// some→none).
 	const dropDeletedChats = useCallback((deletedChatIds: string[]) => {
 		const gone = new Set(deletedChatIds);
 		setChats((prev) => (prev ? prev.filter((c) => !gone.has(c.id)) : prev));
 		leaveDeletedSession(pathname, gone, onViewedSessionDeleted, (href) => router.replace(href), () => router.refresh());
 	}, [pathname, router, onViewedSessionDeleted]);
+	useEffect(() => {
+		const onSessionsDeleted = (e: Event) => {
+			const ids = (e as CustomEvent<{ ids?: string[] }>).detail?.ids;
+			if (ids?.length) dropDeletedChats(ids);
+		};
+		window.addEventListener(SESSIONS_DELETED_EVENT, onSessionsDeleted);
+		return () => window.removeEventListener(SESSIONS_DELETED_EVENT, onSessionsDeleted);
+	}, [dropDeletedChats]);
 	const onDeleted = useCallback(
 		(id: string, _mode: ChatDeleteMode, graphRevision: number) => {
 			setDeleting(null);

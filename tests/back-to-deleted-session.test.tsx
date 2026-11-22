@@ -17,6 +17,7 @@ import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared
 import { PathnameContext } from "next/dist/shared/lib/hooks-client-context.shared-runtime.js";
 import { installModalDom } from "./modal-dom.ts";
 import { AppShell, SidebarProvider } from "../components/sidebar.tsx";
+import { ChainTableOverlay } from "../components/chain-table.tsx";
 import { ActivityProvider } from "../components/activity-dock.tsx";
 import { AppearanceProvider } from "../components/settings/appearance.tsx";
 import { PluginsProvider } from "../components/plugins.tsx";
@@ -25,7 +26,7 @@ import { InteractionLayersProvider } from "../components/interaction-layers.tsx"
 import { SettingsDialogProvider } from "../components/settings/settings-dialog.tsx";
 import { SessionGate } from "../components/session-gate.tsx";
 import { Chat } from "../components/chat.tsx";
-import { beginSessionDelete, isSessionDeleted } from "../components/session-deletion.ts";
+import { beginSessionDelete, isSessionDeleted, sessionReadHold } from "../components/session-deletion.ts";
 import { DEFAULT_THEME } from "../src/core/themes.ts";
 import type { ChatListItem, LhMessage } from "../src/core/index.ts";
 
@@ -58,6 +59,12 @@ Object.assign(dom.window, {
 	cancelAnimationFrame: (id: ReturnType<typeof setTimeout>) => clearTimeout(id),
 });
 Object.defineProperty(dom.window.HTMLElement.prototype, "getAnimations", { configurable: true, value: () => [] });
+// linkedom does not toggle checkbox.checked on click; mirror browser behavior.
+const nativeInputClick = dom.window.HTMLInputElement.prototype.click;
+dom.window.HTMLInputElement.prototype.click = function () {
+	if (this.type === "checkbox") this.checked = !this.checked;
+	nativeInputClick.call(this);
+};
 const restoreModalDom = installModalDom(dom);
 after(() => restoreModalDom());
 
@@ -104,6 +111,7 @@ async function mountShellWithRouter(config: {
 	sessions: Map<string, { item: ChatListItem; transcript: string }>;
 	folder?: { id: string; name: string; chatIds: string[] };
 	initialHistory: string[];
+	homeNode?: React.ReactNode;
 }) {
 	const statsRequests: Array<{ url: string; status: number }> = [];
 	let refreshCalls = 0;
@@ -114,6 +122,17 @@ async function mountShellWithRouter(config: {
 		if (url === "/api/chats") {
 			return Response.json({ chats: [...config.sessions.values()].map((s) => s.item) });
 		}
+		if (url === "/api/graph/sources" && method === "DELETE") {
+			const body = JSON.parse(String(init?.body ?? "{}")) as { sourceIds?: string[]; deleteSessions?: boolean };
+			if (body.deleteSessions) {
+				for (const id of body.sourceIds ?? []) config.sessions.delete(id);
+			}
+			return Response.json({
+				organization: { version: 1, folders: [], placements: {} },
+				sources: [...config.sessions.values()].map((s) => ({ id: s.item.id, kind: "chat", label: s.item.title, createdAt: s.item.createdAt })),
+				graphRevision: 3,
+			});
+		}
 		if (url === "/api/graph/sources") {
 			const folder = config.folder;
 			const existing = folder ? folder.chatIds.filter((id) => config.sessions.has(id)) : [];
@@ -123,7 +142,7 @@ async function mountShellWithRouter(config: {
 					folders: folder && existing.length > 0 ? [{ id: folder.id, name: folder.name, parentId: null, createdAt: "2026-01-01T00:00:00.000Z" }] : [],
 					placements: Object.fromEntries(existing.map((id) => [id, { folderId: folder!.id }])),
 				},
-				sources: [...config.sessions.values()].map((s) => ({ id: s.item.id, kind: "chat", title: s.item.title })),
+				sources: [...config.sessions.values()].map((s) => ({ id: s.item.id, kind: "chat", label: s.item.title, createdAt: s.item.createdAt })),
 			});
 		}
 		if (url.startsWith("/api/chats/") && method === "DELETE") {
@@ -153,7 +172,7 @@ async function mountShellWithRouter(config: {
 	}) as typeof fetch;
 
 	const renderServerPage = (path: string): React.ReactNode => {
-		if (path === "/") return <div data-testid="home-page">Home</div>;
+		if (path === "/") return config.homeNode ?? <div data-testid="home-page">Home</div>;
 		if (path.startsWith("/chat/")) {
 			const id = path.slice("/chat/".length);
 			const session = config.sessions.get(id);
@@ -368,15 +387,51 @@ describe("Back to a deleted session (#328)", () => {
 		assert.deepEqual(app.statsRequests.slice(statsBeforeSecondBack), [], "no 404 stats request for older A");
 	});
 
-	it("SessionGate blocks a cached deleted session from mounting and calls router.refresh()", async () => {
-		const id = "chat_gate_deleted";
-		const settle = beginSessionDelete(id);
+	it("graph source Delete with deleteSessions marks deleted sessions and refreshes so Back to A renders not-found", async () => {
+		const id = "chat_graph_source_a";
+		const sessions = new Map([
+			[id, { item: makeChatItem(id, "Graph Session A"), transcript: "Transcript of graph A" }],
+		]);
+		const app = await mountShellWithRouter({
+			sessions,
+			initialHistory: [`/chat/${id}`, "/"],
+			homeNode: <ChainTableOverlay open nodes={[]} chains={[]} sessions={{ [id]: "Graph Session A" }} fileSources={{}} onClose={() => {}} />,
+		});
+
+		const rowBox = document.querySelector<HTMLElement>(`[data-testid='cluster-checkbox-${id}']`);
+		assert.ok(rowBox, "source row checkbox rendered in ChainTableOverlay");
+		await act(async () => { rowBox.click(); });
+		await flush();
+		await act(async () => { document.querySelector<HTMLElement>("[data-testid='chain-delete']")?.click(); });
+		await flush();
+		const delSessionsBox = document.querySelector<HTMLInputElement>("[data-testid='delete-source-sessions']");
+		assert.ok(delSessionsBox, "deleteSessions checkbox rendered");
+		await act(async () => { delSessionsBox.click(); });
+		await flush();
+		await act(async () => { document.querySelector<HTMLElement>("[data-testid='source-delete-confirm']")?.click(); });
+		await flush();
+
+		assert.equal(isSessionDeleted(id), true, "deleted session is marked via beginSessionDeletes");
+		assert.ok(app.refreshCalls >= 1, "graph source delete with deleteSessions refreshes the router cache");
+
+		const statsBeforeBack = app.statsRequests.length;
+		await app.back();
+		assert.equal(app.pathname, `/chat/${id}`);
+		assert.equal(document.querySelector(`[data-testid='transcript-${id}']`), null, "A's stale transcript must not render");
+		assert.ok(document.querySelector("[data-testid='not-found-page']"), "shows normal not-found state");
+		assert.deepEqual(app.statsRequests.slice(statsBeforeBack), [], "no 404 stats request for A");
+	});
+
+	it("SessionGate renders nothing and calls router.refresh() for a marked id, and renders children for an unmarked id", async () => {
+		const deletedId = "chat_gate_deleted";
+		const liveId = "chat_gate_live";
+		const settle = beginSessionDelete(deletedId);
 		settle(true);
 		let refreshed = 0;
 		const fetched: string[] = [];
 		globalThis.fetch = (async (input: RequestInfo | URL) => {
 			fetched.push(String(input));
-			return Response.json({ error: "Not found" }, { status: 404 });
+			return Response.json({ turns: [] });
 		}) as typeof fetch;
 
 		const router = {
@@ -388,28 +443,50 @@ describe("Back to a deleted session (#328)", () => {
 		document.body.append(host);
 		const root = createRoot(host);
 		roots.push(root);
+
+		// Marked (deleted) id: renders nothing, makes no fetches, refreshes router.
 		await act(async () => {
 			root.render(
 				<AppRouterContext.Provider value={router}>
-					<SessionGate chatId={id}>
-						<CachedSessionView chatId={id} transcript="Must never mount" />
+					<SessionGate key={deletedId} chatId={deletedId}>
+						<CachedSessionView chatId={deletedId} transcript="Must never mount" />
 					</SessionGate>
 				</AppRouterContext.Provider>,
 			);
 		});
 		await flush();
 
-		assert.equal(document.querySelector(`[data-testid='transcript-${id}']`), null, "cached transcript never mounted");
+		assert.equal(document.querySelector(`[data-testid='transcript-${deletedId}']`), null, "cached transcript never mounted");
 		assert.deepEqual(fetched, [], "no API fetches ran for the deleted session");
 		assert.equal(refreshed, 1, "SessionGate asks Next to refresh into not-found");
+
+		// Unmarked (live) id: renders children normally and does not refresh.
+		await act(async () => {
+			root.render(
+				<AppRouterContext.Provider value={router}>
+					<SessionGate key={liveId} chatId={liveId}>
+						<CachedSessionView chatId={liveId} transcript="Live transcript" />
+					</SessionGate>
+				</AppRouterContext.Provider>,
+			);
+		});
+		await flush();
+
+		assert.equal(document.querySelector(`[data-testid='transcript-${liveId}']`)?.textContent, "Live transcript", "unmarked session renders its children");
+		assert.equal(refreshed, 1, "unmarked session does not trigger router.refresh()");
 	});
 
-	it("Chat hides its view and calls router.refresh() when stats returns 404 (external deletion)", async () => {
-		const id = "chat_external_404";
+	it("a transient stats 404 followed by 200 refreshes without marking or blanking a live session", async () => {
+		const id = "chat_transient_404";
+		let statsCalls = 0;
 		let refreshed = 0;
 		globalThis.fetch = (async (input: RequestInfo | URL) => {
 			const url = String(input);
-			if (url === `/api/chats/${id}?view=stats`) return Response.json({ error: "Not found" }, { status: 404 });
+			if (url === `/api/chats/${id}?view=stats`) {
+				statsCalls++;
+				if (statsCalls === 1) return Response.json({ error: "Not found" }, { status: 404 });
+				return Response.json({ turns: [] });
+			}
 			if (url === "/api/plugins") return Response.json({ plugins: [], directory: "", conflicts: [] });
 			if (url === "/api/activity") return Response.json({ jobs: [], turns: [], extractions: [] });
 			if (url === "/api/models") return Response.json({ providers: [], models: [], slots: {} });
@@ -424,37 +501,49 @@ describe("Back to a deleted session (#328)", () => {
 			back() {}, forward() {}, hmrRefresh() {}, push() {}, replace() {}, async prefetch() {},
 			refresh() { refreshed++; },
 		};
+		const renderChat = (key: string) => (
+			<AppRouterContext.Provider value={router}>
+			<PathnameContext.Provider value={`/chat/${id}`}>
+			<ServerEventsProvider connect={quietEvents}>
+				<PluginsProvider>
+					<AppearanceProvider initialAppearance={undefined} initialTheme={DEFAULT_THEME}>
+						<SidebarProvider>
+							<ActivityProvider>
+								<InteractionLayersProvider>
+									<SettingsDialogProvider>
+										<SessionGate key={key} chatId={id}>
+											<Chat chatId={id} title="Live session" initialMessages={makeMessages("Visible message")} />
+										</SessionGate>
+									</SettingsDialogProvider>
+								</InteractionLayersProvider>
+							</ActivityProvider>
+						</SidebarProvider>
+					</AppearanceProvider>
+				</PluginsProvider>
+			</ServerEventsProvider>
+			</PathnameContext.Provider>
+			</AppRouterContext.Provider>
+		);
 		const host = document.createElement("div");
 		document.body.append(host);
 		const root = createRoot(host);
 		roots.push(root);
-		await act(async () => {
-			root.render(
-				<AppRouterContext.Provider value={router}>
-				<PathnameContext.Provider value={`/chat/${id}`}>
-				<ServerEventsProvider connect={quietEvents}>
-					<PluginsProvider>
-						<AppearanceProvider initialAppearance={undefined} initialTheme={DEFAULT_THEME}>
-							<SidebarProvider>
-								<ActivityProvider>
-									<InteractionLayersProvider>
-										<SettingsDialogProvider>
-											<Chat chatId={id} title="Externally deleted" initialMessages={makeMessages("Stale message")} />
-										</SettingsDialogProvider>
-									</InteractionLayersProvider>
-								</ActivityProvider>
-							</SidebarProvider>
-						</AppearanceProvider>
-					</PluginsProvider>
-				</ServerEventsProvider>
-				</PathnameContext.Provider>
-				</AppRouterContext.Provider>,
-			);
-		});
+
+		await act(async () => { root.render(renderChat("first")); });
 		await flush();
 
-		assert.equal(document.querySelector("[data-session-surface]"), null, "Chat unmounts its stale surface on 404");
-		assert.equal(isSessionDeleted(id), true, "marks the session deleted for subsequent guards");
-		assert.equal(refreshed, 1, "refreshes the route into the server's not-found page");
+		assert.equal(statsCalls, 1, "first stats call returned 404");
+		assert.equal(refreshed, 1, "Chat calls router.refresh() so the server decides");
+		assert.equal(isSessionDeleted(id), false, "transient 404 never marks the session deleted");
+		assert.equal(sessionReadHold(id), null, "later reads are not hung by a deletion hold");
+		assert.ok(document.querySelector("[data-session-surface]"), "live session surface stays visible after a single 404");
+
+		// Simulate navigating away and back (remounting through SessionGate) when stats now returns 200.
+		await act(async () => { root.render(renderChat("second")); });
+		await flush();
+
+		assert.equal(statsCalls, 2, "second stats call ran and returned 200");
+		assert.equal(refreshed, 1, "no further refresh after 200");
+		assert.ok(document.querySelector("[data-session-surface]"), "session stays visible on subsequent visit");
 	});
 });

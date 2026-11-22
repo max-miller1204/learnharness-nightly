@@ -10,16 +10,9 @@ import { isSessionDeleted } from "@/components/session-deletion";
  *  asks the server to render the route's normal not-found state. */
 export function SessionGate({ chatId, children }: { chatId: string; children: ReactNode }) {
 	const router = useRouter();
-	const [deleted, setDeleted] = useState(() => isSessionDeleted(chatId));
+	const [deleted] = useState(() => isSessionDeleted(chatId));
 	useEffect(() => {
 		if (deleted) router.refresh();
 	}, [deleted, router]);
-	useEffect(() => {
-		const onPopState = () => {
-			if (isSessionDeleted(chatId)) setDeleted(true);
-		};
-		window.addEventListener("popstate", onPopState);
-		return () => window.removeEventListener("popstate", onPopState);
-	}, [chatId]);
 	return deleted ? null : children;
 }
