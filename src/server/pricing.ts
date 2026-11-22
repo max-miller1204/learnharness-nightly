@@ -1,25 +1,17 @@
 /** API-dollar estimates. Recorded calls store their record-time costUsd; older
  * records without it fall back to Pi's live catalog first, then the retired
  * models table. Catalog resolution is key-independent. */
-import { computeCallCost, hasRecordableCost, isUnpricedModelId, liveCatalogModel } from "../agent/pricing.ts";
+import { computeCallCost, hasRecordableCost, isKnownFreeModelId, isUnpricedModelId, liveCatalogModel, type PricedModel } from "../agent/pricing.ts";
 import { RETIRED_MODELS } from "./retired-models.ts";
 import type { CallUsage, ChatRecord, JobRecord, TurnUsage } from "../core/contracts.ts";
 import { sessionCost as foldSessionCost, turnCost as foldTurnCost, jobCost as foldJobCost } from "../core/prices.ts";
 
-function catalogModel(id: string) {
+function catalogModel(id: string): PricedModel | undefined {
 	if (isUnpricedModelId(id)) return undefined;
 	// History on a model no catalog has (Pi's bundled one or a pi.dev
 	// refresh) keeps the estimate it had when Pi dropped it.
 	return liveCatalogModel(id) ?? (Object.hasOwn(RETIRED_MODELS, id) ? RETIRED_MODELS[id] : undefined);
 }
-
-// These catalog entries route to other models, so zero rates do not describe
-// the selected model's price. The free router is explicitly free.
-const ROUTER_PLACEHOLDERS = new Set([
-	"openrouter:auto", "openrouter:openrouter/auto", "openrouter:openrouter/auto-beta",
-	"openrouter:openrouter/auto-code", "openrouter:openrouter/fusion",
-	"openrouter:openrouter/pareto-code", "openrouter:typesafe/jev-router",
-]);
 
 export function callCost(call: Partial<CallUsage>, modelId: string): number | null {
 	if (isUnpricedModelId(modelId)) return null;
@@ -28,7 +20,10 @@ export function callCost(call: Partial<CallUsage>, modelId: string): number | nu
 	}
 	const model = catalogModel(modelId);
 	const colon = modelId.indexOf(":");
-	if (model && ROUTER_PLACEHOLDERS.has(modelId) && !hasRecordableCost({ provider: modelId.slice(0, colon), id: modelId.slice(colon + 1), cost: model.cost })) return null;
+	if (model && (model.free === true || isKnownFreeModelId(modelId))) {
+		return computeCallCost(call, { cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
+	}
+	if (model && modelId.startsWith("openrouter:") && !hasRecordableCost({ provider: modelId.slice(0, colon), id: modelId.slice(colon + 1), cost: model.cost })) return null;
 	return computeCallCost(call, model);
 }
 

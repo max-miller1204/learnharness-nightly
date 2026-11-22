@@ -116,10 +116,11 @@ export function createPluginInference(
 		const spec = modelSpec(model);
 		const modelId = `${spec.provider}:${spec.id}`;
 		const dispatched = dispatchedModelOf(usage);
-		const cost = dispatched?.cost ?? liveCatalogModel(modelId)?.cost;
+		const catalog = liveCatalogModel(modelId);
+		const cost = dispatched?.cost ?? catalog?.cost;
 		const reported = providerCost(usage, { provider: spec.provider, id: spec.id });
 		const recordable = reported !== null || (cost
-			? hasRecordableCost({ provider: spec.provider, id: spec.id, cost, free: dispatched?.free })
+			? hasRecordableCost({ provider: spec.provider, id: spec.id, cost, free: dispatched?.free ?? catalog?.free })
 			: !isUnpricedModelId(modelId) && (usage.cost.total > 0 || isKnownFreeModelId(spec.id)));
 		// Explicit projection: never serialize transport models, request content,
 		// account leases, arbitrary caller properties, or credentials.

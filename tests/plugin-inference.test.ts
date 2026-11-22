@@ -599,3 +599,10 @@ test("plugin inference usage ledger omits cost for unpriced providers and $0 pla
 	assert.equal(freeRows.length, 1);
 	assert.equal(freeRows[0].usage.cost?.total, 0, "known free model keeps $0 cost in ledger");
 });
+
+test("ledger honors free metadata from the live catalog without a dispatched model", async t => {
+	const pin = { provider: "radius", id: "recursive/flint" } as const;
+	const f = fixture(t, { model: pin });
+	f.adapter.onUsage(pin, { input: 3, output: 4, cacheRead: 0, cacheWrite: 0, totalTokens: 7, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
+	assert.equal(ledger(f.directory)[0].usage.cost.total, 0);
+});

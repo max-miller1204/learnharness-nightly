@@ -232,3 +232,18 @@ test("a refresh serves a model Pi retired when pi.dev lists it again; one it doe
 		delete process.env.OPENROUTER_API_KEY;
 	}
 });
+
+test("zero-rate OpenRouter overlays are unknown unless explicitly free", async () => {
+	const { callCost } = await import("../src/server/pricing.ts");
+	const { setModelCatalogOverlay } = await import("../src/agent/models.ts");
+	const route = piModels().getModel("openrouter", "openrouter/auto")!;
+	const switchyard = { ...route, id: "nvidia/switchyard", name: "Switchyard" };
+	const freeRouter = { ...route, id: "test/metadata-router", free: true };
+	setModelCatalogOverlay(new Map([["openrouter", [switchyard, freeRouter]]]));
+	try {
+		const usage = { inputTokens: 100, outputTokens: 50 };
+		assert.equal(callCost(usage, "openrouter:nvidia/switchyard"), null);
+		assert.equal(callCost(usage, "openrouter:test/metadata-router"), 0);
+		assert.equal(callCost({ ...usage, costUsd: 0.12 }, "openrouter:test/metadata-router"), 0.12);
+	} finally { setModelCatalogOverlay(new Map()); }
+});

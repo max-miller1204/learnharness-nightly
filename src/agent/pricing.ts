@@ -11,7 +11,7 @@ import type { CallUsage } from "../core/contracts.ts";
 import { piUsageToStep, type UsageStepLike } from "../core/contracts/jobs.ts";
 import { isSubscriptionModel } from "../core/prices.ts";
 
-export type PricedModel = { cost: Model<Api>["cost"] };
+export type PricedModel = { cost: Model<Api>["cost"]; free?: boolean };
 
 /** The dispatched model metadata available when a call completes. */
 export type DispatchedModel = {
@@ -67,7 +67,10 @@ export function hasRecordableCost(model: DispatchedModel): boolean {
 
 function dispatchedCost(call: Partial<CallUsage>, model: DispatchedModel): number | null {
 	if (!hasRecordableCost(model)) return null;
-	return computeCallCost(call, { cost: model.cost! });
+	const cost = model.free === true || isKnownFreeModelId(model.id)
+		? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+		: model.cost!;
+	return computeCallCost(call, { cost });
 }
 
 export function computeCallCost(call: Partial<CallUsage>, model: PricedModel | undefined): number | null {
