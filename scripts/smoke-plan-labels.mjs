@@ -251,13 +251,19 @@ async function setFont(page, stack, size) {
 				rule.id = "smoke-label-size";
 				document.head.appendChild(rule);
 			}
-			// The matrix reads every plan block, including offscreen ones. Lay out
-			// just those older rows while forcing sizes so their probes observe
-			// the new metrics before we compare the labels with their boxes.
-			rule.textContent = z ? `
+			// The matrix reads every plan block, including offscreen ones. An older
+			// row offscreen is skipped (content-visibility: auto): the browser lays
+			// out none of it and its probe's ResizeObserver hears nothing, so its
+			// boxes keep the last font until it comes into view and measures again
+			// (checked by "offscreen plan · font switch, then scrolled into view").
+			// Reading such a diagram compares stale boxes with text forced into the
+			// new font, a race on transcript height and so on platform fonts. Keep
+			// those rows laid out at every size, the default 11px included, so each
+			// check reads what the diagram shows when it is seen.
+			rule.textContent = `
 				[data-older-transcript-row]:has([data-testid="plan-block-full"]) { content-visibility: visible; }
-				:is(svg[aria-label="Plan diagram"], svg[data-plan-probe]) .text-xs { font-size: ${z} !important; }
-			` : "";
+				${z ? `:is(svg[aria-label="Plan diagram"], svg[data-plan-probe]) .text-xs { font-size: ${z} !important; }` : ""}
+			`;
 		},
 		stack,
 		size,
@@ -398,6 +404,38 @@ async function checkFontInvalidation(page, origin) {
 	}
 }
 
+/** A font switch while the plan's older row is skipped offscreen (content-visibility:
+ *  auto, nothing laid out, no ResizeObserver notification): once it scrolls into view
+ *  its labels fit the new font. The real app's path; the matrix keeps rows laid out. */
+async function checkOffscreenSwitch(page, origin) {
+	await openChat(page, origin, FIXTURE_CHAT);
+	await page.evaluate(() => {
+		document.getElementById("smoke-label-size")?.remove();
+		document.documentElement.style.removeProperty("--font-prose");
+		const log = document.querySelector('[role="log"]');
+		if (log) log.scrollTop = log.scrollHeight;
+	});
+	await settle(page);
+	const skipped = await page.$eval("[data-testid=plan-block-full]", (block) => {
+		const row = block.closest("[data-older-transcript-row]");
+		// The row is the root of the skip; the block inside it is what is skipped.
+		return !!row && getComputedStyle(row).contentVisibility === "auto" && !block.checkVisibility({ contentVisibilityAuto: true });
+	});
+	if (!skipped) {
+		// The precondition depends on the transcript being taller than the window.
+		failures.push({ label: "offscreen plan", bad: ["the plan's row was not skipped offscreen, so this case did not run"] });
+		console.log("FAIL offscreen plan: the plan's row was not skipped offscreen");
+		return;
+	}
+	await page.evaluate((stack) => document.documentElement.style.setProperty("--font-prose", `${stack}, var(--font-sans3), ui-sans-serif, system-ui, sans-serif`), FONTS[1][1]);
+	await settle(page);
+	await page.$eval("[data-testid=plan-block-full]", (el) => el.scrollIntoView({ block: "start" }));
+	await settle(page);
+	check("offscreen plan · font switch, then scrolled into view · JetBrains Mono · 11px", await measureLabels(page, "[data-testid=plan-block-full]"));
+	await page.evaluate(() => document.documentElement.style.removeProperty("--font-prose"));
+	await settle(page);
+}
+
 /** Element screenshot after scrolling it to the top and letting layout settle. */
 async function shoot(page, selector, file) {
 	await page.$eval(selector, (el) => el.scrollIntoView({ block: "start" }));
@@ -466,6 +504,10 @@ async function main() {
 			}
 			await setFont(page, null, null);
 		}
+
+		// 1b. An offscreen plan the font changes under: skipped while offscreen, it is
+		// measured again in the new font as it comes into view.
+		await checkOffscreenSwitch(page, origin);
 
 		// 2. Popup (the live plan) on the hard titles, default + mono + big.
 		await openChat(page, origin, HARD_CHAT);
