@@ -4,7 +4,7 @@
  * There, another origin of the same site (another port on the same LAN
  * address) could load an `<img>` or `<script>` from `/api` that carries the
  * sign-in cookie and no Origin. With no Fetch Metadata and no Origin, a cookie
- * request that reaches the API now needs a Referer naming this host, as the
+ * request that reaches the API needs a Referer naming this host, as the
  * app's own fetches and EventSource streams send. Pages stay reachable, as
  * navigations. Bearer clients skip the rule. docs/specs/login-pairing.md
  */
@@ -14,7 +14,7 @@ import { describe, it } from "node:test";
 import { NextRequest } from "next/server";
 import { proxy } from "../proxy.ts";
 import { listClients, sessionState } from "../src/server/auth-routes.ts";
-import { cookieOriginAllowed } from "../src/server/auth.ts";
+import { CROSS_SITE_REFUSED, REFERER_REQUIRED, cookieOriginAllowed } from "../src/server/auth.ts";
 import { cookieName, mintToken } from "./helpers/auth-data-dir.ts";
 
 const lan = "http://192.168.1.5:3774";
@@ -49,8 +49,30 @@ describe("cookieOriginAllowed with no Fetch Metadata", () => {
 	});
 });
 
+describe("cookieOriginAllowed: paths and Referer hosts, table-driven", () => {
+	const cases: [string, Record<string, string>, string, boolean][] = [
+		// [what, headers, pathname, allowed]: no Fetch Metadata, no Origin, GET.
+		["/api itself", {}, "/api", false],
+		["/api/", {}, "/api/", false],
+		["/apiX is a page", {}, "/apiX", true],
+		["an encoded slash", {}, "/api%2Fchats", false],
+		["an encoded slash, lowercase", {}, "/api%2fchats", false],
+		["a page with an encoded slash", {}, "/chat%2Fabc", true],
+		["a bracketed IPv6 Referer naming this host", { host: "[fe80::1]:3774", referer: "http://[fe80::1]:3774/chat/abc" }, "/api/chats", true],
+		["a bracketed IPv6 Referer on another port", { host: "[fe80::1]:3774", referer: "http://[fe80::1]:8080/" }, "/api/chats", false],
+		["a bracketed IPv6 Referer for another address", { host: "[fe80::1]:3774", referer: "http://[fe80::2]:3774/" }, "/api/chats", false],
+		["a Referer with userinfo naming this host (userinfo isn't the host)", { referer: `http://user:pass@${host}/settings` }, "/api/chats", true],
+		["a Referer whose userinfo looks like this host", { referer: `http://${host}@evil.example/` }, "/api/chats", false],
+	];
+	for (const [what, headers, pathname, expected] of cases) {
+		it(`${what}: ${expected ? "allowed" : "refused"}`, () => {
+			assert.equal(cookieOriginAllowed(new Headers({ host, ...headers }), "GET", pathname), expected);
+		});
+	}
+});
+
 describe("the login gate on a plain-HTTP LAN address", () => {
-	it("refuses a sibling origin's originless subresource to the API, for any method, and keeps the app working", () => {
+	it("refuses a sibling origin's originless subresource to the API, for any method, and keeps the app working", async () => {
 		const cookie = `${cookieName()}=${mintToken()}`;
 		const send = (pathname: string, headers: Record<string, string> = {}, method = "GET") =>
 			proxy(new NextRequest(lan + pathname, { method, headers: { cookie, host, ...headers } }));
@@ -62,6 +84,9 @@ describe("the login gate on a plain-HTTP LAN address", () => {
 			}
 		}
 		for (const method of ["POST", "PUT", "PATCH", "DELETE"]) assert.equal(send("/api/chats", {}, method).status, 403, `${method} with no Origin`);
+		// The refusal says what it needs, not "cross-site": a pasted /api URL is refused the same way.
+		assert.deepEqual(await send("/api/chats/chat_1/markdown").json(), { error: REFERER_REQUIRED });
+		assert.deepEqual(await send("/api/chats", { origin: sibling }, "POST").json(), { error: CROSS_SITE_REFUSED }, "a foreign Origin is cross-site");
 		// The app's own requests.
 		assert(passes(send("/api/events", { referer: `${lan}/chat/abc` })), "EventSource");
 		assert(passes(send("/api/chats", { referer: `${lan}/` })), "a GET fetch");
@@ -81,7 +106,9 @@ describe("the login gate on a plain-HTTP LAN address", () => {
 		const get = (pathname: string, headers: Record<string, string> = {}) => new Request(lan + pathname, { headers: { cookie, host, ...headers } });
 		assert.deepEqual(await sessionState(get("/api/auth/session")).json(), { authenticated: false }, "an originless subresource is signed out");
 		assert.equal((await sessionState(get("/api/auth/session", { referer: `${lan}/pair` })).json() as { authenticated: boolean }).authenticated, true);
-		assert.equal(listClients(get("/api/auth/clients", { referer: `${sibling}/` })).status, 403);
+		const refused = listClients(get("/api/auth/clients", { referer: `${sibling}/` }));
+		assert.equal(refused.status, 403);
+		assert.deepEqual(await refused.json(), { error: REFERER_REQUIRED });
 		assert.equal(listClients(get("/api/auth/clients", { referer: `${lan}/settings` })).status, 200);
 	});
 });

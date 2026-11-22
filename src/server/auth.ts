@@ -103,7 +103,11 @@ function sameHost(value: string, headers: Headers): boolean {
  * or `<script>` on another origin of the same site (another port on the same
  * LAN address) would otherwise carry the cookie to the API. The app's own
  * fetches, EventSource streams and subresources send a same-origin Referer;
- * pages need none, as navigations. Bearer tokens skip it. `pathname` is null
+ * pages need none, as navigations. Two browser cases pay for this: over
+ * plain HTTP, an /api URL pasted into a new tab (a markdown download) sends
+ * neither header and gets 403; and a browser with Referer turned off can
+ * pair, but then every API read, the event stream and downloads get 403
+ * (cookieRefusal says why). Bearer tokens skip the rule. `pathname` is null
  * for a URL that doesn't parse, and left out only by a layout. */
 export function cookieOriginAllowed(headers: Headers, method?: string, pathname?: string | null): boolean {
 	const site = headers.get("sec-fetch-site");
@@ -148,10 +152,17 @@ export type AuthResult =
 export const SIGN_IN_REQUIRED = "Sign in required: pair this device with a pairing link (run `lh pair` on the server machine).";
 
 export const CROSS_SITE_REFUSED = "Cross-site requests to LearnHarness are not allowed.";
+export const REFERER_REQUIRED = "This request needs a Referer from this server; open it from the app.";
+
+/** Why a refused cookie was refused, in words. With no Fetch Metadata and no
+ *  Origin, only the Referer rule refuses, and that isn't always cross-site
+ *  (a pasted /api URL, a browser with Referer off). */
+export const cookieRefusal = (headers: Headers): string =>
+	headers.get("sec-fetch-site") === null && headers.get("origin") === null ? REFERER_REQUIRED : CROSS_SITE_REFUSED;
 
 export function authenticate(request: HeaderSource, dataDir: string = authDataDir()): AuthResult {
 	const credential = readCredential(request);
-	if (credential === "refused") return { ok: false, status: 403, error: CROSS_SITE_REFUSED };
+	if (credential === "refused") return { ok: false, status: 403, error: cookieRefusal(request.headers) };
 	if (!credential) return { ok: false, status: 401, error: SIGN_IN_REQUIRED };
 	const session = verifyToken(dataDir, credential.token);
 	if (!session) return { ok: false, status: 401, error: SIGN_IN_REQUIRED };

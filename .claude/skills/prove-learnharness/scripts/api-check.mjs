@@ -90,14 +90,18 @@ try {
 	step("read routes answer with their expected status", READS.every(([route, , want = 200]) => result.observations.readShapes.some((s) => s.startsWith(`GET ${route} ${want} `))), `${READS.length} routes`);
 
 	// A build with login (docs/specs/login-pairing.md) replaces the Host and
-	// cross-site checks with a credential and the cookie rule (Fetch Metadata
-	// first, then T3's Origin fallback).
+	// cross-site checks with a credential and the cookie rule: Fetch Metadata
+	// first; without it an Origin must name the host, and with no Origin a
+	// cookie request to /api needs a Referer naming the host (issue #323).
+	// These probes send no Fetch Metadata, like a plain-HTTP browser.
 	const cookie = inst.APP_TOKEN ? { cookie: `lh_session_${inst.APP_PORT}=${inst.APP_TOKEN}` } : {};
 	const refusals = inst.APP_TOKEN ? [
 		["no credential is 401", "GET", "/api/settings", { signedOut: true }, 401],
 		["no credential on a page shows the pairing screen", "GET", "/chat/new", { signedOut: true }, 200],
 		["a forged bearer token is 401", "GET", "/api/settings", { signedOut: true, headers: { authorization: "Bearer forged.token" } }, 401],
-		["foreign Host is allowed with a login", "GET", "/api/settings", { signedOut: true, headers: { host: "evil.example", ...cookie } }, 200],
+		// No Host allowlist: a page served under any host name works, with its own Referer.
+		["foreign Host is allowed with a login", "GET", "/api/settings", { signedOut: true, headers: { host: "evil.example", referer: "http://evil.example/", ...cookie } }, 200],
+		["a cookie API read with no Origin and no Referer is refused", "GET", "/api/settings", { signedOut: true, headers: { host: "evil.example", ...cookie } }, 403],
 		["cross-site Origin write with a cookie is refused", "POST", "/api/chats", { signedOut: true, headers: { origin: "http://evil.example", "sec-fetch-site": "cross-site", ...cookie }, body: "{}" }, 403],
 		// Issue #303: fetch metadata only, no Origin. A build that accepts it
 		// creates a session, which the loop below deletes again.
