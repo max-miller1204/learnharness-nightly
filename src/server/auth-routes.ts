@@ -15,10 +15,11 @@ import {
 	NEVER_EXPIRES,
 	revokeOthers,
 	revokeSession,
+	tokenState,
 	type SessionRecord,
 } from "../../selfhost/src/auth-store.ts";
 import { layout } from "../../selfhost/src/paths.ts";
-import { authDataDir, authenticate, clientInfo, CREDENTIAL_HEADERS, sessionCookie } from "./auth.ts";
+import { authDataDir, authenticate, clientInfo, cookieRuleAllows, CREDENTIAL_HEADERS, CROSS_SITE_REFUSED, presentedCookie, sessionCookie } from "./auth.ts";
 import type { OAuthErrorResponse, SessionStateResponse, TokenExchangeResponse } from "../client-protocol/index.ts";
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
@@ -63,11 +64,36 @@ export function sessionState(request: Request): Response {
 	return json({ authenticated: true, sessionId: result.session.id, ...sessionExpiry(result.session) } satisfies SessionStateResponse);
 }
 
-/** POST /api/auth/browser-session (public): body { credential } -> session cookie. */
+export const ALREADY_SIGNED_IN = "already_signed_in";
+export const STORE_UNREADABLE = "store_unreadable";
+const storeUnreadable = () => json({ error: "The login store couldn't be read. Try again in a moment.", reason: STORE_UNREADABLE }, 503, { "Retry-After": "1" });
+
+/** POST /api/auth/browser-session (public): body { credential, replace? } ->
+ * session cookie. The cookie rule applies before the code is read, so a
+ * request from another site's page neither sets the cookie nor spends a
+ * code. JSON only, so a plain form can't post one. A browser whose cookie
+ * names a live session keeps it: 409 already_signed_in, code unspent,
+ * unless the body says replace: true, which /pair sends only after the
+ * person chooses "Sign in with this link" (components/pair-screen.tsx). A
+ * store that can't be read is never taken for signed out: every path (a
+ * cookie, none, replace) answers 503 store_unreadable and spends nothing. */
 export async function browserSession(request: Request): Promise<Response> {
-	const { credential } = await jsonBody(request);
+	if (!cookieRuleAllows(request)) return json({ error: CROSS_SITE_REFUSED }, 403);
+	if (request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json") return json({ error: "Expected JSON." }, 415);
+	const { credential, replace } = await jsonBody(request);
 	if (typeof credential !== "string" || !credential) return json({ error: "Expected a pairing code." }, 400);
-	const claimed = await unlocked((options) => claimPairingCode(authDataDir(), credential, clientInfo(request), options));
+	const held = replace === true ? undefined : presentedCookie(request.headers);
+	if (held) {
+		const current = tokenState(authDataDir(), held);
+		if (current.state === "active") return json({ error: "This browser is already signed in.", reason: ALREADY_SIGNED_IN }, 409);
+		if (current.state === "unknown") return storeUnreadable();
+	}
+	let claimed: ReturnType<typeof claimPairingCode> | typeof BUSY;
+	// claimPairingCode reads everything it needs (pairing links, sessions,
+	// the signing key) before it spends the code, so a read that throws has
+	// spent nothing. A write that fails after that is answered the same way.
+	try { claimed = await unlocked((options) => claimPairingCode(authDataDir(), credential, clientInfo(request), options)); }
+	catch { return storeUnreadable(); }
 	if (claimed === BUSY) return busy();
 	if (!claimed.ok) return json({ error: "That code is wrong, expired or already used. Make a new one.", reason: claimed.reason }, 401);
 	return json(

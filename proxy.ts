@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { authDataDir, authenticate, CREDENTIAL_HEADERS, readCredential, sessionCookie } from "./src/server/auth.ts";
+import { authDataDir, authenticate, CREDENTIAL_HEADERS, isApiPath, reachesApi, readCredential, sessionCookie } from "./src/server/auth.ts";
 import { NEVER_EXPIRES, touchLastSeen } from "./selfhost/src/auth-store.ts";
 import { SERVER_INFO_PATH } from "./src/client-protocol/index.ts";
 import { protocolRefusal } from "./src/server/server-info.ts";
@@ -10,7 +10,7 @@ import { protocolRefusal } from "./src/server/server-info.ts";
  * server info a client reads before pairing (docs/specs/client-protocol.md). */
 export const PUBLIC_PATHS = new Set(["/pair", "/api/health", "/api/auth/session", "/api/auth/browser-session", "/oauth/token", SERVER_INFO_PATH]);
 
-export const isApiPath = (pathname: string) => pathname === "/api" || pathname.startsWith("/api/");
+export { isApiPath };
 
 /** The login gate (T3 Code's model, no localhost bypass). Signed-out page
  * requests are rewritten to the pairing screen, because LearnHarness pages
@@ -41,7 +41,8 @@ export function proxy(request: NextRequest) {
 	// A paired desktop can be revoked between its session check and a page
 	// request. Native bearer clients recover in their own shell.
 	const credential = readCredential(request);
-	if (isApiPath(pathname) || (credential && credential !== "refused" && credential.via === "bearer")) {
+	// Decoded, as Next routes it: `/%61pi/...` is an API request too.
+	if (reachesApi(pathname) || (credential && credential !== "refused" && credential.via === "bearer")) {
 		return NextResponse.json({ error: result.error }, { status: result.status, headers: CREDENTIAL_HEADERS });
 	}
 	// Next normalizes the loopback hostname to localhost. If its router

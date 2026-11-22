@@ -48,7 +48,7 @@ To open the server from another device on a network you trust, pass a later host
 npm run dev -- -H 0.0.0.0     # then browse to http://<this machine's IP>:3000
 ```
 
-A signed-in device has full access. Browser cookies are refused on cross-site requests (T3 Code's Origin rule); scripts send `Authorization: Bearer <token>` instead. Tests and smoke scripts write a session straight into the store with `issueSession` from `selfhost/src/auth-store.ts`.
+A signed-in device has full access. Browser cookies are refused on requests from another site's page, except a top-level load of a page (not `/api/`), by the rule in `src/server/auth.ts` (`cookieOriginAllowed`); scripts send `Authorization: Bearer <token>` instead. Tests and smoke scripts write a session straight into the store with `issueSession` from `selfhost/src/auth-store.ts`.
 
 ## Configuration
 

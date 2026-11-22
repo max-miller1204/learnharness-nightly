@@ -126,6 +126,20 @@ const nextConfig: NextConfig = {
 	// Framework-free core lives in src/ (plain TS, imported by routes and CLI alike).
 	// The pi engine must stay external: its providers are runtime-loaded Node
 	// code (undici streams, catalog data) that breaks when bundled into routes.
+	// No page may be framed, by another site or a same-site sibling: a framed
+	// page (the pairing confirmation, any button) can be disguised. Nothing in
+	// LearnHarness frames its own pages: the one iframe is the lesson demo's
+	// sandboxed srcDoc, plugins render in the page, and the desktop and phone
+	// apps load pages as top-level views. Every response, pages and API alike.
+	async headers() {
+		return [{
+			source: "/:path*",
+			headers: [
+				{ key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+				{ key: "X-Frame-Options", value: "DENY" },
+			],
+		}];
+	},
 	serverExternalPackages: [
 		"@earendil-works/pi-ai",
 		"@earendil-works/pi-agent-core",
