@@ -44,14 +44,36 @@ try {
 	await page.goto(`${APP}/chat/new`, { waitUntil: "domcontentloaded" });
 	const composer = '[data-testid="composer"] [contenteditable="true"]';
 	await page.waitForSelector(composer, { timeout: 30_000 });
-	await page.click(composer);
-	await page.keyboard.type(GOAL);
+	// Typing before the page has hydrated loses the first keys (the goal's start,
+	// "zz-prove-it", then never matches the fake model's rule): type, read the
+	// composer back, and start over until the whole goal is there.
+	const typed = async () => {
+		for (let attempt = 0; attempt < 6; attempt++) {
+			await page.click(composer);
+			await page.keyboard.down("Control"); await page.keyboard.press("a"); await page.keyboard.up("Control");
+			await page.keyboard.press("Backspace");
+			await page.keyboard.type(GOAL);
+			if ((await page.$eval(composer, (el) => el.textContent?.trim())) === GOAL) return true;
+			await new Promise((r) => setTimeout(r, 1000));
+		}
+		return false;
+	};
+	const setupError = (name, note) => { step(`SETUP ERROR (not a product result): ${name}`, false, note); throw new Error(`setup: ${name}`); };
+	if (!(await typed())) setupError("the goal never reached the composer intact", "typed text did not match after 6 tries");
 	await page.keyboard.press("Enter");
 	await page.waitForFunction(() => /\/chat\/chat_/.test(location.pathname), { timeout: turnMs });
-	// The failed call settles, then the fallback reply ends the turn.
-	await page.waitForFunction(() => document.body.innerText.includes("zz-prove-it fallback reply."), { timeout: turnMs });
+	const seenPrompt = await page.waitForFunction((goal) => document.querySelector('[data-testid="user-message"]')?.textContent?.includes(goal), { timeout: turnMs }, GOAL).then(() => true, () => false);
+	if (!seenPrompt) setupError("the sent prompt is not in the transcript intact", GOAL);
+	// The model must have been asked for the failing read, or there is nothing to judge.
+	const modelLog = () => fs.existsSync(inst.MODEL_LOG) ? fs.readFileSync(inst.MODEL_LOG, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+	const fired = await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="tool-call-card"] .text-error, [data-testid="tool-retry"]')), { timeout: turnMs }).then(() => true, () => false);
+	if (!fired || !modelLog().some((r) => r.rule === "read-missing-file")) setupError("the fake model never called read", `rules fired: ${modelLog().map((r) => r.rule).join(",")}`);
 
 	const observe = async (label) => {
+		if (label === "live") {
+			const early = await page.evaluate(() => !document.body.innerText.includes("zz-prove-it fallback reply."));
+			if (!early) setupError("the live check ran after the next model reply arrived", "fallback reply already on the page");
+		}
 		const seen = await page.evaluate(() => {
 			const card = document.querySelector('[data-testid="tool-call-card"][data-tool="read"]');
 			const name = card?.querySelector("summary span");
@@ -73,9 +95,9 @@ try {
 		return seen;
 	};
 	await observe("live");
+	await page.waitForFunction(() => document.body.innerText.includes("zz-prove-it fallback reply."), { timeout: turnMs });
 	await page.reload({ waitUntil: "domcontentloaded" });
-	await page.waitForSelector('[data-testid="tool-call-card"]', { timeout: turnMs });
-	await new Promise((r) => setTimeout(r, 500));
+	await page.waitForFunction(() => document.body.innerText.includes("zz-prove-it fallback reply."), { timeout: turnMs });
 	await observe("reloaded");
 } catch (e) {
 	step("drive", false, String(e?.stack ?? e).slice(0, 500));

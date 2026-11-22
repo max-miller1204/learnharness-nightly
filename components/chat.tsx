@@ -13,7 +13,7 @@ import { usePageSurfaceBoundary, SurfaceRegion } from "./plugin-surfaces";
 import { findSurfaceBoundary } from "./plugin-surface-targets";
 import { scheduleOpeningSubmission } from "./plugin-submission-opening";
 import { activeProblemOccurrenceOf, buildAnswer, toClientQuestion, type PluginSubmission, type PluginSubmissionTarget, type QuestionData } from "@/src/core";
-import { QUESTION_TOOLS, validatePluginBuiltinSubmissionAnswer } from "@/src/core";
+import { failedCallShowsItsError, validatePluginBuiltinSubmissionAnswer } from "@/src/core";
 import { SessionNotFoundError, visibleQueuedSteers } from "@/components/session-core";
 import { SetupDialog } from "@/components/setup-dialog";
 import { Hint } from "@/components/ui/hint";
@@ -1959,25 +1959,23 @@ export function Chat({
 													phases[mi] === "teach" &&
 													phases[mi - 1] !== "teach" &&
 													teachStepIndex(m.parts) === pi;
-												// A QUESTION tool call that errored BACK TO THE AGENT
-												// (validation failure, malformed args) is invisible work: the
-												// agent reads the error and retries. Owner ruling 2026-09-26:
-												// surface that retry loop as one quiet line (question tools
-												// render null, so a flailing quiz loop read as a stall). Only
-												// question tools: any other failed call (a read of a missing
-												// file) is not retried by the harness and shows its card with
-												// the Error section. Aborts are terminal, so they stay silent.
-												if (
-													part.state === "output-error" &&
-													part.type.startsWith("tool-") &&
-													(QUESTION_TOOLS as readonly string[]).includes(part.type.slice("tool-".length)) &&
-													part.errorText !== "Operation aborted"
-												) {
-													return (
-														<SystemLine key={`retry-${pi}`} testId="tool-retry">
-															Retrying…
-														</SystemLine>
-													);
+												// A failed tool call. An aborted one is terminal, nothing retries it, so
+												// it stays silent for every tool. Any other failure of a tool that shows
+												// its own error (read, grep, a shared image) falls through to its card.
+												// A call that errored BACK TO THE AGENT (a question, a practice problem,
+												// a plugin problem, a job dispatch: validation failure, malformed args)
+												// is invisible work: the agent reads the error and retries, and its card
+												// would hold hidden answers or draw nothing. Owner ruling 2026-09-26:
+												// surface that retry loop as one quiet line.
+												if (part.state === "output-error" && part.type.startsWith("tool-")) {
+													if (part.errorText === "Operation aborted") return null;
+													if (!failedCallShowsItsError(part.type.slice("tool-".length))) {
+														return (
+															<SystemLine key={`retry-${pi}`} testId="tool-retry">
+																Retrying…
+															</SystemLine>
+														);
+													}
 												}
 												switch (part.type) {
 													case "text": {

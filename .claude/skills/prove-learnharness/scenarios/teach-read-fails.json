@@ -1,5 +1,5 @@
 {
-	"_comment": "One turn whose only tool call fails: a read of a file that does not exist. The harness does not retry it, so the transcript must show the read card with its Error, never 'Retrying…' (#335). Used by web-tool-error.mjs. The next model request, which carries the failed result, gets the fallback reply.",
+	"_comment": "One turn whose only tool call fails: a read of a file that does not exist. The harness does not retry it, so the transcript must show the read card with its Error, never 'Retrying…' (#335). Used by web-tool-error.mjs. The next model request, which carries the failed result, is answered after 4 s (delayMs), so the drive can look at the failed step while it is still the live end of the transcript.",
 	"models": [
 		"prove-strong",
 		"prove-cheap",
@@ -23,6 +23,18 @@
 						}
 					}
 				]
+			}
+		},
+		{
+			"id": "after-failed-read",
+			"match": {
+				"lastRole": "tool",
+				"hasTool": "read"
+			},
+			"times": 1,
+			"reply": {
+				"text": "zz-prove-it fallback reply.",
+				"delayMs": 4000
 			}
 		}
 	],

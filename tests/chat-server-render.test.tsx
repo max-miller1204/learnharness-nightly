@@ -76,14 +76,19 @@ describe("the chat view's server render", () => {
 		});
 	}
 
-	// Issue #335: a failed call shows its card's Error, not "Retrying…". Only a
-	// question tool whose error goes back to the agent (it renders nothing of its
-	// own) gets the quiet retry line.
+	// Issue #335: a failed call that shows its own card (the tool steps and a shared
+	// image) shows that card's Error, not "Retrying…". A call that errored back to
+	// the agent (questions, practice, plugin problems, dispatches, send_to_user) gets
+	// the quiet retry line: its card would draw nothing, a success, or the hidden
+	// answer in its arguments. An aborted call is silent for every tool.
 	const failure = (id: string, toolCallId: string, toolName: string, text: string) => ({ id, role: "toolResult", toolCallId, toolName, content: [{ type: "text", text }], isError: true, timestamp: 2 });
-	const renderFailed = (name: string, args: unknown, text: string) => renderToString(<Shell pathname="/chat/chat_failed"><Chat chatId="chat_failed" title="Failed call" kind="teach" initialMessages={[user, assistant("m_fail", [call("call_fail", name, args)]), failure("m_fail_result", "call_fail", name, text)] as never} /></Shell>);
-	for (const tool of ["read", "grep", "ls", "find", "bash"]) {
+	const renderCalls = (kind: "teach" | "practice", calls: { id: string; name: string; args: unknown; error?: string }[]) => renderToString(<Shell pathname="/chat/chat_failed"><Chat chatId="chat_failed" title="Failed call" kind={kind} initialMessages={[user, assistant("m_fail", calls.map(c => call(c.id, c.name, c.args))), ...calls.filter(c => c.error !== undefined).map(c => failure(`r_${c.id}`, c.id, c.name, c.error!))] as never} /></Shell>);
+	const renderFailed = (name: string, args: unknown, text: string, kind: "teach" | "practice" = "teach") => renderCalls(kind, [{ id: "call_fail", name, args, error: text }]);
+	const SECRET = "HIDDEN-MODEL-SOLUTION-7731";
+	const hidden = { statement: "Compute 1 + 1.", mode: "recall", modelSolution: SECRET, payload: { tests: [SECRET] } };
+	for (const [tool, args] of [["read", { path: "missing.md" }], ["grep", { pattern: "x" }], ["ls", {}], ["find", { pattern: "x" }], ["list_sessions", {}], ["list_propositions", { sessionId: "x" }], ["show_image", { path: "missing.png" }]] as const) {
 		it(`shows a failed ${tool} call's card and its error, not Retrying`, () => {
-			const html = renderFailed(tool, { path: "missing.md", pattern: "x" }, "ENOENT: no such file or directory, open 'missing.md'");
+			const html = renderFailed(tool, args, "ENOENT: no such file or directory, open 'missing.md'");
 			assert.ok(html.includes('data-testid="tool-call-card"'), "the card renders");
 			assert.ok(html.includes("ENOENT: no such file or directory"), "the error text shows");
 			assert.ok(html.includes("text-error"), "the failed call is red");
@@ -91,9 +96,34 @@ describe("the chat view's server render", () => {
 			assert.ok(!html.includes('data-testid="tool-retry"'));
 		});
 	}
-	it("still shows the quiet retry line for a question tool that errored back to the agent", () => {
-		const html = renderFailed("quiz", { malformed: true }, "Invalid arguments for quiz");
+	const quiz1 = { type: "check", nodeId: "addition", question: "What is 1 + 1?", options: [{ value: "a", label: "2" }], explanation: "x", correctAnswer: "a" };
+	for (const [tool, args, kind] of [
+		["quiz", quiz1, "teach"], ["probe", quiz1, "teach"], ["ask_user_question", {}, "teach"], ["explain", {}, "teach"], ["recall", {}, "teach"],
+		["problem", hidden, "practice"], ["conclude", { outcome: "solved", verdict: "Done." }, "practice"], ["probe_done", { assessment: "x" }, "teach"], ["plan_init", {}, "teach"],
+		["research", { question: "q" }, "teach"], ["pdf", { path: "missing.pdf" }, "teach"], ["demo", { title: "t", html: "<p>x</p>" }, "teach"], ["visual", { title: "t", code: "x" }, "teach"],
+		["send_to_user", { message: "" }, "teach"], ["coding_problem", hidden, "practice"],
+	] as const) {
+		it(`shows the quiet retry line for a failed ${tool} call, never its card or its arguments`, () => {
+			const html = renderFailed(tool, args, "The call was rejected.", kind);
+			assert.ok(html.includes('data-testid="tool-retry"'), "the retry line shows");
+			assert.ok(html.includes("Retrying"));
+			assert.ok(!html.includes('data-testid="tool-call-card"'), "no raw tool card");
+			assert.ok(!html.includes('data-testid="problem-card"'), "no problem card");
+			assert.ok(!html.includes(SECRET), "the hidden solution never reaches the page");
+		});
+	}
+	it("shows no card and no retry line for an aborted call, whatever the tool", () => {
+		for (const [tool, args] of [["read", { path: "missing.md" }], ["quiz", quiz1], ["pdf", { path: "x.pdf" }], ["coding_problem", hidden]] as const) {
+			const html = renderFailed(tool, args, "Operation aborted");
+			assert.ok(!html.includes('data-testid="tool-call-card"'), `${tool}: no card`);
+			assert.ok(!html.includes('data-testid="tool-retry"'), `${tool}: no retry line`);
+			assert.ok(!html.includes("Operation aborted"), `${tool}: no error text`);
+		}
+	});
+	it("does not reveal the active problem's solution when its conclusion failed", () => {
+		const html = renderToString(<Shell pathname="/chat/chat_failed"><Chat chatId="chat_failed" title="Failed call" kind="practice" initialMessages={[user, assistant("m_pose", [call("call_pose", "problem", hidden)]), result("m_pose_result", "call_pose", "problem"), assistant("m_end", [call("call_end", "conclude", { outcome: "solved", verdict: "Done." })]), failure("r_end", "call_end", "conclude", "No active problem.")] as never} /></Shell>);
+		assert.ok(html.includes("Compute 1 + 1."), "the posed problem still shows");
 		assert.ok(html.includes('data-testid="tool-retry"'));
-		assert.ok(html.includes("Retrying"));
+		assert.ok(!html.includes(SECRET), "the model solution stays hidden");
 	});
 });

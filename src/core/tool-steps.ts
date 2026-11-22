@@ -9,6 +9,16 @@ import type { ShowImageDetails } from "./contracts/chat.ts";
 /** The tools shown as a tool step: ToolCallCard's entries in the web's artifact registry. */
 export const TOOL_STEPS: readonly string[] = ["read", "ls", "find", "grep", "list_sessions", "list_propositions"];
 
+/** The tool a failed call is shown for with its own error (the tool step's card, red, with
+ *  the Error section): the learner filesystem and graph tools, and a picture the learner
+ *  shared. Every other failed call goes back to the agent, which reads the error and retries,
+ *  and its card could hold hidden answers or draw nothing for a call that failed (a question,
+ *  a practice problem or its verdict, a plugin problem, a job dispatch), so the transcript
+ *  shows a quiet retry line for it. */
+export function failedCallShowsItsError(tool: string): boolean {
+	return TOOL_STEPS.includes(tool) || tool === "show_image";
+}
+
 /** Bidirectional controls, which can make a name read backwards (`txt.exe` under a
  *  right-to-left override shows as `exe.txt`): the embedding, override and isolate controls,
  *  and the Arabic letter mark and left-to-right and right-to-left marks. Letters of any

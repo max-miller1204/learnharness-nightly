@@ -144,7 +144,9 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 	// Output calls become text rather than tool parts, so read settled
 	// failures up front: a failed call must retain the normal error path.
 	const outputErrors = new Map<string, ToolResultMessage>();
+	const failedCalls = new Set<string>();
 	for (const message of messages) {
+		if (message.role === "toolResult" && message.isError) failedCalls.add(message.toolCallId);
 		if (message.role === "toolResult" && message.toolName === SEND_TO_USER_TOOL && message.isError) {
 			outputErrors.set(message.toolCallId, message);
 		}
@@ -285,7 +287,9 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 					// The conclusion's reveal join (owner round, 2026-10-05): the
 					// hero of a conclude card is the modelSolution committed at POSE
 					// time — a record fold, enriched here so the card renders pure.
-					if (block.name === PRACTICE_CONCLUDE_TOOL) {
+					// A conclusion that failed reveals nothing: the problem is still
+					// open and its solution must not reach the learner.
+					if (block.name === PRACTICE_CONCLUDE_TOOL && !failedCalls.has(block.id) && part.state !== "output-error") {
 						part.reveal = modelSolutionForConclude(messages, block.id);
 						part.problemInput = problemInputForConclude(messages, block.id);
 					}
