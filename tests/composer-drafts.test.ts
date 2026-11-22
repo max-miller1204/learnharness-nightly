@@ -204,6 +204,18 @@ describe("composer drafts per session", () => {
 		assert.equal(stored("chat_b")?.text, "B's saved draft");
 	});
 
+	it("remove no key on a refused write, even with more than the cap stored (a cross-tab overshoot) (#362 re-verify)", () => {
+		put("chat_b", "B's saved draft, the oldest", 1);
+		for (let i = 0; i < MAX_COMPOSER_DRAFTS; i++) put(`other_${i}`, `other ${i}`, 100 + i);
+		tabA.catchUp();
+		assert.equal(ids().length, MAX_COMPOSER_DRAFTS + 1);
+		tabA.quota = tabA.used(); // full: the write is refused
+		writeComposerDraft("chat_a", "typed in A");
+		flushComposerDrafts();
+		assert.equal(stored("chat_b")?.text, "B's saved draft, the oldest", "B survives");
+		assert.equal(ids().length, MAX_COMPOSER_DRAFTS + 1, "the count is unchanged");
+	});
+
 	it("evict unreadable drafts first, and never a draft another tab changed since the scan (#362 round 2)", () => {
 		for (let i = 0; i < MAX_COMPOSER_DRAFTS - 1; i++) put(`old_${i}`, `old ${i}`, 100 + i);
 		shared.set(keyOf("corrupt_1"), "{bad");

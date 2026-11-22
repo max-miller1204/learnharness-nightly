@@ -122,15 +122,17 @@ export function flushComposerDrafts(): void {
 		for (const seen of storedDrafts(store).values()) at = Math.max(at, seen + 1);
 		const writes = [...unsaved].map(([id, text]) => ({ id, key: COMPOSER_DRAFT_KEY_PREFIX + id, text, at: text.trim() === "" ? null : at++ }));
 		lastAt = at;
+		let saved = false;
 		for (const write of writes) {
 			try {
 				if (write.at === null) store.removeItem(write.key);
-				else store.setItem(write.key, JSON.stringify({ text: write.text, at: write.at } satisfies Entry));
+				else { store.setItem(write.key, JSON.stringify({ text: write.text, at: write.at } satisfies Entry)); saved = true; }
 				unsaved.delete(write.id);
 			} catch { /* full or blocked: it stays in memory and is tried again at the next flush; nothing else is touched */ }
 		}
-		// Then the cap, over what is stored now: only the oldest beyond it go.
-		// Never a recovery step for a refused write, so that never deletes another draft.
+		// Then the cap, only after a draft was saved, over what is stored now:
+		// only the oldest beyond it go. A refused write never removes any key.
+		if (!saved) return;
 		const order = [...storedDrafts(store)].map(([key, seenAt]) => ({ key, at: seenAt })).sort(newestFirst);
 		for (const { key, at: seenAt } of order.slice(MAX_COMPOSER_DRAFTS)) evict(store, key, seenAt);
 	} catch { /* storage refused a read: what is unsaved stays in memory */ }
