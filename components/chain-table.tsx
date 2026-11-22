@@ -74,6 +74,7 @@ import { useServerEvent, useServerResync } from "./server-events";
 import { TopBar } from "@/components/top-bar";
 import { InteractionLayerOwner, useInteractionLayer } from "./interaction-layers";
 import { DeleteSourceDialog } from "@/components/delete-source-dialog";
+import { beginSessionDeletes, notifySessionsDeleted } from "@/components/session-deletion";
 import { LatexGlyph } from "@/components/latex-glyph";
 import { ToolContentResponse } from "@/components/ai-elements/message";
 import { TreeCell, TreeCheckbox, TreeDisclosure, TreeGuide, TreeHeader, TreeSelectionSpacer, TreeSeparator, treeBranchLayout, treeColumnLayout, treeRowLayout } from "./tree-presentation";
@@ -866,18 +867,47 @@ export function ChainTableOverlay({
 				onClose={() => setDeletion(null)}
 				onDelete={(deleteSessions) => {
 					const opening = directoryOpening.current;
+					const chatIds = deleteSessions ? (deletion?.sources ?? []).filter((s) => s.kind === "chat").map((s) => s.id) : [];
 					const operation = mutationTail.current.catch(() => {}).then(async () => {
+						const settle = beginSessionDeletes(chatIds);
 						let graphRevision: number | undefined;
 						try {
 							const response = await fetch("/api/graph/sources", { method: "DELETE", headers: { "Content-Type": "application/json" },
 								body: JSON.stringify({ sourceIds: deletion?.sources.map((s) => s.id) ?? [], folderIds: deletion?.folders.map((f) => f.id) ?? [], deleteSessions }) });
-							const body = await response.json();
-							if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : "Could not delete sources.");
-							graphRevision = body.graphRevision;
-							if (opening === directoryOpening.current) {
-								requestVersion.current++; setDirectory(body as SourceDirectory); setDirectoryPending(false); setDirectoryFailure("");
+							const raw = await response.json().catch(() => null);
+							const body = raw && typeof raw === "object"
+								? (raw as Partial<SourceDirectory> & { error?: string; graphRevision?: number; deletedChatIds?: unknown })
+								: null;
+							if (!response.ok) {
+								const partlyDeleted = Array.isArray(body?.deletedChatIds)
+									? body.deletedChatIds.filter((id): id is string => typeof id === "string")
+									: [];
+								settle(partlyDeleted);
+								notifySessionsDeleted(partlyDeleted);
+								throw new Error(typeof body?.error === "string" ? body.error : "Could not delete sources.");
+							}
+							const validDirectory = body !== null && Array.isArray(body.sources) && body.organization != null;
+							if (validDirectory) {
+								const remaining = new Set(body.sources!.map((s) => s.id));
+								const deletedChatIds = chatIds.filter((id) => !remaining.has(id));
+								settle(deletedChatIds);
+								notifySessionsDeleted(deletedChatIds);
+								graphRevision = body.graphRevision;
+								if (opening === directoryOpening.current) {
+									requestVersion.current++; setDirectory(body as SourceDirectory); setDirectoryPending(false); setDirectoryFailure("");
+								}
+							} else {
+								// Keep the current directory until finally's readDirectory() returns valid
+								// data, release holds without guessing which ids went, and refresh the
+								// router cache so the server decides on Back.
+								settle([]);
+								if (chatIds.length > 0) notifySessionsDeleted([], { refresh: true });
+								graphRevision = body?.graphRevision;
 							}
 							setEntrySelection({ sources: new Set(), folders: new Set() });
+						} catch (error) {
+							settle([]);
+							throw error;
 						} finally {
 							// A failed response can still follow partial disk writes.
 							// Refresh graph content as well as the directory, in both home modes.

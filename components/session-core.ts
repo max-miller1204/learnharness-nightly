@@ -79,6 +79,13 @@ export const TURN_POLL_MS = 500;
 /** Give up waiting (a wake turn can run long) and surface the 409. */
 export const TURN_WAIT_MAX_MS = 30_000;
 
+export class SessionNotFoundError extends Error {
+	constructor() {
+		super("Session not found.");
+		this.name = "SessionNotFoundError";
+	}
+}
+
 export interface SessionModelDeps {
 	/** Injectable fetch (tests); defaults to the global. */
 	fetch?: typeof globalThis.fetch;
@@ -492,6 +499,7 @@ export class SessionModel {
 		const hold = sessionReadHold(this.chatId);
 		if (hold) await hold;
 		const response = await this.fetch(`/api/chats/${encodeURIComponent(this.chatId)}?view=stats`, { signal });
+		if (response.status === 404) throw new SessionNotFoundError();
 		if (!response.ok) throw new Error("Could not refresh session stats.");
 		const stats = await response.json() as SessionStatsSnapshot;
 		if (signal?.aborted || epoch !== this.canonicalEpoch || ticket < this.canonicalAcknowledged) return undefined;

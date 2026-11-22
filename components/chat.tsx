@@ -13,7 +13,7 @@ import { findSurfaceBoundary } from "./plugin-surface-targets";
 import { scheduleOpeningSubmission } from "./plugin-submission-opening";
 import { activeProblemOccurrenceOf, buildAnswer, toClientQuestion, type PluginSubmission, type PluginSubmissionTarget, type QuestionData } from "@/src/core";
 import { validatePluginBuiltinSubmissionAnswer } from "@/src/core";
-import { visibleQueuedSteers } from "@/components/session-core";
+import { SessionNotFoundError, visibleQueuedSteers } from "@/components/session-core";
 import { SetupDialog } from "@/components/setup-dialog";
 import { Hint } from "@/components/ui/hint";
 import { cn } from "@/lib/utils";
@@ -1320,12 +1320,17 @@ export function Chat({
 			if (!stats || request.signal.aborted) return;
 			if (Array.isArray(stats.turns)) setTurns(stats.turns);
 			setPricing(stats.pricing);
-		} catch {
+		} catch (error) {
+			if (error instanceof SessionNotFoundError) {
+				// Let the server decide whether the session is truly gone: a transient
+				// read error (such as EMFILE) must not permanently mark or blank a live view.
+				router.refresh();
+			}
 			// transient blip: stats stay on the last known figures
 		} finally {
 			if (statsRequest.current === request) statsRequest.current = null;
 		}
-	}, [readStats]);
+	}, [readStats, router]);
 	useEffect(() => {
 		void syncTurns();
 		return () => statsRequest.current?.abort();

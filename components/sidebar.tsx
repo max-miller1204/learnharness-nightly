@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { MenuShell } from "@/components/menu-shell";
 import { DeleteFolderDialog, DeleteSessionDialog, folderDeleteCopy, type DeleteDialogCopy } from "@/components/delete-session-dialog";
-import { leaveDeletedSession } from "@/components/session-deletion";
+import { leaveDeletedSession, SESSIONS_DELETED_EVENT } from "@/components/session-deletion";
 import type { ChatDeleteMode, ThemeMode } from "@/src/core";
 import { DumbbellIcon, FolderPlusIcon, PanelLeftCloseIcon, PlusIcon, SearchIcon, SettingsIcon } from "lucide-react";
 import { ActivitySection } from "@/components/activity-dock";
@@ -616,25 +616,37 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 	}, []);
 
 	// Delete success: patch the list instantly (the poll is the backstop),
-	// navigate home if the open session died (the chat view unmounts —
+	// navigate home if the open session died (the chat view unmounts,
 	// drafts die with it, no orphan bubbles). The shell drops that view AT
 	// ONCE, before the navigation commits: left mounted for that gap, its
 	// timers and listeners fetched the deleted session and logged 404s
 	// (first-load polish). replace, not push (T3 Code's rule): Back must not
-	// lead to a session that no longer exists. Then announce the graph
-	// revision so the graph view refetches (deletion is the one writer
-	// the status poll can't see — no run ever transitions some→none).
+	// lead to a session that no longer exists, and refresh drops older
+	// history entries for deleted sessions from Next's client router cache.
+	// Then announce the graph revision so the graph view refetches (deletion
+	// is the one writer the status poll can't see - no run ever transitions
+	// some→none).
+	const dropDeletedChats = useCallback((deletedChatIds: string[]) => {
+		const gone = new Set(deletedChatIds);
+		setChats((prev) => (prev ? prev.filter((c) => !gone.has(c.id)) : prev));
+		leaveDeletedSession(pathname, gone, onViewedSessionDeleted, (href) => router.replace(href), () => router.refresh());
+	}, [pathname, router, onViewedSessionDeleted]);
+	useEffect(() => {
+		const onSessionsDeleted = (e: Event) => {
+			const detail = (e as CustomEvent<{ ids?: string[]; refresh?: boolean }>).detail;
+			if (detail?.ids?.length) dropDeletedChats(detail.ids);
+			else if (detail?.refresh) router.refresh();
+		};
+		window.addEventListener(SESSIONS_DELETED_EVENT, onSessionsDeleted);
+		return () => window.removeEventListener(SESSIONS_DELETED_EVENT, onSessionsDeleted);
+	}, [dropDeletedChats, router]);
 	const onDeleted = useCallback(
 		(id: string, _mode: ChatDeleteMode, graphRevision: number) => {
 			setDeleting(null);
-			setChats((prev) => (prev ? prev.filter((c) => c.id !== id) : prev));
-			if (pathname === `/chat/${id}`) {
-				onViewedSessionDeleted(id);
-				router.replace("/");
-			}
+			dropDeletedChats([id]);
 			window.dispatchEvent(new CustomEvent("lh:graph-revision", { detail: { revision: graphRevision } }));
 		},
-		[pathname, router, onViewedSessionDeleted],
+		[dropDeletedChats],
 	);
 
 	useEffect(() => {
@@ -690,12 +702,8 @@ function SessionsSidebar({ onViewedSessionDeleted }: { onViewedSessionDeleted: (
 		return () => document.removeEventListener("pointerdown", onPointerDown);
 	}, [ctxFolderId, interactions]);
 	// A folder deletion's success: the session Delete's, for every session
-	// that went (list patch, home if the open one died, graph refetch).
-	const dropDeletedChats = useCallback((deletedChatIds: string[]) => {
-		const gone = new Set(deletedChatIds);
-		setChats((prev) => (prev ? prev.filter((c) => !gone.has(c.id)) : prev));
-		leaveDeletedSession(pathname, gone, onViewedSessionDeleted, (href) => router.replace(href));
-	}, [pathname, router, onViewedSessionDeleted]);
+	// that went (list patch, home if the open one died, router cache drop,
+	// graph refetch).
 	const onFolderDeleted = useCallback(({ deletedChatIds, graphRevision }: { deletedChatIds: string[]; graphRevision: number }) => {
 		setDeletingFolder(null);
 		dropDeletedChats(deletedChatIds);

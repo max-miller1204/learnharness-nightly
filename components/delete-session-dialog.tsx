@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { HostDialog } from "@/components/host-dialog";
 import { DELETE_SESSION_COPY, type ChatDeleteMode, type ChatListItem, type FolderDeletionScope } from "@/src/core";
-import { beginSessionDelete } from "@/components/session-deletion";
+import { beginSessionDelete, beginSessionDeletes } from "@/components/session-deletion";
 
 /** The graph-traces checkbox copy (owner, 2026-09-24 flow rework — was
  *  the delete-nodes option's body in the two-button design): the
@@ -299,8 +299,7 @@ export function DeleteFolderDialog({
 		// Before the request, as the session Delete does: every session in the
 		// folder holds its view's reads until the outcome, so an open one never
 		// 404s in the gap (docs/specs/polish-first-load.md, item 4).
-		const settles = folder.scope.chatIds.map((id) => [id, beginSessionDelete(id)] as const);
-		const settle = (deletedIds: readonly string[]) => { for (const [id, done] of settles) done(deletedIds.includes(id)); };
+		const settle = beginSessionDeletes(folder.scope.chatIds);
 		try {
 			const res = await fetch(`/api/graph/sources/folders/${encodeURIComponent(folder.id)}?mode=${mode}`, {
 				method: "DELETE",

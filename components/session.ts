@@ -66,12 +66,13 @@ export function useChatSession({ chatId, initialMessages, initialError, initiall
 	// component. Enough leaked views starved every NEW request (navigation
 	// RSC fetches included) — the multi-session navigation freeze. Aborting
 	// costs nothing: navigating back replays the compacted log + live tail.
+	const initiallyInFlightRef = useRef(initiallyInFlight);
 	useEffect(() => {
-		if (initiallyInFlight) void model.resumeStream(false);
+		if (initiallyInFlightRef.current) void model.resumeStream(false);
 		return () => {
 			model.stop();
 		};
-	}, [initiallyInFlight, model]);
+	}, [model]);
 
 	// The view + state, derived per model change from the model.
 	const state = useMemo<SessionState>(() => model.getState(), [model, version] as const);
