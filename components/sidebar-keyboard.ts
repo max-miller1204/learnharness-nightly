@@ -87,15 +87,18 @@ export function tabThroughList(event: TabEvent, list: Element | null, search: HT
 	return true;
 }
 
-const ROW_KEYS = new Set(["Enter", " ", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
+const PRESS_KEYS = new Set(["Enter", " "]);
+const ARROW_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
 
-/** Plain Enter, Space and arrows on a focused row are the row's: the button's
- *  native press opens it, and an open question dock's document listener
- *  (which submits on Enter and walks on the arrows) or the app's Enter never
- *  sees them. The default isn't prevented. Modified keys, Shift included, go
- *  on to the app's shortcuts. */
+/** Enter and Space (with or without Shift) and plain arrows on a focused row
+ *  are the row's: the button's native press opens it, and an open question
+ *  dock's document listener (which submits on Enter or Shift+Enter and walks
+ *  on the arrows) or the app's Enter never sees them. The default isn't
+ *  prevented. Ctrl, Alt and Meta chords, and Shift+arrows, go on to the
+ *  app's shortcuts. */
 export function keepRowKeys(event: TabEvent): boolean {
-	if (notOurs(event) || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey || !ROW_KEYS.has(event.key)) return false;
+	if (notOurs(event) || event.altKey || event.ctrlKey || event.metaKey) return false;
+	if (!PRESS_KEYS.has(event.key) && (event.shiftKey || !ARROW_KEYS.has(event.key))) return false;
 	const target = event.target as Element | null;
 	if (!target?.hasAttribute?.(SIDEBAR_STOP)) return false;
 	stopHere(event);
@@ -152,35 +155,59 @@ export function trackInputModality(target: EventTarget = window): () => void {
 	};
 }
 
-/** T3's final-focus rule: a menu or field gives focus back to its row only
- *  when it was opened from the keyboard or is closing from it. A pointer
- *  close leaves focus where the pointer put it, so a click on the transcript
- *  never leaves a row focused for the next Enter. */
-export const fromKeyboard = (openedByKeyboard = false): boolean => openedByKeyboard || lastInput === "keyboard";
+/** T3's final-focus rule (finalFocus by close type): a menu, field or dialog
+ *  gives focus back to its row only when it closes from the keyboard. A
+ *  pointer close leaves focus where the pointer put it, whatever opened it,
+ *  so a click on the transcript never leaves a row focused for the next
+ *  Enter. */
+export const closedFromKeyboard = (): boolean => lastInput === "keyboard";
 
-/** Close a row's context menu. When focus was in it and the menu was opened
- *  or is closing from the keyboard (fromKeyboard), focus goes back to the
- *  row, as T3's context menus give it back. MenuShell popups leave focus
- *  return to their owner (docs/dialog-overlay-contract.md). Focus that went
- *  somewhere real meanwhile stays: Rename's field, a new subfolder's field. */
-export function closeMenuToRow(menuTestid: string, row: HTMLElement | null, close: () => void, openedByKeyboard = false): void {
+/** A dialog whose opener is `row` (it gives focus back to its opener) has
+ *  closed. A pointer close leaves focus where the pointer put it: when the
+ *  dialog's focus return lands on the row, the row lets it go. That return
+ *  is the next focus to arrive; any key or pointer first, or a second
+ *  passing, ends the watch. */
+export function releaseRowAfterPointerClose(row: HTMLElement | null, doc: Document = document): void {
+	if (!row || closedFromKeyboard()) return;
+	const onFocus = (event: Event) => {
+		end();
+		if (event.target === row) row.blur();
+	};
+	const end = () => {
+		clearTimeout(cap);
+		doc.removeEventListener("focusin", onFocus, true);
+		doc.removeEventListener("keydown", end, true);
+		doc.removeEventListener("pointerdown", end, true);
+	};
+	const cap = setTimeout(end, 1000);
+	doc.addEventListener("focusin", onFocus, true);
+	doc.addEventListener("keydown", end, true);
+	doc.addEventListener("pointerdown", end, true);
+}
+
+/** Close a row's context menu. When focus was in it and it is closing from
+ *  the keyboard (closedFromKeyboard), focus goes back to the row, as T3's
+ *  context menus give it back. MenuShell popups leave focus return to their
+ *  owner (docs/dialog-overlay-contract.md). Focus that went somewhere real
+ *  meanwhile stays: Rename's field, a new subfolder's field. */
+export function closeMenuToRow(menuTestid: string, row: HTMLElement | null, close: () => void): void {
 	const menu = document.querySelector(`[data-testid="${menuTestid}"]`);
 	const focusInMenu = !!menu && menu.contains(document.activeElement);
 	close();
-	if (!focusInMenu || !row || !fromKeyboard(openedByKeyboard)) return;
+	if (!focusInMenu || !row || !closedFromKeyboard()) return;
 	setTimeout(() => {
 		const now = document.activeElement;
 		if ((!now || now === document.body || !now.isConnected) && row.isConnected) row.focus({ preventScroll: true });
 	}, 0);
 }
 
-/** After a handoff ends (a rename committed or cancelled, a new subfolder's
- *  field left), focus the row `selector` names, unless focus already went
- *  somewhere real or the handoff neither began (`startedFromKeyboard`) nor
- *  ended from the keyboard. The row is found again because it may be a new
+/** After a handoff ends from the keyboard (a rename committed or cancelled,
+ *  a new subfolder's field left), focus the row `selector` names, unless
+ *  focus already went somewhere real. Ended by a pointer, focus stays where
+ *  the pointer put it. The row is found again because it may be a new
  *  element. */
-export function focusWhenLost(selector: string, startedFromKeyboard = false): void {
-	if (!fromKeyboard(startedFromKeyboard)) return;
+export function focusWhenLost(selector: string): void {
+	if (!closedFromKeyboard()) return;
 	setTimeout(() => {
 		const now = document.activeElement;
 		if (now && now !== document.body && now.isConnected) return;
@@ -204,12 +231,12 @@ function nearestStop(stops: HTMLElement[], keys: string[], at: number): HTMLElem
 	return undefined;
 }
 
-/** A row the keyboard is deleting through a dialog (a session, or a folder
- *  with everything in it): `arm` it when the dialog opens, `cancel` when the
- *  dialog closes without deleting. On the first render without the row,
- *  if focus was lost with it (the dialog took it and is gone), the next row
- *  that is still there takes focus, else the previous one. Runs in the
- *  render's layout effect, so it never depends on timer order. */
+/** A row being deleted through a dialog (a session, or a folder with
+ *  everything in it): `arm` it when the dialog opens, `cancel` when the
+ *  dialog closes without deleting. On the first render without the row, if
+ *  the delete was confirmed from the keyboard and focus was lost with the
+ *  row, the next row that is still there takes focus, else the previous one.
+ *  Runs in the render's layout effect, so it never depends on timer order. */
 export function createNeighborHandoff(getList: () => Element | null) {
 	let pending: { key: string; keys: string[]; at: number } | null = null;
 	return {
@@ -226,7 +253,7 @@ export function createNeighborHandoff(getList: () => Element | null) {
 			if (stops.some((stop) => stopKey(stop) === pending!.key)) return; // not gone yet
 			const { keys, at } = pending;
 			pending = null;
-			if (focusIsSomewhere()) return;
+			if (focusIsSomewhere() || !closedFromKeyboard()) return;
 			nearestStop(stops, keys, at)?.focus({ preventScroll: true });
 		},
 	};

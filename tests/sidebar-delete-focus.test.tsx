@@ -16,7 +16,7 @@ import { parseHTML } from "linkedom";
 import { InteractionLayersProvider } from "../components/interaction-layers.tsx";
 import { DeleteSessionDialog } from "../components/delete-session-dialog.tsx";
 import { SessionRow } from "../components/sidebar.tsx";
-import { createNeighborHandoff, createRowFocusKeeper, trackInputModality } from "../components/sidebar-keyboard.ts";
+import { createNeighborHandoff, createRowFocusKeeper, releaseRowAfterPointerClose, trackInputModality } from "../components/sidebar-keyboard.ts";
 import type { ChatListItem } from "../src/core/contracts.ts";
 import { installModalDom } from "./modal-dom.ts";
 
@@ -41,11 +41,13 @@ function Sidebarish() {
 	React.useEffect(() => trackInputModality(document), []);
 	React.useEffect(() => keeper.attach(document), [keeper]);
 	React.useLayoutEffect(() => { handoff.afterRender(); keeper.afterRender(search.current); });
-	// The session menu's Delete… chosen from the keyboard (sidebar.tsx).
+	const opener = React.useRef<HTMLElement | null>(null);
+	// The session menu's Delete… (sidebar.tsx): the row is the dialog's opener.
 	startDelete = (id) => {
 		const row = document.querySelector<HTMLElement>(`[data-session-id="${id}"]`)!;
 		row.focus({ preventScroll: true });
 		handoff.arm(row);
+		opener.current = row;
 		setDeleting(chat(id));
 	};
 	return (
@@ -56,8 +58,8 @@ function Sidebarish() {
 			</div>
 			<DeleteSessionDialog
 				chat={deleting}
-				onClose={() => { handoff.cancel(); setDeleting(null); }}
-				onDeleted={(id) => { setDeleting(null); setIds((previous) => previous.filter((other) => other !== id)); }}
+				onClose={() => { handoff.cancel(); releaseRowAfterPointerClose(opener.current); setDeleting(null); }}
+				onDeleted={(id) => { releaseRowAfterPointerClose(opener.current); setDeleting(null); setIds((previous) => previous.filter((other) => other !== id)); }}
 			/>
 		</div>
 	);
@@ -69,7 +71,12 @@ async function mount() {
 	const saved = new Map(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 	Object.assign(globalThis, globals);
 	const restoreModalDom = installModalDom(dom);
+	// A browser's blur(): focus leaves for the page (the modal fixture has focus() only).
+	const prototype = dom.window.HTMLElement.prototype;
+	const originalBlur = prototype.blur;
+	prototype.blur = function () { if (dom.document.activeElement === this) (dom.document.body as unknown as HTMLElement).focus(); };
 	restore = () => {
+		prototype.blur = originalBlur;
 		restoreModalDom();
 		for (const [key, value] of saved) { if (value) Object.defineProperty(globalThis, key, value); else Reflect.deleteProperty(globalThis, key); }
 	};
@@ -83,6 +90,11 @@ const focusedName = () => {
 	const el = document.activeElement as HTMLElement | null;
 	return el && el !== document.body && el.isConnected ? el.getAttribute("data-session-id") ?? el.getAttribute("data-testid") : null;
 };
+/** A pointer press on `node`, then its click. */
+const pointerClick = (node: HTMLElement) => act(async () => {
+	node.dispatchEvent(Object.assign(new window.Event("pointerdown", { bubbles: true }), { button: 0 }));
+	node.click();
+});
 const settle = () => act(async () => { for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 2)); });
 
 it("a confirmed Delete from the keyboard gives focus to the next row", async () => {
@@ -105,7 +117,7 @@ it("a confirmed Delete from the keyboard gives focus to the next row", async () 
 	assert.equal(focusedName(), "a");
 });
 
-it("a Delete cancelled, or refused and then cancelled, gives focus back to its row and hands nothing on later", async () => {
+it("a Delete cancelled from the keyboard, or refused and then cancelled, gives focus back to its row", async () => {
 	globalThis.fetch = (async () => Response.json({ ok: false, code: "turn_running", error: "A turn is running in this session" }, { status: 409 })) as typeof fetch;
 	await mount();
 	await act(async () => startDelete("b"));
@@ -119,4 +131,21 @@ it("a Delete cancelled, or refused and then cancelled, gives focus back to its r
 	assert.equal(focusedName(), "b", "the dialog's opener, the row, has focus again");
 	await act(async () => byTest("session-search").focus());
 	assert.equal(focusedName(), "session-search");
+});
+
+it("a Delete dialog closed with the pointer leaves focus where the pointer put it, not on the row (#358 prove)", async () => {
+	globalThis.fetch = (async () => Response.json({ ok: true, graphRevision: 1 })) as typeof fetch;
+	await mount();
+	await act(async () => startDelete("b"));
+	await settle();
+	await pointerClick(byTest("delete-cancel"));
+	await settle();
+	assert.equal(document.querySelector('[data-testid="delete-session-dialog"]'), null);
+	assert.equal(focusedName(), null, "Cancel clicked: the row doesn't take focus");
+	await act(async () => startDelete("b"));
+	await settle();
+	await pointerClick(byTest("delete-confirm"));
+	await settle();
+	assert.equal(document.querySelector('[data-session-id="b"]'), null, "deleted");
+	assert.equal(focusedName(), null, "confirmed with the pointer: no neighbour takes focus");
 });

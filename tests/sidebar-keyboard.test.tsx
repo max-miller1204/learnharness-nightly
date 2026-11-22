@@ -18,7 +18,7 @@ import { SidebarFolderRow } from "../components/sidebar-folders.tsx";
 import { InteractionLayersProvider } from "../components/interaction-layers.tsx";
 import { MenuShell } from "../components/menu-shell.tsx";
 import { capturePluginQuestionKey, ownPluginQuestionKeys } from "../components/plugin-question-keys.ts";
-import { closeMenuToRow, createNeighborHandoff, createRowFocusKeeper, focusWhenLost, isMenuKey, keepRowKeys, sidebarStops, swallowNextContextMenu, tabIntoList, tabThroughList, trackInputModality } from "../components/sidebar-keyboard.ts";
+import { closeMenuToRow, createNeighborHandoff, createRowFocusKeeper, focusWhenLost, isMenuKey, keepRowKeys, releaseRowAfterPointerClose, sidebarStops, swallowNextContextMenu, tabIntoList, tabThroughList, trackInputModality } from "../components/sidebar-keyboard.ts";
 import type { ChatListItem } from "../src/core/contracts.ts";
 
 const dom = parseHTML("<html><body></body></html>");
@@ -28,6 +28,7 @@ dom.window.HTMLElement.prototype.focus = function () {
 	focused = this;
 	this.dispatchEvent(new dom.window.Event("focusin", { bubbles: true }));
 };
+dom.window.HTMLElement.prototype.blur = function () { if (focused === this) focused = undefined; };
 Object.defineProperty(dom.document, "activeElement", { configurable: true, get: () => (focused?.isConnected ? focused : dom.document.body) });
 Object.assign(globalThis, {
 	window: dom.window, document: dom.document, Element: dom.window.Element, HTMLElement: dom.window.HTMLElement, Node: dom.window.Node,
@@ -221,8 +222,12 @@ describe("session rows from the keyboard", () => {
 			await press(byId("session-search"), "ArrowDown");
 			assert.deepEqual(dock, ["b", "Enter", "ArrowDown"], "modified keys and keys from fields still go on");
 			dock.length = 0;
+			// Shift+Enter and Shift+Space press the row too: the quiz dock submits on
+			// Shift+Enter, so they stay the row's (#358 prove). Shift+arrows go on.
 			for (const key of ["Enter", " ", "ArrowDown"]) await press(rowOf("c1"), key, { shiftKey: true });
-			assert.deepEqual(dock, ["Enter", " ", "ArrowDown"], "Shift chords on a row go on to the app's shortcuts (#358 round 2)");
+			assert.deepEqual(dock, ["ArrowDown"], "only Shift+ArrowDown reached the dock");
+			const shiftEnter = { key: "Enter", shiftKey: true, altKey: false, ctrlKey: false, metaKey: false, target: rowOf("c1"), stopPropagation() {}, preventDefault() {} };
+			assert.equal(keepRowKeys(shiftEnter), true);
 		} finally {
 			host!.removeEventListener("keydown", onDock);
 		}
@@ -282,7 +287,7 @@ describe("session rows from the keyboard", () => {
 		assert.equal(await contextmenu(rowOf("c1")), true, "a left click doesn't end it: the key's own contextmenu is still cancelled");
 	});
 
-	it("a menu gives focus back to its row when the keyboard opened or closed it; after a pointer close, focus stays where the pointer left it (#358 round 2)", async () => {
+	it("a menu gives focus back to its row when it closes from the keyboard; after a pointer close, focus stays where the pointer left it (#358 prove)", async () => {
 		await mount();
 		const menuFor = () => {
 			const menu = document.createElement("div");
@@ -292,76 +297,62 @@ describe("session rows from the keyboard", () => {
 			document.body.appendChild(menu);
 			return { menu, item };
 		};
-		// Opened from the keyboard, closed with Esc: the menu unmounts, focus returns to the row.
+		// Closed from the keyboard (Esc, or Enter on an item): the menu unmounts, focus returns to the row.
 		let { menu, item } = menuFor();
 		focused = item;
 		usingKeyboard();
-		closeMenuToRow("session-context-menu", rowOf("c1"), () => { menu.remove(); focused = undefined; }, true);
+		closeMenuToRow("session-context-menu", rowOf("c1"), () => { menu.remove(); focused = undefined; });
 		await tick();
 		assert.equal(focusedName(), "c1");
-		// Opened from the keyboard, closed by a click on blank space: the row too.
+		// Closed by a click on blank space, however it was opened: the page keeps
+		// focus, so the next Enter can't open the row (#358 prove: the close type decides).
 		({ menu, item } = menuFor());
 		focused = item;
 		usingPointer();
-		closeMenuToRow("session-context-menu", rowOf("c1"), () => { menu.remove(); focused = undefined; }, true);
-		await tick();
-		assert.equal(focusedName(), "c1");
-		// Opened by a right-click, closed from the keyboard (Esc, or Enter on an item): the row.
-		({ menu, item } = menuFor());
-		focused = item;
-		usingKeyboard();
-		closeMenuToRow("session-context-menu", rowOf("c1"), () => { menu.remove(); focused = undefined; }, false);
-		await tick();
-		assert.equal(focusedName(), "c1");
-		// Opened by a right-click, closed by a click on blank transcript text:
-		// the page keeps focus, so the next Enter can't open the row.
-		({ menu, item } = menuFor());
-		focused = item;
-		usingPointer();
-		closeMenuToRow("session-context-menu", rowOf("c1"), () => { menu.remove(); focused = undefined; }, false);
+		closeMenuToRow("session-context-menu", rowOf("c1"), () => { menu.remove(); focused = undefined; });
 		await tick();
 		assert.equal(focusedName(), null);
 		// A click elsewhere moved focus first: it stays there.
 		({ menu, item } = menuFor());
 		focused = byId("session-search");
 		usingKeyboard();
-		closeMenuToRow("session-context-menu", rowOf("c1"), () => menu.remove(), true);
+		closeMenuToRow("session-context-menu", rowOf("c1"), () => menu.remove());
 		await tick();
 		assert.equal(focusedName(), "session-search");
 		// Focus in the menu, but the close put it somewhere real: not taken back.
 		({ menu, item } = menuFor());
 		focused = item;
-		closeMenuToRow("session-context-menu", rowOf("c1"), () => { menu.remove(); focused = byId("rename-field"); }, true);
+		closeMenuToRow("session-context-menu", rowOf("c1"), () => { menu.remove(); focused = byId("rename-field"); });
 		await tick();
 		assert.equal(focusedName(), "rename-field", "Rename's own field keeps focus");
 	});
 
-	it("Rename and New subfolder give focus back to their row only when they began or ended from the keyboard (#358 round 2)", async () => {
+	it("Rename and New subfolder give focus back to their row only when they end from the keyboard (#358 prove)", async () => {
 		await mount();
 		const session = '[data-session-id="c1"]', folderRow = 'button[data-testid="sidebar-folder-f1"]';
-		// Rename began from the keyboard (the Menu key), ended by a click on blank space: the row.
-		usingPointer(); focused = undefined;
-		focusWhenLost(session, true);
-		await tick();
-		assert.equal(focusedName(), "c1");
-		// Rename began from a right-click, ended with Enter or Esc: the row.
+		// Rename ended with Enter or Esc, however it began: the row.
 		usingKeyboard(); focused = undefined;
-		focusWhenLost(session, false);
+		focusWhenLost(session);
 		await tick();
 		assert.equal(focusedName(), "c1");
-		// Rename began from a right-click, ended by a click on blank space: the page keeps focus.
+		// Rename ended by a click on blank space, even one begun with the Menu key: the page keeps focus.
 		usingPointer(); focused = undefined;
-		focusWhenLost(session, false);
+		focusWhenLost(session);
 		await tick();
 		assert.equal(focusedName(), null);
 		// New subfolder's field left from the keyboard: the folder row.
 		usingKeyboard(); focused = undefined;
-		focusWhenLost(folderRow, true);
+		focusWhenLost(folderRow);
 		await tick();
 		assert.equal(focusedName(), "sidebar-folder-f1");
-		// The field left for somewhere real (a click on the search box): kept.
-		usingPointer(); focused = byId("session-search");
-		focusWhenLost(folderRow, true);
+		// New subfolder's field left by a click on blank space: the page keeps focus.
+		usingPointer(); focused = undefined;
+		focusWhenLost(folderRow);
+		await tick();
+		assert.equal(focusedName(), null);
+		// The field left for somewhere real (Tab to the search box): kept.
+		usingKeyboard(); focused = byId("session-search");
+		focusWhenLost(folderRow);
 		await tick();
 		assert.equal(focusedName(), "session-search");
 	});
@@ -371,9 +362,8 @@ describe("session rows from the keyboard", () => {
  *  and a click away, each through closeMenuToRow as sidebar.tsx does. */
 function MenuHarness() {
 	const anchor = React.useRef<HTMLButtonElement>(null);
-	const byKeyboard = React.useRef(false);
 	const [open, setOpen] = React.useState(false);
-	const close = () => closeMenuToRow("test-menu", anchor.current, () => setOpen(false), byKeyboard.current);
+	const close = () => closeMenuToRow("test-menu", anchor.current, () => setOpen(false));
 	React.useEffect(() => {
 		if (!open) return;
 		const onPointerDown = (e: Event) => {
@@ -388,8 +378,8 @@ function MenuHarness() {
 		<div>
 			<input data-testid="search" />
 			<p data-testid="blank">text</p>
-			<button ref={anchor} data-testid="row" onClick={() => { byKeyboard.current = false; setOpen(true); }}
-				onKeyDown={(e) => { if (e.key === "ContextMenu") { byKeyboard.current = true; setOpen(true); } }}>row</button>
+			<button ref={anchor} data-testid="row" onClick={() => setOpen(true)}
+				onKeyDown={(e) => { if (e.key === "ContextMenu") setOpen(true); }}>row</button>
 			{open && (
 				<MenuShell anchorRef={anchor} testid="test-menu" preferredSide="down" menuClass="menu" onClose={() => { close(); return "closed"; }}>
 					<button type="button" data-testid="item" onClick={() => close()}>Export</button>
@@ -448,13 +438,13 @@ describe("a real MenuShell gives focus back to its row when the keyboard opened 
 		assert.equal(focusedName(), null, "the row didn't take focus");
 	});
 
-	it("a keyboard-opened menu closed by a click on blank space returns focus to the row; one on the search box keeps it there", async () => {
+	it("a menu the Menu key opened, closed by a click on blank space, leaves focus on the page too; one on the search box keeps it there (#358 prove)", async () => {
 		await render(<InteractionLayersProvider><MenuHarness /></InteractionLayersProvider>);
 		await openMenu("keyboard");
 		await act(async () => { usingPointer(byId("blank")); });
 		await tick();
 		assert.equal(closed(), true);
-		assert.equal(focusedName(), "row", "blank space takes no focus: back to the row the keyboard was on");
+		assert.equal(focusedName(), null, "the close type decides: a pointer close never returns focus to the row");
 		await openMenu("keyboard");
 		await act(async () => { usingPointer(byId("search")); byId("search").focus(); });
 		await tick();
@@ -581,6 +571,7 @@ describe("a row deleted from the keyboard hands focus to its neighbour (#358 rou
 		await render(<NeighborList ids={["a", "b", "c"]} />);
 		handoff.arm(rowOf("b"));
 		byId("dialog-confirm").focus(); // the dialog takes focus
+		usingKeyboard(); // Enter on Delete
 		await show(["a", "b", "c"]);
 		assert.equal(focusedName(), "dialog-confirm", "nothing moves while the row is still there");
 		focused = undefined; // the dialog closed with the delete
@@ -595,13 +586,24 @@ describe("a row deleted from the keyboard hands focus to its neighbour (#358 rou
 	it("a folder's neighbour skips the sessions that went with it", async () => {
 		await render(<NeighborList ids={["a", "folder:f9", "s1", "s2", "c"]} />);
 		handoff.arm(byId("sidebar-folder-f9"));
+		usingKeyboard();
 		focused = undefined;
 		await show(["a", "c"]);
 		assert.equal(focusedName(), "c");
 	});
 
+	it("a delete confirmed with the pointer leaves focus where the pointer put it (#358 prove)", async () => {
+		await render(<NeighborList ids={["a", "b", "c"]} />);
+		handoff.arm(rowOf("b"));
+		usingPointer(byId("dialog-confirm"));
+		focused = undefined;
+		await show(["a", "c"]);
+		assert.equal(focusedName(), null);
+	});
+
 	it("does nothing once cancelled (the dialog closed without deleting) or when focus went somewhere real", async () => {
 		await render(<NeighborList ids={["a", "b", "c"]} />);
+		usingKeyboard();
 		handoff.arm(rowOf("b"));
 		handoff.cancel();
 		focused = undefined;
@@ -614,6 +616,26 @@ describe("a row deleted from the keyboard hands focus to its neighbour (#358 rou
 		focused = undefined;
 		await show([]);
 		assert.equal(focusedName(), null, "spent: a later change doesn't move focus");
+	});
+
+	it("a dialog closed with the pointer lets go of the row its focus return lands on; closed from the keyboard, it keeps it (#358 prove)", async () => {
+		await render(<NeighborList ids={["a", "b", "c"]} />);
+		usingPointer(byId("dialog-confirm")); // Cancel clicked
+		releaseRowAfterPointerClose(rowOf("b"), dom.document as unknown as Document);
+		rowOf("b").focus(); // the dialog gives focus back to its opener
+		assert.equal(focusedName(), null, "let go: focus stays where the pointer put it");
+		rowOf("b").focus();
+		assert.equal(focusedName(), "b", "only that one return: a later focus stays");
+		usingKeyboard(); // Esc
+		releaseRowAfterPointerClose(rowOf("b"), dom.document as unknown as Document);
+		focused = undefined;
+		rowOf("b").focus();
+		assert.equal(focusedName(), "b");
+		usingPointer(byId("dialog-confirm"));
+		releaseRowAfterPointerClose(rowOf("b"), dom.document as unknown as Document);
+		usingPointer(rowOf("b")); // the learner clicks the row before any return
+		rowOf("b").focus();
+		assert.equal(focusedName(), "b", "a new input ends the watch");
 	});
 });
 
@@ -634,18 +656,18 @@ describe("sidebar.tsx wiring", () => {
 		assert.doesNotMatch(deleteFolder, /setCtxFolderId\(null\)/, "the folder Delete closes through the helper too");
 		assert.equal((source.match(/closeMenuToRow\("session-context-menu", ctxAnchorRef\.current, /g) ?? []).length, 3, "Esc (onClose), click-away, and closeSessionMenu for the items");
 		assert.equal((source.match(/closeMenuToRow\("folder-context-menu", folderAnchorRef\.current, /g) ?? []).length, 3);
-		assert.equal((source.match(/closeMenuToRow\("session-context-menu", .*, ctxByKeyboardRef\.current\)/g) ?? []).length, 3, "each session-menu close knows whether the keyboard opened it");
-		assert.equal((source.match(/closeMenuToRow\("folder-context-menu", .*, folderByKeyboardRef\.current\)/g) ?? []).length, 3);
-		assert.match(source, /ctxByKeyboardRef\.current = e\.type === "keydown";/);
-		assert.match(source, /folderByKeyboardRef\.current = e\.type === "keydown";/);
-		// From the keyboard the dialog takes the row as its opener, and the deleted row's neighbour takes over.
-		assert.match(source, /if \(keyboard && row\) \{ row\.focus\(\{ preventScroll: true \}\); deleteHandoff\.arm\(row\); \}/);
-		assert.match(source, /if \(dialog\) deleteHandoff\.arm\(row\);/);
+		// The close type alone decides: nothing records how a menu or field was opened.
+		assert.doesNotMatch(source, /ByKeyboardRef/);
+		// The row is each Delete dialog's opener; a pointer close lets it go.
+		assert.match(source, /if \(row\) \{ row\.focus\(\{ preventScroll: true \}\); deleteHandoff\.arm\(row\); \}/);
+		assert.match(source, /row\.focus\(\{ preventScroll: true \}\);\n\t+deleteHandoff\.arm\(row\);\n\t+folderDeleteOpenerRef\.current = row;/);
 		assert.equal((source.match(/deleteHandoff\.cancel\(\);/g) ?? []).length, 3, "both dialogs' close and the folder's stale close");
+		assert.equal((source.match(/releaseRowAfterPointerClose\(deleteOpenerRef\.current\)/g) ?? []).length, 2, "the session dialog's close and its delete");
+		assert.equal((source.match(/releaseRowAfterPointerClose\(folderDeleteOpenerRef\.current\)/g) ?? []).length, 3, "the folder dialog's close, stale close and delete");
 		assert.doesNotMatch(source, /returnFocusFallback/);
 		assert.match(source, /useLayoutEffect\(\(\) => \{ deleteHandoff\.afterRender\(\); focusKeeper\.afterRender\(searchRef\.current\); \}\);/);
 		assert.match(source, /useEffect\(\(\) => trackInputModality\(\), \[\]\);/);
-		assert.equal((source.match(/focusWhenLost\([^;]*, (renameByKeyboardRef|folderHandoffByKeyboardRef)\.current\)/g) ?? []).length, 4, "Rename (commit, cancel), folder Rename and New subfolder");
+		assert.equal((source.match(/focusWhenLost\(`[^`]*`\)/g) ?? []).length, 4, "Rename (commit, cancel), folder Rename and New subfolder");
 		assert.match(source, /swallowNextContextMenu\(\);/);
 	});
 });
