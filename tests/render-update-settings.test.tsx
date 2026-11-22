@@ -1907,6 +1907,33 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 			assert.equal(r.calls.install, 0);
 		});
 
+		it("main's push moves the label at once: a check that finds the app's own update, then its download, never wait for a poll", async () => {
+			const r = everythingRemote(app(), state({ status: "up-to-date", runningVersion: V71 }));
+			const subscribers = new Set<(status: unknown) => void>();
+			let reads = 0;
+			const desktop = window.lh!.desktopUpdate as unknown as { getStatus: () => Promise<unknown>; onStatus: (callback: (status: unknown) => void) => () => void };
+			const read = desktop.getStatus;
+			desktop.getStatus = async () => { reads++; return read(); };
+			desktop.onStatus = (callback) => { subscribers.add(callback); return () => { subscribers.delete(callback); }; };
+			const host = await mount(<SidebarUpdatePill pageVersion={V71} />);
+			await settle();
+			assert.equal(subscribers.size, 1, "subscribed to main's pushes");
+			const readsAfterMount = reads;
+			const pill = () => q(host, "update-pill")!;
+			assert.equal(pill().getAttribute("aria-label"), "Update 1 server");
+			// The menu's Check for Updates… finds this app's own update: main pushes, the page doesn't ask.
+			await act(async () => { for (const push of subscribers) push(app({ target: V73, phase: "available" })); });
+			assert.equal(pill().getAttribute("aria-label"), "Update this app and 1 server", "the label is what main would plan, before anything polls");
+			assert.equal(reads, readsAfterMount, "no read was needed");
+			await act(async () => { for (const push of subscribers) push(app({ target: V73, phase: "downloading", downloadPercent: 40 })); });
+			assert.equal(pill().getAttribute("data-action"), "downloading");
+			await act(async () => { for (const push of subscribers) push({ not: "a status" }); });
+			assert.equal(pill().getAttribute("data-action"), "downloading", "a malformed push is dropped, the last status stays");
+			void r;
+			for (const { root, host: node } of roots.splice(0)) { await act(async () => { root.unmount(); }); node.remove(); }
+			assert.equal(subscribers.size, 0, "unsubscribed when the page unmounts");
+		});
+
 		it("with only the server behind there are no release notes: the hover is the plain tooltip, even if the app kept old ones", async () => {
 			everythingRemote(app({ releaseNotes: [{ version: V71, items: ["Old app change"] }], omittedReleaseCount: 0 }), state({ status: "up-to-date", runningVersion: V71, releaseNotes: [{ version: V72, items: ["Server notes"] }] }));
 			const host = await mount(<SidebarUpdatePill pageVersion={V71} />);

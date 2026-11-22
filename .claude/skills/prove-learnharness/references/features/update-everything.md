@@ -5,6 +5,7 @@ Roadmap item 23 PR 2 (answer key: [docs/specs/desktop-server-list.md](../../../.
 ## Sub-features
 
 - `bridge`: the remote page has only `window.lh.desktopUpdate` (`getStatus`, `check`, `download`, `install`); the ghost page and other origins get nothing.
+- `push`: main pushes the app's status to the page at every updater change (`window.lh.desktopUpdate.onStatus`), so the control moves within a frame of main's own phase: sample the pill and `getStatus().phase` every 50 ms over CDP while the menu's Check for Updates… finds a newer app version and while a download starts. A lag of seconds (the 5 s poll) is the old bug. The pill spins as "Checking for updates…" (disabled) for at least one turn on a check, then names the app.
 - `states`: `[data-testid=update-pill]` `data-action` `everything` (server behind), `app-download` / `app-install` (server already on it), disabled `everything` while a run goes.
 - `hover`: in the `everything` state, hovering the control shows this app's release notes under the summary (answer key: [docs/specs/t3-style-updates.md](../../../../../docs/specs/t3-style-updates.md), revision PR 1).
 - `settings`: Settings > General rows `row-version` ("Server X", button `update-button`) and `row-desktop-app` ("This app Y", button `desktop-app-update`), each T3's About button. This app's Install (`window.lh.desktopUpdate.installApp`) shows the app's native "Install update Y and restart LearnHarness?" confirm and installs only this app, never the server (docs/specs/t3-style-updates.md revision PR 5).

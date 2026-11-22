@@ -8,6 +8,8 @@
 const { atOrigin } = require("./remote-server.cjs");
 
 const CHANNEL = "lh:desktop-update";
+/** Main's push of the status the "status" action answers, to the remote window's main frame. */
+const STATUS_CHANNEL = "lh:desktop-update-status";
 const ACTIONS = new Set(["status", "check", "download", "install", "install-app", "everything", "ready", "later", "retry", "dismiss", "take-result"]);
 
 /** `current()` is { win, origin } of the open remote window, or null. */
@@ -42,4 +44,24 @@ function registerDesktopUpdateIPC(ipcMain, { current, updateEverything, pageGene
 	});
 }
 
-module.exports = { registerDesktopUpdateIPC, fromRemoteWindow, CHANNEL };
+/** T3's push on every updater state change (apps/desktop/src/updates/DesktopUpdates.ts:425-434
+ *  at df09ced7, `setState` then `emitState`): the same status "status" answers, sent to the
+ *  current remote window's main frame only, and only while it is still at the selected origin.
+ *  The page's read stays for a late subscriber and for the run's own steps. */
+function createStatusPush({ current, updateEverything, pageGeneration = () => 0 }) {
+	return function pushStatus() {
+		try {
+			const open = current();
+			if (!open || open.win.isDestroyed()) return false;
+			const frame = open.win.webContents.mainFrame;
+			if (!frame || !atOrigin(frame.url, open.origin)) return false;
+			frame.send(STATUS_CHANNEL, updateEverything.status({ win: open.win, generation: pageGeneration(open.win) }));
+			return true;
+		} catch {
+			/* A window mid-teardown: the page's next read covers it. */
+			return false;
+		}
+	};
+}
+
+module.exports = { registerDesktopUpdateIPC, createStatusPush, fromRemoteWindow, CHANNEL, STATUS_CHANNEL };

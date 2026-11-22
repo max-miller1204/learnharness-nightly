@@ -34,7 +34,7 @@ const { desktopAPIHeaders, exchangeDesktopSession } = require("./desktop-api.cjs
 const { setTraceSink } = require("./first-frame.cjs");
 const { createServerList } = require("./server-list.cjs");
 const { createUpdateEverything } = require("./update-everything.cjs");
-const { registerDesktopUpdateIPC } = require("./update-everything-ipc.cjs");
+const { registerDesktopUpdateIPC, createStatusPush } = require("./update-everything-ipc.cjs");
 const { createUpdateEverythingDialog } = require("./update-everything-dialog.cjs");
 const { registerChatGPTSignInIPC } = require("./remote-chatgpt-ipc.cjs");
 const { createUpdateActions } = require("./update-actions.cjs");
@@ -664,6 +664,8 @@ function setUpdateState(next, { notice = false } = {}) {
 				/* window mid-teardown - snapshot retrieval covers a later load */
 			}
 		}
+		// The remote window's page learns of it at once too (T3's emitState after each setState).
+		pushRemoteStatus?.();
 	} catch {
 		/* Status reporting must never interrupt the updater. */
 	}
@@ -911,6 +913,8 @@ function quitAndInstallNow() {
 
 // The run in progress, for the guards below (set once the server list exists).
 let updateEverything = null;
+// Set with the server list: sends the status to the open remote window's page.
+let pushRemoteStatus = null;
 const updateActions = createUpdateActions({
 	updater: () => autoUpdater,
 	state: () => updateState,
@@ -1407,7 +1411,9 @@ async function main() {
 		reopenWindow = () => serverList.reopen();
 		const inApp = createUpdateEverythingDialog({ ipcMain, WebContentsView, session, themeMode: () => appearance.mode });
 		updateEverything = createUpdateEverything(updateEverythingDeps(serverList, inApp));
-		registerDesktopUpdateIPC(ipcMain, { current: () => serverList.current(), updateEverything, pageGeneration: (win) => pageLoadsOf(win)?.generation() ?? 0 });
+		const pageGeneration = (win) => pageLoadsOf(win)?.generation() ?? 0;
+		registerDesktopUpdateIPC(ipcMain, { current: () => serverList.current(), updateEverything, pageGeneration });
+		pushRemoteStatus = createStatusPush({ current: () => serverList.current(), updateEverything, pageGeneration });
 		registerChatGPTSignInIPC(ipcMain, {
 			current: () => serverList.current(), signIn: (accountId) => serverList.chatgptSignIn(accountId), cancel: () => serverList.chatgptCancel(),
 		});

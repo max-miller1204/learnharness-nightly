@@ -92,6 +92,10 @@ export type DesktopAppStatus = {
 
 export type DesktopUpdateBridge = {
 	getStatus: () => Promise<DesktopAppStatus>;
+	/** Main pushes the status whenever this app's updater changes (T3's onUpdateState,
+	 *  apps/desktop/src/preload.ts:339-349 at df09ced7); returns the unsubscribe. Apps from
+	 *  before it lack it and are only polled. */
+	onStatus?: (callback: (status: unknown) => void) => () => void;
 	check: () => Promise<void>;
 	download: () => Promise<void>;
 	/** Opens the app's own Update everything confirmation; never acts without it. */
@@ -286,7 +290,9 @@ export function readDesktopAppStatus(value: unknown): DesktopAppStatus | null {
 	return status;
 }
 
-/** How often the page asks the app for its update status (the bridge has no push channel). */
+/** How often the page asks the app for its update status: the fallback for an app without
+ *  onStatus, and the way the page follows an Update everything run's own steps, which main
+ *  doesn't push. */
 export const DESKTOP_STATUS_POLL_MS = 5_000;
 /** While Update everything runs: often enough for its capsule's steps and countdown. */
 export const DESKTOP_RUN_POLL_MS = 1_000;
@@ -307,11 +313,18 @@ export function useDesktopAppUpdate() {
 	const running = runIsLive(status?.run ?? null);
 	useEffect(() => {
 		if (!bridge) return;
+		// T3's order (apps/web/src/state/desktopUpdate.ts:46-77 at df09ced7): subscribe to main's
+		// pushes first, then read once, so a change between the two is never missed. A push moves
+		// the control at once, never after the next poll.
+		const unsubscribe = typeof bridge.onStatus === "function" ? bridge.onStatus((pushed) => {
+			const next = readDesktopAppStatus(pushed);
+			if (next) setStatus(next);
+		}) : undefined;
 		void refresh();
 		const timer = setInterval(() => { if (document.visibilityState !== "hidden") void refresh(); }, running ? DESKTOP_RUN_POLL_MS : DESKTOP_STATUS_POLL_MS);
 		const onVisible = () => { if (document.visibilityState !== "hidden") void refresh(); };
 		document.addEventListener("visibilitychange", onVisible);
-		return () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
+		return () => { unsubscribe?.(); clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
 	}, [bridge, refresh, running]);
 	const call = useCallback((method: "check" | "download" | "install" | "installApp") => async (): Promise<void> => {
 		const action = bridge?.[method];
