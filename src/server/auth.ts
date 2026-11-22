@@ -80,28 +80,57 @@ function topLevelNavigation(headers: Headers, method: string | undefined, pathna
 	return dest === null || dest === "document";
 }
 
+/** Whether a URL header (Origin, Referer) names this request's own host. */
+function sameHost(value: string, headers: Headers): boolean {
+	const host = headers.get("host");
+	if (!host) return false;
+	try {
+		return new URL(value).host.toLowerCase() === host.toLowerCase();
+	} catch {
+		return false;
+	}
+}
+
+/** Why the cookie rule refused a request: another site's page (a foreign
+ *  Origin or Referer, or Fetch Metadata saying so), or no Referer at all
+ *  where one is needed. */
+export type CookieRefusalReason = "cross-site" | "needs-referer";
+
 /** The rule for cookie credentials, and for the route that sets the cookie.
  * Fetch Metadata first: same-origin passes; same-site and cross-site pass
  * only as a top-level page navigation, so another site's page can't send a
  * cookie request to the API even without an Origin header. With no Fetch
  * Metadata (a non-secure context, a native client) or "none" (a typed
- * address), the Origin part of T3's rule: no Origin, or an Origin whose
- * host equals the Host header. Bearer tokens skip it. `pathname` is null for a URL
- * that doesn't parse, and left out only by a layout. */
-export function cookieOriginAllowed(headers: Headers, method?: string, pathname?: string | null): boolean {
+ * address), the Origin part of T3's rule: an Origin must name this host.
+ * With no Fetch Metadata and no Origin, a request that reaches the API needs
+ * a Referer naming this host (issue #323): browsers send neither header to a
+ * plain-HTTP, non-loopback origin, nor does Safari before 16.4, so an `<img>`
+ * or `<script>` on another origin of the same site (another port on the same
+ * LAN address) would otherwise carry the cookie to the API. The app's own
+ * fetches, EventSource streams and subresources send a same-origin Referer;
+ * pages need none, as navigations. Browsers that pay for this: over plain
+ * HTTP, an /api URL pasted into a new tab (a markdown download) sends neither
+ * header and gets 403; a browser or extension that strips Referer can pair
+ * (its POST still sends Origin), but then every API read, the event stream
+ * and downloads get 403; and under a no-referrer referrer policy even the
+ * pairing POST sends `Origin: null` and is refused. Bearer tokens skip the
+ * rule. `pathname` is null for a URL that doesn't parse, and left out only by
+ * a layout. Returns null when the request may use its cookie. */
+export function cookieRefusalReason(headers: Headers, method?: string, pathname?: string | null): CookieRefusalReason | null {
 	const site = headers.get("sec-fetch-site");
-	if (site === "same-origin") return true;
-	if (site === "same-site" || site === "cross-site") return topLevelNavigation(headers, method, pathname);
+	if (site === "same-origin") return null;
+	if (site === "same-site" || site === "cross-site") return topLevelNavigation(headers, method, pathname) ? null : "cross-site";
 	const origin = headers.get("origin");
-	if (origin === null) return true;
-	const host = headers.get("host");
-	if (!host) return false;
-	try {
-		return new URL(origin).host.toLowerCase() === host.toLowerCase();
-	} catch {
-		return false;
-	}
+	if (origin !== null) return sameHost(origin, headers) ? null : "cross-site";
+	if (site === "none" || pathname === undefined) return null;
+	if (pathname !== null && !reachesApi(pathname)) return null;
+	const referer = headers.get("referer");
+	if (referer === null) return "needs-referer";
+	return sameHost(referer, headers) ? null : "cross-site";
 }
+
+export const cookieOriginAllowed = (headers: Headers, method?: string, pathname?: string | null): boolean =>
+	cookieRefusalReason(headers, method, pathname) === null;
 
 export type Credential = { token: string; via: "cookie" | "bearer" };
 
@@ -115,6 +144,10 @@ function requestPath(request: HeaderSource): string | null | undefined {
 
 export const cookieRuleAllows = (request: HeaderSource): boolean =>
 	cookieOriginAllowed(request.headers, request.method, requestPath(request));
+
+/** The words for a refused cookie, from the same checks that refused it. */
+export const cookieRefusal = (request: HeaderSource): string =>
+	cookieRefusalReason(request.headers, request.method, requestPath(request)) === "needs-referer" ? REFERER_REQUIRED : CROSS_SITE_REFUSED;
 
 /** The cookie first, then `Authorization: Bearer`. A cookie that fails the
  * cookie rule is not used; with no bearer to fall back on it's "refused". */
@@ -134,10 +167,12 @@ export type AuthResult =
 export const SIGN_IN_REQUIRED = "Sign in required: pair this device with a pairing link (run `lh pair` on the server machine).";
 
 export const CROSS_SITE_REFUSED = "Cross-site requests to LearnHarness are not allowed.";
+export const REFERER_REQUIRED = "This request needs a Referer from this server; open it from the app.";
+
 
 export function authenticate(request: HeaderSource, dataDir: string = authDataDir()): AuthResult {
 	const credential = readCredential(request);
-	if (credential === "refused") return { ok: false, status: 403, error: CROSS_SITE_REFUSED };
+	if (credential === "refused") return { ok: false, status: 403, error: cookieRefusal(request) };
 	if (!credential) return { ok: false, status: 401, error: SIGN_IN_REQUIRED };
 	const session = verifyToken(dataDir, credential.token);
 	if (!session) return { ok: false, status: 401, error: SIGN_IN_REQUIRED };

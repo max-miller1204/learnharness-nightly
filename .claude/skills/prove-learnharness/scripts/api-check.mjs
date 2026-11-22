@@ -90,14 +90,19 @@ try {
 	step("read routes answer with their expected status", READS.every(([route, , want = 200]) => result.observations.readShapes.some((s) => s.startsWith(`GET ${route} ${want} `))), `${READS.length} routes`);
 
 	// A build with login (docs/specs/login-pairing.md) replaces the Host and
-	// cross-site checks with a credential and the cookie rule (Fetch Metadata
-	// first, then T3's Origin fallback).
+	// cross-site checks with a credential and the cookie rule: Fetch Metadata
+	// first; without it an Origin must name the host, and with no Origin a
+	// cookie request to /api needs a Referer naming the host (issue #323).
+	// The Host and Referer probes send no Fetch Metadata, like a plain-HTTP
+	// browser; the cross-site probes send `sec-fetch-site: cross-site`.
 	const cookie = inst.APP_TOKEN ? { cookie: `lh_session_${inst.APP_PORT}=${inst.APP_TOKEN}` } : {};
 	const refusals = inst.APP_TOKEN ? [
 		["no credential is 401", "GET", "/api/settings", { signedOut: true }, 401],
 		["no credential on a page shows the pairing screen", "GET", "/chat/new", { signedOut: true }, 200],
 		["a forged bearer token is 401", "GET", "/api/settings", { signedOut: true, headers: { authorization: "Bearer forged.token" } }, 401],
-		["foreign Host is allowed with a login", "GET", "/api/settings", { signedOut: true, headers: { host: "evil.example", ...cookie } }, 200],
+		// No Host allowlist: a page served under any host name works, with its own Referer.
+		["foreign Host is allowed with a login", "GET", "/api/settings", { signedOut: true, headers: { host: "evil.example", referer: "http://evil.example/", ...cookie } }, 200],
+		["a cookie API read with no Origin and no Referer is refused", "GET", "/api/settings", { signedOut: true, headers: { host: "evil.example", ...cookie } }, 403, "This request needs a Referer from this server"],
 		["cross-site Origin write with a cookie is refused", "POST", "/api/chats", { signedOut: true, headers: { origin: "http://evil.example", "sec-fetch-site": "cross-site", ...cookie }, body: "{}" }, 403],
 		// Issue #303: fetch metadata only, no Origin. A build that accepts it
 		// creates a session, which the loop below deletes again.
@@ -113,7 +118,8 @@ try {
 		["turn with bad JSON is 400", "POST", "/api/chat", { body: "{not json" }, 400],
 		["delete without a mode is 400", "DELETE", "/api/chats/chat_zzproveit_00000000", {}, 400],
 	);
-	for (const [name, method, route, opts, want] of refusals) {
+	// [name, method, route, options, status, text the body must contain]
+	for (const [name, method, route, opts, want, bodyHas] of refusals) {
 		const r = await raw(method, route, opts);
 		if (method === "POST" && route === "/api/chats" && r.status === 200) {
 			let id;
@@ -124,7 +130,7 @@ try {
 			}
 		}
 		result.observations.refusals.push(`${name}: ${r.status}`);
-		step(name, r.status === want, `${method} ${route} -> ${r.status} (want ${want}) ${r.body.slice(0, 120)}`);
+		step(name, r.status === want && (bodyHas === undefined || r.body.includes(bodyHas)), `${method} ${route} -> ${r.status} (want ${want}${bodyHas === undefined ? "" : `, body with "${bodyHas}"`}) ${r.body.slice(0, 120)}`);
 	}
 	const empty = await (async () => {
 		const c = JSON.parse((await raw("POST", "/api/chats", { body: JSON.stringify({ title: "zz-prove-it empty input" }) })).body);

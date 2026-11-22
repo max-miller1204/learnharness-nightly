@@ -100,7 +100,8 @@ describe("signed in", () => {
 		const token = mintToken();
 		const cookie = `${cookieName()}=${token}`;
 		const started = Date.now();
-		const request = new NextRequest(`${origin}/api/settings`, { headers: { cookie, "x-forwarded-proto": "https" } });
+		// A browser on https sends Fetch Metadata with the app's own fetch.
+		const request = new NextRequest(`${origin}/api/settings`, { headers: { cookie, "x-forwarded-proto": "https", "sec-fetch-site": "same-origin" } });
 		const response = proxy(request);
 		assert.ok(passes(response));
 		assert.equal(response.headers.get("cache-control"), "no-store");
@@ -118,7 +119,8 @@ describe("signed in", () => {
 
 	it("the Host allowlist is gone: any host name works with a credential", () => {
 		const cookie = `${cookieName()}=${mintToken()}`;
-		assert(passes(proxy(new NextRequest("http://mymac.local:3000/api/settings", { headers: { cookie, host: "mymac.local:3000" } }))));
+		// A plain-HTTP page sends no Fetch Metadata; its fetch carries a same-origin Referer.
+		assert(passes(proxy(new NextRequest("http://mymac.local:3000/api/settings", { headers: { cookie, host: "mymac.local:3000", referer: "http://mymac.local:3000/settings" } }))));
 	});
 
 	it("cookieOriginAllowed follows T3's rule", () => {

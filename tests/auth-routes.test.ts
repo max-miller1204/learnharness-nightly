@@ -16,8 +16,11 @@ const origin = "http://localhost:3000";
 const IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
 const MAC_CHROME = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 
+// What a browser on a plain-HTTP page sends (no Fetch Metadata there): an
+// Origin on every POST, and a same-origin Referer on the app's own GETs.
 const post = (pathname: string, body: unknown, headers: Record<string, string> = {}) =>
-	new Request(origin + pathname, { method: "POST", headers: { "content-type": "application/json", host: "localhost:3000", ...headers }, body: JSON.stringify(body) });
+	new Request(origin + pathname, { method: "POST", headers: { "content-type": "application/json", host: "localhost:3000", origin, ...headers }, body: JSON.stringify(body) });
+const page = { host: "localhost:3000", referer: `${origin}/settings` };
 
 async function pairBrowser(userAgent = MAC_CHROME, extra: Record<string, string> = {}) {
 	const { code } = createPairingLink(AUTH_TEST_DATA_DIR);
@@ -39,9 +42,9 @@ describe("browser pairing", () => {
 		assert.equal(again.status, 401);
 		assert.match((await again.json() as { error: string }).error, /wrong, expired or already used/);
 		const cookie = setCookie.split(";")[0] ?? "";
-		const state = await sessionState(new Request(`${origin}/api/auth/session`, { headers: { cookie } })).json() as { authenticated: boolean };
+		const state = await sessionState(new Request(`${origin}/api/auth/session`, { headers: { ...page, cookie } })).json() as { authenticated: boolean };
 		assert.equal(state.authenticated, true);
-		const list = await listClients(new Request(`${origin}/api/auth/clients`, { headers: { cookie } })).json() as { clients: { current: boolean; deviceType: string; os?: string; browser?: string; ip?: string }[] };
+		const list = await listClients(new Request(`${origin}/api/auth/clients`, { headers: { ...page, cookie } })).json() as { clients: { current: boolean; deviceType: string; os?: string; browser?: string; ip?: string }[] };
 		const me = list.clients.find((c) => c.current);
 		assert.deepEqual({ deviceType: me?.deviceType, os: me?.os, browser: me?.browser, ip: me?.ip }, { deviceType: "mobile", os: "iOS", browser: "Safari", ip: "100.101.102.103" });
 	});
@@ -94,6 +97,10 @@ describe("native-to-browser session handoff", () => {
 			const headers = new Headers(init?.headers);
 			assert.equal(headers.get("authorization"), null, "no native credential reached the browser");
 			if (cookie) headers.set("cookie", cookie);
+			// The pairing page's own fetches, as a plain-HTTP browser sends them.
+			headers.set("host", "localhost:3000");
+			headers.set("referer", `${origin}/pair`);
+			if (init?.method === "POST") headers.set("origin", origin);
 			const req = new Request(origin + route, { ...init, headers });
 			return route === "/api/auth/session" ? sessionState(req) : browserSession(req);
 		};
@@ -184,14 +191,14 @@ describe("devices", () => {
 		const made = await (await createPairingToken(post("/api/auth/pairing-token", { label: "Tablet" }, auth))).json() as { credential: string; label: string; expiresAt: string };
 		assert.equal(made.credential.length, 12);
 		assert.equal(made.label, "Tablet");
-		const ids = async () => (await listClients(new Request(`${origin}/api/auth/clients`, { headers: auth })).json() as { clients: { sessionId: string; current: boolean }[] }).clients;
+		const ids = async () => (await listClients(new Request(`${origin}/api/auth/clients`, { headers: { ...page, ...auth } })).json() as { clients: { sessionId: string; current: boolean }[] }).clients;
 		const mine = (await ids()).find((c) => c.current)!;
 		const theirs = (await ids()).find((c) => !c.current)!;
 		const self = await revokeClient(post("/api/auth/clients/revoke", { sessionId: mine.sessionId }, auth));
 		assert.equal(self.status, 400);
 		assert.deepEqual(await self.json(), { error: "current_session_revoke_not_allowed" });
 		assert.deepEqual(await revokeClient(post("/api/auth/clients/revoke", { sessionId: theirs.sessionId }, auth)).then((r) => r.json()), { revoked: true });
-		assert.equal((await listClients(new Request(`${origin}/api/auth/clients`, { headers: { cookie: other.cookie } }))).status, 401, "the revoked device is signed out");
+		assert.equal((await listClients(new Request(`${origin}/api/auth/clients`, { headers: { ...page, cookie: other.cookie } }))).status, 401, "the revoked device is signed out");
 		await pairBrowser();
 		const count = await (await revokeOtherClients(post("/api/auth/clients/revoke-others", {}, auth))).json() as { revokedCount: number };
 		assert.ok(count.revokedCount >= 1);

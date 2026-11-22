@@ -19,7 +19,7 @@ import {
 	type SessionRecord,
 } from "../../selfhost/src/auth-store.ts";
 import { layout } from "../../selfhost/src/paths.ts";
-import { authDataDir, authenticate, clientInfo, cookieRuleAllows, CREDENTIAL_HEADERS, CROSS_SITE_REFUSED, presentedCookie, sessionCookie } from "./auth.ts";
+import { authDataDir, authenticate, clientInfo, cookieRefusal, cookieRuleAllows, CREDENTIAL_HEADERS, presentedCookie, sessionCookie } from "./auth.ts";
 import type { OAuthErrorResponse, SessionStateResponse, TokenExchangeResponse } from "../client-protocol/index.ts";
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
@@ -78,7 +78,7 @@ const storeUnreadable = () => json({ error: "The login store couldn't be read. T
  * store that can't be read is never taken for signed out: every path (a
  * cookie, none, replace) answers 503 store_unreadable and spends nothing. */
 export async function browserSession(request: Request): Promise<Response> {
-	if (!cookieRuleAllows(request)) return json({ error: CROSS_SITE_REFUSED }, 403);
+	if (!cookieRuleAllows(request)) return json({ error: cookieRefusal(request) }, 403);
 	if (request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json") return json({ error: "Expected JSON." }, 415);
 	const { credential, replace } = await jsonBody(request);
 	if (typeof credential !== "string" || !credential) return json({ error: "Expected a pairing code." }, 400);

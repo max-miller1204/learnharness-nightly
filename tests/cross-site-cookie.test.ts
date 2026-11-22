@@ -113,6 +113,8 @@ describe("POST /api/auth/browser-session, the route that sets the cookie", () =>
 			"cross-site fetch": { ...FETCH.crossSite, origin: evil },
 			"same-site": FETCH.sameSite,
 			"no Fetch Metadata, foreign Origin": { origin: evil },
+			// Not a browser: every browser sends Origin on a POST (issue #323).
+			"no Fetch Metadata, no Origin, no Referer (curl)": {},
 		} as Record<string, Record<string, string>>)) {
 			const { code, response } = pair(headers);
 			const refused = await response;
@@ -122,8 +124,7 @@ describe("POST /api/auth/browser-session, the route that sets the cookie", () =>
 		}
 		for (const [label, headers] of Object.entries({
 			"same-origin pairing page": FETCH.sameOrigin,
-			"plain-http LAN pairing page (no Fetch Metadata)": { origin },
-			"no headers (curl)": {},
+			"plain-http LAN pairing page (no Fetch Metadata)": { origin, referer: `${origin}/pair` },
 		} as Record<string, Record<string, string>>)) {
 			const response = await pair(headers).response;
 			assert.equal(response.status, 200, label);
@@ -167,7 +168,8 @@ describe("the navigation exception covers pages only", () => {
 		// Same-origin, typed and no-metadata API GETs are unchanged.
 		assert(passes(proxy(new NextRequest(`${origin}/api/stt/token`, { headers: { cookie, host, ...FETCH.sameOrigin } }))));
 		assert(passes(proxy(new NextRequest(`${origin}/api/chats/chat_1/markdown`, { headers: { cookie, host, ...FETCH.none } }))), "a typed address");
-		assert(passes(proxy(new NextRequest(`${origin}/api/stt/token`, { headers: { cookie, host } }))), "no Fetch Metadata");
+		assert(passes(proxy(new NextRequest(`${origin}/api/stt/token`, { headers: { cookie, host, referer: `${origin}/chat/abc` } }))), "no Fetch Metadata: the app's own fetch on a plain-HTTP page");
+		assert.equal(proxy(new NextRequest(`${origin}/api/stt/token`, { headers: { cookie, host } })).status, 403, "no Fetch Metadata, no Origin, no Referer (issue #323)");
 		// The rule itself, as route handlers and the layout call it.
 		const crossNav = new Headers({ host, "sec-fetch-site": "cross-site", ...NAVIGATE });
 		assert.equal(cookieOriginAllowed(crossNav, "GET", "/api/stt/token"), false);
@@ -196,7 +198,8 @@ describe("the signed-in auth routes (they re-check the session themselves)", () 
 			assert.equal((await call({ cookie, "sec-fetch-site": "cross-site" })).status, 403, `${name}: cross-site`);
 			assert.equal((await call({ cookie, ...FETCH.sameSite })).status, 403, `${name}: same-site`);
 			assert.equal((await call({ cookie, ...FETCH.sameOrigin })).status, 200, `${name}: same-origin`);
-			assert.equal((await call({ cookie })).status, 200, `${name}: no Fetch Metadata`);
+			assert.equal((await call({ cookie, origin, referer: `${origin}/settings` })).status, 200, `${name}: a plain-HTTP page (no Fetch Metadata)`);
+			assert.equal((await call({ cookie })).status, 403, `${name}: no Fetch Metadata, no Origin, no Referer (issue #323)`);
 			assert.equal((await call({ authorization: `Bearer ${own}`, ...FETCH.crossSite })).status, 200, `${name}: bearer`);
 		}
 		// Signing every other device out is the one state change here; a cross-site page can't do it.
