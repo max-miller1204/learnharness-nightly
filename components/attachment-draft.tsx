@@ -19,6 +19,8 @@ interface DraftFile {
 	folder?: PickedFolder;
 	/** A finished upload restored from the session's draft: no bytes here, only what its chip and the limits need. */
 	stored?: StoredAttachment;
+	/** Aborts a restored row's status check (Remove, leaving). */
+	check?: AbortController;
 	/** `deadline` is the upload start deadline on this device's clock. */
 	grant?: { id: string; deadline: number; uploadUrl?: string };
 	uploads: Set<XMLHttpRequest>;
@@ -52,33 +54,39 @@ export async function attachmentResponseError(response: Response): Promise<strin
 
 async function deleteGrant(id: string): Promise<void> {
 	const response = await fetch(PROTOCOL_ROUTES.removeAttachment(id), { method: "DELETE" });
-	if (!response.ok && response.status !== 404) throw new RequestError(response.status, await attachmentResponseError(response));
+	if (!response.ok && response.status !== 404) throw new Error(await attachmentResponseError(response));
 }
 
-/** The server answers 409 while it still sees an aborted transfer as running. */
-const RELEASE_RETRY_MS = [100, 300, 1000];
-
 /** Wait for running puts to settle before asking the server to release the
- * reservation, trying again while it answers 409. A released folder starts no
- * further files. */
+ * reservation. A transfer the server still sees as running answers 409 and
+ * the server removes it when it settles. A released folder starts no further
+ * files. A restored row has no transfer: its release never waits on its
+ * status check. */
 function releaseGrant(row: DraftFile): void {
 	void (async () => {
-		await row.work;
-		if (!row.grant) return;
-		for (const wait of [...RELEASE_RETRY_MS, undefined]) {
-			try { await deleteGrant(row.grant.id); return; }
-			catch (error) {
-				if (wait === undefined || !(error instanceof RequestError && error.status === 409)) throw error;
-				await new Promise(resolve => setTimeout(resolve, wait));
-			}
-		}
+		if (!row.stored) await row.work;
+		if (row.grant) await deleteGrant(row.grant.id);
 	})().catch(() => { /* The server also expires abandoned grants. */ });
 }
 
-/** Stop a row's transfers and release its reservation. */
+/** Stop a row's transfers and status check and release its reservation. */
 function cancelRow(row: DraftFile): void {
 	for (const upload of row.uploads) upload.abort();
+	row.check?.abort();
 	releaseGrant(row);
+}
+
+/** How long a restore waits for the server before it goes on without it. */
+export const restoreTimeouts = { info: 5000, check: 5000 };
+
+/** A signal that aborts when `signal` does or after `ms`, and a way to stop its timer. */
+function within(signal: AbortSignal, ms: number) {
+	const controller = new AbortController();
+	const abort = () => controller.abort();
+	if (signal.aborted) abort();
+	signal.addEventListener("abort", abort);
+	const timer = setTimeout(abort, ms);
+	return { signal: controller.signal, stop: () => { clearTimeout(timer); signal.removeEventListener("abort", abort); } };
 }
 
 /** The number of files in a folder row; undefined for a single file. */
@@ -129,6 +137,8 @@ async function postGrant<T extends { expiresAt: number }>(url: string, body?: un
 export function useAttachmentDraft(chatId?: string) {
 	const [info, setInfo] = useState<ServerInfo>();
 	const [infoDone, setInfoDone] = useState(false);
+	/** Server info could not be read (error, 503 or timeout), as opposed to read and lacking a capability. */
+	const [infoFailed, setInfoFailed] = useState(false);
 	const enabled = !!info && hasCapability(info, ATTACHMENT_UPLOADS);
 	const folders = !!info && hasCapability(info, ATTACHMENT_FOLDERS);
 	const statusChecks = !!info && hasCapability(info, ATTACHMENT_STATUS);
@@ -150,11 +160,12 @@ export function useAttachmentDraft(chatId?: string) {
 		const controller = new AbortController();
 		if (window.lh?.getPathForFile) setInfoDone(true);
 		else {
-			void fetch(PROTOCOL_ROUTES.serverInfo, { signal: controller.signal })
+			const bound = within(controller.signal, restoreTimeouts.info);
+			void fetch(PROTOCOL_ROUTES.serverInfo, { signal: bound.signal })
 				.then(async response => response.ok ? response.json() as Promise<ServerInfo> : undefined)
-				.then(next => { if (next && Array.isArray(next.capabilities)) setInfo(next); })
-				.catch(() => {})
-				.finally(() => { if (!unmounted) setInfoDone(true); });
+				.then(next => { if (next && Array.isArray(next.capabilities)) setInfo(next); else setInfoFailed(true); })
+				.catch(() => { if (!unmounted) setInfoFailed(true); })
+				.finally(() => { bound.stop(); if (!unmounted) setInfoDone(true); });
 		}
 		return () => {
 			unmounted = true;
@@ -334,27 +345,32 @@ export function useAttachmentDraft(chatId?: string) {
 	const restorable = enabled && statusChecks;
 	useEffect(() => {
 		if (!chatId || !infoDone) return;
-		if (!restorable) { settleRestore(); return; }
-		const controller = new AbortController();
+		// A server that was read and can't check, has nothing to restore from. One
+		// that couldn't be read (down, 503, slow) still gets the saved chips,
+		// unchecked: the claim at send decides, so a Send never silently drops them.
+		if (!restorable && !infoFailed) { settleRestore(); return; }
 		const restored = readStoredAttachments(chatId)
 			.filter(stored => !files.current.some(row => row.grant?.id === stored.id))
 			.map((stored): DraftFile => ({ key: randomUuid(), name: stored.name, stored, grant: { id: stored.id, deadline: 0 }, uploads: new Set(), ready: true, progress: 100 }));
 		files.current = [...files.current, ...restored];
 		for (const row of restored) {
+			if (!restorable) continue;
+			const own = row.check = new AbortController();
+			const bound = within(own.signal, restoreTimeouts.check);
 			row.work = (async () => {
 				try {
-					const response = await fetch(PROTOCOL_ROUTES.attachmentStatus(row.grant!.id, chatId), { signal: controller.signal });
+					const response = await fetch(PROTOCOL_ROUTES.attachmentStatus(row.grant!.id, chatId), { signal: bound.signal });
 					if (response.status !== 404 || !live(row)) return;
 					files.current = files.current.filter(file => file !== row);
 					dropStoredAttachments(chatId, [row.grant!.id]);
-				} catch { /* Offline or left: keep the chip. */ }
-				finally { row.work = undefined; changed(); }
+				} catch { /* Offline, slow or left: keep the chip. */ }
+				finally { bound.stop(); row.work = undefined; row.check = undefined; changed(); }
 			})();
 		}
 		if (restored.length) changed();
 		settleRestore();
-		return () => controller.abort();
-	}, [chatId, restorable, infoDone]);
+		return () => { for (const row of restored) row.check?.abort(); };
+	}, [chatId, restorable, infoDone, infoFailed]);
 	// A send accepted after the learner left and came back dropped these.
 	useEffect(() => onStoredAttachmentsDropped((id, ids) => {
 		if (id !== chatId || !files.current.some(row => row.grant && ids.includes(row.grant.id))) return;

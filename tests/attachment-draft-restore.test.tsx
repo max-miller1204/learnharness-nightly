@@ -15,7 +15,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { parseHTML } from "linkedom";
 import { readFileSync } from "node:fs";
-import { DraftAttachmentChips, useAttachmentDraft, type AttachmentDraft } from "../components/attachment-draft.tsx";
+import { DraftAttachmentChips, restoreTimeouts, useAttachmentDraft, type AttachmentDraft } from "../components/attachment-draft.tsx";
 import { beginSessionDelete } from "../components/session-deletion.ts";
 import { ATTACHMENT_DRAFT_KEY_PREFIX, dropStoredAttachments, forgetStoredAttachments, readStoredAttachments, storeAttachment } from "../lib/attachment-drafts.ts";
 
@@ -36,6 +36,13 @@ const keyOf = (id: string) => ATTACHMENT_DRAFT_KEY_PREFIX + id;
 const stored = (id: string) => values.has(keyOf(id)) ? (JSON.parse(values.get(keyOf(id))!) as { rows: { id: string; name: string }[] }).rows : [];
 
 interface Call { method: string; url: string }
+
+/** What a real fetch does: a request waiting on `held` ends when its signal aborts. */
+const heldUntilAborted = (held: Promise<void> | null, signal?: AbortSignal | null) => held === null ? Promise.resolve() : new Promise<void>((resolve, reject) => {
+	void held.then(resolve);
+	const abort = () => reject(new DOMException("The operation was aborted", "AbortError"));
+	if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort);
+});
 let calls: Call[] = [];
 /** The status the server answers for a stored upload's id (404 when absent). */
 let statusOf: Map<string, number>;
@@ -51,6 +58,8 @@ let holdIds = new Map<string, Promise<void>>();
 /** While set, the server-info answer waits for it; infoFailure makes it fail. */
 let holdInfo: Promise<void> | null = null;
 let infoFailure = false;
+/** The status the server-info route answers. */
+let infoStatus = 200;
 /** Answers to the next DELETEs, in order (204 after they run out). */
 let deleteAnswers: number[] = [];
 let statusSignals: (AbortSignal | undefined)[] = [];
@@ -77,7 +86,7 @@ let doc!: Document;
 const saved: Record<string, PropertyDescriptor | undefined> = {};
 
 beforeEach(async () => {
-	values.clear(); calls = []; transfers = []; statusOf = new Map(); grants = 0; statusFailure = false; holdStatus = null; holdIds = new Map(); holdInfo = null; infoFailure = false; deleteAnswers = []; statusSignals = []; quota = Infinity;
+	values.clear(); calls = []; transfers = []; statusOf = new Map(); grants = 0; statusFailure = false; holdStatus = null; holdIds = new Map(); holdInfo = null; infoFailure = false; infoStatus = 200; restoreTimeouts.info = 5000; restoreTimeouts.check = 5000; deleteAnswers = []; statusSignals = []; quota = Infinity;
 	capabilities = ["attachment-uploads-v1", "attachment-status-v1"];
 	const { window: win, document } = parseHTML("<html><body><div id='root'></div></body></html>");
 	doc = document;
@@ -90,9 +99,9 @@ beforeEach(async () => {
 			const url = String(input);
 			calls.push({ method, url });
 			if (url === "/.well-known/learnharness/server") {
-				await holdInfo;
+				await heldUntilAborted(holdInfo, init?.signal);
 				if (infoFailure) throw new TypeError("offline");
-				return Response.json({ capabilities });
+				return infoStatus === 200 ? Response.json({ capabilities }) : new Response("unavailable", { status: infoStatus });
 			}
 			if (method === "POST" && url === "/api/attachments") {
 				const id = randomUUID();
@@ -108,8 +117,8 @@ beforeEach(async () => {
 			if (method === "GET" && url.startsWith("/api/attachments/")) {
 				statusSignals.push(init?.signal ?? undefined);
 				const id = decodeURIComponent(url.slice("/api/attachments/".length).split("?")[0]!);
-				await holdStatus;
-				await holdIds.get(id);
+				await heldUntilAborted(holdStatus, init?.signal);
+				await heldUntilAborted(holdIds.get(id) ?? null, init?.signal);
 				if (statusFailure) throw new TypeError("offline");
 				return new Response(null, { status: statusOf.get(id) ?? 404 });
 			}
@@ -330,17 +339,62 @@ describe("round 1 review of #410", () => {
 		assert.deepEqual((await latest.prepare("x"))?.attachmentUploadIds, [saved.id]);
 	});
 
-	it("nothing saved means nothing to wait for; an unreachable server ends the wait and keeps the saved row", async () => {
+	it("nothing saved means nothing to wait for", async () => {
 		await render("nothing-saved");
 		assert.equal(latest.restoring(), false);
-		const saved = row("kept.pdf");
-		keep("offline-info", saved);
-		infoFailure = true;
-		await render("offline-info");
-		await latest.restored();
-		assert.equal(latest.restoring(), false);
-		assert.deepEqual(chips(), []);
-		assert.deepEqual(stored("offline-info").map(each => each.id), [saved.id], "left for a visit that can check it");
+	});
+
+	it("server info that fails, answers 503 or hangs still restores the saved chips unchecked, so Send never drops them", async () => {
+		for (const [name, arrange] of [
+			["unreachable", () => { infoFailure = true; }],
+			["503", () => { infoStatus = 503; }],
+			["hanging", () => { holdInfo = new Promise(() => {}); restoreTimeouts.info = 40; }],
+		] as const) {
+			infoFailure = false; infoStatus = 200; holdInfo = null;
+			const chatId = `info-${name}`;
+			const saved = row("kept.pdf");
+			keep(chatId, saved);
+			arrange();
+			await render(chatId);
+			if (name === "hanging") assert.equal(latest.restoring(), true, "Send waits while server info is pending");
+			await waitMs(150);
+			await latest.restored();
+			assert.equal(latest.restoring(), false, name);
+			assert.deepEqual(chips(), ["kept.pdf"], `${name}: the chip is restored without a status check`);
+			assert.deepEqual((await latest.prepare("x"))?.attachmentUploadIds, [saved.id], name);
+			assert.deepEqual(stored(chatId).map(each => each.id), [saved.id], name);
+			assert.equal(calls.some(call => call.url.startsWith(`/api/attachments/${saved.id}`)), false, `${name}: no status check was possible`);
+		}
+	});
+
+	it("a status check that hangs keeps the chip once it times out", async () => {
+		const saved = row("slow.pdf");
+		keep("hung-check", saved);
+		holdStatus = new Promise(() => {});
+		restoreTimeouts.check = 40;
+		await render("hung-check");
+		assert.deepEqual(chips(), ["slow.pdf"]);
+		const sending = latest.prepare("x");
+		await waitMs(150);
+		assert.deepEqual((await sending)?.attachmentUploadIds, [saved.id], "the send is not stuck behind the hung check");
+		assert.equal(statusSignals[0]?.aborted, true, "the check was cut off");
+	});
+
+	it("Remove of a restored chip aborts its status check and still releases it", async () => {
+		const saved = row("removed.pdf");
+		keep("remove-restored", saved);
+		holdStatus = new Promise(() => {});
+		await render("remove-restored");
+		const selected = latest.current();
+		let unavailable = 0;
+		const sending = latest.prepare("x", () => { unavailable++; }, selected);
+		await act(async () => { latest.remove(selected[0]!); });
+		assert.equal(await sending, null, "the waiting send ends instead of staying occupied");
+		assert.equal(unavailable, 1);
+		assert.equal(statusSignals[0]?.aborted, true);
+		await waitMs(20);
+		assert.ok(calls.some(call => call.method === "DELETE" && call.url === `/api/attachments/${saved.id}`), "released without waiting for the check");
+		assert.deepEqual(stored("remove-restored"), []);
 	});
 
 	it("a 404 that lands after Send was pressed stops the send, whatever is left", async () => {
@@ -357,23 +411,21 @@ describe("round 1 review of #410", () => {
 			statusOf.delete(gone.id); // the server no longer has it
 			let unavailable = 0;
 			const sending = latest.prepare("same draft", () => { unavailable++; }, selected);
-			release();
-			assert.equal(await sending, null, `${name}: the send stops instead of going with ${name === "one chip" ? "no files" : "only the survivor"}`);
+			await act(async () => { release(); });
+			assert.equal(await act(async () => await sending), null, `${name}: the send stops instead of going with ${name === "one chip" ? "no files" : "only the survivor"}`);
 			assert.equal(unavailable, 1, name);
 		}
 	});
 
-	it("leaving mid-upload keeps asking the server to release the reservation while it answers 409", async () => {
+	it("leaving mid-upload sends one release; a 409 is final because the server removes the transfer when it settles", async () => {
 		await render("leaver");
 		await attach(pdf());
 		assert.equal(transfers.length, 1);
 		const id = latest.files[0]!.grant!.id;
-		deleteAnswers = [409, 409]; // the server still sees the aborted transfer as running
+		deleteAnswers = [409];
 		await render("elsewhere");
-		await waitMs(700);
-		const deletes = calls.filter(call => call.method === "DELETE" && call.url === `/api/attachments/${id}`);
-		assert.equal(deletes.length, 3, "two refusals, then released");
-		assert.equal(statusOf.has(id), false);
+		await waitMs(300);
+		assert.equal(calls.filter(call => call.method === "DELETE" && call.url === `/api/attachments/${id}`).length, 1);
 	});
 
 	it("Remove aborts a running transfer and releases it", async () => {
@@ -421,9 +473,11 @@ describe("round 1 review of #410", () => {
 
 	it("Chat sends what the learner saw, and not before the saved attachments are loaded (wiring; the hook tests cover the rules)", () => {
 		const source = readFileSync(new URL("../components/chat.tsx", import.meta.url), "utf8");
-		assert.match(source, /attachments\.restoring\(\)\) void attachments\.restored\(\)\.then\(\(\) => \{ if \(submissionMounted\.current && !submissionRunner\.occupied\) send\(\); \}\);/);
-		assert.match(source, /const attached = attachments\.current\(\); void prepareText\(undefined, undefined, undefined, attached\.length \? attached : undefined\)/);
-		assert.match(source, /attachments\.prepare\(JSON\.stringify\(input\), \(\) => attempt\.cancel\(\), attached\)/);
+		assert.match(source, /const rows = attachments\.current\(\), waiting = attachments\.restoring\(\);\n\t+void prepareText\(undefined, undefined, undefined, rows\.length \|\| waiting \? \{ rows, waiting \} : undefined\);/);
+		// The wait is inside the submission: text captured at the click, and a change while waiting cancels.
+		assert.match(source, /if \(attached\?\.waiting\) \{[\s\S]*?await attachments\.restored\(\);\s*attempt\.check\(\);\s*if \(composerEditRevision\.current !== capturedRevision \|\| !isInteractionScopeEligible\(sessionFindScopeRef\.current, controller\)\) \{ attempt\.cancel\(\); return false; \}\s*selected = attachments\.current\(\);/);
+		assert.match(source, /attachments\.prepare\(JSON\.stringify\(input\), \(\) => attempt\.cancel\(\), selected\)/);
+		assert.doesNotMatch(source, /attachments\.restored\(\)\.then/, "no deferred send outside the submission runner");
 	});
 
 	it("leaving the session aborts a status check still in flight", async () => {

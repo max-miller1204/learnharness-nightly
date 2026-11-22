@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { after, test } from "node:test";
 import { issueSession } from "../selfhost/src/auth-store.ts";
 
@@ -113,6 +114,53 @@ test("a folder is sendable once every file arrived", async () => {
 	assert.equal((await status(grant.id, chat.id)).status, 204);
 	assert.equal((await status(grant.id, chat.id, other.token)).status, 404);
 	assert.equal((await discardAttachmentRequest(request(`/api/attachments/${grant.id}`, "DELETE"), Promise.resolve({ id: grant.id }))).status, 204);
+	assert.equal((await status(grant.id, chat.id)).status, 404);
+	chatStore.deleteChat(chat.id);
+});
+
+/** A PUT whose bytes the test hands over by hand, so a transfer can outlast other requests. */
+function streamingPut(uploadUrl: string, size: number) {
+	let body!: ReadableStreamDefaultController<Uint8Array>;
+	const stream = new ReadableStream<Uint8Array>({ start(controller) { body = controller; } });
+	const put = uploadAttachmentRequest(new Request(new URL(uploadUrl, base), {
+		method: "PUT", body: stream, duplex: "half", headers: { Authorization: `Bearer ${owner.token}`, "X-LearnHarness-Protocol": "1", "Content-Length": String(size) },
+	} as RequestInit));
+	return { send: (text: string) => body.enqueue(new TextEncoder().encode(text)), end: () => body.close(), done: put };
+}
+const stagedFor = (id: string) => (fs.existsSync(path.join(PATHS.attachments, "pending")) ? fs.readdirSync(path.join(PATHS.attachments, "pending")) : []).filter(name => name.startsWith(id));
+const discard = (id: string) => discardAttachmentRequest(request(`/api/attachments/${id}`, "DELETE"), Promise.resolve({ id }));
+
+test("removing a file while its bytes are still arriving removes it when the transfer settles, however long that takes", async () => {
+	const chat = chatStore.createChat("zz-prove-it cancelled upload chat");
+	const grant = await (await reserve({ chatId: chat.id, name: "slow.txt", mimeType: "text/plain", size: 4 })).json();
+	const transfer = streamingPut(grant.uploadUrl, 4);
+	transfer.send("ab");
+	await delay(50);
+	assert.equal((await discard(grant.id)).status, 409, "still uploading: the client's answer is unchanged");
+	await delay(300); // longer than any client retry would wait
+	assert.equal((await status(grant.id, chat.id)).status, 404, "never sendable while it transfers");
+	transfer.send("cd");
+	transfer.end();
+	await transfer.done;
+	assert.deepEqual(stagedFor(grant.id), [], "the bytes and the metadata are gone once it settles");
+	assert.equal((await status(grant.id, chat.id)).status, 404);
+	chatStore.deleteChat(chat.id);
+});
+
+test("removing a folder while one of its files is arriving removes the whole folder when that file settles", async () => {
+	const chat = chatStore.createChat("zz-prove-it cancelled folder chat");
+	const files = [{ path: "a.md", mimeType: "text/markdown", size: 1 }, { path: "b.md", mimeType: "text/markdown", size: 2 }];
+	const grant = await (await reserve({ chatId: chat.id, name: "Notes", files })).json();
+	assert.equal((await put(grant.files[0].uploadUrl, "a")).status, 204);
+	const transfer = streamingPut(grant.files[1].uploadUrl, 2);
+	transfer.send("b");
+	await delay(50);
+	assert.equal((await discard(grant.id)).status, 409);
+	transfer.send("c");
+	transfer.end();
+	await transfer.done;
+	const members = (grant.files as { uploadUrl: string }[]).map(file => new URL(file.uploadUrl, base).searchParams.get("id")!);
+	assert.deepEqual([grant.id, ...members].flatMap(stagedFor), [], "no member, no folder record left");
 	assert.equal((await status(grant.id, chat.id)).status, 404);
 	chatStore.deleteChat(chat.id);
 });

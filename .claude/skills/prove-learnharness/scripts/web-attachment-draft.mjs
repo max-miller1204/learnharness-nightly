@@ -285,6 +285,56 @@ try {
 	await page.setRequestInterception(false);
 	step("7. a Send before the saved chip loaded waits for it and carries it", chipsBeforeInfo.length === 0 && early?.attachments?.[0]?.id === slow.id, JSON.stringify({ chipsBeforeInfo, attachments: early?.attachments }));
 
+	// Requests the page makes that match are never answered, like a hung server.
+	const hang = async match => {
+		await page.setRequestInterception(true);
+		const handler = request => { if (match(request)) return; request.continue().catch(() => {}); };
+		page.on("request", handler);
+		return async () => { page.off("request", handler); await page.setRequestInterception(false); };
+	};
+	const messageWith = async (id, text) => {
+		let found;
+		for (let i = 0; i < 100 && !found; i++) {
+			found = ((await record(id)).messages ?? []).find(message => message.role === "user" && JSON.stringify(message.content).includes(text));
+			if (!found) await delay(200);
+		}
+		return found;
+	};
+
+	// 8. Server info that never answers: after its time limit the saved chip is restored unchecked and goes with Send.
+	await fresh("s8");
+	await open("s8");
+	await attach(small);
+	await waitChips(["zz-prove-it-notes.txt"]);
+	const hungInfo = JSON.parse(await stored("s8")).rows[0];
+	const releaseInfo = await hang(request => request.url().includes("/.well-known/learnharness/server"));
+	await page.goto(`${APP}/chat/${ids.s8}`, { waitUntil: "domcontentloaded" });
+	await page.waitForSelector('[data-testid="composer"] [contenteditable="true"]', { timeout: 30_000 });
+	const earlyChips = await chips();
+	await sendText("zz-prove-it send while server info hangs");
+	const afterHang = await messageWith(ids.s8, "while server info hangs");
+	await releaseInfo();
+	step("8. a hung server-info lookup times out, restores the chip unchecked and Send carries it", earlyChips.length === 0 && afterHang?.attachments?.[0]?.id === hungInfo.id, JSON.stringify({ earlyChips, attachments: afterHang?.attachments }));
+
+	// 9. Remove a restored chip while its status check hangs: released, and Send is not stuck.
+	await fresh("s9");
+	await open("s9");
+	await attach(small);
+	await waitChips(["zz-prove-it-notes.txt"]);
+	const hungCheck = JSON.parse(await stored("s9")).rows[0];
+	const releaseCheck = await hang(request => request.method() === "GET" && request.url().includes(`/api/attachments/${hungCheck.id}?chatId=`));
+	await page.goto(`${APP}/chat/${ids.s9}`, { waitUntil: "domcontentloaded" });
+	await page.waitForSelector('[data-testid="composer"] [contenteditable="true"]', { timeout: 30_000 });
+	await waitChips(["zz-prove-it-notes.txt"]);
+	await page.click('[data-attachment-upload] button[aria-label^="Remove"]');
+	await delay(1000);
+	const removedHung = seen.findLast(item => item.method === "DELETE" && item.url === `/api/attachments/${hungCheck.id}`);
+	step("9a. Remove of a restored chip with a hung status check releases it at once", (await chips()).length === 0 && removedHung?.status === 204 && await stored("s9") === null, JSON.stringify({ removedHung }));
+	await sendText("zz-prove-it send after removing the hung chip");
+	const plainAfter = await messageWith(ids.s9, "after removing the hung chip");
+	await releaseCheck();
+	step("9b. Send is not stuck: the text goes with no attachment", Boolean(plainAfter) && !plainAfter.attachments?.length);
+
 	// Chrome logs each non-2xx fetch: the known 503 (/api/stt/token, no Deepgram key, budgets.json) and one 404 per status check the server answered 404 (the dropped chips).
 	const answered404 = seen.filter(item => item.method === "GET" && item.status === 404).length;
 	const unexpected = consoleErrors.filter(text => !/status of 503/.test(text) && !/status of 404/.test(text));
