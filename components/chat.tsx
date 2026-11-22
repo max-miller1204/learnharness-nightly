@@ -841,7 +841,9 @@ export function Chat({
 			}, attempt.accepted, undefined, attempt.refused);
 		});
 	};
-	const prepareText = (supplied?: string, openingAccepted?: () => void, beforePost?: (captured: string) => boolean, withAttachments = false) => {
+	/** `attached` is the draft's attachments as they were when Send was pressed;
+	 * `waiting` says the session's saved ones were still loading then. */
+	const prepareText = (supplied?: string, openingAccepted?: () => void, beforePost?: (captured: string) => boolean, attached?: { rows: typeof attachments.files; waiting: boolean }) => {
 		const target = textTarget();
 		if (!target || pendingRef.current || pluginOwnsDock || activeProblemRef.current || compacting) return Promise.resolve(false);
 		if (!busyRef.current && zeroKeys) { setSetupOpen(true); return Promise.resolve(false); }
@@ -852,10 +854,25 @@ export function Chat({
 			if (!prepared.content.text.trim() && !prepared.content.images.length) throw new Error("Message text or images are required. Your input has been kept.");
 			if (beforePost && !beforePost(captured)) { attempt.cancel(); return false; }
 			const input: ChatInput = { type: "text", text: prepared.content.text, ...(prepared.content.images.length ? { images: prepared.content.images.map(image => ({ ...image })) } : {}) };
-			if (withAttachments && !input.text.trim()) throw new Error("Message text is required when attaching files.");
-			const upload = withAttachments ? await attachments.prepare(JSON.stringify(input), () => attempt.cancel()) : undefined;
+			let selected = attached?.rows;
+			// A send that waited for attachments (still loading, or a restored one's
+			// status check) was captured at the click: an edit or a change of scope
+			// meanwhile cancels it and keeps the draft.
+			const changedWhileWaiting = () => composerEditRevision.current !== capturedRevision || !isInteractionScopeEligible(sessionFindScopeRef.current, controller);
+			if (attached?.waiting) {
+				// The saved attachments were still loading when Send was pressed: wait
+				// inside this submission (it already holds the runner, with the text
+				// captured then).
+				await attachments.restored();
+				attempt.check();
+				if (changedWhileWaiting()) { attempt.cancel(); return false; }
+				selected = attachments.current();
+			}
+			if (selected?.length && !input.text.trim()) throw new Error("Message text is required when attaching files.");
+			const upload = selected?.length ? await attachments.prepare(JSON.stringify(input), () => attempt.cancel(), selected) : undefined;
 			if (upload === null) return false;
 			attempt.check();
+			if (upload && changedWhileWaiting()) { attempt.cancel(); return false; }
 			if (upload && busyRef.current) throw new Error("A turn is already running — try again in a moment.");
 			draftRef.current = captured;
 			const accepted = () => {
@@ -1622,7 +1639,8 @@ export function Chat({
 	const onSend = () => {
 		if (!isInteractionScopeEligible(sessionFindScopeRef.current, controller) || submissionRunner.occupied) return;
 		if (openingDraftRef.current !== null) { deliverOpeningPrompt(textRef.current.trim(), true); return; }
-		void prepareText(undefined, undefined, undefined, attachments.files.length > 0);
+		const rows = attachments.current(), waiting = attachments.restoring();
+		void prepareText(undefined, undefined, undefined, rows.length || waiting ? { rows, waiting } : undefined);
 	};
 
 	/* STEER VS SEND (owner arc 2026-10-03): a send while a turn runs steers

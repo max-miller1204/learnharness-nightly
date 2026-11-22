@@ -367,6 +367,7 @@ it("releases the existing-chat submission when a file fails or is removed while 
 		onerror?: () => void;
 		open() {}
 		send() { uploads.push(this); }
+		abort() {} // Remove aborts a running transfer; the test settles it by hand.
 	}
 	const descriptor = Object.getOwnPropertyDescriptor(globalThis, "XMLHttpRequest");
 	Object.defineProperty(globalThis, "XMLHttpRequest", { value: ManualUpload, configurable: true });

@@ -38,8 +38,11 @@ export class AttachmentError extends Error {
 	constructor(public status: number, message: string) { super(message); }
 }
 
-const active = (globalThis as typeof globalThis & { lhActiveAttachmentUploads?: Map<string, number> });
+const active = (globalThis as typeof globalThis & { lhActiveAttachmentUploads?: Map<string, number>; lhCancelledAttachmentUploads?: Set<string> });
 const uploads = active.lhActiveAttachmentUploads ??= new Map();
+/** Uploads their owner asked to remove while bytes were still arriving: their
+ *  files go when the transfer settles, however long that takes. */
+const cancelled = active.lhCancelledAttachmentUploads ??= new Set();
 
 const staging = path.join(/* turbopackIgnore: true */ PATHS.attachments, "pending");
 const claimed = path.join(/* turbopackIgnore: true */ PATHS.attachments, "claimed");
@@ -268,7 +271,10 @@ export async function receiveAttachment(
 		throw error;
 	} finally {
 		try { unlink(part); }
-		finally { uploads.delete(id); }
+		finally {
+			uploads.delete(id);
+			if (cancelled.delete(id)) removePending(id);
+		}
 	}
 }
 
@@ -280,7 +286,14 @@ function removePending(id: string): void {
 }
 
 function discardFolder(folder: PendingFolder): void {
-	if (folder.files.some(file => uploads.has(file.member))) throw new AttachmentError(409, "This file is still uploading.");
+	const running = folder.files.filter(file => uploads.has(file.member));
+	if (running.length) {
+		// Remove the rest now; each running file is removed when its transfer settles.
+		for (const file of running) cancelled.add(file.member);
+		for (const file of folder.files) if (!uploads.has(file.member)) removePending(file.member);
+		unlink(folderFile(folder.id));
+		throw new AttachmentError(409, "This file is still uploading.");
+	}
 	const copy = claimedFile(folder.id);
 	if (entryStat(copy)) {
 		const { ids, complete } = liveReferences();
@@ -306,7 +319,10 @@ export function discardAttachment(id: string, owner: string): void {
 	}
 	const upload = pending(id);
 	if (!upload || upload.owner !== owner || upload.folder) throw new AttachmentError(404, "Pending attachment not found.");
-	if (uploads.has(id)) throw new AttachmentError(409, "This file is still uploading.");
+	if (uploads.has(id)) {
+		cancelled.add(id);
+		throw new AttachmentError(409, "This file is still uploading.");
+	}
 	// A crash can leave a copy and its pending metadata side by side. Keep
 	// the metadata until the copy is either referenced or removed.
 	const copy = claimedFile(id);
@@ -337,28 +353,47 @@ export function unavailableAttachmentIds(messages: readonly LhMessage[]): string
 	return missing.length ? missing : undefined;
 }
 
+/** A pending file whose bytes have all arrived, for this owner and target.
+ *  The id is validated, and the owner and target are checked, before the body is stat'ed. */
+function uploadedPending(id: string, owner: string, target: AttachmentTarget, folder?: string): PendingAttachment | undefined {
+	const upload = pending(id);
+	if (!upload || upload.owner !== owner || !sameTarget(upload.target, target) || upload.folder !== folder || uploads.has(id)) return;
+	const bytes = stat(pendingFile(id, ".body"));
+	if (!bytes || bytes.size !== upload.size || bytes.mtimeMs + PENDING_MS <= Date.now()) return;
+	return upload;
+}
+
+/** A pending folder whose files have all arrived, for this owner and target. */
+function uploadedFolder(folder: PendingFolder, owner: string, target: AttachmentTarget): boolean {
+	return folder.owner === owner && sameTarget(folder.target, target) && folder.files.every(file => {
+		const member = uploadedPending(file.member, owner, target, folder.id);
+		return member && member.size === file.size && member.mimeType === file.mimeType;
+	});
+}
+
+/** Whether a send could claim this pending file or folder right now: a
+ *  restored draft chip asks this before it keeps a stored upload. */
+export function attachmentSendable(id: string, owner: string, target: AttachmentTarget): boolean {
+	if (!isAttachmentId(id)) return false;
+	const folder = pendingFolder(id);
+	return folder ? uploadedFolder(folder, owner, target) : !!uploadedPending(id, owner, target);
+}
+
 export function claimAttachments(
 	ids: readonly string[], owner: string, target: AttachmentTarget, messages: readonly LhMessage[],
 	save: (refs: AttachmentReference[]) => void,
 ): void {
 	const current = new Set(attachmentReferences(messages).map(({ id }) => id));
 	const unavailable = () => new AttachmentError(409, "A file is unavailable for this draft or chat. Attach it again to use it.");
-	const uploaded = (id: string, folder?: string) => {
-		const upload = pending(id);
-		const bytes = stat(pendingFile(id, ".body"));
-		if (!upload || upload.owner !== owner || !sameTarget(upload.target, target) || upload.folder !== folder ||
-			uploads.has(id) || !bytes || bytes.size !== upload.size || bytes.mtimeMs + PENDING_MS <= Date.now()) throw unavailable();
-		return upload;
-	};
 	const items = ids.map(id => {
 		if (current.has(id)) throw unavailable();
 		const folder = pendingFolder(id);
-		if (!folder) return { upload: uploaded(id), folder: undefined };
-		if (folder.owner !== owner || !sameTarget(folder.target, target)) throw unavailable();
-		for (const file of folder.files) {
-			const member = uploaded(file.member, folder.id);
-			if (member.size !== file.size || member.mimeType !== file.mimeType) throw unavailable();
+		if (!folder) {
+			const upload = uploadedPending(id, owner, target);
+			if (!upload) throw unavailable();
+			return { upload, folder: undefined };
 		}
+		if (!uploadedFolder(folder, owner, target)) throw unavailable();
 		return { folder };
 	});
 	const limitError = attachmentLimitError(items.flatMap(item => item.folder ? folderFilesAsAttachments(item.folder.files) : [item.upload]));

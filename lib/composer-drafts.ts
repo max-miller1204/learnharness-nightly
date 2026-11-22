@@ -22,7 +22,8 @@
  * storage that throws, reads as no draft. Storage that is blocked or full
  * keeps this page's unsaved drafts in its memory (lost if the page is
  * reloaded or closed), and they are saved at a later flush if storage works
- * again; a refused write deletes no other draft. Text only: attachments are not part of it.
+ * again; a refused write deletes no other draft. Text only: a session's unsent
+ * attachments are kept beside it (lib/attachment-drafts.ts, #367).
  */
 
 export const COMPOSER_DRAFT_KEY_PREFIX = "lh:composer-draft:v1:";

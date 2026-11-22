@@ -2,9 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { FolderIcon, PaperclipIcon } from "lucide-react";
-import { ATTACHMENT_FOLDERS, ATTACHMENT_UPLOADS, hasCapability, PROTOCOL_ROUTES, type AttachmentFolderGrantResponse, type AttachmentGrantResponse, type AttachmentSend, type AttachmentTarget, type ServerInfo } from "@/src/core";
+import { ATTACHMENT_FOLDERS, ATTACHMENT_STATUS, ATTACHMENT_UPLOADS, hasCapability, PROTOCOL_ROUTES, type AttachmentFolderGrantResponse, type AttachmentGrantResponse, type AttachmentSend, type AttachmentTarget, type ServerInfo } from "@/src/core";
 import { attachmentLimitError, ATTACHMENT_UNAVAILABLE, folderFilesAsAttachments, folderLimitError, folderPathError, randomUuid, skippedFolderNotice } from "@/src/core";
 import type { AttachmentReference } from "@/src/core";
+import { dropStoredAttachments, isForgotten, onStoredAttachmentsDropped, readStoredAttachments, storeAttachment, storedLimitInputs, type StoredAttachment } from "@/lib/attachment-drafts";
 import { droppedAttachments, folderFromFiles, type FolderPick, type PickedFolder } from "./attachment-folder";
 
 /** Dispatched by the page drop zone on an uploading composer's chips. */
@@ -16,6 +17,10 @@ interface DraftFile {
 	name: string;
 	file?: File;
 	folder?: PickedFolder;
+	/** A finished upload restored from the session's draft: no bytes here, only what its chip and the limits need. */
+	stored?: StoredAttachment;
+	/** Aborts a restored row's status check (Remove, leaving). */
+	check?: AbortController;
 	/** `deadline` is the upload start deadline on this device's clock. */
 	grant?: { id: string; deadline: number; uploadUrl?: string };
 	uploads: Set<XMLHttpRequest>;
@@ -34,6 +39,7 @@ function folderManifest(folder: PickedFolder) {
 function limitInputs(rows: readonly DraftFile[]) {
 	return rows.flatMap(row => row.folder
 		? folderFilesAsAttachments(folderManifest(row.folder))
+		: row.stored ? storedLimitInputs(row.stored)
 		: [{ name: row.file!.name, mimeType: row.file!.type, size: row.file!.size }]);
 }
 
@@ -50,6 +56,41 @@ async function deleteGrant(id: string): Promise<void> {
 	const response = await fetch(PROTOCOL_ROUTES.removeAttachment(id), { method: "DELETE" });
 	if (!response.ok && response.status !== 404) throw new Error(await attachmentResponseError(response));
 }
+
+/** Wait for running puts to settle before asking the server to release the
+ * reservation. A transfer the server still sees as running answers 409 and
+ * the server removes it when it settles. A released folder starts no further
+ * files. A restored row has no transfer: its release never waits on its
+ * status check. */
+function releaseGrant(row: DraftFile): void {
+	void (async () => {
+		if (!row.stored) await row.work;
+		if (row.grant) await deleteGrant(row.grant.id);
+	})().catch(() => { /* The server also expires abandoned grants. */ });
+}
+
+/** Stop a row's transfers and status check and release its reservation. */
+function cancelRow(row: DraftFile): void {
+	for (const upload of row.uploads) upload.abort();
+	row.check?.abort();
+	releaseGrant(row);
+}
+
+/** How long a restore waits for the server before it goes on without it. */
+export const restoreTimeouts = { info: 5000, check: 5000 };
+
+/** A signal that aborts when `signal` does or after `ms`, and a way to stop its timer. */
+function within(signal: AbortSignal, ms: number) {
+	const controller = new AbortController();
+	const abort = () => controller.abort();
+	if (signal.aborted) abort();
+	signal.addEventListener("abort", abort);
+	const timer = setTimeout(abort, ms);
+	return { signal: controller.signal, stop: () => { clearTimeout(timer); signal.removeEventListener("abort", abort); } };
+}
+
+/** The number of files in a folder row; undefined for a single file. */
+const folderCount = (row: DraftFile): number | undefined => row.folder?.files.length ?? row.stored?.files?.length;
 
 function putBytes(row: DraftFile, file: File, url: string, progress: (loaded: number) => void): Promise<void> {
 	return new Promise((resolve, reject) => {
@@ -91,34 +132,79 @@ async function postGrant<T extends { expiresAt: number }>(url: string, body?: un
 	return { ...grant, deadline: localDeadline(grant.expiresAt, response.headers.get("date")) };
 }
 
+/** One composer per session: callers key it by the chat id (app/chat/[id]/page.tsx), so
+ * the hook lives for one `chatId`. */
 export function useAttachmentDraft(chatId?: string) {
-	const [enabled, setEnabled] = useState(false);
-	const [folders, setFolders] = useState(false);
+	const [info, setInfo] = useState<ServerInfo>();
+	const [infoDone, setInfoDone] = useState(false);
+	/** Server info could not be read (error, 503 or timeout), as opposed to read and lacking a capability. */
+	const [infoFailed, setInfoFailed] = useState(false);
+	const enabled = !!info && hasCapability(info, ATTACHMENT_UPLOADS);
+	const folders = !!info && hasCapability(info, ATTACHMENT_FOLDERS);
+	const statusChecks = !!info && hasCapability(info, ATTACHMENT_STATUS);
 	const [validation, setValidation] = useState<string>();
 	const [, redraw] = useState(0);
 	const files = useRef<DraftFile[]>([]);
 	const openingDraft = useRef<string>(null);
 	const lastSend = useRef<{ identity: string; id: string }>(null);
 	const changed = () => redraw(n => n + 1);
+	// Until the session's saved uploads are shown or ruled out, a Send waits
+	// (restored()), so it never goes without a file the learner can't see yet.
+	const restoreSettled = useRef(false);
+	const restoreWaiters = useRef<(() => void)[]>([]);
+	const wakeRestoreWaiters = () => { for (const wake of restoreWaiters.current.splice(0)) wake(); };
+	const settleRestore = () => { restoreSettled.current = true; wakeRestoreWaiters(); };
+	const restoring = () => !restoreSettled.current && !!chatId && readStoredAttachments(chatId).length > 0;
 	useEffect(() => {
-		if (window.lh?.getPathForFile) return;
+		let unmounted = false;
 		const controller = new AbortController();
-		void fetch(PROTOCOL_ROUTES.serverInfo, { signal: controller.signal })
-			.then(async response => response.ok ? response.json() as Promise<ServerInfo> : undefined)
-			.then(info => {
-				if (!info || !Array.isArray(info.capabilities)) return;
-				setEnabled(hasCapability(info, ATTACHMENT_UPLOADS));
-				setFolders(hasCapability(info, ATTACHMENT_FOLDERS));
-			})
-			.catch(() => {});
+		if (window.lh?.getPathForFile) setInfoDone(true);
+		else {
+			const bound = within(controller.signal, restoreTimeouts.info);
+			void fetch(PROTOCOL_ROUTES.serverInfo, { signal: bound.signal })
+				.then(async response => response.ok ? response.json() as Promise<ServerInfo> : undefined)
+				.then(next => { if (next && Array.isArray(next.capabilities)) setInfo(next); else setInfoFailed(true); })
+				.catch(() => { if (!unmounted) setInfoFailed(true); })
+				.finally(() => { bound.stop(); if (!unmounted) setInfoDone(true); });
+		}
+		// A reload or close while an upload runs: the page can't release it
+		// afterwards, so ask now. keepalive outlives the page; the server removes
+		// the files once it sees the transfer end.
+		const releaseUnfinished = () => {
+			for (const row of files.current) {
+				if (!row.ready && row.grant) void fetch(PROTOCOL_ROUTES.removeAttachment(row.grant.id), { method: "DELETE", keepalive: true }).catch(() => {});
+			}
+		};
+		window.addEventListener("pagehide", releaseUnfinished);
 		return () => {
+			window.removeEventListener("pagehide", releaseUnfinished);
+			unmounted = true;
 			controller.abort();
-			for (const row of files.current) for (const upload of row.uploads) upload.abort();
+			wakeRestoreWaiters(); // a waiting Send finds the composer gone and does nothing
+			// Leaving with an upload still running cancels it and releases its
+			// reservation: it is never half kept. Finished uploads stay with the
+			// session's draft (lib/attachment-drafts.ts), and Back restores them.
+			const leaving = files.current.filter(row => !row.ready);
+			files.current = files.current.filter(row => row.ready);
+			for (const row of leaving) cancelRow(row);
 		};
 	}, []);
 
 	const target = (): AttachmentTarget => chatId ? { chatId } : { draftId: openingDraft.current ??= randomUuid() };
 	const live = (row: DraftFile) => files.current.includes(row);
+	/** Keep a finished upload with the session's draft. */
+	const keep = (row: DraftFile) => {
+		if (!chatId || !row.grant) return;
+		if (isForgotten(chatId)) {
+			// The session was deleted while this uploaded: nothing is kept, and
+			// the server's copy is released.
+			files.current = files.current.filter(file => file !== row);
+			releaseGrant(row);
+			return;
+		}
+		const base = { id: row.grant.id, name: row.name, at: Date.now() };
+		storeAttachment(chatId, row.folder ? { ...base, files: folderManifest(row.folder) } : { ...base, mimeType: row.file!.type, size: row.file!.size });
+	};
 	const uploadFile = async (row: DraftFile) => {
 		if (!row.grant?.uploadUrl || row.grant.deadline <= Date.now()) {
 			if (row.grant) {
@@ -191,7 +277,10 @@ export function useAttachmentDraft(chatId?: string) {
 		row.progress = 0;
 		row.work = (async () => {
 			try {
-				if (await (row.folder ? uploadFolder(row) : uploadFile(row))) row.ready = true;
+				if (await (row.folder ? uploadFolder(row) : uploadFile(row))) {
+					row.ready = true;
+					if (live(row)) keep(row);
+				}
 			} catch (error) {
 				row.error = error instanceof Error ? error.message : "Upload failed. Try again.";
 			} finally {
@@ -233,17 +322,15 @@ export function useAttachmentDraft(chatId?: string) {
 	};
 	const remove = (row: DraftFile) => {
 		files.current = files.current.filter(file => file !== row);
-		// Wait for running puts to settle before asking the server to release
-		// the reservation. A removed folder starts no further files.
-		void (async () => {
-			await row.work;
-			if (row.grant) await deleteGrant(row.grant.id);
-		})().catch(() => { /* The server also expires abandoned grants. */ });
+		if (chatId && row.grant) dropStoredAttachments(chatId, [row.grant.id]);
+		cancelRow(row);
 		setValidation(undefined);
 		changed();
 	};
-	const prepare = async (identity: string, onUnavailable?: () => void): Promise<AttachmentSend | null> => {
-		const selected = files.current;
+	/** `selected` is the draft as it was when Send was pressed: the send stops
+	 * (null) if any of it changed before delivery, so what goes is exactly what
+	 * the learner saw. */
+	const prepare = async (identity: string, onUnavailable?: () => void, selected: DraftFile[] = files.current): Promise<AttachmentSend | null> => {
 		await Promise.all(selected.map(row => row.work));
 		if (files.current !== selected || selected.some(row => !row.ready || !row.grant)) {
 			onUnavailable?.();
@@ -256,12 +343,59 @@ export function useAttachmentDraft(chatId?: string) {
 	};
 	const accept = (send: AttachmentSend) => {
 		files.current = files.current.filter(row => !row.grant || !send.attachmentUploadIds.includes(row.grant.id));
+		if (chatId) dropStoredAttachments(chatId, send.attachmentUploadIds);
 		setValidation(undefined);
 		changed();
 	};
+	// Restore the session's finished uploads when Back returns to it. Each
+	// chip shows at once and Send waits for the server's answer, like for a
+	// running upload: a 404 (expired, removed, sent meanwhile) drops the chip
+	// quietly and a send waiting on it stops, keeping the draft. Any other
+	// failure keeps the chip; the send checks it again.
+	const restorable = enabled && statusChecks;
+	useEffect(() => {
+		if (!chatId || !infoDone) return;
+		// A server that was read and can't check, has nothing to restore from. One
+		// that couldn't be read (down, 503, slow) still gets the saved chips,
+		// unchecked: the claim at send decides, so a Send never silently drops them.
+		if (!restorable && !infoFailed) { settleRestore(); return; }
+		const restored = readStoredAttachments(chatId)
+			.filter(stored => !files.current.some(row => row.grant?.id === stored.id))
+			.map((stored): DraftFile => ({ key: randomUuid(), name: stored.name, stored, grant: { id: stored.id, deadline: 0 }, uploads: new Set(), ready: true, progress: 100 }));
+		files.current = [...files.current, ...restored];
+		for (const row of restored) {
+			if (!restorable) continue;
+			const own = row.check = new AbortController();
+			const bound = within(own.signal, restoreTimeouts.check);
+			row.work = (async () => {
+				try {
+					const response = await fetch(PROTOCOL_ROUTES.attachmentStatus(row.grant!.id, chatId), { signal: bound.signal });
+					if (response.status !== 404 || !live(row)) return;
+					files.current = files.current.filter(file => file !== row);
+					dropStoredAttachments(chatId, [row.grant!.id]);
+				} catch { /* Offline, slow or left: keep the chip. */ }
+				finally { bound.stop(); row.work = undefined; row.check = undefined; changed(); }
+			})();
+		}
+		if (restored.length) changed();
+		settleRestore();
+		return () => { for (const row of restored) row.check?.abort(); };
+	}, [chatId, restorable, infoDone, infoFailed]);
+	// A send accepted after the learner left and came back dropped these.
+	useEffect(() => onStoredAttachmentsDropped((id, ids) => {
+		if (id !== chatId || !files.current.some(row => row.grant && ids.includes(row.grant.id))) return;
+		files.current = files.current.filter(row => !row.grant || !ids.includes(row.grant.id));
+		changed();
+	}), [chatId]);
 	return {
 		enabled, folders: enabled && folders, files: files.current, validation, getDraftId: () => openingDraft.current ??= randomUuid(),
 		select, selectFolder, drop, remove, retry: start, prepare, accept,
+		/** The draft's attachments right now (`files` is what the last render saw). */
+		current: () => files.current,
+		/** Whether the session's saved uploads are still being loaded. */
+		restoring,
+		/** Resolves once they are shown or ruled out, or the composer is gone. */
+		restored: (): Promise<void> => restoring() ? new Promise<void>(resolve => { restoreWaiters.current.push(resolve); }) : Promise.resolve(),
 	};
 }
 
@@ -292,8 +426,9 @@ export function DraftAttachmentChips({ draft, disabled = false }: { draft: Attac
 		<div ref={root} data-attachment-upload={disabled ? "busy" : ""} className={empty ? "w-full" : "w-full space-y-1 px-2.5 pt-2"}>
 			{!empty && <div className="flex max-h-28 flex-wrap gap-1 overflow-y-auto">
 				{draft.files.map(row => {
-					const Icon = row.folder ? FolderIcon : PaperclipIcon;
-					const label = row.folder ? folderLabel(row.name, row.folder.files.length) : row.name;
+					const count = folderCount(row);
+					const Icon = count === undefined ? PaperclipIcon : FolderIcon;
+					const label = count === undefined ? row.name : folderLabel(row.name, count);
 					return (
 						<div key={row.key} className="flex min-w-0 items-center gap-2 rounded border px-2 py-1 text-xs">
 							<Icon className="size-3 shrink-0" aria-hidden="true" />
