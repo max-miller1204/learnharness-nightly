@@ -46,6 +46,7 @@ export * from "./math-delims.ts";
 // and the input-events contract — all
 // pure logic, browser-safe.
 export * from "./native-messages.ts";
+export * from "./random-uuid.ts";
 export { copyImmutableData } from "./immutable-data.ts";
 export * from "./compaction.ts";
 export * from "./release-notes.ts";

@@ -51,6 +51,7 @@ import { compactAnswerForModel, type QuestionAnswerData } from "./question-core.
 import { activeCompactionOf, keptIndexFor } from "./compaction.ts";
 import { parseQuestionInput } from "./tool-parts.ts";
 import { expandCitationsForModel } from "./citations.ts";
+import { randomUuid } from "./random-uuid.ts";
 import { readPluginQuestionMessageAnnotation, readPluginQuestionAnswer, readPluginQuestionCancellation, samePluginQuestionOccurrence, type PluginQuestionAnnotationRead, type PluginQuestionOccurrence, type PluginQuestionOccurrenceMap, type PluginQuestionSnapshot } from "./plugin-questions.ts";
 
 /** The hard-invariant wording for an aborted turn's unanswered calls —
@@ -202,7 +203,7 @@ export function failedOutputCallIds(messages: readonly LhMessage[]): ReadonlySet
 
 /** The app-wide message id shape (same as the UIMessage-era mint). */
 export function newMessageId(): string {
-	return `msg_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`;
+	return `msg_${Date.now().toString(36)}_${randomUuid().slice(0, 8)}`;
 }
 
 // ─── constructors (the input-event → native append mapping lives in
@@ -289,7 +290,7 @@ export function newPlanBlockMessage(
 	block: unknown,
 ): LhMarkerMessage {
 	return {
-		id: `pb_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`,
+		id: `pb_${Date.now().toString(36)}_${randomUuid().slice(0, 8)}`,
 		role: "custom",
 		customType: "plan-block",
 		content: "",

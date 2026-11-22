@@ -46,6 +46,7 @@ import { QUESTION_TOOLS, toolQuestionKind } from "./pending.ts";
 import { parseQuestionInput } from "./tool-parts.ts";
 import { readPluginQuestionMessageAnnotation, readPluginQuestionAnswer, readPluginQuestionCancellation } from "./plugin-questions.ts";
 import { pluginProblemForCall, readPluginProblemSubmission } from "./plugin-problems.ts";
+import { randomUuid } from "./random-uuid.ts";
 
 // ─── shared segment identity and main-agent history ──────────────────────────
 
@@ -303,7 +304,7 @@ export function parseSideOpenInput(raw: unknown): boolean {
 // ─── threads ─────────────────────────────────────────────────────────────────
 
 export function newSideThreadId(): string {
-	return `side_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`;
+	return `side_${Date.now().toString(36)}_${randomUuid().slice(0, 8)}`;
 }
 
 export function newSideThread(anchor: SideChatAnchor, at = new Date().toISOString()): SideChatThread {

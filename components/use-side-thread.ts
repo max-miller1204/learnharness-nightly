@@ -4,7 +4,7 @@
  * Closing detaches a view; messages are already saved, and returning can
  * subscribe to a still-running answer. No close-time commits or tutor notes. */
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { serializeCitation, sideSegmentId, type LhMessage, type TextSelector, type SideChatMessage, type SideChatThread } from "@/src/core";
+import { randomUuid, serializeCitation, sideSegmentId, type LhMessage, type TextSelector, type SideChatMessage, type SideChatThread } from "@/src/core";
 import { useServerEvent, useServerResync } from "./server-events";
 import { sessionReadHold } from "./session-deletion";
 
@@ -176,7 +176,7 @@ export function useSideThread(chatId: string, messages: readonly LhMessage[], ge
 			...(passage.selector ?? { start: 0, end: passage.text.length, prefix: "", suffix: "" }) }) : undefined;
 		const previous = uncertain.current;
 		const requestId = previous?.segmentId === current.segmentId && previous.text === text && previous.quote === quote
-			? previous.requestId : `ask_${crypto.randomUUID().replaceAll("-", "")}`;
+			? previous.requestId : `ask_${randomUuid().replaceAll("-", "")}`;
 		uncertain.current = { segmentId: current.segmentId, text, quote, requestId };
 		connection.current?.controller.abort();
 		const controller = new AbortController(); const token = ++serial.current;

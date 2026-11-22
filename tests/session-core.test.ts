@@ -453,6 +453,34 @@ describe("send (one input event, verbatim consumption)", () => {
 		});
 	});
 
+	it("Submit posts the answer outside a secure context, where crypto.randomUUID is missing (#360)", async () => {
+		// A self-hosted server at http://<LAN address> isn't a secure context: the browser has
+		// crypto.getRandomValues but no crypto.randomUUID.
+		const quizCall = {
+			id: "call-1", role: "assistant", stopReason: "toolUse", provider: "openrouter", model: "test", timestamp: 0,
+			content: [{ type: "text", text: "Q?" }, { type: "toolCall", id: "call-1", name: "quiz", arguments: { question: "Q?", choices: ["a", "b"] } }],
+			usage: { input: 0, output: 0, total: 0, cacheReads: 0, cacheWrites: 0 },
+		} as unknown as LhMessage;
+		let postBody = "";
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			if (String(input) === "/api/chat") {
+				postBody = init?.body as string;
+				return sseResponse("[DONE]");
+			}
+			throw new Error(`unexpected fetch: ${String(input)}`);
+		}) as typeof globalThis.fetch;
+		Object.defineProperty(globalThis.crypto, "randomUUID", { value: undefined, configurable: true });
+		try {
+			assert.equal(typeof globalThis.crypto.randomUUID, "undefined");
+			const m = model({ initialMessages: [newUserMessage("hi"), quizCall] });
+			await m.submitAnswer("quiz", "call-1", { correct: true } as never);
+			assert.deepEqual(JSON.parse(postBody), { chatId: "chat_x", input: { type: "answer", toolCallId: "call-1", answer: { correct: true } } });
+		} finally {
+			delete (globalThis.crypto as { randomUUID?: unknown }).randomUUID;
+		}
+		assert.equal(typeof globalThis.crypto.randomUUID, "function", "the real randomUUID is back");
+	});
+
 	it("ignores the question placeholder's clean execution end (fork 2) and keeps errors", async () => {
 		// The dock's mount gate keys on the part STATE the live execution
 		// layer drives MID-STREAM: a clean question execution stays
