@@ -12,7 +12,7 @@ import test from "node:test";
 
 const require = createRequire(import.meta.url);
 const { createUpdateEverything, serverLabel, HANDOFF_TIMEOUT_MS, RESTART_DELAY_MS, SAVED_RESULT_MAX_AGE_MS, PAGE_READY_TIMEOUT_MS, ASK_COOLDOWN_MS } = require("../electron/update-everything.cjs");
-const { registerDesktopUpdateIPC } = require("../electron/update-everything-ipc.cjs");
+const { registerDesktopUpdateIPC, createStatusPush } = require("../electron/update-everything-ipc.cjs");
 
 const ORIGIN = "https://max-desktop.tail1234.ts.net:8443";
 const V71 = "0.6.1-nightly.20261118.71";
@@ -682,11 +682,16 @@ test("the remote preload exposes only window.lh.desktopUpdate and window.lh.chat
 	const source = fs.readFileSync(path.join(import.meta.dirname, "..", "electron", "remote-preload.cjs"), "utf8");
 	const exposed = new Map<string, unknown>();
 	const invoked: unknown[][] = [];
+	const listeners = new Map<string, Set<(event: unknown, status: unknown) => void>>();
 	const run = (protocol: string) => new Function("require", "location", source)((name: string) => {
 		assert.equal(name, "electron");
 		return {
 			contextBridge: { exposeInMainWorld: (key: string, value: unknown) => exposed.set(key, value) },
-			ipcRenderer: { invoke: (...args: unknown[]) => { invoked.push(args); return Promise.resolve(); } },
+			ipcRenderer: {
+				invoke: (...args: unknown[]) => { invoked.push(args); return Promise.resolve(); },
+				on: (channel: string, listener: (event: unknown, status: unknown) => void) => { (listeners.get(channel) ?? listeners.set(channel, new Set()).get(channel)!).add(listener); },
+				removeListener: (channel: string, listener: (event: unknown, status: unknown) => void) => { listeners.get(channel)?.delete(listener); },
+			},
 		};
 	}, { protocol });
 	run("file:");
@@ -696,7 +701,21 @@ test("the remote preload exposes only window.lh.desktopUpdate and window.lh.chat
 	const lh = exposed.get("lh") as { desktopUpdate: Record<string, (...args: unknown[]) => unknown> };
 	assert.deepEqual(Object.keys(lh), ["desktopUpdate", "chatgptSignIn"]);
 	const methods = ["getStatus", "check", "download", "install", "installApp", "everything", "ready", "later", "retry", "dismiss", "takeResult"];
-	assert.deepEqual(Object.keys(lh.desktopUpdate), methods);
+	assert.deepEqual(Object.keys(lh.desktopUpdate), ["getStatus", "onStatus", ...methods.slice(1)]);
+	// Main's pushes reach the page's callback as the status object alone, never the IPC event, and
+	// stop at the unsubscribe; a callback that isn't a function subscribes nothing.
+	const onStatus = lh.desktopUpdate.onStatus as (callback: unknown) => () => void;
+	const seen: unknown[] = [];
+	const unsubscribe = onStatus((status: unknown) => seen.push(status));
+	const channel = listeners.get("lh:desktop-update-status")!;
+	assert.equal(channel.size, 1, "one listener on main's status channel");
+	for (const listener of channel) { listener({ sender: "the ipc event" }, { phase: "available" }); listener({}, "not a status"); listener({}, null); }
+	assert.deepEqual(seen, [{ phase: "available" }]);
+	unsubscribe();
+	assert.equal(channel.size, 0);
+	onStatus("not a function")();
+	onStatus({ planId: "x" })();
+	assert.equal(channel.size, 0);
 	// Asking for a dialog needs the user's own click or key press in the page.
 	const activation = { isActive: false };
 	const descriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
@@ -1364,4 +1383,54 @@ test("a Cancel starts the cooldown for a server-only ask too", async () => {
 	assert.deepEqual(await f.ue.everything(), { error: { title: "Update everything", detail: "Try again in a moment." } });
 	f.advance(ASK_COOLDOWN_MS);
 	assert.deepEqual(await f.ue.everything(), { started: true, keyboard: false, dialog: true });
+});
+
+test("main pushes the status to the remote window's main frame at its origin, and to nothing else", () => {
+	const sent: unknown[][] = [];
+	const mainFrame = { url: `${ORIGIN}/learn/x`, send: (...args: unknown[]) => { sent.push(args); } };
+	let destroyed = false;
+	const win = { webContents: { mainFrame }, isDestroyed: () => destroyed };
+	let open: { win: typeof win; origin: string } | null = { win, origin: ORIGIN };
+	const asked: unknown[] = [];
+	const push = createStatusPush({
+		current: () => open,
+		pageGeneration: (of: unknown) => (of === win ? 4 : -1),
+		updateEverything: { status: (from: unknown) => { asked.push(from); return { phase: "available", target: V72 }; } },
+	});
+	assert.equal(push(), true);
+	assert.deepEqual(sent, [["lh:desktop-update-status", { phase: "available", target: V72 }]], "the status the page's own read would get");
+	assert.deepEqual(asked, [{ win, generation: 4 }], "the result toast is addressed to this window's page");
+	sent.length = 0;
+	mainFrame.url = "https://evil.example/";
+	assert.equal(push(), false, "the window left the selected origin");
+	mainFrame.url = `${ORIGIN}/`;
+	destroyed = true;
+	assert.equal(push(), false, "a destroyed window");
+	destroyed = false;
+	open = null;
+	assert.equal(push(), false, "no remote window open (the local window, or the server list)");
+	assert.deepEqual(sent, []);
+	open = { win, origin: ORIGIN };
+	mainFrame.send = () => { throw new Error("Render frame was disposed."); };
+	assert.equal(push(), false, "a frame mid-teardown never interrupts the updater");
+});
+
+test("main.cjs pushes the remote window's status after every updater state change", () => {
+	const source = fs.readFileSync(path.join(import.meta.dirname, "..", "electron", "main.cjs"), "utf8");
+	const setState = source.slice(source.indexOf("function setUpdateState("), source.indexOf("/** Read the install record once at launch"));
+	assert.match(setState, /pushRemoteStatus\?\.\(\)/, "setUpdateState is the one place the snapshot moves");
+	assert.match(source, /pushRemoteStatus = createStatusPush\(\{ current: \(\) => serverList\.current\(\), updateEverything,/);
+	assert.match(source, /createServerList\(\{[^]*?selected: \(\) => pushRemoteStatus\?\.\(\),[^]*?\}\);/, "the server list is told when a server is selected (tests/desktop-server-list.test.ts holds the behaviour behind it)");
+});
+
+test("status carries the updater snapshot's revision, so the page can drop a read that a later push overtook", () => {
+	let appState: Record<string, unknown> = { status: "available", version: V72, revision: 7 };
+	const ue = createUpdateEverything({ appVersion: V71, updater: { state: () => appState } });
+	assert.equal(ue.status().revision, 7);
+	appState = { status: "available", version: V72, revision: 8 };
+	assert.equal(ue.status().revision, 8);
+	for (const bad of [undefined, "7", 1.5, null]) {
+		appState = { status: "available", version: V72, revision: bad };
+		assert.equal("revision" in ue.status(), false, `a ${JSON.stringify(bad)} revision is left out`);
+	}
 });

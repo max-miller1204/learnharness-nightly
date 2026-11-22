@@ -252,7 +252,9 @@ function createUpdateEverything(deps) {
 		// `serverOnly`: this app can plan a run that moves only the server when it has no update of
 		// its own (makePlan): its updater is on and its version is exact. An older app says "up to
 		// date" there, so the page offers the flow only where this is true.
-		const page = { run: runView(run?.inPage ? run : shownKept), result: resultFor(from)?.id ?? null, serverOnly: canPlanServerOnly(state) };
+		// `revision`: the updater snapshot's, which moves with every update event. The page drops a
+		// read older than the status it already has (a push can overtake a read's answer).
+		const page = { run: runView(run?.inPage ? run : shownKept), result: resultFor(from)?.id ?? null, serverOnly: canPlanServerOnly(state), ...(Number.isInteger(state.revision) ? { revision: state.revision } : {}) };
 		if (run) return { version: deps.appVersion, target: run.target, phase: run.step === "downloading" ? "downloading" : "updating", error: null, downloadPercent, releaseNotes: [], omittedReleaseCount: 0, ...page };
 		// The offered version's notes (the reducers keep them until a new check or "no update"
 		// clears them, electron/update-machine.cjs), bounded: the sidebar's hover shows them for this

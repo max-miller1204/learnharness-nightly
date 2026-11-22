@@ -2,7 +2,8 @@
  * The ONLY bridges the desktop app's window onto a self-hosted server gets
  * (docs/specs/desktop-server-list.md), each answered only for this window's
  * main frame at the selected origin:
- * - desktopUpdate: this app's own update, every method with no argument. The
+ * - desktopUpdate: this app's own update, every method with no argument but onStatus, which
+ *   takes the page's callback and subscribes it to main's pushes of the status. The
  *   page can't name a version, URL or file (electron/update-everything-ipc.cjs
  *   refuses any argument), and it can't start a run: install() (an older page)
  *   and installApp() (Settings' This app Install) make main ask in its own
@@ -22,6 +23,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 const CHANNEL = "lh:desktop-update";
+const STATUS_CHANNEL = "lh:desktop-update-status";
 const SIGN_IN = "lh:chatgpt-sign-in";
 
 // Asking main for a dialog needs the user's own click or key press in the page, within the last
@@ -35,6 +37,14 @@ if (location.protocol === "https:") {
 	contextBridge.exposeInMainWorld("lh", Object.freeze({
 		desktopUpdate: Object.freeze({
 			getStatus: () => ipcRenderer.invoke(CHANNEL, "status"),
+			// Main pushes the status whenever this app's updater changes (T3's onUpdateState).
+			// The callback gets the status object; nothing else of the event reaches the page.
+			onStatus: (callback) => {
+				if (typeof callback !== "function") return () => {};
+				const listener = (_event, status) => { if (typeof status === "object" && status !== null) callback(status); };
+				ipcRenderer.on(STATUS_CHANNEL, listener);
+				return () => ipcRenderer.removeListener(STATUS_CHANNEL, listener);
+			},
 			check: () => ipcRenderer.invoke(CHANNEL, "check"),
 			download: () => ipcRenderer.invoke(CHANNEL, "download"),
 			install: () => asked("install"),

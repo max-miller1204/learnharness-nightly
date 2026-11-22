@@ -88,10 +88,18 @@ export type DesktopAppStatus = {
 	run?: UpdateEverythingRun | null;
 	/** A result toast waits for this page (takeResult): its number, new for each result. Older apps omit it. */
 	result?: number | null;
+	/** The app's updater snapshot revision, which moves with every update event. A read or push with
+	 *  a lower one than the page already has is older and is dropped; equal ones apply (a run's
+	 *  steps and results change without it). Older apps omit it. */
+	revision?: number;
 };
 
 export type DesktopUpdateBridge = {
 	getStatus: () => Promise<DesktopAppStatus>;
+	/** Main pushes the status whenever this app's updater changes (T3's onUpdateState,
+	 *  apps/desktop/src/preload.ts:339-349 at df09ced7); returns the unsubscribe. Apps from
+	 *  before it lack it and are only polled. */
+	onStatus?: (callback: (status: unknown) => void) => () => void;
 	check: () => Promise<void>;
 	download: () => Promise<void>;
 	/** Opens the app's own Update everything confirmation; never acts without it. */
@@ -283,10 +291,13 @@ export function readDesktopAppStatus(value: unknown): DesktopAppStatus | null {
 	};
 	// Only a plain true counts; anything else reads as an app that doesn't plan the flow.
 	if (value.serverOnly !== true) delete status.serverOnly;
+	if (!(typeof value.revision === "number" && Number.isInteger(value.revision) && value.revision >= 0)) delete status.revision;
 	return status;
 }
 
-/** How often the page asks the app for its update status (the bridge has no push channel). */
+/** How often the page asks the app for its update status: the fallback for an app without
+ *  onStatus, and the way the page follows an Update everything run's own steps, which main
+ *  doesn't push. */
 export const DESKTOP_STATUS_POLL_MS = 5_000;
 /** While Update everything runs: often enough for its capsule's steps and countdown. */
 export const DESKTOP_RUN_POLL_MS = 1_000;
@@ -296,13 +307,34 @@ export const DESKTOP_RUN_POLL_MS = 1_000;
 export function useDesktopAppUpdate() {
 	const [bridge] = useState<DesktopUpdateBridge | undefined>(() => (typeof window === "undefined" ? undefined : window.lh?.desktopUpdate));
 	const [status, setStatus] = useState<DesktopAppStatus | null>(null);
+	// The newest updater revision shown. An answer to a read can land after a push that came later
+	// (T3 drops its initial read once a push has arrived, apps/web/src/state/desktopUpdate.ts:46-77
+	// at df09ced7): the older one never replaces the newer.
+	const revisionRef = useRef(-1);
+	const apply = useCallback((next: DesktopAppStatus) => {
+		if (next.revision !== undefined) {
+			if (next.revision < revisionRef.current) return;
+			revisionRef.current = next.revision;
+		}
+		setStatus(next);
+	}, []);
 	const refresh = useCallback(async () => {
 		if (!bridge) return;
 		try {
 			const next = readDesktopAppStatus(await bridge.getStatus());
-			if (next) setStatus(next);
+			if (next) apply(next);
 		} catch { /* keep the last status */ }
-	}, [bridge]);
+	}, [bridge, apply]);
+	// T3's order: subscribe to main's pushes before the first read, so a change between the two is
+	// never missed. A push moves the control at once, never after the next poll. Its own effect, so
+	// the poll's rate changing never drops and re-adds it.
+	useEffect(() => {
+		if (!bridge || typeof bridge.onStatus !== "function") return;
+		return bridge.onStatus((pushed) => {
+			const next = readDesktopAppStatus(pushed);
+			if (next) apply(next);
+		});
+	}, [bridge, apply]);
 	// Fast only while a run moves: a failure kept for Retry waits like the rest.
 	const running = runIsLive(status?.run ?? null);
 	useEffect(() => {

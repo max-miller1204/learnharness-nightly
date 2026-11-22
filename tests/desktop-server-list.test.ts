@@ -14,6 +14,7 @@ const require = createRequire(import.meta.url);
 const wire = require("../electron/remote-server.cjs");
 const { createRemoteWindow } = require("../electron/remote-window.cjs");
 const { createServerList } = require("../electron/server-list.cjs");
+const { createStatusPush } = require("../electron/update-everything-ipc.cjs");
 const { registerChatGPTSignInIPC } = require("../electron/remote-chatgpt-ipc.cjs");
 const { openServerList } = require("../electron/server-list-store.cjs");
 const { AUTHORIZE } = require("../electron/chatgpt.cjs");
@@ -158,7 +159,7 @@ class TestWindow extends EventEmitter {
 	windowOpen!: (details: { url: string; postBody?: object }) => unknown;
 	webContents = Object.assign(new EventEmitter(), {
 		id: TestWindow.all.length,
-		mainFrame: { url: "" },
+		mainFrame: { url: "", sent: [] as unknown[][], send(...args: unknown[]) { this.sent.push(args); } },
 		isDestroyed: () => this.destroyed,
 		focus() {},
 		executeJavaScript: async (script?: string) => {
@@ -237,7 +238,15 @@ test("the app-owned switch flow keeps defaults, enforces preflight and isolates 
 	let handler!: (event: FakeEvent, action: string, payload?: unknown) => Promise<unknown>;
 	let localStarts = 0;
 	let localStops = 0;
+	// Main's own push (electron/update-everything-ipc.cjs) behind the `selected` hook, as electron/main.cjs wires it:
+	// the page of the window whose server was just selected gets the updater status.
+	const statusPush = createStatusPush({
+		current: () => (controller as { current(): unknown }).current() as never,
+		updateEverything: { status: () => ({ phase: "available", revision: 3 }) },
+	});
+	const pushed = (win: TestWindow) => win.webContents.mainFrame.sent;
 	const boot = () => createServerList({
+		selected: () => { statusPush(); },
 		app: { getPath: () => directory }, BrowserWindow: TestWindow, WebContentsView: TestView, safeStorage: fakeSafeStorage,
 		ipcMain: { handle: (_channel: string, callback: typeof handler) => { handler = callback; } },
 		session: { fromPartition: () => new TestSession() },
@@ -264,6 +273,8 @@ test("the app-owned switch flow keeps defaults, enforces preflight and isolates 
 	assert.equal(localStops, 1);
 	assert.equal(remote.url, alpha);
 	assert.equal(remote.shown, true);
+	assert.deepEqual(pushed(remote), [["lh:desktop-update-status", { phase: "available", revision: 3 }]], "the page gets the status once its server is selected, so its refused first read is covered");
+	assert.deepEqual(pushed(local), [], "not the bundled server's window, which has the local bridge");
 	// Only the narrow Update everything bridge (tests/update-everything.test.ts).
 	assert.equal(remote.options.webPreferences?.preload, path.join(import.meta.dirname, "../electron/remote-preload.cjs"));
 	assert.deepEqual(Object.entries(remote.options.webPreferences!).filter(([key]) => key !== "session"), [
@@ -278,6 +289,7 @@ test("the app-owned switch flow keeps defaults, enforces preflight and isolates 
 	assert.equal(remote.destroyed, true);
 	assert.equal(remote.options.webPreferences?.session?.closed, true);
 	assert.equal(lastWindow().url, beta);
+	assert.equal(pushed(lastWindow()).length, 1, "and for the next server's window");
 	assert.equal((await send(panel(), "state") as { defaultServer: string }).defaultServer, alpha);
 	controller.close();
 	for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
