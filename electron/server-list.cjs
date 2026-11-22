@@ -40,6 +40,8 @@ async function createServerList({
 	app, BrowserWindow, WebContentsView, ipcMain, session, shell, safeStorage, dialog,
 	startLocal, stopLocal, createLocalWindow, setLocalMenu, themeMode = () => "dark", platform = process.platform,
 	updatingServer = () => null,
+	// The remote window's server just became the selected one: its page's bridge answers from now on.
+	selected = () => {},
 }) {
 	const file = path.join(app.getPath("userData"), "servers.json");
 	const store = await openServerList(file, safeStorage);
@@ -300,6 +302,9 @@ async function createServerList({
 					if (!quiet && store.firstSetup) await store.saveDefault(server);
 					operation.signal.throwIfAborted();
 					active = { server, token };
+					// A page that mounted during the load had its reads refused (no server was selected
+					// yet): hand it the updater's status now, as a later push would.
+					try { selected(); } catch { /* the page's next read covers it */ }
 					trace(skeleton ? "reveal" : "show() call", skeleton ? "remote" : "list connect");
 					if (skeleton) skeleton.reveal();
 					else win.show();

@@ -1542,7 +1542,7 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 	const V71 = "0.6.1-nightly.20261118.71";
 	const V72 = "0.6.1-nightly.20261118.72";
 	const V73 = "0.6.1-nightly.20261118.73";
-	type Status = { version: string; target: string | null; phase: string; error: string | null; serverOnly?: boolean; downloadPercent?: number | null; releaseNotes?: unknown; omittedReleaseCount?: unknown };
+	type Status = { version: string; target: string | null; phase: string; error: string | null; serverOnly?: boolean; downloadPercent?: number | null; releaseNotes?: unknown; omittedReleaseCount?: unknown; revision?: number };
 	function remote(status: Status, server: UpdateState, { installApp = true } = {}) {
 		let current = status;
 		const calls = { getStatus: 0, check: 0, download: 0, install: 0, installApp: 0, fetches: [] as string[] };
@@ -1932,6 +1932,43 @@ describe("Update everything in the desktop app's window onto a server (roadmap i
 			void r;
 			for (const { root, host: node } of roots.splice(0)) { await act(async () => { root.unmount(); }); node.remove(); }
 			assert.equal(subscribers.size, 0, "unsubscribed when the page unmounts");
+		});
+
+		it("a read whose answer lands after a newer push never replaces it, on mount, on a poll and after a click", async () => {
+			const old = app({ revision: 5 }) as Status;
+			const r = everythingRemote(old, state({ status: "up-to-date", runningVersion: V71 }));
+			const subscribers = new Set<(status: unknown) => void>();
+			const answers: Array<(status: unknown) => void> = [];
+			const desktop = window.lh!.desktopUpdate as unknown as { getStatus: () => Promise<unknown>; onStatus: (callback: (status: unknown) => void) => () => void; check: () => Promise<void> };
+			// Every read waits for the test to answer it, as an IPC reply that is slow to land.
+			desktop.getStatus = () => new Promise((resolve) => { answers.push(resolve); });
+			desktop.onStatus = (callback) => { subscribers.add(callback); return () => { subscribers.delete(callback); }; };
+			const host = await mount(<SidebarUpdatePill pageVersion={V71} />);
+			await settle();
+			assert.equal(answers.length, 1, "the mount's read is out");
+			const pill = () => q(host, "update-pill")!;
+			const found = app({ version: V72, target: V73, phase: "available", revision: 6 });
+			await act(async () => { for (const push of subscribers) push(found); });
+			assert.equal(pill().getAttribute("aria-label"), "Update this app and 1 server");
+			// The mount's read was answered by main before the push (revision 5) and lands after it.
+			await act(async () => { answers.shift()!(old); });
+			await settle();
+			assert.equal(pill().getAttribute("aria-label"), "Update this app and 1 server", "the older read is dropped");
+			// The same for a read after a click on check: its finally-refresh races the change.
+			await act(async () => { await (window.lh!.desktopUpdate as unknown as { check: () => Promise<void> }).check(); });
+			await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+			const next = app({ version: V72, target: V73, phase: "downloading", revision: 8 });
+			await act(async () => { for (const push of subscribers) push(next); });
+			assert.equal(pill().getAttribute("data-action"), "downloading");
+			while (answers.length) await act(async () => { answers.shift()!(found); });
+			await settle();
+			assert.equal(pill().getAttribute("data-action"), "downloading", "a read of revision 6 never undoes revision 8");
+			// An equal revision applies (a run's and a result's steps change without it); a status from an app without one always does.
+			await act(async () => { for (const push of subscribers) push({ ...next, downloadPercent: 60 }); });
+			assert.ok(pill().querySelector("svg"));
+			await act(async () => { for (const push of subscribers) push(app({ version: V72, target: V73, phase: "available" })); });
+			assert.equal(pill().getAttribute("aria-label"), "Update this app and 1 server", "no revision: taken as it is");
+			void r;
 		});
 
 		it("with only the server behind there are no release notes: the hover is the plain tooltip, even if the app kept old ones", async () => {

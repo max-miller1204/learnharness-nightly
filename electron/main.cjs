@@ -1406,6 +1406,7 @@ async function main() {
 			startLocal: startLocalServer, stopLocal: killServer, createLocalWindow: () => createWindow(),
 			setLocalMenu: () => installMenu(), themeMode: () => appearance.mode,
 			updatingServer: () => updateEverything?.server() ?? null,
+			selected: () => pushRemoteStatus?.(),
 		});
 		installMenu();
 		reopenWindow = () => serverList.reopen();

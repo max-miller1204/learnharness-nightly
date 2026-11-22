@@ -237,7 +237,10 @@ test("the app-owned switch flow keeps defaults, enforces preflight and isolates 
 	let handler!: (event: FakeEvent, action: string, payload?: unknown) => Promise<unknown>;
 	let localStarts = 0;
 	let localStops = 0;
+	// Where the remote window's server was selected: main hands its page the updater status then.
+	const selections: unknown[] = [];
 	const boot = () => createServerList({
+		selected: () => { selections.push((controller as { current(): { origin: string } | null }).current()?.origin ?? null); },
 		app: { getPath: () => directory }, BrowserWindow: TestWindow, WebContentsView: TestView, safeStorage: fakeSafeStorage,
 		ipcMain: { handle: (_channel: string, callback: typeof handler) => { handler = callback; } },
 		session: { fromPartition: () => new TestSession() },
@@ -264,6 +267,7 @@ test("the app-owned switch flow keeps defaults, enforces preflight and isolates 
 	assert.equal(localStops, 1);
 	assert.equal(remote.url, alpha);
 	assert.equal(remote.shown, true);
+	assert.deepEqual(selections, [alpha], "told once the server is selected (not for the bundled one), so the page's refused first read gets its status");
 	// Only the narrow Update everything bridge (tests/update-everything.test.ts).
 	assert.equal(remote.options.webPreferences?.preload, path.join(import.meta.dirname, "../electron/remote-preload.cjs"));
 	assert.deepEqual(Object.entries(remote.options.webPreferences!).filter(([key]) => key !== "session"), [
@@ -278,6 +282,7 @@ test("the app-owned switch flow keeps defaults, enforces preflight and isolates 
 	assert.equal(remote.destroyed, true);
 	assert.equal(remote.options.webPreferences?.session?.closed, true);
 	assert.equal(lastWindow().url, beta);
+	assert.deepEqual(selections, [alpha, beta]);
 	assert.equal((await send(panel(), "state") as { defaultServer: string }).defaultServer, alpha);
 	controller.close();
 	for (const window of TestWindow.all) if (!window.destroyed) window.destroy();

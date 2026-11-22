@@ -1421,3 +1421,15 @@ test("main.cjs pushes the remote window's status after every updater state chang
 	assert.match(setState, /pushRemoteStatus\?\.\(\)/, "setUpdateState is the one place the snapshot moves");
 	assert.match(source, /pushRemoteStatus = createStatusPush\(\{ current: \(\) => serverList\.current\(\), updateEverything,/);
 });
+
+test("status carries the updater snapshot's revision, so the page can drop a read that a later push overtook", () => {
+	let appState: Record<string, unknown> = { status: "available", version: V72, revision: 7 };
+	const ue = createUpdateEverything({ appVersion: V71, updater: { state: () => appState } });
+	assert.equal(ue.status().revision, 7);
+	appState = { status: "available", version: V72, revision: 8 };
+	assert.equal(ue.status().revision, 8);
+	for (const bad of [undefined, "7", 1.5, null]) {
+		appState = { status: "available", version: V72, revision: bad };
+		assert.equal("revision" in ue.status(), false, `a ${JSON.stringify(bad)} revision is left out`);
+	}
+});
