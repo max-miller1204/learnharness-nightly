@@ -118,3 +118,19 @@ it("resends an interrupted opening with its restored attachment and clears the c
 	assert.ok(posts[0]!.body.includes(saved.id) && posts[0]!.body.includes("opening text"), posts[0]!.body);
 	assert.deepEqual(chips(), []);
 });
+
+for (const opening of [false, true]) {
+	it(`keeps an empty editor when ${opening ? "an opening retry" : "a normal send"} is cancelled during the attachment check`, async () => {
+		if (opening) values.set("lh.openingPrompt.a", JSON.stringify({ text: "opening text", attempted: true }));
+		await fixture!.render(<Chat key="a" chatId="a" title="Session a" initialMessages={[]} />);
+		await settle();
+		if (!opening) await type("normal text");
+		await pressSend();
+		await type("");
+		releaseStatus();
+		await settle();
+		assert.equal(posts.length, 0);
+		assert.equal(editor().textContent, "");
+		assert.deepEqual(chips(), ["notes.pdf"]);
+	});
+}

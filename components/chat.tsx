@@ -892,6 +892,7 @@ export function Chat({
 
 	const deliverOpeningPrompt = (prompt: string, captureNative = false, attached?: { rows: typeof attachments.files; waiting: boolean }) => {
 		let submitted = prompt;
+		const revision = composerEditRevision.current;
 		openingDraftRef.current = prompt;
 		// Persist uncertainty BEFORE the POST: another mount must restore,
 		// not race the still-arriving request. No storage means no auto-send.
@@ -912,7 +913,7 @@ export function Chat({
 			if (!saved) setOpeningError(true);
 			return saved;
 		}, attached).then(accepted => {
-			if (!accepted && openingMountedRef.current && openingDraftRef.current === prompt && !textRef.current) {
+			if (!accepted && openingMountedRef.current && openingDraftRef.current === prompt && composerEditRevision.current === revision && !textRef.current) {
 				applyText(prompt);
 			}
 		});
