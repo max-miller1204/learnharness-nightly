@@ -530,7 +530,7 @@ async function sideBySide(browser) {
 		}
 	}
 	const rel = (file) => path.relative(OUT, file);
-	const summary = ["## iPhone and web screenshots", "", "Download the `iphone-screenshots` artifact. Each `pairs/` picture puts the iPhone pages beside the web pages of the same screen.", "",
+	const summary = ["## iPhone and web screenshots", "", "Each `pairs/` picture under the `--out` directory puts the iPhone pages beside the web pages of the same screen.", "",
 		"| Screen | Mode | Side by side | iPhone | Web |", "| --- | --- | --- | --- | --- |",
 		...rows.map((r) => `| ${r.screen} | ${r.mode} | \`${rel(r.pair)}\` | ${r.phone.map((s) => `\`${rel(s.file)}\``).join("<br>")} | ${r.web.map((s) => `\`${rel(s.file)}\``).join("<br>")} |`)];
 	writeFileSync(path.join(OUT, "summary.md"), summary.join("\n") + "\n");

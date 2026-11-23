@@ -66,7 +66,6 @@ Use a server with `attachment-uploads-v1` and the fake model's teach scenario. U
 
 Follow [the session basics spec](../../../../../docs/specs/mobile-session-basics.md). Before starting each disposable server, copy the [graph-traces fixture](../../../../../tests/fixtures/mobile-session-basics/) into its data folder: `chats/*.json` into `DATA_DIR/chats/` and `graph/nodes.jsonl` into `DATA_DIR/graph/`. "Square roots to delete" contributed two nodes. "Square of two" is shared with "Squares kept elsewhere"; "Positive square root" is its own. Use a fresh copy for each delete mode. Unchecked, both nodes stay. Checked, "Positive square root" goes and "Square of two" stays with only the other session's provenance. Check `DATA_DIR/graph/nodes.jsonl` and the browser's graph after each.
 
-
 - On a server without `session-basics-v1` (the pinned `bfb1e5d`), a long press opens no menu. Search and the switch still work.
 - The same query in the phone and the web sidebar gives the same rows in the same order. Opening a result with one tap works while the keyboard is up. The query is still there after Back, and gone after Servers and another server.
 - Compare the exported file (save it from the share sheet) byte for byte with the browser's download of the same session.
