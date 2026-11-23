@@ -417,3 +417,29 @@ test("a cleanup marker failure preserves chat traces for direct and source delet
 	assert.equal(chatStore.getChat(chat.id), null);
 	assert.equal(stores.graphStore.readNodes().some(item => item.id === node.id), false);
 });
+
+test("a deleted opening cannot be recreated from its draft id", async () => {
+	const { openingAttachmentChatId } = await import("../src/server/attachment-submissions.ts");
+	const { newChatRecord, saveOpeningChat } = await import("../src/store/chats.ts");
+	const draftId = randomUUID();
+	const id = openingAttachmentChatId(first.session.id, draftId);
+	saveOpeningChat(newChatRecord(id, "Deleted opening"));
+	assert.equal((await deleteChatSession(id, "preserve-graph")).ok, true);
+	const upload = await (await reserve(draftId, 1)).json();
+	assert.equal((await uploadAttachmentRequest(request(upload.uploadUrl, "PUT", "x"))).status, 204);
+	const response = await startAttachmentRequest(request("/api/attachments/start", "POST", JSON.stringify({ draftId, sendId: randomUUID(), title: "Again", attachmentUploadIds: [upload.id] })));
+	assert.equal(response.status, 409);
+	assert.equal(chatStore.getChat(id), null);
+});
+
+test("upload completing after chat deletion releases its reservation", async () => {
+	const chat = chatStore.createChat("Deleted during upload");
+	const grant = await reserveAttachmentRequest(request("/api/attachments", "POST", JSON.stringify({ chatId: chat.id, name: "test.txt", size: 1, mimeType: "text/plain" })));
+	const { id, uploadUrl } = await grant.json();
+	const upload = holdUpload(uploadUrl);
+	assert.equal((await deleteChatSession(chat.id, "preserve-graph")).ok, true);
+	upload.finish("x");
+	assert.equal((await upload.response).status, 404);
+	assert.equal(fs.existsSync(path.join(PATHS.attachments, "pending", id + ".body")), false);
+	assert.equal(fs.existsSync(path.join(PATHS.attachments, "pending", id + ".json")), false);
+});

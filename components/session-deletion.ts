@@ -18,6 +18,30 @@ import { forgetComposerDraft } from "@/lib/composer-drafts";
 const inFlight = new Map<string, Promise<boolean>>(); // resolves true = deleted
 const deleted = new Set<string>(); // ids are never reused
 const reads = new Map<string, Set<AbortController>>();
+const DELETE_KEY = "lh:session-deleted";
+const listening = new WeakSet<Window>();
+
+function applyDeletion(chatId: string): void {
+	deleted.add(chatId);
+	for (const controller of reads.get(chatId) ?? []) controller.abort();
+	reads.delete(chatId);
+	forgetComposerDraft(chatId);
+	forgetStoredAttachments(chatId);
+	notifySessionsDeleted([chatId]);
+}
+
+function listenForDeletions(): void {
+	if (typeof window === "undefined" || listening.has(window)) return;
+	listening.add(window);
+	window.addEventListener("storage", event => {
+		if (event.key !== DELETE_KEY || !event.newValue) return;
+		try {
+			const value: unknown = JSON.parse(event.newValue);
+			if (value && typeof value === "object" && "id" in value && typeof value.id === "string") applyDeletion(value.id);
+		} catch { /* Ignore malformed notifications. */ }
+	});
+}
+
 
 /** Register a cancellable read after checking sessionReadHold. */
 export function registerSessionRead(chatId: string, controller: AbortController): () => void {
@@ -41,6 +65,7 @@ const never = () => new Promise<never>(() => {});
 /** Mark a session as being deleted; call the returned function with the
  *  outcome (true = the server deleted it) once the DELETE settles. */
 export function beginSessionDelete(chatId: string): (wasDeleted: boolean) => void {
+	listenForDeletions();
 	let settle!: (wasDeleted: boolean) => void;
 	const pending = new Promise<boolean>((resolve) => { settle = resolve; });
 	inFlight.set(chatId, pending);
@@ -52,9 +77,8 @@ export function beginSessionDelete(chatId: string): (wasDeleted: boolean) => voi
 		if (done) return; // the first outcome stands
 		done = true;
 		if (wasDeleted) {
-			deleted.add(chatId);
-			forgetComposerDraft(chatId); // its unsent draft goes with it, for good (#347)
-			forgetStoredAttachments(chatId); // and its unsent attachments (#367)
+			applyDeletion(chatId);
+			try { window.localStorage.setItem(DELETE_KEY, JSON.stringify({ id: chatId, nonce: Math.random() })); } catch { /* Storage can be unavailable. */ }
 		}
 		if (inFlight.get(chatId) === pending) inFlight.delete(chatId); // never a newer delete's mark
 		settle(wasDeleted);
@@ -73,6 +97,7 @@ export function beginSessionDeletes(chatIds: readonly string[]): (deletedIds: re
 
 /** Whether this window already confirmed the session was deleted. */
 export function isSessionDeleted(chatId: string): boolean {
+	listenForDeletions();
 	return deleted.has(chatId);
 }
 

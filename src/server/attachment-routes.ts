@@ -1,3 +1,4 @@
+import { wasOpeningDeleted } from "../store/deleted-openings.ts";
 import type { CreateChatResponse } from "../client-protocol/index.ts";
 import { isAttachmentId } from "../core/attachments.ts";
 import { titleFromPrompt } from "../core/contracts.ts";
@@ -47,7 +48,10 @@ export function uploadAttachmentRequest(request: Request) {
 	// This route skips Next Proxy body cloning and applies its gates directly.
 	return attachmentOperation(request, async owner => {
 		const query = new URL(request.url).searchParams;
-		await receiveAttachment(query.get("id") ?? "", query.get("grant") ?? "", owner, request, () => assertAttachmentOwner(request, owner));
+		await receiveAttachment(query.get("id") ?? "", query.get("grant") ?? "", owner, request, target => {
+			assertAttachmentOwner(request, owner);
+			if ("chatId" in target && !stores.chatStore.getChat(target.chatId)) throw new AttachmentError(404, "Unknown chat.");
+		});
 		return new Response(null, { status: 204 });
 	});
 }
@@ -96,6 +100,7 @@ export function startAttachmentRequest(request: Request) {
 			throw new AttachmentError(400, "Provide an opening draft ID and message text.");
 		}
 		const id = openingAttachmentChatId(owner, draftId);
+		if (wasOpeningDeleted(id) && !stores.chatStore.getChat(id)) throw new AttachmentError(409, "This opening draft belongs to a deleted session.");
 		const submission = attachmentSubmission(request, owner, { draftId }, id, attachmentUploadIds, sendId);
 		const record = newChatRecord(id, titleFromPrompt(title), kind === "practice" ? kind : undefined);
 		record.settings = initialChatSettings();

@@ -1,3 +1,4 @@
+import { markDeletedOpening } from "../store/deleted-openings.ts";
 import { attachmentReferences, scheduleAttachmentRemoval, sweepAttachments } from "../store/attachments.ts";
 import { abortExtraction, extractionStatuses } from "../agent/subagents/extraction.ts";
 import { isJobLive } from "../agent/subagents/aborts.ts";
@@ -180,6 +181,7 @@ export function scheduleChatAttachmentRemoval(chatId: string): void {
 
 function finishChatRecordDeletion(chatId: string): number {
 	const attachments = attachmentReferences(stores.chatStore.getChat(chatId)?.messages ?? []);
+	markDeletedOpening(chatId);
 	const jobsRemoved = stores.jobStore.deleteJobsForChat(chatId);
 	if (stores.chatStore.deleteChat(chatId)) {
 		if (attachments.length) queueMicrotask(() => {

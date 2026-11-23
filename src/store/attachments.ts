@@ -240,7 +240,7 @@ function grantFolder(folder: PendingFolder, created: boolean): AttachmentFolderG
 }
 
 export async function receiveAttachment(
-	id: string, grant: string, owner: string, request: Request, currentOwner: () => void,
+	id: string, grant: string, owner: string, request: Request, currentOwner: (target: AttachmentTarget) => void,
 ): Promise<void> {
 	const upload = pending(id);
 	if (!upload || upload.owner !== owner || upload.expiresAt <= Date.now() || !/^[A-Za-z0-9_-]{43}$/.test(grant) ||
@@ -264,7 +264,16 @@ export async function receiveAttachment(
 			const [oldDigest, newDigest] = await Promise.all([attachmentDigest(body), attachmentDigest(part)]);
 			if (oldDigest !== newDigest) throw new AttachmentError(409, "Different bytes were already uploaded with this grant.");
 		}
-		currentOwner();
+		try { currentOwner(upload.target); } catch (error) {
+			if (error instanceof AttachmentError && error.status === 404) {
+				cancelled.add(id);
+				if (upload.folder) {
+					const folder = pendingFolder(upload.folder);
+					if (folder) { try { discardFolder(folder); } catch { /* active members clean up on completion */ } }
+				}
+			}
+			throw error;
+		}
 		if (!retry) fs.renameSync(/* turbopackIgnore: true */ part, /* turbopackIgnore: true */ body);
 	} catch (error) {
 		if (error instanceof AttachmentSizeMismatch) throw new AttachmentError(400, error.message);

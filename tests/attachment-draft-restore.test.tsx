@@ -566,3 +566,15 @@ describe("stored attachment state reads tolerantly (AGENTS.md)", () => {
 		assert.equal(values.has(keyOf("a")), false);
 	});
 });
+
+it("another tab's deletion prevents a late upload from restoring the draft", async () => {
+	const { isSessionDeleted } = await import("../components/session-deletion.ts");
+	const id = `chat_cross_tab_${randomUUID()}`;
+	isSessionDeleted(id);
+	const event = new window.Event("storage");
+	Object.defineProperties(event, { key: { value: "lh:session-deleted" }, newValue: { value: JSON.stringify({ id, nonce: randomUUID() }) } });
+	window.dispatchEvent(event);
+	storeAttachment(id, { id: randomUUID(), name: "late.txt", at: Date.now(), mimeType: "text/plain", size: 1 });
+	assert.equal(isSessionDeleted(id), true);
+	assert.equal(values.has(keyOf(id)), false);
+});
