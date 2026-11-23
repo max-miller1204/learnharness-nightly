@@ -17,7 +17,7 @@ import { StatsBar } from "@/components/stats-bar";
 import { ChainTableOverlay } from "@/components/chain-table.tsx";
 import { ComposerActions, NodePickerControl } from "@/components/composer-actions";
 import { OPENING_PROMPT_FAILURE } from "@/components/opening-prompt";
-import { SessionStarter } from "@/components/start-session";
+import { OpeningDeletedError, SessionStarter } from "@/components/start-session";
 import type { StartWithAttachmentsRequest } from "@/src/core";
 import type { ChatSettings, GraphSnapshot } from "@/src/core";
 
@@ -335,9 +335,10 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 			if (target) router.push(target);
 			else { startingRef.current = false; setBusy(false); }
 		} catch (error) {
+			if (error instanceof OpeningDeletedError) attachments.resetOpening();
 			startingRef.current = false;
 			setBusy(false);
-			setStartError(error instanceof Error ? error.message : OPENING_PROMPT_FAILURE);
+			setStartError(error instanceof OpeningDeletedError ? "That session was deleted. Your attachments are uploading again; send when they are ready." : error instanceof Error ? error.message : OPENING_PROMPT_FAILURE);
 		}
 	};
 

@@ -121,3 +121,9 @@ describe("new-session create and handover", () => {
 		}
 	});
 });
+
+it("distinguishes a retired opening from other start failures", async () => {
+	const starter = new SessionStarter();
+	const fetchLike = (async () => Response.json({ code: "opening-deleted", error: "Deleted" }, { status: 409 })) as typeof fetch;
+	await assert.rejects(starter.start({ title: "keep this" }, fetchLike, undefined, { draftId: "draft", sendId: "send", attachmentUploadIds: ["upload"] }), error => error instanceof Error && error.name === "OpeningDeletedError");
+});

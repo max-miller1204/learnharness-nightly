@@ -1,5 +1,6 @@
 "use client";
 
+import { listenForDeletions } from "./session-deletion";
 import { useEffect, useRef, useState } from "react";
 import { FolderIcon, PaperclipIcon } from "lucide-react";
 import { ATTACHMENT_FOLDERS, ATTACHMENT_STATUS, ATTACHMENT_UPLOADS, hasCapability, PROTOCOL_ROUTES, type AttachmentFolderGrantResponse, type AttachmentGrantResponse, type AttachmentSend, type AttachmentTarget, type ServerInfo } from "@/src/core";
@@ -104,7 +105,7 @@ function putBytes(row: DraftFile, file: File, url: string, progress: (loaded: nu
 			if (upload.status === 204) { resolve(); return; }
 			let message = "Upload failed. Try again.";
 			try { message = JSON.parse(upload.responseText).error || message; } catch { /* Non-JSON proxy error. */ }
-			reject(new Error(message));
+			reject(new RequestError(upload.status, message));
 		};
 		upload.onerror = upload.onabort = () => { settle(); reject(new Error("Upload interrupted. Try again.")); };
 		upload.send(file);
@@ -135,6 +136,7 @@ async function postGrant<T extends { expiresAt: number }>(url: string, body?: un
 /** One composer per session: callers key it by the chat id (app/chat/[id]/page.tsx), so
  * the hook lives for one `chatId`. */
 export function useAttachmentDraft(chatId?: string) {
+	useEffect(() => { listenForDeletions(); }, []);
 	const [info, setInfo] = useState<ServerInfo>();
 	const [infoDone, setInfoDone] = useState(false);
 	/** Server info could not be read (error, 503 or timeout), as opposed to read and lacking a capability. */
@@ -146,6 +148,7 @@ export function useAttachmentDraft(chatId?: string) {
 	const [, redraw] = useState(0);
 	const files = useRef<DraftFile[]>([]);
 	const openingDraft = useRef<string>(null);
+	const resettingOpening = useRef(false);
 	const lastSend = useRef<{ identity: string; id: string }>(null);
 	const changed = () => redraw(n => n + 1);
 	// Until the session's saved uploads are shown or ruled out, a Send waits
@@ -282,13 +285,36 @@ export function useAttachmentDraft(chatId?: string) {
 					if (live(row)) keep(row);
 				}
 			} catch (error) {
-				row.error = error instanceof Error ? error.message : "Upload failed. Try again.";
+				if (!chatId && error instanceof RequestError && error.status === 404) resetOpening();
+				else row.error = error instanceof Error ? error.message : "Upload failed. Try again.";
 			} finally {
 				row.work = undefined;
 				changed();
 			}
 		})();
 		changed();
+	};
+	const resetOpening = () => {
+		if (chatId || resettingOpening.current) return;
+		resettingOpening.current = true;
+		openingDraft.current = null;
+		lastSend.current = null;
+		const selected = [...files.current];
+		const pending = selected.map(row => {
+			const grant = row.grant;
+			for (const upload of row.uploads) upload.abort();
+			row.ready = false;
+			row.error = undefined;
+			return Promise.resolve(row.work).then(() => {
+				if (grant) void deleteGrant(grant.id).catch(() => {});
+				if (row.grant === grant) row.grant = undefined;
+			});
+		});
+		changed();
+		void Promise.all(pending).then(() => {
+			resettingOpening.current = false;
+			for (const row of selected) if (live(row)) start(row);
+		});
 	};
 	const add = (rows: DraftFile[]) => {
 		files.current = [...files.current, ...rows];
@@ -344,6 +370,7 @@ export function useAttachmentDraft(chatId?: string) {
 	const accept = (send: AttachmentSend) => {
 		files.current = files.current.filter(row => !row.grant || !send.attachmentUploadIds.includes(row.grant.id));
 		if (chatId) dropStoredAttachments(chatId, send.attachmentUploadIds);
+		else { openingDraft.current = null; lastSend.current = null; }
 		setValidation(undefined);
 		changed();
 	};
@@ -389,7 +416,7 @@ export function useAttachmentDraft(chatId?: string) {
 	}), [chatId]);
 	return {
 		enabled, folders: enabled && folders, files: files.current, validation, getDraftId: () => openingDraft.current ??= randomUuid(),
-		select, selectFolder, drop, remove, retry: start, prepare, accept,
+		select, selectFolder, drop, remove, retry: start, prepare, accept, resetOpening,
 		/** The draft's attachments right now (`files` is what the last render saw). */
 		current: () => files.current,
 		/** Whether the session's saved uploads are still being loaded. */

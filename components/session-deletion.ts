@@ -20,6 +20,10 @@ const deleted = new Set<string>(); // ids are never reused
 const reads = new Map<string, Set<AbortController>>();
 const DELETE_KEY = "lh:session-deleted";
 const listening = new WeakSet<Window>();
+const channels = new WeakMap<Window, BroadcastChannel>();
+const seen = new Set<string>();
+
+type DeletionNotice = { ids: string[]; nonce: string };
 
 function applyDeletion(chatId: string): void {
 	deleted.add(chatId);
@@ -27,21 +31,43 @@ function applyDeletion(chatId: string): void {
 	reads.delete(chatId);
 	forgetComposerDraft(chatId);
 	forgetStoredAttachments(chatId);
-	notifySessionsDeleted([chatId]);
 }
 
-function listenForDeletions(): void {
+function receiveDeletion(value: unknown): void {
+	if (!value || typeof value !== "object") return;
+	const notice = value as Partial<DeletionNotice>;
+	if (typeof notice.nonce !== "string" || !Array.isArray(notice.ids) || !notice.ids.every(id => typeof id === "string") || seen.has(notice.nonce)) return;
+	seen.add(notice.nonce);
+	for (const id of notice.ids) applyDeletion(id);
+	notifySessionsDeleted(notice.ids);
+}
+
+export function listenForDeletions(): void {
 	if (typeof window === "undefined" || listening.has(window)) return;
 	listening.add(window);
+	try {
+		if (typeof window.BroadcastChannel === "function" && !("unref" in window.BroadcastChannel.prototype)) {
+			const channel = new window.BroadcastChannel(DELETE_KEY);
+			channel.onmessage = event => receiveDeletion(event.data);
+			channels.set(window, channel);
+		}
+	} catch { /* Storage events provide the fallback. */ }
 	window.addEventListener("storage", event => {
 		if (event.key !== DELETE_KEY || !event.newValue) return;
-		try {
-			const value: unknown = JSON.parse(event.newValue);
-			if (value && typeof value === "object" && "id" in value && typeof value.id === "string") applyDeletion(value.id);
-		} catch { /* Ignore malformed notifications. */ }
+		try { receiveDeletion(JSON.parse(event.newValue)); } catch { /* Ignore malformed notifications. */ }
 	});
 }
 
+function publishDeletions(ids: readonly string[]): void {
+	if (!ids.length || typeof window === "undefined") return;
+	listenForDeletions();
+	const notice: DeletionNotice = { ids: [...ids], nonce: `${Date.now()}-${Math.random()}` };
+	seen.add(notice.nonce);
+	try { channels.get(window)?.postMessage(notice); } catch { /* Storage events provide the fallback. */ }
+	try { window.localStorage.setItem(DELETE_KEY, JSON.stringify(notice)); } catch { /* The channel can still deliver. */ }
+}
+
+listenForDeletions();
 
 /** Register a cancellable read after checking sessionReadHold. */
 export function registerSessionRead(chatId: string, controller: AbortController): () => void {
@@ -64,7 +90,7 @@ const never = () => new Promise<never>(() => {});
 
 /** Mark a session as being deleted; call the returned function with the
  *  outcome (true = the server deleted it) once the DELETE settles. */
-export function beginSessionDelete(chatId: string): (wasDeleted: boolean) => void {
+function beginDelete(chatId: string, publish: boolean): (wasDeleted: boolean) => void {
 	listenForDeletions();
 	let settle!: (wasDeleted: boolean) => void;
 	const pending = new Promise<boolean>((resolve) => { settle = resolve; });
@@ -78,20 +104,25 @@ export function beginSessionDelete(chatId: string): (wasDeleted: boolean) => voi
 		done = true;
 		if (wasDeleted) {
 			applyDeletion(chatId);
-			try { window.localStorage.setItem(DELETE_KEY, JSON.stringify({ id: chatId, nonce: Math.random() })); } catch { /* Storage can be unavailable. */ }
+			if (publish) publishDeletions([chatId]);
 		}
 		if (inFlight.get(chatId) === pending) inFlight.delete(chatId); // never a newer delete's mark
 		settle(wasDeleted);
 	};
 }
 
+export function beginSessionDelete(chatId: string): (wasDeleted: boolean) => void {
+	return beginDelete(chatId, true);
+}
+
 /** Mark a batch of sessions as being deleted; call the returned function with
  *  the ids the server actually removed once the DELETE settles. */
 export function beginSessionDeletes(chatIds: readonly string[]): (deletedIds: readonly string[]) => void {
-	const settles = chatIds.map((id) => [id, beginSessionDelete(id)] as const);
+	const settles = chatIds.map((id) => [id, beginDelete(id, false)] as const);
 	return (deletedIds) => {
 		const gone = new Set(deletedIds);
 		for (const [id, done] of settles) done(gone.has(id));
+		publishDeletions(chatIds.filter(id => gone.has(id)));
 	};
 }
 
