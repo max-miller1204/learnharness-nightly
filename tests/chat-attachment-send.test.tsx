@@ -23,12 +23,16 @@ const storage = {
 };
 const posts: { url: string; body: string }[] = [];
 let releaseStatus!: () => void;
+let acceptPosts = false;
+let savedSession: PropertyDescriptor | undefined;
 let fixture: Awaited<ReturnType<typeof mountPluginChrome>> | undefined;
 let savedObserver: PropertyDescriptor | undefined;
 const saved = { id: randomUUID(), name: "notes.pdf" };
 
 beforeEach(async () => {
-	values.clear(); posts.length = 0;
+	values.clear(); posts.length = 0; acceptPosts = false;
+	savedSession = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+	Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: storage });
 	const held = new Promise<void>(resolve => { releaseStatus = resolve; });
 	savedObserver = Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver");
 	Object.assign(globalThis, { ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } });
@@ -48,7 +52,7 @@ beforeEach(async () => {
 			const method = init?.method ?? "GET";
 			if (url === "/.well-known/learnharness/server") return Response.json({ capabilities: ["attachment-uploads-v1", "attachment-status-v1"] });
 			if (url.startsWith(`/api/attachments/${saved.id}?chatId=`)) { await held; return new Response(null, { status: 204 }); }
-			if (method !== "GET") { posts.push({ url, body: String(init?.body ?? "") }); return Response.json({ error: "fixture does not run turns" }, { status: 500 }); }
+			if (method !== "GET") { posts.push({ url, body: String(init?.body ?? "") }); return acceptPosts ? new Response("", { status: 200 }) : Response.json({ error: "fixture does not run turns" }, { status: 500 }); }
 			const chat = /^\/api\/chats\/(\w+)$/.exec(url);
 			if (chat) return Response.json({ id: chat[1], messages: [] });
 			if (url === "/api/models") return Response.json({ providers: [{ id: "custom", name: "Fixture", keyPresent: true, models: [] }], models: [], slots: {} });
@@ -62,6 +66,7 @@ beforeEach(async () => {
 afterEach(async () => {
 	await fixture?.close();
 	fixture = undefined;
+	if (savedSession) Object.defineProperty(globalThis, "sessionStorage", savedSession); else Reflect.deleteProperty(globalThis, "sessionStorage");
 	if (savedObserver) Object.defineProperty(globalThis, "ResizeObserver", savedObserver); else Reflect.deleteProperty(globalThis, "ResizeObserver");
 });
 
@@ -97,4 +102,19 @@ describe("Send with a restored attachment whose status check is pending", () => 
 		assert.equal(editor().textContent, "the edited text");
 		assert.deepEqual(chips(), ["notes.pdf"]);
 	});
+});
+
+it("resends an interrupted opening with its restored attachment and clears the chip on acceptance", async () => {
+	values.set("lh.openingPrompt.a", JSON.stringify({ text: "opening text", attempted: true }));
+	acceptPosts = true;
+	await fixture!.render(<Chat key="a" chatId="a" title="Session a" initialMessages={[]} />);
+	await settle();
+	assert.equal(editor().textContent, "opening text");
+	await pressSend();
+	assert.equal(posts.length, 0, "waits for the attachment status");
+	releaseStatus();
+	await settle();
+	assert.equal(posts.length, 1);
+	assert.ok(posts[0]!.body.includes(saved.id) && posts[0]!.body.includes("opening text"), posts[0]!.body);
+	assert.deepEqual(chips(), []);
 });
