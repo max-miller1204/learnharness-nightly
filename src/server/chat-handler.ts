@@ -1,4 +1,5 @@
 import { attachmentsForChat, attachmentOperation, attachmentSubmission, type AttachmentSubmission } from "./attachment-submissions.ts";
+import { wasOpeningDeleted } from "../store/deleted-openings.ts";
 import { AttachmentError, claimAttachments } from "../store/attachments.ts";
 import { saveOpeningChat } from "../store/chats.ts";
 import type { Usage } from "@earendil-works/pi-ai";
@@ -662,6 +663,7 @@ export async function handleChatInput(
 	let persistBaseCount = stagedAutomatic ? record.messages.length : agentMessages.length;
 	try {
 		if (attachment) {
+			if (opening && wasOpeningDeleted(chatId) && !stores.chatStore.getChat(chatId)) return Response.json({ code: "opening-deleted", error: "This opening draft belongs to a deleted session." }, { status: 409 });
 			const learner = appends.find(message => message.role === "user");
 			if (!learner) throw new AttachmentError(400, "Attachments require a learner message.");
 			claimAttachments(attachment.ids, attachment.owner, attachment.target, record.messages, refs => {

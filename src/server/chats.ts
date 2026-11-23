@@ -1,5 +1,6 @@
 import { markDeletedOpening } from "../store/deleted-openings.ts";
-import { attachmentReferences, scheduleAttachmentRemoval, sweepAttachments } from "../store/attachments.ts";
+import { attachmentReferences, discardPendingForChat, scheduleAttachmentRemoval, sweepAttachments } from "../store/attachments.ts";
+import { openingAttachmentChatId } from "./attachment-submissions.ts";
 import { abortExtraction, extractionStatuses } from "../agent/subagents/extraction.ts";
 import { isJobLive } from "../agent/subagents/aborts.ts";
 import { coverageOf } from "../core/coverage.ts";
@@ -169,6 +170,7 @@ export function deleteIdleChatRecord(chatId: string): Extract<ChatDeleteOutcome,
 function finishChatDeletion(chatId: string, mode: ChatDeleteMode): Extract<ChatDeleteOutcome, { ok: true }> {
 	// THE SYNC BLOCK — no awaits below (see the doc comment). Order:
 	// attachment cleanup markers, then ledgers, jobs and the chat record.
+	markDeletedOpening(chatId);
 	scheduleChatAttachmentRemoval(chatId);
 	const stats = deleteChatTraces(stores.graphStore, chatId, mode);
 	const jobsRemoved = finishChatRecordDeletion(chatId);
@@ -181,9 +183,9 @@ export function scheduleChatAttachmentRemoval(chatId: string): void {
 
 function finishChatRecordDeletion(chatId: string): number {
 	const attachments = attachmentReferences(stores.chatStore.getChat(chatId)?.messages ?? []);
-	markDeletedOpening(chatId);
 	const jobsRemoved = stores.jobStore.deleteJobsForChat(chatId);
 	if (stores.chatStore.deleteChat(chatId)) {
+		discardPendingForChat(chatId, openingAttachmentChatId);
 		if (attachments.length) queueMicrotask(() => {
 			try { sweepAttachments(); }
 			catch (error) { console.warn("[attachments] Deferred cleanup will retry:", error); }

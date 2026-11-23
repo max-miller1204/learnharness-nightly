@@ -1,3 +1,4 @@
+import { markDeletedOpening } from "../store/deleted-openings.ts";
 import { deleteSourcesTraces, type ChatDeleteMode } from "../core/graph-deletion.ts";
 import { folderIsEmpty, type SourceDirectory } from "../core/source-organization.ts";
 import { folderDeletionScope, type FolderDeletionScope } from "../core/session-folders.ts";
@@ -39,6 +40,7 @@ export function deleteSources(raw: unknown): SourceDirectory & { graphRevision: 
 		const blocker = runningWorkBlocker(entry.id);
 		if (blocker) throw new SourceDeletionError(blocker.error, blocker.status, blocker.code);
 	}
+	if (request.deleteSessions) for (const entry of targets) if (entry.kind === "chat") markDeletedOpening(entry.id);
 	if (request.deleteSessions) for (const entry of targets) if (entry.kind === "chat") scheduleChatAttachmentRemoval(entry.id);
 	// Clear the whole selected batch in one graph rewrite. Kept chats lose
 	// coverage/checkpoints too, so their unchanged messages can be re-extracted.
@@ -156,6 +158,7 @@ export async function deleteFolderWithSessions(folderId: string, mode: ChatDelet
 	}
 	const chatIds = new Set(targets.chatIds);
 	// The sessions' uploads go with them (docs/specs/remote-safe-attachments.md), as in deleteSources.
+	for (const id of chatIds) markDeletedOpening(id);
 	for (const id of chatIds) scheduleChatAttachmentRemoval(id);
 	deleteSourcesTraces(stores.graphStore, chatIds, mode);
 	try {

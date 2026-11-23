@@ -425,9 +425,7 @@ test("a deleted opening cannot be recreated from its draft id", async () => {
 	const id = openingAttachmentChatId(first.session.id, draftId);
 	saveOpeningChat(newChatRecord(id, "Deleted opening"));
 	assert.equal((await deleteChatSession(id, "preserve-graph")).ok, true);
-	const upload = await (await reserve(draftId, 1)).json();
-	assert.equal((await uploadAttachmentRequest(request(upload.uploadUrl, "PUT", "x"))).status, 204);
-	const response = await startAttachmentRequest(request("/api/attachments/start", "POST", JSON.stringify({ draftId, sendId: randomUUID(), title: "Again", attachmentUploadIds: [upload.id] })));
+	const response = await startAttachmentRequest(request("/api/attachments/start", "POST", JSON.stringify({ draftId, sendId: randomUUID(), title: "Again", attachmentUploadIds: [randomUUID()] })));
 	assert.equal(response.status, 409);
 	assert.equal(chatStore.getChat(id), null);
 });
@@ -442,4 +440,57 @@ test("upload completing after chat deletion releases its reservation", async () 
 	assert.equal((await upload.response).status, 404);
 	assert.equal(fs.existsSync(path.join(PATHS.attachments, "pending", id + ".body")), false);
 	assert.equal(fs.existsSync(path.join(PATHS.attachments, "pending", id + ".json")), false);
+});
+
+test("a failed opening tombstone leaves the chat and its graph untouched", async () => {
+	const { openingAttachmentChatId } = await import("../src/server/attachment-submissions.ts");
+	const { newChatRecord, saveOpeningChat } = await import("../src/store/chats.ts");
+	const id = openingAttachmentChatId(first.session.id, randomUUID());
+	saveOpeningChat(newChatRecord(id, "Marker failure"));
+	const node = { id: randomUUID(), name: "Marker", aliases: [], statement: "Trace", createdAt: "2026-01-01", provenance: [{ chatId: id, messageId: "fixture" }] };
+	stores.graphStore.appendNode(node);
+	const marker = path.join(PATHS.data, "deleted-openings", id);
+	fs.mkdirSync(marker, { recursive: true });
+	try {
+		await assert.rejects(deleteChatSession(id, "delete-nodes"));
+		assert.ok(chatStore.getChat(id));
+		assert.deepEqual(stores.graphStore.readNodes().find(item => item.id === node.id), node);
+		assert.throws(() => deleteSources({ sourceIds: [id], folderIds: [], deleteSessions: true }));
+		assert.deepEqual(stores.graphStore.readNodes().find(item => item.id === node.id), node);
+	} finally { fs.rmdirSync(marker); }
+});
+
+test("deletion removes finished reservations and rejects the retired draft", async () => {
+	const { openingAttachmentChatId } = await import("../src/server/attachment-submissions.ts");
+	const { newChatRecord, saveOpeningChat } = await import("../src/store/chats.ts");
+	const draftId = randomUUID();
+	const grant = await (await reserve(draftId, 1)).json();
+	assert.equal((await uploadAttachmentRequest(request(grant.uploadUrl, "PUT", "x"))).status, 204);
+	const id = openingAttachmentChatId(first.session.id, draftId);
+	saveOpeningChat(newChatRecord(id, "Retired"));
+	assert.equal((await deleteChatSession(id, "preserve-graph")).ok, true);
+	assert.equal(fs.existsSync(path.join(PATHS.attachments, "pending", grant.id + ".body")), false);
+	assert.equal((await reserve(draftId, 1)).status, 404);
+	assert.equal((await uploadAttachmentRequest(request(grant.uploadUrl, "PUT", "x"))).status, 404);
+});
+
+test("deletion clears a folder and its active member for a retired draft", async () => {
+	const { openingAttachmentChatId } = await import("../src/server/attachment-submissions.ts");
+	const { newChatRecord, saveOpeningChat } = await import("../src/store/chats.ts");
+	const { renewAttachmentFolderRequest } = await import("../src/server/attachment-routes.ts");
+	const draftId = randomUUID();
+	const result = await reserveAttachmentRequest(request("/api/attachments", "POST", JSON.stringify({ draftId, name: "folder", files: [{ path: "one.txt", mimeType: "text/plain", size: 1 }, { path: "two.txt", mimeType: "text/plain", size: 1 }] })));
+	const folder = await result.json();
+	const upload = holdUpload(folder.files[0].uploadUrl);
+	const id = openingAttachmentChatId(first.session.id, draftId);
+	saveOpeningChat(newChatRecord(id, "Folder"));
+	assert.equal((await deleteChatSession(id, "preserve-graph")).ok, true);
+	assert.equal((await renewAttachmentFolderRequest(request(`/api/attachments/${folder.id}`, "POST"), Promise.resolve({ id: folder.id }))).status, 404);
+	upload.finish("x");
+	assert.equal((await upload.response).status, 404);
+	for (const file of folder.files) {
+		const member = new URL(file.uploadUrl, base).searchParams.get("id");
+		assert.equal(fs.existsSync(path.join(PATHS.attachments, "pending", member + ".json")), false);
+		assert.equal(fs.existsSync(path.join(PATHS.attachments, "pending", member + ".body")), false);
+	}
 });

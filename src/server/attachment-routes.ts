@@ -1,5 +1,5 @@
 import { wasOpeningDeleted } from "../store/deleted-openings.ts";
-import type { CreateChatResponse } from "../client-protocol/index.ts";
+import type { AttachmentTarget, CreateChatResponse } from "../client-protocol/index.ts";
 import { isAttachmentId } from "../core/attachments.ts";
 import { titleFromPrompt } from "../core/contracts.ts";
 import { ChatInputError, parseChatInput } from "../core/input-events.ts";
@@ -11,6 +11,15 @@ import { CREDENTIAL_HEADERS } from "./auth.ts";
 import { initialChatSettings, initialGraphContext } from "./chat-creation.ts";
 import { handleChatInput } from "./chat-handler.ts";
 import { stores } from "./stores.ts";
+
+function assertTargetExists(owner: string, target: AttachmentTarget): void {
+	if ("chatId" in target) {
+		if (!stores.chatStore.getChat(target.chatId)) throw new AttachmentError(404, "Unknown chat.");
+	} else {
+		const id = openingAttachmentChatId(owner, target.draftId);
+		if (wasOpeningDeleted(id) && !stores.chatStore.getChat(id)) throw new AttachmentError(404, "Opening draft no longer available.");
+	}
+}
 
 export function reserveAttachmentRequest(request: Request) {
 	return attachmentOperation(request, async owner => {
@@ -36,6 +45,7 @@ export function reserveAttachmentRequest(request: Request) {
 		} else if (chatId !== undefined || !isAttachmentId(draftId)) {
 			throw new AttachmentError(400, "Provide an opening draft ID or an existing chat ID.");
 		} else target = { draftId };
+		assertTargetExists(owner, target);
 		if (folder) {
 			const manifest = (files as { path: string; mimeType: string; size: number }[]).map(({ path, mimeType, size }) => ({ path, mimeType, size }));
 			return Response.json(reserveAttachmentFolder(owner, { ...target, name, files: manifest }), { status: 201 });
@@ -50,7 +60,7 @@ export function uploadAttachmentRequest(request: Request) {
 		const query = new URL(request.url).searchParams;
 		await receiveAttachment(query.get("id") ?? "", query.get("grant") ?? "", owner, request, target => {
 			assertAttachmentOwner(request, owner);
-			if ("chatId" in target && !stores.chatStore.getChat(target.chatId)) throw new AttachmentError(404, "Unknown chat.");
+			assertTargetExists(owner, target);
 		});
 		return new Response(null, { status: 204 });
 	});
@@ -88,7 +98,7 @@ export function renewAttachmentFolderRequest(request: Request, params: Promise<{
 	return attachmentOperation(request, async owner => {
 		const { id } = await params;
 		assertAttachmentOwner(request, owner);
-		return Response.json(renewAttachmentFolder(id, owner));
+		return Response.json(renewAttachmentFolder(id, owner, target => assertTargetExists(owner, target)));
 	});
 }
 
@@ -100,7 +110,7 @@ export function startAttachmentRequest(request: Request) {
 			throw new AttachmentError(400, "Provide an opening draft ID and message text.");
 		}
 		const id = openingAttachmentChatId(owner, draftId);
-		if (wasOpeningDeleted(id) && !stores.chatStore.getChat(id)) throw new AttachmentError(409, "This opening draft belongs to a deleted session.");
+		if (wasOpeningDeleted(id) && !stores.chatStore.getChat(id)) return Response.json({ code: "opening-deleted", error: "This opening draft belongs to a deleted session." }, { status: 409, headers: CREDENTIAL_HEADERS });
 		const submission = attachmentSubmission(request, owner, { draftId }, id, attachmentUploadIds, sendId);
 		const record = newChatRecord(id, titleFromPrompt(title), kind === "practice" ? kind : undefined);
 		record.settings = initialChatSettings();

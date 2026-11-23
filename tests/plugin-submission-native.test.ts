@@ -261,6 +261,30 @@ test("steer HTTP route distinguishes stale replacements from the ordinary settle
 	}
 });
 
+test("an opening deleted during preflight cannot be recreated", async () => {
+	const { randomUUID } = await import("node:crypto");
+	const { newChatRecord, saveOpeningChat } = await import("../src/store/chats.ts");
+	const { openingAttachmentChatId } = await import("../src/server/attachment-submissions.ts");
+	const { reserveAttachment, receiveAttachment } = await import("../src/store/attachments.ts");
+	const { markDeletedOpening } = await import("../src/store/deleted-openings.ts");
+	const owner = randomUUID(), draftId = randomUUID();
+	const id = openingAttachmentChatId(owner, draftId);
+	const grant = reserveAttachment(owner, { draftId, name: "a.txt", mimeType: "text/plain", size: 1 });
+	const url = new URL(grant.uploadUrl!, "http://localhost");
+	await receiveAttachment(grant.id, url.searchParams.get("grant")!, owner, new Request(url, { method: "PUT", body: "x" }), () => {});
+	const opening = newChatRecord(id, "Opening");
+	const response = await duringProcessing(() => {
+		saveOpeningChat(opening);
+		markDeletedOpening(id);
+		stores.chatStore.deleteChat(id);
+	}, () => handleChatInput(id, { type: "text", text: "Open", images: [image()] }, () => { throw new Error("must not start"); }, undefined, {
+		ids: [grant.id], owner, target: { draftId }, messageId: randomUUID(), currentOwner: () => {}, opening,
+	}));
+	assert.equal(response.status, 409);
+	assert.equal((await response.json()).code, "opening-deleted");
+	assert.equal(stores.chatStore.getChat(id), null);
+});
+
 test("custom endpoint admission uses the existing effective-engine forced image policy, not sparse catalog input flags", async () => {
 	const entry = createProvider({ id: provider, models: [textModel], auth: { apiKey: { name: "fixture", resolve: async () => ({ auth: {} }) } }, api: { stream, streamSimple: stream } });
 	configureProviderSource({ isCustom: id => id === provider, sync: models => models.setProvider(entry) });
