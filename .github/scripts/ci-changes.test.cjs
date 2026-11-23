@@ -95,10 +95,13 @@ test("names Git would quote (non-ASCII, a newline) reach the gates as they are, 
 		git("add", "-A");
 		git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "names");
 		const gates = { ...none, mobile: true };
+		const expected = [...names].sort();
 
 		// A pull request: ci.yml writes the diff to a file, the same command as the workflow's.
 		const list = path.join(dir, ".git", "changed-paths");
 		fs.writeFileSync(list, git("diff", "-z", "--name-only", "--no-renames", "HEAD^1", "HEAD"));
+		// The parser keeps every name exactly, including the non-ASCII one and the newline.
+		assert.deepEqual(pathsFile(fs.readFileSync(list, "utf8")).sort(), expected);
 		const script = path.join(__dirname, "ci-changes.cjs");
 		const out = execFileSync(process.execPath, [script, "--paths", list], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
 		assert.equal(out, Object.entries(gates).map(([key, value]) => `${key}=${value}`).join("\n") + "\n");
