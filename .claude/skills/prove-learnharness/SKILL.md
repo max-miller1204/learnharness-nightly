@@ -201,7 +201,7 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 
 ### Planned surfaces
 
-`/api/v<N>` paths have no scripts and no recipe: a diff that reaches them is BLOCKED for that surface until `/create-prove-it` builds its section. The Expo mobile app on Android (the emulator on this machine) has no scripts but has a recipe: a diff that reaches `apps/mobile/**` runs the scripted plan, which ends `MANUAL` (exit 4), and then you drive the [mobile beta recipe](references/features/mobile-beta.md) on the emulator. Only a device step the machine can't give you is BLOCKED, and only that step. Its iOS variant follows [references/planned.md](references/planned.md#ios-iphone); the CI `iPhone` job (`.github/workflows/ci.yml`, `scripts/iphone-check/`) is that surface, and the mobile beta recipe judges its screenshots ([iPhone in CI](references/features/mobile-beta.md#iphone-in-ci)). The client protocol itself (server info, the version header, the protocol 1 routes) is driven with the API: [client-protocol recipe](references/features/client-protocol.md). Extension points: [references/planned.md](references/planned.md).
+`/api/v<N>` paths have no scripts and no recipe: a diff that reaches them is BLOCKED for that surface until `/create-prove-it` builds its section. The Expo mobile app, on the iOS Simulator on the Mac (T3 host `intel-mac`), has no scripts but has a recipe: a diff that reaches `apps/mobile/**` runs the scripted plan, which ends `MANUAL` (exit 4), and then you drive the [mobile beta recipe](references/features/mobile-beta.md#ios-simulator-on-the-mac) on the simulator through the T3 `device_list` and `device_open` tools and `agent-device`. Only a device step the Mac can't give you is BLOCKED, and only that step. Android is not run; its material is kept in [references/android-archive.md](references/android-archive.md), and an Android pass is never an iOS pass ([references/planned.md](references/planned.md#ios-iphone)). The client protocol itself (server info, the version header, the protocol 1 routes) is driven with the API: [client-protocol recipe](references/features/client-protocol.md). Extension points: [references/planned.md](references/planned.md).
 
 ### Varies by and deliberate
 
@@ -307,9 +307,9 @@ A failing step is evidence, and the verdict rules above still hold. Before you w
 
 - **The change**: head fails, and base passes or the step is new. BROKEN, back to the builder.
 - **Main's own bug**: base fails the same way on the same input (`compare.mjs` shows both values). BROKEN, sent back like any BROKEN, with the step labelled "base fails the same: main's bug, not this diff". The fix for the builder is to update the branch from main when main has a fix, then you run again; name that commit. Without one, it goes to the user with both values. Example: the question page's CLS scored 0.096 to 0.29 on main's identical code before 5a3910c4 (#282), so a branch whose merge base is older fails it until it is updated.
-- **The environment or a tool**: the emulator, the device tool, Xvfb, the keyring, a socket path, a CI runner. BLOCKED for that step with the raw error, never BROKEN. Gotchas below and the [mobile beta](references/features/mobile-beta.md) health gate list the known ones with their working fixes.
+- **The environment or a tool**: the simulator, the device tool, Xvfb, the keyring, a socket path, a CI runner. BLOCKED for that step with the raw error, never BROKEN. Gotchas below and the [mobile beta](references/features/mobile-beta.md) recipe list the known ones with their working fixes.
 - **A test harness that fails on both revisions before it drives anything** (a repo `scripts/smoke-*.mjs` crash, a fixture that can't start). BLOCKED for that check. Report the harness as a product bug, and prove the flow it covers another way if you can.
-- **Another job holding a shared resource** (the emulator, a build slot, a port). Wait, or BLOCKED. Never take it over.
+- **Another job holding a shared resource** (the simulator, a build slot, a port). Wait, or BLOCKED. Never take it over.
 
 ## Gotchas
 

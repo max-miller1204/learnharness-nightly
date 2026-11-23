@@ -118,7 +118,7 @@ if (Object.keys(surfaces).length) {
 		if (needsBase) plan.push(`EB=$(scripts/electron.sh "$RUN" dev-base); node scripts/web-teach.mjs "$EB"; node scripts/compare.mjs "$RUN/electron-dev-base/web-teach/result.json" "$RUN/electron-${electron}/web-teach/result.json" --only desktop --base-is-key --out "$RUN/compare-desktop.md"`);
 	}
 	if (surfaces.mobile) plan.push(`scripts/mobile-checks.sh "$RUN"   # the app's unit tests and the skill's phone checks, Node 22`);
-	if (surfaces.mobile) plan.push("# MANUAL: device proof next: in a new run folder (scripts/new-run.sh <slug>-device), drive references/features/mobile-beta.md, emulator health gate first, and name both run folders in one receipt. The iOS variant: references/planned.md (iOS).");
+	if (surfaces.mobile) plan.push("# MANUAL: device proof next: in a new run folder (scripts/new-run.sh <slug>-device), drive references/features/mobile-beta.md on the iOS Simulator on the Mac (T3 host intel-mac), and name both run folders in one receipt. Why iOS only: references/planned.md (iOS).");
 	if (surfaces.protocol) plan.push("# PLANNED versioned protocol surface: see references/planned.md.");
 	plan.push(`scripts/stop.sh "$RUN"`);
 }

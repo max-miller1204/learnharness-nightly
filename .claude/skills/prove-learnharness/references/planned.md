@@ -4,7 +4,7 @@ A surface here has no section in SKILL.md. A diff that reaches one is BLOCKED fo
 
 ## iOS (iPhone)
 
-An Android run says nothing about iOS rendering: #277's quiz choice math passed on Android and still shipped with the answered card's math on the wrong baseline on the iPhone. A diff that reaches `apps/mobile/**` therefore has an iOS variant, and the Android steps run as usual. Drive the iOS variant with the iPhone CI job when the [mobile beta recipe](features/mobile-beta.md) has a section for it. Without one, the iOS variant is BLOCKED, with the owner's TestFlight check as the unlock. Never count an Android pass as an iOS pass.
+The phone app is proved on an iOS Simulator on the Mac: [iOS Simulator on the Mac](features/mobile-beta.md#ios-simulator-on-the-mac). Rendering differs by platform: #277's quiz choice math passed on Android and still shipped with the answered card's math on the wrong baseline on the iPhone. A diff that reaches `apps/mobile/**` therefore has an iOS drive, and Android runs, kept in the [Android archive](android-archive.md), never count for it. A device step the Mac can't give you is BLOCKED for that step, with the owner's TestFlight check as the unlock for what a simulator can't show.
 
 ## Client protocol
 
