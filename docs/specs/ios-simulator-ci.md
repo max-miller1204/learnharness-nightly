@@ -1,5 +1,7 @@
 # iPhone check in CI
 
+> The CI `iPhone` job this spec describes was retired in favour of local iOS Simulator runs on a Mac. The history below is kept as written. The driver scripts remain in `scripts/iphone-check/`.
+
 Approved by the owner on 2026-11-19 (playback confirmed, no vetoes). A new required CI job runs the phone app (`apps/mobile`) on an iOS Simulator on GitHub's Macs for every phone PR. It drives a few key screens against a throwaway server, takes iPhone and web screenshots side by side, and fails on mechanical problems. The prove-it checker judges how the screens look.
 
 ## 1. Starting point
