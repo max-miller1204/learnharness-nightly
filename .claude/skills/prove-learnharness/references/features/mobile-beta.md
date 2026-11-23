@@ -28,14 +28,89 @@ Record each observation, the device screenshot or recording, and the saved serve
 
 The phone surface is proved on an iOS Simulator on the Mac, not on an emulator on the ThinkPad. Android runs are not part of this recipe: the Android material is kept in [the Android archive](../android-archive.md).
 
-- **Device.** iPhone 17 Pro on iOS 26.5, on the T3 host labeled `intel-mac`. Call `device_list`, then `device_open` with the `hostId` and device `id` it gives, and drive the app with the `agent-device` command that `device_open` returns and `device_screenshot`. Use `xcrun simctl` only for what the tool can't do, such as `xcrun simctl keychain <udid> add-root-cert`.
-- **Build.** A Debug simulator build embeds no bundle, so the app runs what Metro serves it: build the app from the head under proof and serve it from that checkout's Metro.
-- **HTTPS.** The phone app accepts only `https://` servers and the prove server listens on plain HTTP. `scripts/iphone-check/tls-cert.sh` makes a throwaway CA and a server certificate for 127.0.0.1, and `scripts/iphone-check/tls-front.mjs` ends TLS in front of the prove server. Trust the CA only inside the simulator.
-- **Fixtures.** The [lesson fixture](../../../../../tests/fixtures/mobile-lesson/) and the [quiz fixture](../../../../../tests/fixtures/mobile-quiz/) (with its `scenario.json` for the fake model) serve the screens below. The earlier AXe-based driver for them is `scripts/iphone-check/drive.mjs` ([spec](../../../../../docs/specs/ios-simulator-ci.md)).
-- **Parity.** Shoot the Pair screen, the session list, the lesson fixture and the quiz fixture (waiting, then answered through the dock) on the phone and in the web app on the same server, in light (web: Ivory) and dark (web: Default). Judge every iPhone screen against its web screen under the visual-parity rule in Drive and compare above. Check math above all: baselines in answered cards and choice rows, sentence-ending math and its period, expressions like `0.1(-1)(-2)`, and the bold first column of the two-column table. A visible difference that phone layout doesn't explain is BROKEN.
-- **Choice rows.** A quiz choice row must be one accessibility item speaking its math. An accessibility item check is not a VoiceOver check: never record VoiceOver as checked from it. The owner's TestFlight VoiceOver check stays.
-- **Opening a session.** The earlier AXe-based driver could not tap session rows on the simulator, so its Metro sets `EXPO_PUBLIC_CI_OPEN_SESSIONS` instead ([`apps/mobile/src/workspace-view.ts`](../../../../../apps/mobile/src/workspace-view.ts)). A production bundle never carries it.
-- **Steps with no iOS drive.** The camera, location, undecodable-photo and cache-copy checks under Attach photos and files, and the driving notes under Session opening, are Android drives kept in the archive. An iOS diff that reaches them is BLOCKED for that step unless this section gives an iOS drive.
+- **Device.** The T3 host is labeled `intel-mac`: an Intel Mac (i9) on macOS 26.7.3 with Xcode 26.5 and only the iOS 26.5 runtime. The device is an iPhone 17 Pro (udid `8C1A7F98-6DCD-4EFC-AA99-D249EEE90B44`; `xcrun simctl list devices` shows it). Call `device_list`, then `device_open` with the `hostId` and device `id` it gives, and drive the app with the `agent-device` command that `device_open` returns, or with the commands below. Use `xcrun simctl` for what that tool can't do: booting, `keychain add-root-cert`, `status_bar`, `addmedia`, `ui` and `io`.
+- **What it does not cover.** An Intel Mac cannot run Xcode 27, which needs macOS 27, so the simulator runs iOS 26.5. Rendering differences that exist only on iOS 27, Liquid Glass included, are not covered. Every receipt for a phone change says it ran on iOS 26.5.
+- **Tools.** Node 22 builds the app (`mise where node@22`) and Node 26 runs the server. Ruby 4.0.10, CocoaPods 1.17.0 and `agent-device` come from `dots pkg add` and mise. `eas` runs through `npx eas`. The Mac has no Homebrew, watchman (Metro works without it), Chrome or AXe, and `gh` is not logged in there.
+- **Sizes and timing.** Typical times: root `npm ci` 29 s, the app's `npm ci` 39 s, the server build 3 min, `pod install` 2.5 min, a cold Debug `xcodebuild` 7 min, simulator boot 19 s, Metro warm 20 s, a warm launch to the session list 5 s. The clone takes 5.1 GB, DerivedData 1.7 GB, the CocoaPods cache 1.1 GB and the simulator's data 3 GB.
+
+### Run it
+
+Build the server and start it with the quiz fixture's scenario and the lesson and quiz fixtures seeded. The phone app accepts only `https://` servers and the prove server listens on plain HTTP, so `tls-cert.sh` makes a throwaway CA and a certificate for 127.0.0.1 and `tls-front.mjs` ends TLS in front of the server. The simulator trusts that CA and nothing else does.
+
+```bash
+cd ~/learnharness-nightly
+N22=$(mise where node@22)/bin; export LANG=en_US.UTF-8 EXPO_NO_TELEMETRY=1
+npm ci --no-audit --no-fund                       # root, Node 26
+(cd apps/mobile && PATH=$N22:$PATH npm ci --no-audit --no-fund)
+RUN=$(.claude/skills/prove-learnharness/scripts/new-run.sh iphone-mac)
+.claude/skills/prove-learnharness/scripts/build.sh "$RUN" head
+mkdir -p $RUN/head/data/{chats,jobs}
+cp tests/fixtures/mobile-lesson/chat_*.json tests/fixtures/mobile-quiz/chat_*.json $RUN/head/data/chats/
+cp tests/fixtures/mobile-lesson/job_*.json $RUN/head/data/jobs/
+INST=$(.claude/skills/prove-learnharness/scripts/start.sh "$RUN" head $PWD/tests/fixtures/mobile-quiz/scenario.json)
+. "$INST"
+scripts/iphone-check/tls-cert.sh ~/lh-tls
+port=$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')
+node scripts/iphone-check/tls-front.mjs $port $APP_PORT ~/lh-tls/cert.pem ~/lh-tls/key.pem &
+```
+
+Build the native Debug app. The Mac is Intel, so the simulator is x86_64 only: pass `ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO` (an Apple silicon build uses `arm64`).
+
+```bash
+cd apps/mobile && export PATH=$N22:$PATH
+npx expo prebuild --clean --platform ios --no-install
+(cd ios && pod install)
+xcrun xcodebuild -workspace ios/LearnHarnessNightly.xcworkspace -scheme LearnHarnessNightly -configuration Debug -destination "generic/platform=iOS Simulator" -derivedDataPath ~/lh-dd ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO build -quiet
+APP=~/lh-dd/Build/Products/Debug-iphonesimulator/LearnHarnessNightly.app
+[ ! -e "$APP/main.jsbundle" ] || echo "the Debug app embeds a bundle"
+```
+
+A Debug build embeds no bundle, so the app can only run what Metro serves it. If `main.jsbundle` is there, the build is not the Debug one and the run proves the wrong thing.
+
+Boot the simulator, trust the CA, install, start Metro and warm its bundle, then pair through the Pair screen:
+
+```bash
+U=8C1A7F98-6DCD-4EFC-AA99-D249EEE90B44
+xcrun simctl boot $U; xcrun simctl bootstatus $U -b
+xcrun simctl keychain $U add-root-cert ~/lh-tls/ca.pem
+xcrun simctl status_bar $U override --time 9:41 --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4
+xcrun simctl install $U $APP
+EXPO_PUBLIC_CI_OPEN_SESSIONS=chat_zzmobilelesson,chat_zzmobilequiz npx expo start --port 8081 &
+curl -s -o /dev/null "http://127.0.0.1:8081/.expo/.virtual-metro-entry.bundle?platform=ios&dev=true&hot=false&lazy=true&transform.engine=hermes&transform.bytecode=1&unstable_transformProfile=hermes-stable"
+CODE=$(curl -s -X POST -H "authorization: Bearer $APP_TOKEN" -H "origin: $APP_URL" -H 'content-type: application/json' -d '{"label":"x"}' $APP_URL/api/auth/pairing-token | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).credential')
+agent-device open com.maxmiller.learnharness.nightly --platform ios --udid $U --foreground
+agent-device react-native dismiss-overlay
+agent-device press 'label="Pair a server"' --settle
+agent-device fill 'role=text-field' "https://127.0.0.1:$port" --settle
+agent-device fill 'role=securetextfield' "$CODE" --settle
+agent-device press 'label="Connect"' --settle
+agent-device press 'label="Not Now" role=button' --settle     # iOS "Save Password?" sheet
+agent-device screenshot out.png          # or: xcrun simctl io $U screenshot out.png
+agent-device close --session <name shown by "agent-device session list">
+```
+
+`EXPO_PUBLIC_CI_OPEN_SESSIONS` makes each new connection open the next listed session instead of a tapped row ([`apps/mobile/src/workspace-view.ts`](../../../../../apps/mobile/src/workspace-view.ts)). Only a dev bundle reads it: a release or update bundle never carries it. Leave it out of Metro's environment when a check starts from tapping a session row.
+
+### Rules and gotchas
+
+- **Saved servers.** After a force-stop, a reinstall or a text size change the app opens Saved servers: open the disposable server's row before selecting a session.
+- **Restore what you change.** Restore every setting you change (appearance, text size, rotation, Reduce Motion) and read it back before the receipt.
+- **Sessions are bound to the directory.** An `agent-device` session belongs to the working directory it started in: another directory answers `DEVICE_IN_USE`. Close the session by its name from `agent-device session list`, and never take over another session's device.
+- **First launch.** A React Native warning overlay can cover the first screen: `agent-device react-native dismiss-overlay`.
+- **`stop.sh` on macOS.** `stop.sh` reads `/proc`, so it cannot stop its own processes on macOS. Kill the fake model and the server by the pids in the run's `*.pid` files (`find "$RUN" -name '*.pid'`), then the TLS front and Metro. `flock` and `setsid` are not needed on macOS: `lib.sh` supplies stand-ins.
+- **Hosts block.** The CI job's `/etc/hosts` entry for `u.expo.dev` needs sudo and is skipped here, because a Debug build loads from Metro and never asks for an update. To test the embedded bundle or expo-updates, build Release (`npx expo run:ios --configuration Release`), and then block `u.expo.dev` in `/etc/hosts` first.
+- **TestFlight.** TestFlight builds come from EAS on the Linux runner (`mobile-release.yml`). Nothing here builds or uploads one.
+- **Cleanup.** When done, shut down Metro, the server and the TLS front, and keep exactly one simulator booted. `~/lh-dd` and the clone stay.
+
+### What the old driver needs
+
+`scripts/iphone-check/drive.mjs` ([spec](../../../../../docs/specs/ios-simulator-ci.md)) reads the screen and taps through AXe (`--axe`) and shoots the web pages in Chrome (`--chrome`). The Mac has neither, so the full driver does not run there. Use `agent-device` taps and `xcrun simctl io $U screenshot` for the phone half. `paging.mjs`, `tls-cert.sh` and `tls-front.mjs` need neither. A parity pair's web half needs a browser the prover supplies and names in the receipt. Without one, the pair is BLOCKED for its web half.
+
+### Checks
+
+- **Parity.** Shoot the Pair screen, the session list, the lesson fixture and the quiz fixture (waiting, then answered through the dock) on the phone and in the web app on the same server, in light (web: Ivory) and dark (web: Default). Set the phone's appearance with `xcrun simctl ui $U appearance dark` (or `light`). Judge every iPhone screen against its web screen under the visual-parity rule in Drive and compare above. Check math above all: baselines in answered cards and choice rows, sentence-ending math and its period, expressions like `0.1(-1)(-2)`, and the bold first column of the two-column table. A visible difference that phone layout doesn't explain is BROKEN.
+- **Choice rows.** A quiz choice row must be one accessibility item speaking its math. An accessibility item check is not a VoiceOver check: never record VoiceOver as checked from it. VoiceOver speech output is not observable on the simulator, so every step that needs it is BLOCKED for that observation and stays the owner's TestFlight check.
+- **Camera.** The simulator has no camera. Taking a photo, and the camera permission text, stay the owner's TestFlight check.
 
 ## Full lesson view (mobile follow-up 1)
 
@@ -60,6 +135,7 @@ Use a server with `attachment-uploads-v1` and the fake model's teach scenario. U
 - **Send.** While Send waits for an upload, the text box and Remove are locked. With files and empty text, Send is dimmed and "Add a message to send these files." shows. Type text and send while an upload still runs: the send waits, then one message saves with `attachments` in the record. The phone and the browser both show its chips after reload. Have the fake model call `show_image` and `pdf` with the opaque `attachment:<id>` and check the shown image and the brief.
 - **Opening send.** On New session, attach a photo, type an opening message and start. One chat opens with that message and its chip, through `/api/attachments/start`. Drop the response once (kill connectivity right after the tap), send again, and check there is still one chat and one message.
 - **Saved and missing.** Delete a claimed file's bytes on the disposable server and reopen: the chip shows "File unavailable. Attach it again to use it."
+- **Library photos, GPS and types (iOS).** Seed the simulator's library with a synthetic JPEG that carries GPS EXIF and a synthetic WebP: `xcrun simctl addmedia $U <files>`. Pick both from Photo library, send, and read the server's stored bytes with `exiftool`: no GPS, XMP or IPTC tags, orientation kept, and the WebP stored as `image/jpeg` with a chip ending in `.jpg` ([spec](../../../../../docs/specs/mobile-beta.md): "on both platforms"). Seed an 8-bit HEIC the same way: it attaches as `.jpg`.
 - **iOS.** On the TestFlight build, check the two permission texts, that a HEIC library photo uploads as `.jpg` JPEG, and that no microphone prompt or Info.plist string exists.
 
 ## Session basics (mobile parity area 4)
@@ -72,6 +148,16 @@ Follow [the session basics spec](../../../../../docs/specs/mobile-session-basics
 
 ## Session opening (mobile-session-open)
 
-Follow the [spec's Proof section](../../../../../docs/specs/mobile-session-open.md) with the fixtures in `tests/fixtures/mobile-session-open/chats/`. The driving notes written for the Android emulator are in [the Android archive](../android-archive.md#session-opening-android-driving-notes). One of them applies to any device:
+Follow the [spec's Proof section](../../../../../docs/specs/mobile-session-open.md) for what each check must show, with the fixtures in `tests/fixtures/mobile-session-open/chats/` copied into the disposable server's `DATA_DIR/chats/`. These are the iOS driving steps, and the spec's pass criteria are the same on iOS. The Android driving notes, in pixels on the Pixel 6a, are in [the Android archive](../android-archive.md#session-opening-android-driving-notes). The spec's `adb` and TalkBack steps have the iOS equivalents below.
 
+- **Opening by tap.** Press the session's row with `agent-device press`. A check that starts from the tap runs without `EXPO_PUBLIC_CI_OPEN_SESSIONS` in Metro's environment, which skips the tap. If a row does not respond to the tool's press, that check is BLOCKED for its starting tap.
+- **Frames (proofs 1, 2, 8, 9).** Record with `xcrun simctl io $U recordVideo <file>.mov` and extract frames with a tool on the Mac, naming it in the receipt. Step through frame by frame and compare consecutive frames pixel by pixel, as the spec says.
+- **Reaching the top during fill-in (proof 2).** Older messages keep arriving above while the long fixture fills in, so a command that scrolls until the top stops moving never settles there. Fling instead: repeat `agent-device swipe` from low on the screen to high, with `--count` and `--pause-ms` as in the Android notes (`agent-device help swipe` lists the options), taking a screenshot after each, until the fixture's first message ("Teach me maximum likelihood and logistic regression.") is at the top. Run it on a warm open and on a cold open (force-stop first) right after the transcript shows. The cold run is the harder case. Press the app's ‹ to time Back.
+- **The Scroll to end threshold (proof 5).** The threshold is 100 points on both platforms. The iPhone 17 Pro draws 3 pixels to the point, so it is 300 px in a screenshot. Drag slowly (a long duration on `agent-device swipe`) so the content moves by the drag distance without a fling, until it has moved just under 100 points and the button is absent, then just over it and the button shows.
+- **Text size and the period at the wrap width (proof 8).** Change the text size with `xcrun simctl ui $U content_size <size>` (`increment` and `decrement` step it one size at a time, and the size names are in `xcrun simctl ui --help`) until the sentence's equation just fits its line, reopening the math cases session each time. Put the size back and read it back with `xcrun simctl ui $U content_size`. iOS has fixed steps, not the fine steps the Android notes use.
+- **Rotation.** `agent-device orientation landscape-left`, then `orientation portrait`, and check the screenshots' size.
+- **Reduce Motion (proof 5).** Turn it on in Settings → Accessibility → Motion with `agent-device`, check that Scroll to end jumps with no animation, and turn it off again.
+- **Keyboard (proof 5).** `agent-device keyboard` has only Enter and dismiss. Activating the focused button from a hardware keyboard needs a Tab key the tool does not send, so that observation is BLOCKED unless a way to send Tab is found and recorded.
+- **VoiceOver (proofs 4, 5).** VoiceOver speech output is not observable on the simulator. The touch and Reduce Motion parts of proof 5 run here. Proof 4, and the VoiceOver double tap of proof 5, are BLOCKED for that observation and are the owner's TestFlight check.
+- **Memory (proof 2).** Measure it once the long session has fully loaded: open it, scroll nowhere, and wait until filling in has finished (20 s after the transcript shows). Then run two rounds, each a fling to the top until the first message shows, then Scroll to end and a 4 s wait. Sample the app's memory about once a second through both rounds, with Instruments or `xcrun xctrace record --template Allocations --attach LearnHarnessNightly --time-limit 120s --output $RUN/mem.trace`, and compare each round's peak. The spec's limit stays: round 2's peak at most 10% above round 1's. The spec's `dumpsys meminfo` TOTAL PSS is the Android measure. Memory on the simulator is the Mac process's, not a phone's: say so in the receipt. Rounds started while filling in is still going compare a partly loaded session with a fully loaded one, so they don't measure this.
 - **Blank math in a recording.** In the long fixture every line of prose holds inline math, so a missing picture leaves a gap wider than any word space inside a line of text. Scan each frame's transcript area (below the bar, above the dock, left of the button column) for ink gaps over 140 px inside a text line no taller than a few lines. Then look at each flagged frame by eye: matrices and display math with wide spacing are false positives. Check a known blank frame (the receipt's `blank-math-frame-116.png` from the run at a4881269) is flagged before trusting a clean scan.
