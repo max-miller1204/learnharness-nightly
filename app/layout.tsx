@@ -1,3 +1,4 @@
+import { PATH_INPUT_BOOT_SCRIPT } from "@/components/path-input-boot";
 import type { Metadata } from "next";
 import { JetBrains_Mono, Source_Sans_3 } from "next/font/google";
 import { headers } from "next/headers";
@@ -53,6 +54,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 				    lands on <html> (components/sidebar-boot.ts), so the shell
 				    renders in its final layout with no shift. */}
 				<script dangerouslySetInnerHTML={{ __html: SIDEBAR_BOOT_SCRIPT }} />
+				<script dangerouslySetInnerHTML={{ __html: PATH_INPUT_BOOT_SCRIPT }} />
 			</head>
 			<body className="min-h-dvh antialiased">
 			{/* The notification channel rides OUTSIDE everything: sidebar, dock,

@@ -10,6 +10,7 @@ import React, { act } from "react";
 (globalThis as Record<string, unknown>).React = React;
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { PATH_INPUT_BOOT_SCRIPT } from "../components/path-input-boot.ts";
 import { Chat } from "../components/chat.tsx";
 import { ChatSessionComposer } from "../components/composer.tsx";
 import { COMPOSER_DRAFT_KEY_PREFIX, flushComposerDrafts } from "../lib/composer-drafts.ts";
@@ -56,7 +57,7 @@ const model = { provider: "fixture", id: "fixture-model", name: "Fixture", input
 const TYPED = "typed before hydration";
 type Props = Partial<React.ComponentProps<typeof Chat>>;
 /** Server-render the session, type into `selector`'s field, then hydrate. */
-async function hydrate(selector: string, props: Props = {}, saved?: string) {
+async function hydrate(selector: string, props: Props = {}, saved?: string, composing = false, emptyAtMount = false) {
 	savedObserver = Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver");
 	savedSession = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
 	Object.assign(globalThis, { ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } });
@@ -70,7 +71,12 @@ async function hydrate(selector: string, props: Props = {}, saved?: string) {
 				const typedInto = document.querySelector(selector);
 				assert.ok(typedInto, `the server render has ${selector}`);
 				before.field = typedInto;
-				typedInto.replaceChildren(document.createTextNode(TYPED)); // typed before any listener existed
+				typedInto.replaceChildren(document.createTextNode(composing ? "" : TYPED));
+				if (composing) {
+					new Function("document", PATH_INPUT_BOOT_SCRIPT)(document);
+					typedInto.dispatchEvent(new (document.defaultView as unknown as { Event: typeof Event }).Event("compositionstart", { bubbles: true }));
+					if (!emptyAtMount) typedInto.replaceChildren(document.createTextNode(TYPED));
+				}
 			},
 		},
 		prepareDom(dom) {
@@ -120,6 +126,21 @@ describe("text typed before hydration, through the production owners", () => {
 		assert.equal(button("Send")?.disabled, false, "Send is enabled for the typed text");
 		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); flushComposerDrafts(); });
 		assert.equal(storedText("a"), TYPED, "the typed text is the saved draft");
+	});
+
+	it("keeps an early composition ahead of a saved draft", { timeout: 30_000 }, async () => {
+		const field = await hydrate(COMPOSER, {}, "old draft", true);
+		field.textContent = "committed";
+		await act(async () => { field.dispatchEvent(new (fixture!.document.defaultView as unknown as { Event: typeof Event }).Event("compositionend", { bubbles: true })); await Promise.resolve(); });
+		await settle();
+		assert.equal(field.textContent, "committed");
+	});
+
+	it("restores the saved draft when an early composition cancels without an edit", { timeout: 30_000 }, async () => {
+		const field = await hydrate(COMPOSER, {}, "old draft", true, true);
+		await act(async () => { field.dispatchEvent(new (fixture!.document.defaultView as unknown as { Event: typeof Event }).Event("compositionend", { bubbles: true })); await Promise.resolve(); });
+		await settle();
+		assert.equal(field.textContent, "old draft");
 	});
 
 	it("keeps the text with no saved draft and Enter sends it", { timeout: 30_000 }, async () => {
