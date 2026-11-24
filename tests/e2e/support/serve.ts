@@ -5,8 +5,8 @@
  *
  * Boots one isolated LearnHarness on 127.0.0.1:<port>. Its HOME, data folder
  * and key store live in instanceDir(port), under the OS temp folder (wiped at
- * each start), no ambient
- * provider key reaches it (LH_IGNORE_ENV_KEYS=1), and a scripted fake model
+ * each start), no ambient provider key reaches it (LH_IGNORE_ENV_KEYS=1),
+ * the checkout's .env* files cannot redirect it (isolatedEnv), and a scripted fake model
  * (fake-model.ts) fills the Strong, Cheap and Vision slots through the same
  * API routes the Settings page uses. When the instance is usable it writes
  * state.json there (read it with instance.ts), and it stops the app
@@ -22,7 +22,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { issueSession } from "../../../selfhost/src/auth-store.ts";
 import { startFakeModel } from "./fake-model.ts";
-import { instanceDir, stateFile, type InstanceState } from "./instance.ts";
+import { instanceDir, RUN_ENV, runPointer, stateFile, type InstanceState } from "./instance.ts";
 
 const port = process.argv[2];
 if (!port || !/^\d+$/.test(port)) {
@@ -69,6 +69,37 @@ if (mode === "standalone") {
 	server = [process.execPath, path.join(root, "node_modules/next/dist/bin/next"), "dev", "-H", "127.0.0.1", "-p", port];
 }
 
+// `next dev` loads the checkout's .env* files, and a variable passed to the
+// process wins over them. So every variable that could point the instance at
+// real data, a real install or a real account is set here, to an isolated
+// value or to empty/off, even when this file does not need it: a .env.local
+// then changes nothing. Add a variable here when the app starts reading one.
+const isolatedEnv: Record<string, string> = {
+	// Where the instance keeps its data.
+	LH_DATA_DIR: dataDir,
+	LH_AUTH_FILE: authFile,
+	LH_HOME: path.join(dir, "lh-home"),
+	XDG_CONFIG_HOME: path.join(home, ".config"),
+	CLAUDE_CONFIG_DIR: path.join(home, ".claude"),
+	// Never the self-hosted server, a desktop-shell child or a running launcher.
+	LH_SELFHOST: "0",
+	LH_DESKTOP_SERVER: "0",
+	LH_DESKTOP_API_SECRET: "",
+	LH_LAUNCHER_PROTOCOL: "",
+	LH_TRIAL_UPDATE_ID: "",
+	LH_FEED_URL: "",
+	LH_BIN_DIR: "",
+	LH_SERVICE_NAME: "",
+	LH_DEV_URL: "",
+	// No ambient provider key, and no diagnostic capture of what the model sees.
+	LH_IGNORE_ENV_KEYS: "1",
+	LH_PROVIDER_EVENTS: "",
+	LH_BACKGROUND_CAPTURE: "",
+	// Nothing that changes how Node or a browser binary is found.
+	NODE_OPTIONS: "",
+	CHROME_PATH: "",
+};
+
 const app: ChildProcess = spawn(server[0], server.slice(1), {
 	cwd: mode === "standalone" ? path.join(root, ".next/standalone") : root,
 	// Its own process group, so stopping it also stops the server Next forks.
@@ -84,9 +115,7 @@ const app: ChildProcess = spawn(server[0], server.slice(1), {
 		HOSTNAME: "127.0.0.1",
 		PORT: port,
 		NEXT_TELEMETRY_DISABLED: "1",
-		LH_DATA_DIR: dataDir,
-		LH_AUTH_FILE: authFile,
-		LH_IGNORE_ENV_KEYS: "1",
+		...isolatedEnv,
 	} as NodeJS.ProcessEnv,
 });
 
@@ -148,4 +177,6 @@ try {
 
 const state: InstanceState = { appUrl, mode, dataDir, home, authFile, modelLog, fixture, fixtureNoNewline, fakeModel: fake.url, fakeControl: fake.control, scenario };
 fs.writeFileSync(stateFile(port), `${JSON.stringify(state, null, 2)}\n`);
+// Last, so a reader that finds the pointer finds a usable instance.
+if (process.env[RUN_ENV]) fs.writeFileSync(runPointer(process.env[RUN_ENV]), `${JSON.stringify({ port })}\n`);
 console.log(`serve: ready (${mode}) at ${appUrl}, state in ${stateFile(port)}`);
