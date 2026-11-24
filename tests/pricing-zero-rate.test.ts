@@ -35,6 +35,25 @@ test("a call on a zero-rate free model stores $0.00 and keeps it when the catalo
 	}
 });
 
+// Free-tier hosted APIs: NVIDIA's hosted catalog and Mistral's Labs models.
+test("free-tier hosted models store $0.00 and keep it when the catalog later prices them", () => {
+	for (const id of ["nvidia:moonshotai/kimi-k2.6", "nvidia:google/gemma-3-12b-it", "mistral:labs-devstral-small-2512", "mistral:labs-leanstral-1-5-1"]) {
+		const colon = id.indexOf(":");
+		const model = catalog(id.slice(0, colon), id.slice(colon + 1));
+		assert.ok(isZero(model), `${id} ships zero rates`);
+		const call = captureCallUsage(usage, model);
+		assert.equal(call.costUsd, 0, `${id} records $0.00 at call time`);
+		assert.equal(callCost({ inputTokens: 100_000, outputTokens: 50_000 }, id), 0, `${id} reads $0.00 with no stored cost`);
+		restore(model, () => {
+			model.cost.input = 1;
+			model.cost.output = 2;
+			assert.equal(callCost(call, id), 0, `${id} stays $0.00 after the catalog prices it`);
+		});
+	}
+	// A retired free-tier entry keeps its $0.00 too.
+	assert.equal(callCost({ inputTokens: 100, outputTokens: 100 }, "nvidia:meta/llama-3.2-11b-vision-instruct"), 0);
+});
+
 test("a record with no stored cost still reads through the live catalog", () => {
 	const old: CallUsage = { inputTokens: 100_000, outputTokens: 50_000, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite1hTokens: 0, reasoningTokens: 0 };
 	assert.equal(callCost(old, "google:gemma-4-26b-a4b-it"), 0);

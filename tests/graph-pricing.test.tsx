@@ -43,19 +43,19 @@ test("a run with a priced extractor and an unpriced image reader shows its known
 	const imageRun: ExtractionRunUsage = {
 		startedAt: 1, at: "fixture", durationMs: 1,
 		stages: {
-			extractor: { model, steps: [usage({ cacheWrite1hTokens: 0 })] },
+			extractor: { model, steps: [usage({ costUsd: 0.12 })] },
 			auditor: { model, steps: [] },
 			imageReader: { model, steps: [usage()] },
 		},
 	};
 	const costs = summary([imageRun]);
-	assert.ok(costs.stages.extraction.dollars > 0, "the extractor's spend is known");
+	assert.ok(Math.abs(costs.stages.extraction.dollars - 0.12) < 1e-9, "the extractor's spend is known");
 	assert.equal(costs.stages.extraction.unpricedRuns, 1);
 	assert.equal(costs.stages.extraction.pricedRuns, 1);
 	assert.equal(costs.stages.audit.unpricedRuns, 0, "an audit with no calls is not unpriced");
 	assert.equal(costs.unpricedRuns, 1, "unpriced is counted once per run");
 	const html = headline([imageRun]);
-	assert.match(html, new RegExp(`>\\$${costs.totalDollars.toFixed(2).replace(".", "\\.")} \\+ 1 unpriced</button>`));
+	assert.match(html, />\$0\.12 \+ 1 unpriced<\/button>/);
 	assert.doesNotMatch(html, />\u2014<\/button>/);
 	// The panel agrees with the headline: the extraction row keeps its known dollars and its mark.
 	const panel = renderToStaticMarkup(<GraphCostPanel costs={costs} />);

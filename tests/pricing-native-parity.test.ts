@@ -22,7 +22,7 @@ test("API catalog models price through Pi at every tier boundary; native CLI sta
 			const total = calculateCost(model, usage).total;
 			const free = (model as typeof model & { free?: boolean }).free === true || isKnownFreeModelId(model.id);
 			const zeroRated = [model.cost, ...(model.cost.tiers ?? [])].every(r => r.input === 0 && r.output === 0 && r.cacheRead === 0 && r.cacheWrite === 0);
-			const unknown = model.provider === "claude-code" || (!free && zeroRated && !(model.provider === "opencode" || (model.provider === "google" && model.id.startsWith("gemma-"))));
+			const unknown = model.provider === "claude-code" || (!free && zeroRated && !(model.provider === "opencode" || model.provider === "nvidia" || (model.provider === "google" && model.id.startsWith("gemma-")) || (model.provider === "mistral" && model.id.startsWith("labs-"))));
 			const expected = unknown ? null : free ? 0 : total;
 			assert.equal(callCost(call, `${model.provider}:${model.id}`), expected, `${model.provider}:${model.id} input=${input}`);
 			assert.deepEqual(call, before);

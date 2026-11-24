@@ -58,9 +58,10 @@ export function isKnownFreeModelId(id: string): boolean {
 }
 
 /** Zero-rate models known to be free by name, not by an id marker: OpenCode's
- *  free tier and Google's Gemma models. Every other all-zero entry (a paid plan
- *  or a router that hides the backend's bill) is unknown, never free. */
-const NAMED_FREE_MODEL = /^(?:opencode:|google:gemma-)/;
+ *  free tier, Google's Gemma models, NVIDIA's hosted catalog and Mistral's Labs
+ *  models, all free-tier hosted APIs. Every other all-zero entry (a paid plan or
+ *  a router that hides the backend's bill) is unknown, never free. */
+const NAMED_FREE_MODEL = /^(?:opencode:|google:gemma-|nvidia:|mistral:labs-)/;
 
 /** Whether a call on this model costs $0.00 for certain. An explicit free marker
  *  always counts; a name on the free list counts only while its rates are zero. */
