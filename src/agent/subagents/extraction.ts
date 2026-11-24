@@ -1598,7 +1598,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			return stats;
 		} catch (err) {
 			console.error(`[extraction ${id}] notes pipeline failed (${Math.round(performance.now() - t0)}ms):`, err);
-			if (err instanceof NotesImportError || err instanceof ModelsNotConfiguredError || err instanceof ProviderKeyMissingError || err instanceof SubscriptionUnreachableError) throw err;
+			if (err instanceof NotesImportError || err instanceof ModelsNotConfiguredError || err instanceof ModelUnavailableError || err instanceof ProviderKeyMissingError || err instanceof SubscriptionUnreachableError) throw err;
 			throw new NotesImportError(err instanceof Error && err.name === "AbortError" ? "aborted" : "failed", mergedStats,
 				err instanceof Error ? err.message : String(err), { cause: err });
 		} finally {
@@ -1618,7 +1618,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			graphStore.upsertSource({ id, filePath: input.filePath, importedAt });
 			return await runNotesExtraction({ id, ...input, importedAt });
 		} catch (err) {
-			if (err instanceof NotesImportError || err instanceof ModelsNotConfiguredError || err instanceof ProviderKeyMissingError || err instanceof SubscriptionUnreachableError) throw err;
+			if (err instanceof NotesImportError || err instanceof ModelsNotConfiguredError || err instanceof ModelUnavailableError || err instanceof ProviderKeyMissingError || err instanceof SubscriptionUnreachableError) throw err;
 			throw new NotesImportError("failed", { nodes: 0, chains: 0 }, err instanceof Error ? err.message : String(err), { cause: err });
 		} finally {
 			inFlight.delete(id);

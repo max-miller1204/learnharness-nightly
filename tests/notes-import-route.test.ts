@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { after, it } from "node:test";
 import { POST } from "../app/api/graph/import/route.ts";
 import { extraction, sourceDirectory } from "../src/server/index.ts";
+import { ModelUnavailableError } from "../src/agent/models.ts";
+import { modelUnavailableMessage } from "../src/core/model-unavailable.ts";
 import { ModelsNotConfiguredError, ProviderKeyMissingError, SubscriptionUnreachableError, subscriptionUnreachable } from "../src/core/settings.ts";
 import { createExtractionPipeline, NotesImportError } from "../src/agent/subagents/extraction.ts";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
@@ -69,6 +71,20 @@ it("route keeps three-worker batching, request positions and mixed per-file outc
 	assert.equal(outage.code, "subscription_unreachable", "an outage is not a setup refusal");
 	assert.equal(outage.error, subscriptionUnreachable("chatgpt").error);
 	assert.equal(outage.provider, "chatgpt");
+});
+
+it("a removed model is refused per file as model_unavailable with the one refusal message", async () => {
+	extraction.importNotes = async () => { throw new ModelUnavailableError("opencode-go", "retired"); };
+	const response = await POST(request(["a.md", "b.md"]));
+	assert.equal(response.status, 200);
+	const { results } = await response.json();
+	assert.equal(results.length, 2);
+	for (const result of results) {
+		assert.equal(result.ok, false);
+		assert.equal(result.outcome, "failed");
+		assert.equal(result.code, "model_unavailable");
+		assert.equal(result.error, modelUnavailableMessage("opencode-go", "retired"));
+	}
 });
 
 it("real route plus in-memory ledgers and faux stages reprocess identical imports for all four filename cases", async () => {

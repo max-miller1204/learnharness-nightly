@@ -2614,6 +2614,12 @@ describe("notes import completion and retry reliability", () => {
 		await assert.rejects(createExtractionPipeline({ chatStore, graphStore: ledgers, extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT), connectionRefusal: async () => subscriptionUnreachable("chatgpt") }).importNotes(input), SubscriptionUnreachableError);
 	});
 
+	it("a saved model the catalog dropped is refused as ModelUnavailableError, not wrapped as a failed import", async () => {
+		const ledgers = memoryLedgers();
+		const pipeline = createExtractionPipeline({ chatStore, graphStore: ledgers, engineFor: () => { throw new ModelUnavailableError("openai", "gpt-retired-builtin"); } });
+		await assert.rejects(pipeline.importNotes(input), ModelUnavailableError);
+	});
+
 	it("a refused import still lists its source, as on main: no models configured, a missing key, an outage", async () => {
 		for (const gate of [undefined, () => providerKeyMissing("openai", ["cheap"]), async () => subscriptionUnreachable("chatgpt")]) {
 			const ledgers = memoryLedgers();
