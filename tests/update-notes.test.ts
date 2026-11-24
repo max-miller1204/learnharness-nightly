@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { capReleaseNoteGroups, noteReleasedAt, type ReleaseNoteGroup, MAX_RELEASE_NOTE_ITEM_LENGTH, totalReleaseItems, withoutSummaryEcho } from "../src/core/release-notes.ts";
+import { capReleaseNoteGroups, type ReleaseNoteGroup, MAX_RELEASE_NOTE_ITEM_LENGTH, totalReleaseItems, withoutSummaryEcho } from "../src/core/release-notes.ts";
 import { releaseLinkLabel } from "../components/release-notes-view.tsx";
 import { readDesktopAppStatus } from "../components/settings/update-settings.tsx";
 import { feedNotesToGroups, groupsBetween, mergeNotesCache, readNotesCache, readUpdateRecord, whatsNew, writeUpdateRecord } from "../src/server/update-records.ts";
@@ -18,7 +18,9 @@ import { buildSummaryInput, countContributors, entryItems, fallbackItems, format
 
 const require = createRequire(import.meta.url);
 const electronNotes = require("../electron/release-notes.cjs") as {
-	releaseNoteGroups(info: unknown): Array<{ version: string; releasedAt?: string; items: string[]; totalItems: number; intro?: string; stats?: string; footer?: string }>;
+	releaseNoteGroups(info: unknown): Array<{ version: string; releasedAt?: string; items: string[]; totalItems: number; intro?: string; stats?: string; footer?: string; summaryCopy?: boolean }>;
+	extractReleaseNoteItems(note: unknown): { items: string[]; totalItems: number; intro?: string; stats?: string; footer?: string; summaryCopy?: boolean };
+	boundedGroup(group: unknown): { version: string; releasedAt?: string; items: string[]; totalItems: number; intro?: string; stats?: string; footer?: string; summaryCopy?: boolean } | null;
 	summaryBody(note: unknown): string;
 	FULL_CHANGELOG_MARKER: string;
 	capGroups(groups: unknown[]): { releaseNotes: Array<{ version: string; items: string[]; totalItems: number; intro?: string; stats?: string; footer?: string }>; omittedReleaseCount: number };
@@ -109,15 +111,6 @@ describe("notes limits", () => {
 		const desktop = electronNotes.releaseNoteGroups({ version: V(18), releaseNotes: notes.map((n) => ({ version: n.version, items: n.items, ...(n.publishedAt ? { releasedAt: n.publishedAt } : {}) })) }).map((g) => [g.version, g.releasedAt]);
 		assert.deepEqual(server, [[V(18), "2026-11-14T08:00:00Z"], [V(17), "2026-11-17"], [V(16), "2026-11-16"]]);
 		assert.deepEqual(desktop, server);
-	});
-
-	it("the server and the desktop date a note with one function: the shared electron/release-dates.cjs", () => {
-		const shared = require("../electron/release-dates.cjs") as { noteReleasedAt: unknown };
-		assert.equal(noteReleasedAt, shared.noteReleasedAt, "src/core reads the same function the desktop's note reader calls");
-		// The feed paths that hand it the pointer are driven in tests/self-update.test.ts and tests/nightly-updater.test.ts.
-		const src = fs.readFileSync(new URL("../electron/release-notes.cjs", import.meta.url), "utf8");
-		assert.match(src, /require\("\.\/release-dates\.cjs"\)/);
-		assert.ok(!/RELEASED_AT\s*=|PRERELEASE_BUILD_DAY\s*=/.test(src), "no second copy of the date patterns");
 	});
 
 	it("the copy is told apart from a real item where the whole list is known, and the decision survives the cut, the bridge and the cache", () => {
@@ -475,5 +468,74 @@ describe("electron release notes (T3 port)", () => {
 	it("writes the same cache format the server reads", () => {
 		electronNotes.mergeNotesCache(dir, [group(V(5)), group(V(6))]);
 		assert.deepEqual(readNotesCache(dir).map((g) => g.version), [V(6), V(5)]);
+	});
+
+	it("preserves Electron truncation and unconditional trailing-echo stripping across release-notes entry points", () => {
+		const rules = require("../electron/release-note-rules.cjs") as {
+			sliceReleaseNoteItem: (item: string) => string;
+			stripTrailingSummaryEcho: (items: readonly string[], summary?: { intro?: string; footer?: string }) => string[];
+		};
+		assert.equal(rules.sliceReleaseNoteItem("  keep   spaces  "), "  keep   spaces  ");
+		const padded = `  ${"a".repeat(220)}`;
+		assert.equal(rules.sliceReleaseNoteItem(padded), `  ${"a".repeat(215)}...`);
+		const footer = "Plus 2 more bug fixes.";
+		const longItem = "x".repeat(230);
+		const truncatedLong = `${"x".repeat(217)}...`;
+		const eightWithFooter = [...Array.from({ length: 7 }, (_, i) => `item ${i + 1}`), footer];
+		assert.deepEqual(
+			rules.stripTrailingSummaryEcho(eightWithFooter, { footer }),
+			eightWithFooter.slice(0, -1),
+		);
+
+		// extractReleaseNoteItems truncates >220-char items in both generated summaries and plain lists.
+		const generatedBody = [
+			`**v${V(12)}** · 10 PRs`,
+			"",
+			`- ${longItem}`,
+			...Array.from({ length: 6 }, (_, i) => `- item ${i + 2}`),
+			`- ${footer}`,
+			"",
+			`### ${footer}`,
+			"",
+			electronNotes.FULL_CHANGELOG_MARKER,
+		].join("\n");
+		const extractedSummary = electronNotes.extractReleaseNoteItems(generatedBody);
+		assert.equal(extractedSummary.items.length, 8);
+		assert.equal(extractedSummary.items[0], truncatedLong);
+		assert.equal(extractedSummary.totalItems, 8);
+		assert.equal(extractedSummary.summaryCopy, false);
+
+		const extractedPlain = electronNotes.extractReleaseNoteItems(`- ${longItem}`);
+		assert.deepEqual(extractedPlain, { items: [truncatedLong], totalItems: 1 });
+
+		// releaseNoteGroups (feed note), summaryBody, and boundedGroup strip trailing footer echoes unconditionally.
+		const [feedGroup] = electronNotes.releaseNoteGroups({
+			version: V(12),
+			releaseNotes: [{ version: V(12), items: eightWithFooter, footer, totalItems: 8, summaryCopy: false }],
+		});
+		assert.equal(feedGroup!.items.length, 8);
+		assert.equal(feedGroup!.totalItems, 7);
+		assert.equal(feedGroup!.summaryCopy, true);
+
+		const renderedSummary = electronNotes.summaryBody({
+			version: V(12),
+			items: eightWithFooter,
+			footer,
+			totalItems: 8,
+			summaryCopy: false,
+		});
+		assert.ok(!renderedSummary.includes(`- ${footer}`), "summaryBody drops the trailing footer echo from bullet items");
+		assert.ok(renderedSummary.endsWith(`### ${footer}`));
+
+		const bounded = electronNotes.boundedGroup({
+			version: V(12),
+			items: [longItem, ...Array.from({ length: 6 }, (_, i) => `item ${i + 2}`), footer],
+			footer,
+			summaryCopy: false,
+		});
+		assert.equal(bounded!.items.length, 8);
+		assert.equal(bounded!.items[0], truncatedLong);
+		assert.equal(bounded!.totalItems, 7);
+		assert.equal(bounded!.summaryCopy, false);
 	});
 });

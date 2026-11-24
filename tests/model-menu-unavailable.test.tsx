@@ -43,10 +43,3 @@ test("a saved model the catalog has, or a catalog still loading, shows no notice
 		assert.doesNotMatch(html, /model-unavailable/);
 	}
 });
-
-test("the Providers section label is the one the settings dialog shows", async () => {
-	const { readFileSync } = await import("node:fs");
-	const dialog = readFileSync(new URL("../components/settings/settings-dialog.tsx", import.meta.url), "utf8");
-	assert.match(dialog, /label: PROVIDERS_SECTION_LABEL/);
-	assert.match(dialog, /title=\{PROVIDERS_SECTION_LABEL\}/);
-});

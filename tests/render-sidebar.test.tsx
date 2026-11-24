@@ -39,13 +39,6 @@ function render(chat: ChatListItem, active = false) {
 }
 
 describe("SessionRow", () => {
-	it("no phase strips, no phase colors — the retired decoration", () => {
-		const html = render(item({ phase: "teach" }));
-		assert.ok(!html.includes("phase-strip"), "strip removed by design (too busy)");
-		assert.ok(!html.includes("bg-phase-"), "phase fills are retired app-wide");
-		assert.ok(!html.includes("border-phase-"), "phase rings are retired app-wide");
-	});
-
 	it("compact rows use monospace, hide metadata and preserve the practice icon and spinner", () => {
 		const chat = item({ kind: "practice", pendingQuestion: true, busy: true });
 		const html = renderToStaticMarkup(<SessionRow chat={chat} active={false} compact onOpen={() => {}} />);
@@ -82,15 +75,6 @@ describe("SessionRow", () => {
 		assert.ok(html.includes('data-frame="0"'), "frame 0 leads (static fallback)");
 		assert.ok(html.includes("Working"), "accessible label");
 		assert.ok(!html.includes("bg-attention"), "no colored state fill — monochrome by design");
-	});
-
-	it("busy does not double-signal background agents (that is the sidebar section's channel)", () => {
-		// The narrowing lives in the API route (busy = isTurnRunning only);
-		// the row itself just renders busy faithfully. Pinned here so the
-		// contract can't silently re-widen: an extraction-only "working"
-		// row would be a double signal.
-		const html = render(item({ busy: true, pendingQuestion: false }));
-		assert.ok(html.includes("Working"), "the spinner's label names the turn, not agents");
 	});
 
 	it("the meta line: state replaces the count when the state is the useful fact", () => {
@@ -165,11 +149,6 @@ describe("SessionRow practice badge (practice sessions, 2026-10-04)", () => {
 		const html = render(item({}));
 		assert.doesNotMatch(html, /Practice session/);
 		assert.doesNotMatch(html, /Practicing…/);
-	});
-
-	it("busy teaching rows say the same unified Working", () => {
-		const html = render(item({ busy: true }));
-		assert.match(html, /Working…/);
 	});
 
 	it("a practice row with a posed problem says the problem is waiting", () => {

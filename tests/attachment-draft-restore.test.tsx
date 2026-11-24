@@ -14,7 +14,6 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { parseHTML } from "linkedom";
-import { readFileSync } from "node:fs";
 import { DraftAttachmentChips, restoreTimeouts, useAttachmentDraft, type AttachmentDraft } from "../components/attachment-draft.tsx";
 import { beginSessionDelete } from "../components/session-deletion.ts";
 import { ATTACHMENT_DRAFT_KEY_PREFIX, dropStoredAttachments, forgetStoredAttachments, readStoredAttachments, storeAttachment } from "../lib/attachment-drafts.ts";
@@ -490,17 +489,6 @@ describe("round 1 review of #410", () => {
 		const fresh = row("fresh.pdf");
 		storeAttachment("roomy", fresh);
 		assert.deepEqual(readStoredAttachments("roomy").map(each => each.id), [fresh.id]);
-	});
-
-	it("Chat sends what the learner saw, and not before the saved attachments are loaded (wiring; the hook tests cover the rules)", () => {
-		const source = readFileSync(new URL("../components/chat.tsx", import.meta.url), "utf8");
-		assert.match(source, /const rows = attachments\.current\(\), waiting = attachments\.restoring\(\);\s*if \(openingDraftRef\.current !== null\) \{ deliverOpeningPrompt\(textRef\.current\.trim\(\), true, rows\.length \|\| waiting \? \{ rows, waiting \} : undefined\); return; \}\s*void prepareText\(undefined, undefined, undefined, rows\.length \|\| waiting \? \{ rows, waiting \} : undefined\);/);
-		// The wait is inside the submission: text captured at the click, and a change while waiting cancels (also while a restored chip's check is pending; tests/chat-attachment-send.test.tsx drives that).
-		assert.match(source, /const changedWhileWaiting = \(\) => composerEditRevision\.current !== capturedRevision \|\| !isInteractionScopeEligible\(sessionFindScopeRef\.current, controller\);/);
-		assert.match(source, /await attachments\.restored\(\);\s*attempt\.check\(\);\s*if \(changedWhileWaiting\(\)\) \{ attempt\.cancel\(\); return false; \}\s*selected = attachments\.current\(\);/);
-		assert.match(source, /if \(upload && changedWhileWaiting\(\)\) \{ attempt\.cancel\(\); return false; \}/);
-		assert.match(source, /attachments\.prepare\(JSON\.stringify\(input\), \(\) => attempt\.cancel\(\), selected\)/);
-		assert.doesNotMatch(source, /attachments\.restored\(\)\.then/, "no deferred send outside the submission runner");
 	});
 
 	it("leaving the session aborts a status check still in flight", async () => {

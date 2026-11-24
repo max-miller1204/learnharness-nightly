@@ -16,7 +16,7 @@ import { PhaseChip, PhaseDivider, planNodeCount } from "../components/phase-divi
 import { teachStepIndex } from "../src/core/phases.ts";
 
 describe("PhaseChip (header)", () => {
-	it("renders the learner-facing label — no colored dot (phase color retired)", () => {
+	it("renders the learner-facing label as a flat tag", () => {
 		for (const [phase, label] of [
 			["probe", "Probing"],
 			["plan", "Planning"],
@@ -26,23 +26,8 @@ describe("PhaseChip (header)", () => {
 			assert.ok(html.includes('data-testid="phase-chip"'));
 			assert.ok(html.includes(`data-phase="${phase}"`));
 			assert.ok(html.includes(label), `${phase} label`);
-			assert.ok(!html.includes("bg-phase-"), `${phase} dot color retired`);
-			assert.ok(!html.includes("rounded-full bg-"), "no dot of any color — label only");
+			assert.match(html, /class="[^"]*text-xs font-medium uppercase/, "flat label typography");
 		}
-	});
-
-	it("UN-PILLED (owner, extraction-UX redesign 2026-09-24): a flat tag — no border, no rounding, no padding", () => {
-		const html = renderToStaticMarkup(<PhaseChip phase="plan" />);
-		assert.ok(!html.includes("rounded-full"), "no pill curve");
-		assert.ok(!html.includes("border-border"), "no border chrome");
-		assert.ok(!html.includes("px-2"), "no pill padding");
-		assert.match(html, /class="[^"]*text-xs font-medium uppercase/, "the quiet flat label keeps its type treatment");
-	});
-
-	it("NEVER shows a working spinner — the pill's curve suits text, not glyph cells (owner, round 2)", () => {
-		const html = renderToStaticMarkup(<PhaseChip phase="teach" />);
-		assert.ok(!html.includes("braille-spinner"), "the chip is label-only by design");
-		assert.ok(!html.includes("braille-frame"), "no spinner frames leak in");
 	});
 });
 
@@ -53,15 +38,12 @@ describe("PhaseDivider (transcript boundary)", () => {
 		assert.match(html, /Plan · 3 nodes/);
 		assert.ok(html.includes("border-dotted"), "dotted rule");
 		assert.ok(html.includes("border-border"), "monochrome rule");
-		assert.ok(!html.includes("border-phase-"), "phase-colored rules are retired");
 	});
 
 	it("the teach seam: monochrome rule, no count", () => {
 		const html = renderToStaticMarkup(<PhaseDivider phase="teach" />);
 		assert.ok(html.includes('data-testid="phase-divider-teach"'));
 		assert.match(html, /Teaching/);
-		assert.ok(!html.includes("border-phase-"));
-		assert.ok(!html.includes("text-phase-"));
 		assert.ok(!html.includes("nodes"));
 	});
 

@@ -1,35 +1,11 @@
 /**
- * PLAN LAYOUT — where every plan box goes and how big it is. Pure: no DOM,
- * no React. Shared by the in-chat block, the popup and the dock marginalia
- * (components/plan-block.tsx, components/plan-window.tsx, which import it
- * through components/plan-layout.ts) and the phone's plan view (apps/mobile,
- * mobile follow-up 1), so every surface draws the same diagram. It lives in
- * src/core for the phone, imported by path, not through the core barrel, so
- * the barrel's many importers don't load dagre and d3.
+ * Pure DAG layout shared by web plan views and the mobile app. Imported by path
+ * rather than through the core barrel so barrel importers do not pull in dagre
+ * and d3.
  *
- * Usage: `blockLayout(nodes, edges, measure)`. `measure` answers "where do
- * this title's lines break, how wide is each line, and at what font size?"
- * — the caller owns those answers:
- *   - the browser passes the real label laid out in the real font
- *     (usePlanLayout in plan-block.tsx: the browser's own line breaker and
- *     one hidden SVG <text>, both inside the diagram's own cascade);
- *   - the server and the first client render pass `chartMeasure`, a
- *     per-character-class estimate of Source Sans 3 at 11px that wraps at
- *     spaces, so SSR and hydration render the same markup before anything
- *     can be measured;
- *   - tests pass `chartMeasure` or their own fake.
- * Box widths and line breaks therefore come from the same place the text
- * does (#671: the chart alone sized boxes for one font while the text drew
- * in whatever font Appearance picked — JetBrains Mono, CJK and long words
- * spilled past the borders).
- *
- * Words never split: a word wider than the line cap gets a line of its own
- * and widens its box. Deterministic + synchronous for a given measure: same
- * nodes, same measure → same layout.
- *
- * Does NOT promise: anything about line breaks before the browser has
- * measured. The chart stand-in breaks only at spaces (CJK titles stay one
- * line on the server's first paint).
+ * Callers supply `measure` so box dimensions match the active font and line
+ * breaker (browser measurement on client, `chartMeasure` for SSR and first
+ * paint so hydration markup matches before measurement).
  */
 
 // The placement engine — literally mermaid's: dagre-d3-es, the fork

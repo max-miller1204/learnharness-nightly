@@ -31,6 +31,24 @@ function validateState(providerId, state) {
 	if (hasId) validateCredential(providerId, state.credential);
 	return state;
 }
+/** Atomic, owner-only JSON write with file and parent-directory fsync. */
+async function writeAtomicJson(file, state, io = fs) {
+	const temporary = `${file}.${randomUUID()}.tmp`;
+	let handle;
+	try {
+		await io.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+		handle = await io.open(temporary, "wx", 0o600);
+		await handle.writeFile(`${JSON.stringify(state)}\n`);
+		await handle.sync(); await handle.close(); handle = null;
+		await io.rename(temporary, file);
+		if (process.platform !== "win32") {
+			const directory = await io.open(path.dirname(file), "r");
+			try { await directory.sync(); } finally { await directory.close(); }
+		}
+	} catch { throw failure("storage"); }
+	finally { await handle?.close().catch(() => {}); await io.unlink(temporary).catch(() => {}); }
+}
+
 /** Main-process-only, one independent owner-only file per provider. No recovery writes on corruption. */
 function fileStore(file, providerId, io = fs) {
 	return {
@@ -44,21 +62,8 @@ function fileStore(file, providerId, io = fs) {
 		},
 		async write(state) {
 			validateState(providerId, state);
-			const temporary = `${file}.${randomUUID()}.tmp`;
-			let handle;
-			try {
-				await io.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-				handle = await io.open(temporary, "wx", 0o600);
-				await handle.writeFile(`${JSON.stringify(state)}\n`);
-				await handle.sync(); await handle.close(); handle = null;
-				await io.rename(temporary, file);
-				if (process.platform !== "win32") {
-					const directory = await io.open(path.dirname(file), "r");
-					try { await directory.sync(); } finally { await directory.close(); }
-				}
-			} catch { throw failure("storage"); }
-			finally { await handle?.close().catch(() => {}); await io.unlink(temporary).catch(() => {}); }
+			await writeAtomicJson(file, state, io);
 		},
 	};
 }
-module.exports = { PROVIDERS, failure, validateCredential, validateState, safeDomain, safeHttps, fileStore };
+module.exports = { PROVIDERS, failure, validateCredential, validateState, safeDomain, safeHttps, writeAtomicJson, fileStore };

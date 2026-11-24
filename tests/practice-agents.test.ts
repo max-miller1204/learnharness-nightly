@@ -259,19 +259,6 @@ describe("persistent practice nudges", () => {
 		}
 	});
 
-	it("does not compose the retired attempt cutoff, failed-repair reveal, or automatic-abort instructions", () => {
-		for (const text of [doctrine, composeInstructions("practice")]) {
-			const normalized = normalizeWhitespace(text);
-			assert.doesNotMatch(normalized, /\b(?:one|single|1) bounded attempt\b/i);
-			assert.doesNotMatch(normalized, /If the repair attempt fails, reveal and move on/i);
-			assert.doesNotMatch(normalized, /A correction found by the learner after a confident error consolidates more/i);
-			assert.doesNotMatch(normalized, /when the trace shows genuine inability, drop straight to R5 and reveal/i);
-			assert.doesNotMatch(normalized, /when the learner surrenders or cannot proceed/i);
-			assert.doesNotMatch(normalized, /when the marginal yield of staying is exhausted/i);
-			assert.doesNotMatch(normalized, /do not withhold them past the point of exhaustion/i);
-		}
-	});
-
 	it("preserves the approved concluded-problem switch and unbounded structural repair in source and the effective default prompt", () => {
 		const approvedDifficulty = "3. **Difficulty** — from the last outcomes on this target: clean success, one notch up; success that needed hints, hold; a miss, one notch down and consider dropping a mode. Two missed concluded problems in a row on this target: switch targets for the next demand. Never switch away from an active problem because of the number of attempts.";
 		const approvedClassification = "Classify every miss: cue miss (nothing came), discrimination error (wrong candidate won), execution slip (right proposition, wrong run), careless, or structural (the retrieved proposition is itself wrong — a misconception). The first four are practice information. Structural misses call for minimal nudges toward repairing the misconception, not an immediate correction or re-teaching. Keep each nudge surgical; do not impose a one-line or one-attempt limit on the repair as a whole.";

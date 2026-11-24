@@ -696,13 +696,8 @@ function writeInstallRecord(targetVersion) {
 	}
 }
 
-/** T3's shouldBroadcastDownloadProgress (apps/desktop/src/updates/DesktopUpdates.ts:325-341 at
- *  3ce21458): a new state only on entering "downloading", at each whole 10%, and at 100%. */
 function shouldReportDownloadProgress(state, percent) {
-	if (state.status !== "downloading") return true;
-	if (percent === null) return false; // no size: the ring stays empty
-	if (state.downloadPercent === null) return true;
-	return Math.floor(percent / 10) !== Math.floor(state.downloadPercent / 10) || percent === 100;
+	return state.status !== "downloading" || updateMachine.shouldReportDownloadProgress(state.downloadPercent, percent);
 }
 
 function adoptOfferedNotes(info) {

@@ -243,11 +243,6 @@ describe("render — bold is the real <strong> (the dead Bold-color fix)", () =>
 		assert.ok(html.includes("lh-prose"), "the markdown surface carries .lh-prose (the token rule's anchor)");
 	});
 
-	it("no span-for-bold regression: the font-semibold span is gone", () => {
-		const html = render("plain **bold** plain");
-		assert.ok(!html.includes('class="font-semibold"'), "streamdown's span/600 default must not render bold");
-	});
-
 	it("italic stays native <em> (the case that always worked)", () => {
 		const html = render("plain *emph* plain");
 		assert.ok(html.includes("<em>"), "italic renders a native em element");

@@ -1,7 +1,8 @@
 import type { Model } from "@earendil-works/pi-ai";
-import { onWebSubscriptionPacket, webSubscriptionRequest, webSubscriptionsEnabled } from "./subscription-runtime.ts";
+import { onWebSubscriptionPacket, webSubscriptionsEnabled } from "./subscription-runtime.ts";
+import { DesktopIpcChannel, desktopIPCConnected, subscriptionRuntimeConnected as runtimeConnected } from "./subscription-ipc.ts";
 import type { ChatGPTStatus } from "../core/contracts/chatgpt.ts";
-import type { AdmissionScope, NoDispatchKind } from "./chatgpt-request-cycle.ts";
+import type { AdmissionScope, NoDispatchKind } from "./subscription-request-cycle.ts";
 export type { ChatGPTStatus } from "../core/contracts/chatgpt.ts";
 export interface Stamp { epoch: number; authorityRevision: number; revision: number }
 interface StatusValue extends Stamp { status: ChatGPTStatus }
@@ -9,10 +10,9 @@ interface StatusValue extends Stamp { status: ChatGPTStatus }
 interface AccountModelEntry { id: string; name: string; contextWindow?: unknown; input?: unknown; reasoningLevels?: unknown }
 interface ModelsValue extends StatusValue { accountId: string | null; models: AccountModelEntry[] }
 interface LeaseValue extends Stamp { accessToken: string; accountId: string }
-interface Pending { op: string; resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
 interface BridgeState {
  status: ChatGPTStatus; stamp: Stamp; models: Model<"openai-responses">[]; catalogAccount: string | null;
- pending: Map<string, Pending>; controllers: Map<AbortController, boolean>; listeners: Set<() => void>; counter: number; catalogRequest: number;
+ ipc: DesktopIpcChannel; controllers: Map<AbortController, boolean>; listeners: Set<() => void>; catalogRequest: number;
  /** Status and catalog checks, numbered when they start (see settleCheck). */
  checks: number; lastCheck: number; unreachable: boolean;
  /** The newest catalog request, which a superseded success waits for. */
@@ -21,17 +21,17 @@ interface BridgeState {
 const key = Symbol.for("lh.chatgpt.bridge");
 const unavailable = (): ChatGPTStatus => ({ available: false, pending: false, allowBackgroundUse: true, activeId: null, accounts: [], error: null });
 const validStamp = (s: Stamp) => s && [s.epoch, s.authorityRevision, s.revision].every((v) => Number.isSafeInteger(v) && v >= 0);
-/** Next dev also uses parent/child IPC. IPC alone is not our desktop
- * transport: require the same launch markers set by Electron startServer.
- * These identify the transport, not a substitute for admission/lease checks. */
-function desktopIPCConnected(): boolean {
- return process.env.LH_DESKTOP_SERVER === "1" && (process.env.LH_DESKTOP_API_SECRET?.length ?? 0) >= 64 && typeof process.send === "function" && process.connected === true;
-}
-function runtimeConnected(): boolean { return desktopIPCConnected() || webSubscriptionsEnabled(); }
 function bridge(): BridgeState {
  const global = globalThis as typeof globalThis & { [key]?: BridgeState };
  if (!global[key]) {
-  const state: BridgeState = { status: unavailable(), stamp: { epoch: 0, authorityRevision: 0, revision: 0 }, models: [], catalogAccount: null, pending: new Map(), controllers: new Map(), listeners: new Set(), counter: 0, catalogRequest: 0, checks: 0, lastCheck: 0, unreachable: false };
+  const ipc = new DesktopIpcChannel({
+   channel: "lh:chatgpt",
+   unavailableError: "ChatGPT sign-in is available only in the desktop app with a private server connection.",
+   timeoutError: "The ChatGPT desktop connection timed out.",
+   closedError: "The ChatGPT desktop connection closed.",
+   failedError: "ChatGPT connection failed.",
+  });
+  const state: BridgeState = { status: unavailable(), stamp: { epoch: 0, authorityRevision: 0, revision: 0 }, models: [], catalogAccount: null, ipc, controllers: new Map(), listeners: new Set(), catalogRequest: 0, checks: 0, lastCheck: 0, unreachable: false };
   global[key] = state;
   const receive = (raw: unknown) => {
    const m = raw as { channel?: string; kind?: string; id?: string; op?: string; ok?: boolean; value?: unknown; stamp: Stamp; status: ChatGPTStatus; invalidate?: string; error?: string };
@@ -49,13 +49,7 @@ function bridge(): BridgeState {
     }
     if (m.invalidate === "all" || m.invalidate === "background" || pushKey(state) !== before) for (const listener of state.listeners) listener();
    }
-   if (m.id) {
-    const call = state.pending.get(m.id);
-    if (!call || call.op !== m.op) return;
-    clearTimeout(call.timer); state.pending.delete(m.id);
-    if (m.ok === true) call.resolve(m.value);
-    else call.reject(new Error(m.error ?? "ChatGPT connection failed."));
-   }
+   state.ipc.resolveReply(m);
   };
   process.on("message", (raw: unknown) => { if (desktopIPCConnected()) receive(raw); });
   onWebSubscriptionPacket("lh:chatgpt", (packet) => { if (webSubscriptionsEnabled()) receive(packet); });
@@ -63,8 +57,7 @@ function bridge(): BridgeState {
    if (webSubscriptionsEnabled()) return;
    state.status = unavailable(); clearCatalog(state); state.catalogRequest++;
    for (const controller of state.controllers.keys()) controller.abort("all");
-   for (const call of state.pending.values()) { clearTimeout(call.timer); call.reject(new Error("The desktop connection closed.")); }
-   state.pending.clear();
+   state.ipc.rejectAll("The desktop connection closed.");
    for (const listener of state.listeners) listener();
   });
  }
@@ -98,17 +91,7 @@ function acceptStatus(state: BridgeState, value: StatusValue) {
 }
 /** Runtime-only: inherited desktop IPC or direct web owner. Never HTTP leases. */
 export function chatGPTRequest<T>(op: "status" | "models" | "lease", fields: Record<string, unknown> = {}): Promise<T> {
- const state = bridge();
- if (webSubscriptionsEnabled()) return webSubscriptionRequest<T>("lh:chatgpt", op, fields);
- if (!desktopIPCConnected()) return Promise.reject(new Error("ChatGPT sign-in is available only in the desktop app with a private server connection."));
- return new Promise<T>((resolve, reject) => {
-  const id = `${process.pid}:${++state.counter}`;
-  const timer = setTimeout(() => { state.pending.delete(id); reject(new Error("The ChatGPT desktop connection timed out.")); }, 45000);
-  state.pending.set(id, { op, resolve: (v) => resolve(v as T), reject, timer });
-  process.send!({ ...fields, channel: "lh:chatgpt", id, op }, (error) => {
-   if (error) { clearTimeout(timer); state.pending.delete(id); reject(new Error("The ChatGPT desktop connection closed.")); }
-  });
- });
+ return bridge().ipc.request<T>(op, fields);
 }
 export function chatGPTStatus(): ChatGPTStatus { return bridge().status; }
 export async function refreshChatGPTStatus(): Promise<void> {

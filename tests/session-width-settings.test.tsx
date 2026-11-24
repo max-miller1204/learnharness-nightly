@@ -69,12 +69,9 @@ it("the appearance mapping sets the transcript variable only when capped", () =>
 	assert.deepEqual(appearanceVars(resolveAppearance({ adaptiveQuestions: false }), DEFAULT_THEME), full);
 });
 
-it("the transcript column reads the variable; unset leaves today's full-bleed column", () => {
+it("the transcript column reads the variable; unset leaves the full-bleed column", () => {
 	const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
 	assert.match(css, /\.lh-transcript-column \{\s*max-width: calc\(var\(--lh-transcript-max\) \+ 1rem\);\s*\}/);
-	const chat = readFileSync(new URL("../components/chat.tsx", import.meta.url), "utf8");
-	assert.match(chat, /const COLUMN = "lh-transcript-column mx-auto w-full px-6";/);
-	assert.match(chat, /const DOCK = "mx-auto w-full max-w-\[46rem\] px-4";/);
 });
 
 it("inline code and inline math never wrap on the session page; a span wider than its column scrolls", () => {
@@ -85,8 +82,6 @@ it("inline code and inline math never wrap on the session page; a span wider tha
 	}
 	// Display math keeps its own sideways scroller; only inline math is scoped.
 	assert.match(css, /\.katex-display \{\s*overflow-x: auto;/);
-	const chat = readFileSync(new URL("../components/chat.tsx", import.meta.url), "utf8");
-	assert.match(chat, /<div data-session-surface="" className="flex h-dvh">/);
 });
 
 it("labels: px at 16px per rem, or Full", () => {

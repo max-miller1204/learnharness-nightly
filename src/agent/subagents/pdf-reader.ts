@@ -1,16 +1,16 @@
 import { randomUUID } from "node:crypto";
-import type { AssistantMessage, Message, ToolResultMessage, Usage, Tool } from "@earendil-works/pi-ai";
-import { normalizeContext } from "@earendil-works/pi-ai";
+import type { Message, ToolResultMessage, Usage, Tool } from "@earendil-works/pi-ai";
 import { processImage, type ProcessImageResult } from "../image-processing/index.ts";
 import { Type } from "typebox";
 import { learnerFileErrorMessage, resolveLearnerFile, type ResolveAttachment } from "../tools/learner-file.ts";
-import { piEngineFor, type PiEngine, type ThinkingLevel } from "../models.ts";
-import { providerEventObserver, type ProviderEventObserver } from "../provider-events.ts";
-import { backgroundCaptureStream, createBackgroundCapture, type BackgroundCapture } from "../background-capture.ts";
+import { piEngineFor, type PiEngine } from "../models.ts";
+import { providerEventObserver } from "../provider-events.ts";
+import { backgroundCaptureStream, createBackgroundCapture } from "../background-capture.ts";
 import { createWorkerRequestScope } from "../worker-request-admission.ts";
 import type { PdfResult, PdfToolInput } from "../../core/contracts.ts";
 import { getHeadless, type HeadlessApi } from "./headless.ts";
 import { pdfExtract, pdfInfo, pdfProbe, pdfSearch, type PdfSearchHit } from "./pdf-ops.ts";
+import { streamOnce, toolTextResult as toolText } from "./pi-run.ts";
 
 /**
  * The pdf-reader sub-agent (sources v0, 2026-09): reads a learner-provided
@@ -146,17 +146,6 @@ async function pdfExtractText(pdfPath: string, pages: string): Promise<string> {
 		return `${text.slice(0, EXTRACT_CAP)}\n\n[Output truncated at ${EXTRACT_CAP} chars — narrow the page spec and extract in smaller batches.]`;
 	}
 	return text;
-}
-
-function toolText(toolCallId: string, toolName: string, value: string): ToolResultMessage {
-	return {
-		role: "toolResult",
-		toolCallId,
-		toolName,
-		content: [{ type: "text", text: value }],
-		isError: value.startsWith("ERROR:"),
-		timestamp: Date.now(),
-	};
 }
 
 /** Doctrine gate (the visual-maker's unlooked-finish rule, ported): never
@@ -418,42 +407,4 @@ async function probeReadable(file: ReturnType<typeof resolveLearnerFile>): Promi
 	} catch (err) {
 		return learnerFileErrorMessage(err, file);
 	}
-}
-
-/** One raw model call (no agent loop): the visual-maker's streamOnce,
- *  duplicated here because its module keeps it private. */
-async function streamOnce(
-	engine: PiEngine,
-	systemPrompt: string,
-	messages: Message[],
-	tools: Tool[],
-	sessionId: string,
-	reasoning: ThinkingLevel | undefined,
-	abortSignal?: AbortSignal,
-	onProviderStreamEvent?: ProviderEventObserver,
-	capture?: BackgroundCapture,
-): Promise<AssistantMessage> {
-	// 0.87.1: provider-facing contexts are TranscriptContexts — the prompt
-	// and tool declarations fold into a leading system message.
-	// normalizeContext is the library's only Context→TranscriptContext entry.
-	const stream = engine.streamFn(engine.model, normalizeContext({ systemPrompt, messages, tools }), {
-		sessionId,
-		reasoning: reasoning && reasoning !== "off" ? reasoning : undefined,
-		signal: abortSignal,
-		onProviderStreamEvent: onProviderStreamEvent as never,
-	} as never);
-	for await (const event of stream) {
-		if (event.type === "done") { capture?.reply(event.message); return event.message; }
-		if (event.type === "error") {
-			capture?.reply(event.error);
-			if (event.reason === "aborted") {
-				const err = new Error("aborted");
-				const abortedErr = err as Error & { name: string };
-				abortedErr.name = "AbortError";
-				throw abortedErr;
-			}
-			throw new Error(event.error.errorMessage ?? "the model call failed");
-		}
-	}
-	throw new Error("the model stream ended without a result");
 }

@@ -1,17 +1,11 @@
-import { isImportable, MAX_IMPORT_BYTES, validNotesPath } from "@/lib/notes-import-limits";
+import { extensionLabel, isImportable, MAX_IMPORT_BYTES, notesPath, unsafeSummary, unsupportedSummary, validNotesPath } from "@/lib/notes-import-limits";
 import { convertHeicToJpeg, heicFailureMessage, isHeicImageFile } from "@/lib/heic";
 import type { NotesImportResult } from "./notes-import";
-import { extensionLabel } from "./notes-import-folder";
 
-export const notesPath = (file: File): string => file.webkitRelativePath || file.name;
+export { notesPath, unsafeSummary, unsupportedSummary };
 /** Folder imports silently exclude dot-prefixed files and directories below
  * the chosen root. The root is segment 0 and stays importable even when hidden. */
 const hiddenInFolder = (file: File): boolean => file.webkitRelativePath.split("/").slice(1).some((part) => part.startsWith("."));
-/** One line per reason for a whole pick, so a big folder cannot flood the error list. */
-export const unsupportedSummary = (extensions: readonly string[]): string =>
-	`Skipped ${extensions.length} ${extensions.length === 1 ? "file that isn't" : "files that aren't"} a supported type (${[...new Set(extensions)].join(", ")}).`;
-export const unsafeSummary = (count: number): string =>
-	`Skipped ${count} ${count === 1 ? "file with a name" : "files with names"} the import can't use (e.g. a ':' in the name).`;
 export interface ImportQueueSnapshot {
 	importing: boolean;
 	errors: string[];

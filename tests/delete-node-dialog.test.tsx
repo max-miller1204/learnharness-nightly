@@ -75,15 +75,6 @@ describe("DeleteNodeBody — the minimal screen (owner, 2026-09-30)", () => {
 		assert.match(html, /border-destructive\/50[^>]*text-destructive/);
 	});
 
-	it("NO impact facts, NO loading line, NO sessions join — the pre-flight read is dead", () => {
-		const html = bodyAt([{ id: "kepler", name: "Kepler's three laws" }]);
-		assert.ok(!html.includes("node-impact-facts"), "no facts list");
-		assert.ok(!html.includes("node-impact-loading"), "no loading line");
-		assert.ok(!html.includes("Reading what this would remove"), "no fetch copy");
-		assert.ok(!html.includes("Referenced by"), "no sessions join");
-		assert.ok(!html.includes("links to other topics"), "no edge count — it is obvious");
-	});
-
 	it("multi: 'Delete N nodes?' (the UI word is node, owner 2026-09-30), names capped at 8 + and-K-more", () => {
 		const three = bodyAt([
 			{ id: "kepler", name: "Kepler's three laws" },

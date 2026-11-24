@@ -25,6 +25,8 @@ import { claudeCodeInstallationStatus } from "./claude-code.ts";
 import { claudeCodeEnabled } from "./claude-code-config.ts";
 import { refreshConnectionCatalog } from "./model-catalog.ts";
 import { effectiveSettings } from "./stores.ts";
+// Ensure the server's web subscription runtime is registered before refresh calls.
+import "./web-subscriptions.ts";
 
 const LABELS: Record<SubscriptionSearchEngineId, string> = {
 	chatgpt: "ChatGPT", "claude-code": "Claude Code", "xai-subscription": "Grok", "github-copilot-subscription": "GitHub Copilot",

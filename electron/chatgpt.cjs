@@ -5,7 +5,7 @@
 const crypto = require("node:crypto");
 const http = require("node:http");
 const fs = require("node:fs/promises");
-const path = require("node:path");
+const { writeAtomicJson } = require("./subscription-store.cjs");
 
 const ISSUER = "https://auth.openai.com";
 const RESOURCE = "https://api.openai.com/v1";
@@ -66,27 +66,7 @@ function fileStore(file) {
 		},
 		async write(state) {
 			validateState(state);
-			const temp = `${file}.${crypto.randomUUID()}.tmp`;
-			let handle;
-			try {
-				await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-				handle = await fs.open(temp, "wx", 0o600);
-				await handle.writeFile(`${JSON.stringify(state)}\n`);
-				await handle.sync();
-				await handle.close();
-				handle = null;
-				await fs.rename(temp, file);
-				// Directory fsync is supported on Unix; the file fsync above is mandatory.
-				if (process.platform !== "win32") {
-					const dir = await fs.open(path.dirname(file), "r");
-					try { await dir.sync(); } finally { await dir.close(); }
-				}
-			} catch {
-				throw fail("storage");
-			} finally {
-				await handle?.close().catch(() => {});
-				await fs.unlink(temp).catch(() => {});
-			}
+			await writeAtomicJson(file, state, fs);
 		},
 	};
 }

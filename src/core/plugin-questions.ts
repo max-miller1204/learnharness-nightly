@@ -2,7 +2,8 @@
 import type { Static, TSchema } from "typebox";
 import type { PluginCleanup } from "./plugins.ts";
 import { checkPluginSchema, preparePluginSchema } from "./plugin-validation.ts";
-import { copyImmutableData, ImmutableReadCache } from "./immutable-data.ts";
+import { cloneJson, clonePluginQuestionJson, copyImmutableData, freezePluginQuestionValue, ImmutableReadCache, isPluginQuestionJson } from "./immutable-data.ts";
+export { clonePluginQuestionJson, freezePluginQuestionValue, isPluginQuestionJson };
 import { Format } from "typebox/format";
 import { validatePluginSubmissionImages, type PluginSubmissionImages } from "./plugin-submissions.ts";
 
@@ -188,61 +189,6 @@ const record = (value: unknown): value is Record<string, unknown> => value !== n
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 const version = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 const variantOf = (value: unknown): value is PluginQuestionVariant => value === "probe" || value === "teach";
-
-/** Copy only finite JSON, without invoking getters, toJSON, or coercion. */
-export function clonePluginQuestionJson(value: unknown): JsonValue {
-	return cloneJson(value);
-}
-function cloneJson(value: unknown, schemaNodes?: Set<object>): JsonValue {
-	const active = new Set<object>();
-	function copy(item: unknown): JsonValue {
-		if (item === null || typeof item === "string" || typeof item === "boolean") return item;
-		if (typeof item === "number" && Number.isFinite(item)) return item;
-		if (typeof item !== "object" || item === null || (!Array.isArray(item) && !record(item)) || active.has(item)) throw new Error("Plugin question data must be finite JSON");
-		active.add(item);
-		try {
-			const descriptors = Object.getOwnPropertyDescriptors(item);
-			if (Array.isArray(item)) {
-				const keys = Reflect.ownKeys(descriptors);
-				if (keys.length !== item.length + 1) throw new Error("Plugin question arrays must be dense JSON arrays");
-				const result: JsonValue[] = [];
-				for (let i = 0; i < item.length; i++) {
-					const descriptor = descriptors[String(i)];
-					if (!descriptor || !own(descriptor, "value") || !descriptor.enumerable) throw new Error("Plugin question arrays must contain JSON values");
-					result.push(copy(descriptor.value));
-				}
-				return result;
-			}
-			const result: Record<string, JsonValue> = {};
-			for (const key of Reflect.ownKeys(descriptors)) {
-				const descriptor = descriptors[key as string]!;
-				// Installed TypeBox branding is descriptive, non-enumerable metadata,
-				// never a persisted validation rule. Only strip it at schema positions.
-				if (schemaNodes?.has(item) && own(descriptor, "value") && !descriptor.enumerable &&
-					((key === "~kind" && typeof descriptor.value === "string") ||
-					((key === "~optional" || key === "~readonly") && typeof descriptor.value === "boolean") ||
-					(key === "~unsafe" && descriptor.value === null))) continue;
-				if (typeof key !== "string" || !own(descriptor, "value") || !descriptor.enumerable) throw new Error("Plugin question objects must have ordinary JSON properties");
-				Object.defineProperty(result, key, { value: copy(descriptor.value), enumerable: true, configurable: true, writable: true });
-			}
-			return result;
-		} finally { active.delete(item); }
-	}
-	return copy(value);
-}
-export function isPluginQuestionJson(value: unknown): value is JsonValue {
-	try { clonePluginQuestionJson(value); return true; } catch { return false; }
-}
-/** Freeze owned copies, never plugin-owned input objects. */
-export function freezePluginQuestionValue<T>(value: T): T {
-	// Contexts can contain runtime capabilities such as AbortSignal. Freeze only
-	// owned JSON containers and the plain context itself, never those capabilities.
-	if ((Array.isArray(value) || record(value)) && !Object.isFrozen(value)) {
-		for (const child of Object.values(value)) freezePluginQuestionValue(child);
-		Object.freeze(value);
-	}
-	return value;
-}
 
 const schemaMaps = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]);
 const schemaLists = new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);

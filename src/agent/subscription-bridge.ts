@@ -1,16 +1,15 @@
 import type { Api, Model, ModelAuth } from "@earendil-works/pi-ai";
-import { onWebSubscriptionPacket, webSubscriptionRequest, webSubscriptionsEnabled } from "./subscription-runtime.ts";
+import { onWebSubscriptionPacket, webSubscriptionsEnabled } from "./subscription-runtime.ts";
+import { DesktopIpcChannel, desktopIPCConnected as desktopConnected, subscriptionRuntimeConnected as runtimeConnected } from "./subscription-ipc.ts";
 import { NATIVE_SUBSCRIPTIONS, type NativeSubscriptionProviderId, type NativeSubscriptionScope, type NativeSubscriptionSnapshot, type NativeSubscriptionStatus } from "../core/contracts/subscriptions.ts";
-import type { AdmissionScope, NoDispatchKind } from "./chatgpt-request-cycle.ts";
+import type { AdmissionScope, NoDispatchKind } from "./subscription-request-cycle.ts";
 
-interface Pending { op: string; resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }
 interface State {
 	statuses: Map<NativeSubscriptionProviderId, NativeSubscriptionStatus>;
 	models: Map<NativeSubscriptionProviderId, Model<Api>[]>;
-	pending: Map<string, Pending>;
+	ipc: DesktopIpcChannel;
 	controllers: Map<AbortController, { providerId: NativeSubscriptionProviderId; background: boolean }>;
 	listeners: Set<() => void>;
-	counter: number;
 	/** Snapshot checks, numbered when they start (see settleCheck). */
 	checks: number;
 	lastCheck: number;
@@ -20,10 +19,6 @@ const KEY = Symbol.for("lh.subscriptions.bridge");
 export function nativeSubscriptionId(logicalId: string): NativeSubscriptionProviderId | undefined {
 	return NATIVE_SUBSCRIPTIONS.find((entry) => entry.logicalId === logicalId)?.providerId;
 }
-function desktopConnected(): boolean {
-	return process.env.LH_DESKTOP_SERVER === "1" && (process.env.LH_DESKTOP_API_SECRET?.length ?? 0) >= 64 && typeof process.send === "function" && process.connected === true;
-}
-function runtimeConnected(): boolean { return desktopConnected() || webSubscriptionsEnabled(); }
 function notify(state: State) { for (const listener of state.listeners) { try { listener(); } catch { /* observer isolation */ } } }
 function invalidate(state: State, providerId?: NativeSubscriptionProviderId) {
 	for (const [controller, owner] of state.controllers) if (!providerId || owner.providerId === providerId) controller.abort("all");
@@ -63,18 +58,20 @@ function settleCheck(state: State, started: number, unreachable: boolean): boole
 function bridge(): State {
 	const global = globalThis as typeof globalThis & { [KEY]?: State };
 	if (!global[KEY]) {
-		const state: State = { statuses: new Map(), models: new Map(), pending: new Map(), controllers: new Map(), listeners: new Set(), counter: 0, checks: 0, lastCheck: 0, unreachable: false };
+		const ipc = new DesktopIpcChannel({
+			channel: "lh:subscriptions",
+			unavailableError: "Subscription sign-in is available only in the desktop app with a private server connection.",
+			timeoutError: "The subscription desktop connection timed out.",
+			closedError: "The subscription desktop connection closed.",
+			failedError: "Subscription connection failed.",
+		});
+		const state: State = { statuses: new Map(), models: new Map(), ipc, controllers: new Map(), listeners: new Set(), checks: 0, lastCheck: 0, unreachable: false };
 		global[KEY] = state;
 		process.on("message", (raw: unknown) => {
 			const message = raw as { channel?: string; op?: string; id?: string; ok?: boolean; value?: unknown; error?: string; snapshot?: NativeSubscriptionSnapshot };
 			if (!desktopConnected() || message?.channel !== "lh:subscriptions") return;
 			if (message.op === "changed" && message.snapshot) { settleCheck(state, ++state.checks, false); accept(state, message.snapshot); }
-			if (!message.id) return;
-			const pending = state.pending.get(message.id);
-			if (!pending || pending.op !== message.op) return;
-			clearTimeout(pending.timer); state.pending.delete(message.id);
-			if (message.ok) pending.resolve(message.value);
-			else pending.reject(new Error(message.error ?? "Subscription connection failed."));
+			state.ipc.resolveReply(message);
 		});
 		onWebSubscriptionPacket("lh:subscriptions", (packet) => {
 			if (webSubscriptionsEnabled() && packet.snapshot) { settleCheck(state, ++state.checks, false); accept(state, packet.snapshot as NativeSubscriptionSnapshot); }
@@ -82,24 +79,14 @@ function bridge(): State {
 		process.on("disconnect", () => {
 			if (webSubscriptionsEnabled()) return;
 			invalidate(state);
-			for (const pending of state.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error("The desktop connection closed.")); }
-			state.pending.clear(); notify(state);
+			state.ipc.rejectAll("The desktop connection closed.");
+			notify(state);
 		});
 	}
 	return global[KEY];
 }
 export function subscriptionRequest<T>(op: "snapshot" | "lease", fields: Record<string, unknown> = {}): Promise<T> {
-	const state = bridge();
-	if (webSubscriptionsEnabled()) return webSubscriptionRequest<T>("lh:subscriptions", op, fields);
-	if (!desktopConnected()) return Promise.reject(new Error("Subscription sign-in is available only in the desktop app with a private server connection."));
-	return new Promise<T>((resolve, reject) => {
-		const id = `${process.pid}:${++state.counter}`;
-		const timer = setTimeout(() => { state.pending.delete(id); reject(new Error("The subscription desktop connection timed out.")); }, 45000);
-		state.pending.set(id, { op, timer, resolve: (value) => resolve(value as T), reject });
-		process.send!({ ...fields, channel: "lh:subscriptions", id, op }, (error) => {
-			if (error) { clearTimeout(timer); state.pending.delete(id); reject(new Error("The subscription desktop connection closed.")); }
-		});
-	});
+	return bridge().ipc.request<T>(op, fields);
 }
 export async function refreshSubscriptionModels(): Promise<void> {
 	const state = bridge();

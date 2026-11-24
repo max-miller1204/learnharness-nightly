@@ -24,6 +24,7 @@
  * launcher owns runtime/service-state.json; this module only reads it.
  */
 import { emit } from "../core/events.ts";
+import { shouldReportDownloadProgress as sharedShouldReportDownloadProgress } from "../../electron/update-machine.cjs";
 import type { ReleaseNoteGroup } from "../core/release-notes.ts";
 import { feedNotesToGroups, groupsBetween, mergeNotesCache, readUpdateRecord, writeUpdateRecord } from "./update-records.ts";
 import { listChats } from "./chats.ts";
@@ -100,14 +101,7 @@ export const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 export const CHECK_AFTER_START_MS = 15_000;
 export const CHECK_AFTER_COMMIT_MS = CHECK_AFTER_START_MS;
 
-/** T3's shouldBroadcastDownloadProgress (apps/desktop/src/updates/DesktopUpdates.ts:325-341 at
- *  3ce21458), for a state already "downloading": report the first known percent, then each
- *  whole 10% and 100%. An unknown size never reports (the ring stays empty). */
-export function shouldReportDownloadProgress(current: number | null, next: number | null): boolean {
-	if (next === null) return false;
-	if (current === null) return true;
-	return Math.floor(next / 10) !== Math.floor(current / 10) || next === 100;
-}
+export const shouldReportDownloadProgress: (current: number | null, next: number | null) => boolean = sharedShouldReportDownloadProgress;
 
 export const noticeId = (notice: UpdateNotice) => `${notice.kind}:${notice.version}:${notice.at}`;
 

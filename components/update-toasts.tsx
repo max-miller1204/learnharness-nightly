@@ -21,71 +21,43 @@
  */
 
 import { useEffect, useRef } from "react";
-import { ArrowRightIcon } from "lucide-react";
-import { releaseUrl } from "@/components/release-notes-view";
-import { APP_VERSION, HOMEPAGE, useUpdateState } from "@/components/settings/update-settings";
-import { toastManager } from "@/components/ui/toast";
-import { getUpdateEverythingToastView, type UpdateEverythingResult } from "@/components/update-everything-logic";
+import { APP_VERSION } from "@/components/app-info";
+import { useUpdateState } from "@/components/settings/update-settings";
+import {
+	CHECK_ERROR,
+	CHECK_FAILED_TITLE,
+	CHECK_UNAVAILABLE,
+	DOWNLOAD_FAILED_TITLE,
+	DOWNLOAD_START_FAILED_TITLE,
+	INSTALL_FAILED_LINE,
+	INSTALL_FAILED_TITLE,
+	NOT_APPLIED_TITLE,
+	notAppliedLine,
+	showUpdateDownloadedToast,
+	showUpdateErrorToast,
+	showUpdateEverythingResult,
+	UNEXPECTED_ERROR,
+	UPDATE_DOWNLOADED_LINE,
+	UPDATE_DOWNLOADED_TITLE,
+} from "@/components/update-toast-helpers";
 
-export const UPDATE_DOWNLOADED_TITLE = "Update downloaded";
-export const UPDATE_DOWNLOADED_LINE = "Restart the app from the update button to install it.";
-export const CHECK_FAILED_TITLE = "Could not check for updates";
-export const DOWNLOAD_FAILED_TITLE = "Could not download update";
-export const DOWNLOAD_START_FAILED_TITLE = "Could not start update download";
-export const INSTALL_FAILED_TITLE = "Could not install update";
-export const NOT_APPLIED_TITLE = "Update did not apply";
-/** T3's fallbacks where its description would be a thrown error's text (kept fixed here). */
-export const UNEXPECTED_ERROR = "An unexpected error occurred.";
-export const CHECK_ERROR = "Update check failed.";
-export const CHECK_UNAVAILABLE = "Automatic updates are not available in this build.";
-
-export const notAppliedLine = (current: string, version: string) =>
-	`LearnHarness is still on ${current}. Install ${version} again from the update button.`;
-
-/** T3's ReleaseNotesLink: "Read more" with its arrow turned to point up and out. */
-function ReadMore({ href }: { href: string }) {
-	return (
-		<a
-			href={href}
-			target="_blank"
-			rel="noopener noreferrer"
-			data-testid="toast-read-more"
-			className="ml-2 inline cursor-pointer text-muted-foreground underline decoration-dotted underline-offset-4 transition-colors hover:text-foreground"
-		>
-			Read more
-			<ArrowRightIcon aria-hidden className="ml-1 inline size-3 -rotate-45 align-[-0.125em]" strokeWidth={2.25} />
-		</a>
-	);
-}
-
-export function showUpdateDownloadedToast(version: string | null | undefined, homepage: string = HOMEPAGE): void {
-	const link = version ? releaseUrl(homepage, version) : null;
-	toastManager.add({
-		type: "success",
-		title: UPDATE_DOWNLOADED_TITLE,
-		description: <>{UPDATE_DOWNLOADED_LINE}{link ? <ReadMore href={link} /> : null}</>,
-		announce: `${UPDATE_DOWNLOADED_TITLE}. ${UPDATE_DOWNLOADED_LINE}`,
-	});
-}
-
-export function showUpdateErrorToast(title: string, description: string): void {
-	toastManager.add({ type: "error", title, description });
-}
-
-/** Update everything's result in the window onto a server (revision PR 7), also after the restart
- *  that finished it: T3's showUpdateEverythingResult (updateEverythingRun.tsx:267-279 at df09ced7). */
-export function showUpdateEverythingResult(result: UpdateEverythingResult, appVersion: string = APP_VERSION): void {
-	const view = getUpdateEverythingToastView(result, appVersion);
-	if (!view) return;
-	toastManager.add({
-		type: view.type,
-		title: view.title,
-		...(view.description ? { description: <span className="whitespace-pre-line">{view.description}</span>, announce: `${view.title}. ${view.description}` } : {}),
-	});
-}
-
-/** The fixed line of main's install-failure notice when the state carries none (main's INSTALL_FAILED). */
-export const INSTALL_FAILED_LINE = "Couldn’t install the update.";
+export {
+	CHECK_ERROR,
+	CHECK_FAILED_TITLE,
+	CHECK_UNAVAILABLE,
+	DOWNLOAD_FAILED_TITLE,
+	DOWNLOAD_START_FAILED_TITLE,
+	INSTALL_FAILED_LINE,
+	INSTALL_FAILED_TITLE,
+	NOT_APPLIED_TITLE,
+	notAppliedLine,
+	showUpdateDownloadedToast,
+	showUpdateErrorToast,
+	showUpdateEverythingResult,
+	UNEXPECTED_ERROR,
+	UPDATE_DOWNLOADED_LINE,
+	UPDATE_DOWNLOADED_TITLE,
+};
 
 /**
  * Main's notices, each once per launch: "did not apply" (T3's startDesktopUpdateLaunchNotice), and

@@ -17,20 +17,9 @@
  * server's new version, not when its restart starts (owner decision).
  */
 
-const { compareVersions, bridgeNotes } = require("./release-notes.cjs");
+const { compareVersions, isExactVersion, isNewerVersion, sameReleaseTrack: sameTrack, bridgeNotes } = require("./release-notes.cjs");
 const { hasDownloadableOffer, hasInstallableDownload } = require("./update-machine.cjs");
 
-const EXACT = /^\d+\.\d+\.\d+(?:-([a-z]+)\.\d{8}\.\d+)?$/;
-const isNewerVersion = (a, b) => typeof a === "string" && typeof b === "string" && EXACT.test(a) && EXACT.test(b) && compareVersions(a, b) > 0;
-// The release track of an exact version: its prerelease label ("nightly", "preview"), "" for a plain
-// release, null for anything else. T3 compares only within a channel (versionSkew.ts:62-70 and
-// updateEverything.logic.ts:121-130 at df09ced7): "0.7.0" sorts after every "0.7.0-nightly.*", and a
-// preview sorts against a nightly by its date, yet neither is an update for the other.
-const trackOf = (version) => {
-	const match = typeof version === "string" ? EXACT.exec(version) : null;
-	return match ? (match[1] ?? "") : null;
-};
-const sameTrack = (a, b) => trackOf(a) !== null && trackOf(a) === trackOf(b);
 /** A server that is behind `target` on the same track. An inexact version (a development build) or
  *  another track is never behind: it is not compared, and not updated. */
 const behindTarget = (running, target) => sameTrack(running, target) && compareVersions(running, target) < 0;
@@ -239,7 +228,7 @@ function createUpdateEverything(deps) {
 
 	/** A dev or unpackaged build has no release of its own to move a server to, and a version that
 	 *  isn't exact can't be asked of one. */
-	const canPlanServerOnly = (state) => state?.status !== "disabled" && EXACT.test(deps.appVersion);
+	const canPlanServerOnly = (state) => state?.status !== "disabled" && isExactVersion(deps.appVersion);
 
 	function status(from) {
 		const state = deps.updater.state();

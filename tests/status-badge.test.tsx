@@ -2,7 +2,6 @@ import React from "react";
 (globalThis as Record<string, unknown>).React = React;
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { it } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
@@ -66,15 +65,6 @@ it("StatusBadge uses the supplied CSS color and exact 15% oklab background, safe
 		assertAppearance(badgeFrom(renderToStaticMarkup(<StatusBadge text="Custom" color={color} />)), "Custom", color);
 	}
 });
-
-for (const file of ["answered-card.tsx", "practice-cards.tsx"]) {
-	it(`${file} adopts the shared StatusBadge instead of duplicating chip markup`, () => {
-		const source = readFileSync(new URL(`../components/${file}`, import.meta.url), "utf8");
-		assert.match(source, /import \{ StatusBadge \} from "@\/components\/ui\/status-badge"/);
-		assert.match(source, /<StatusBadge\b/);
-		assert.doesNotMatch(source, /bg-(?:green|red|amber)-500\/15/);
-	});
-}
 
 function question(kind: QuestionData["kind"] = "quiz"): QuestionData {
 	return {

@@ -5,9 +5,18 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useNotifyHub } from "@/components/server-events";
 import { InstallUpdateDialog } from "@/components/install-update-dialog";
-import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateErrorToast, UNEXPECTED_ERROR } from "@/components/update-toasts";
+import { APP_VERSION, HOMEPAGE } from "@/components/app-info";
+import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateErrorToast, UNEXPECTED_ERROR } from "@/components/update-toast-helpers";
 import { updateButtonTooltip } from "@/components/update-tooltips";
-import { capReleaseNoteGroups, type ReleaseNoteGroup } from "@/src/core";
+import {
+	capReleaseNoteGroups,
+	MAX_NOTE_VERSION_LENGTH,
+	MAX_OMITTED_RELEASE_COUNT,
+	MAX_RELEASED_AT_LENGTH,
+	MAX_TOTAL_ITEMS,
+	SUMMARY_LIMITS,
+	type ReleaseNoteGroup,
+} from "@/src/core";
 import { BRIDGE_FAILED, readBridgeAnswer, readUpdateEverythingResult, readUpdateEverythingRun, runIsLive, type BridgeAnswer, type UpdateEverythingResult, type UpdateEverythingRun } from "@/components/update-everything-logic";
 import { SettingsRow } from "./controls.tsx";
 import { isNewerVersion } from "@/selfhost/src/version-order.ts";
@@ -122,8 +131,7 @@ export type DesktopUpdateBridge = {
 /** The local desktop window's full bridge (electron/preload.cjs), not the remote one. */
 const localDesktopBridge = () => (typeof window.lh?.getUpdateState === "function" ? window.lh : undefined);
 
-export const APP_VERSION = process.env.LH_VERSION ?? "";
-export const HOMEPAGE = process.env.LH_HOMEPAGE ?? "";
+export { APP_VERSION, HOMEPAGE };
 const UNAVAILABLE_UPDATES_DETAIL = "Automatic updates are not available in this build.";
 
 const isUpdateState = (value: unknown): value is UpdateState =>
@@ -247,13 +255,6 @@ export function useUpdateState() {
 
 const isDesktopAppStatus = (value: unknown): value is DesktopAppStatus =>
 	typeof value === "object" && value !== null && typeof (value as DesktopAppStatus).version === "string" && typeof (value as DesktopAppStatus).phase === "string";
-
-// The bridge's caps (electron/release-notes.cjs bridgeNotes), applied again on the page.
-const MAX_NOTE_VERSION_LENGTH = 64;
-const MAX_RELEASED_AT_LENGTH = 40;
-const MAX_OMITTED_RELEASE_COUNT = 1000;
-const MAX_TOTAL_ITEMS = 10000;
-const SUMMARY_LIMITS = { intro: 600, stats: 120, footer: 220 } as const;
 
 function summaryFields(group: ReleaseNoteGroup): Pick<ReleaseNoteGroup, "intro" | "stats" | "footer"> {
 	const fields: Pick<ReleaseNoteGroup, "intro" | "stats" | "footer"> = {};

@@ -164,7 +164,7 @@ function Tooltip({ children, open: openProp, defaultOpen, onOpenChange, delayDur
   return <Popper.Root><TooltipContext.Provider value={value}>{children}</TooltipContext.Provider></Popper.Root>
 }
 
-function focusVisible(element: Element) {
+export function focusVisible(element: Element): boolean {
   try { return element.matches(":focus-visible") } catch { return true }
 }
 

@@ -3,10 +3,6 @@ import { NATIVE_SUBSCRIPTIONS } from "../core/contracts/subscriptions.ts";
 import { subscriptionRequestOrigin } from "./desktop-access.ts";
 import { webSubscriptionOwner, webSubscriptionsEnabled, webSubscriptionStatus } from "./web-subscriptions.ts";
 
-// Lives in desktop-access.ts so proxy.ts can share it without loading the
-// subscription runtime; re-exported for existing callers.
-export { subscriptionRequestOrigin };
-
 const HEADERS = { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff" };
 function authorized(request: Request): boolean {
 	const origin = subscriptionRequestOrigin(request);

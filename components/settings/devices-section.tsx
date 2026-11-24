@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { QrCode } from "@/selfhost/src/qr.ts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useNow } from "@/components/use-now";
 
 type Client = {
 	sessionId: string;
@@ -53,16 +54,6 @@ function QrSvg({ value, size = 176 }: { value: string; size?: number }) {
 			<path d={path} fill="#000000" />
 		</svg>
 	);
-}
-
-function useNow(active: boolean): number {
-	const [now, setNow] = useState(() => Date.now());
-	useEffect(() => {
-		if (!active) return;
-		const id = setInterval(() => setNow(Date.now()), 1000);
-		return () => clearInterval(id);
-	}, [active]);
-	return now;
 }
 
 function PairingLinkPanel({ onClose }: { onClose: () => void }) {

@@ -28,8 +28,7 @@ import { quizInputObject, quizInputProblems } from "../core/question-core.ts";
 import { QUESTION_TOOLS, TOGGLEABLE_TOOLS, type EnabledTools } from "../core/pending.ts";
 import type { PluginToolContext } from "../core/plugins.ts";
 import { toLlmMessages, nativeInputCause, PRACTICE_PROBLEM_TOOL } from "../core/native-messages.ts";
-import type { ChatGPTRequestCycle } from "./chatgpt-request-cycle.ts";
-import { usageWasAdmitted } from "./subscription-request-cycle.ts";
+import { usageWasAdmitted, type SubscriptionRequestCycle as ChatGPTRequestCycle } from "./subscription-request-cycle.ts";
 import { PluginQuestionLedger, type NativePluginQuestionContribution } from "./plugin-question-tools.ts";
 
 /**

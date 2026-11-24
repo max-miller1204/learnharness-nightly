@@ -457,8 +457,3 @@ function dismissalConclusion(record: { messages: LhMessage[] }): LhMessage[] {
 	const problemCallId = pendingProblemDismissalOf(record.messages);
 	return problemCallId ? concludedByDismissalPair(problemCallId) : [];
 }
-
-/** Is this tool name a question tool (dock-owned, answer-gated)? */
-export function isQuestionTool(name: string): boolean {
-	return (QUESTION_TOOLS as readonly string[]).includes(name);
-}

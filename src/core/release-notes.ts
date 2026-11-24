@@ -5,7 +5,22 @@
  * df09ced7) and apps/desktop/src/updates/releaseNotes.ts: at most 6 groups,
  * 8 items per group, 220 characters per item. Client-safe: no Node imports.
  */
-import { noteReleasedAt as sharedNoteReleasedAt } from "../../electron/release-dates.cjs";
+import { MAX_RELEASED_AT_LENGTH, noteReleasedAt as sharedNoteReleasedAt } from "../../electron/release-dates.cjs";
+import {
+	MAX_RELEASE_NOTE_GROUPS as SHARED_MAX_GROUPS,
+	MAX_RELEASE_NOTE_ITEMS as SHARED_MAX_ITEMS,
+	MAX_RELEASE_NOTE_ITEM_LENGTH as SHARED_MAX_ITEM_LENGTH,
+	MAX_NOTE_VERSION_LENGTH as SHARED_MAX_VERSION_LENGTH,
+	MAX_OMITTED_RELEASE_COUNT as SHARED_MAX_OMITTED,
+	MAX_TOTAL_ITEMS as SHARED_MAX_TOTAL_ITEMS,
+	SUMMARY_LIMITS as SHARED_SUMMARY_LIMITS,
+	truncateReleaseNoteItem as sharedTruncateItem,
+	endsWithSummaryCopy as sharedEndsWithSummaryCopy,
+	withoutSummaryEcho as sharedWithoutSummaryEcho,
+	totalReleaseItems as sharedTotalReleaseItems,
+} from "../../electron/release-note-rules.cjs";
+
+export { MAX_RELEASED_AT_LENGTH };
 
 /** One version's notes. Items are plain sentences; `**Label.** detail` renders the label bold. */
 export interface ReleaseNoteGroup {
@@ -29,61 +44,18 @@ export interface ReleaseNoteGroup {
 	summaryCopy?: boolean;
 }
 
-const normalized = (text: string | undefined) => (text ?? "").trim().replace(/\s+/g, " ");
+export const MAX_RELEASE_NOTE_GROUPS: number = SHARED_MAX_GROUPS;
+export const MAX_RELEASE_NOTE_ITEMS: number = SHARED_MAX_ITEMS;
+export const MAX_RELEASE_NOTE_ITEM_LENGTH: number = SHARED_MAX_ITEM_LENGTH;
+export const MAX_NOTE_VERSION_LENGTH: number = SHARED_MAX_VERSION_LENGTH;
+export const MAX_OMITTED_RELEASE_COUNT: number = SHARED_MAX_OMITTED;
+export const MAX_TOTAL_ITEMS: number = SHARED_MAX_TOTAL_ITEMS;
+export const SUMMARY_LIMITS: Readonly<{ intro: number; stats: number; footer: number }> = SHARED_SUMMARY_LIMITS;
 
-/** Whether `item` is `text`, as written or as the item limits cut it (a 600-character intro's copy is cut to 220). */
-function isCopyOf(item: string, text: string | undefined): boolean {
-	if (text === undefined) return false;
-	const whole = normalized(text);
-	return whole !== "" && (item === whole || item === truncateReleaseNoteItem(whole));
-}
-
-/** Whether the last item of a whole (uncut) list is the old-client copy: the position, compared as the full text. */
-export function endsWithSummaryCopy(items: readonly string[], { intro, footer }: { intro?: string; footer?: string }): boolean {
-	const last = items.length > 0 ? normalized(items[items.length - 1]) : "";
-	return last !== "" && (isCopyOf(last, footer) || isCopyOf(last, intro));
-}
-
-/**
- * Old clients read only `items`, so the release script also writes the intro or footer once more
- * as the last item (scripts/generate-release-notes.ts entryItems). Every stored or sent copy of the
- * notes keeps it, for old readers; what a new client shows drops it: only that one trailing item,
- * compared as the full text with both sides normalized, never another bullet.
- *
- * The item limits cut the copy off first, and a cut list no longer shows whether its last item is
- * the copy. So the producer decides while it still has the whole list, and `summaryCopy` records the
- * decision (true when the copy is last, false when it was cut off or never there); a recorded
- * decision is followed as it is. A group without one (stored before the field) is read as before
- * it: the last item is the copy, unless the list is full and its whole count, less the intro,
- * equals its length, which means nothing was cut and every item is real.
- */
-export function withoutSummaryEcho(items: readonly string[], { intro, footer, totalItems, summaryCopy }: { intro?: string; footer?: string; totalItems?: number; summaryCopy?: boolean }): string[] {
-	if (!endsWithSummaryCopy(items, { intro, footer })) return [...items];
-	const copy = typeof summaryCopy === "boolean"
-		? summaryCopy
-		: !(items.length >= MAX_RELEASE_NOTE_ITEMS && isCount(totalItems) && totalItems - (intro ? 1 : 0) === items.length);
-	return copy ? items.slice(0, -1) : [...items];
-}
-
-const isCount = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0;
-
-/** The release's whole count: what the feed said, else the shown items and the intro (T3's totalItems). */
-export const totalReleaseItems = (group: ReleaseNoteGroup): number => {
-	const shown = withoutSummaryEcho(group.items, group).length;
-	return isCount(group.totalItems)
-		? Math.max(group.totalItems, shown)
-		: shown + (group.intro ? 1 : 0);
-};
-
-export const MAX_RELEASE_NOTE_GROUPS = 6;
-export const MAX_RELEASE_NOTE_ITEMS = 8;
-export const MAX_RELEASE_NOTE_ITEM_LENGTH = 220;
-
-export function truncateReleaseNoteItem(item: string): string {
-	const clean = item.trim().replace(/\s+/g, " ");
-	if (clean.length <= MAX_RELEASE_NOTE_ITEM_LENGTH) return clean;
-	return `${clean.slice(0, MAX_RELEASE_NOTE_ITEM_LENGTH - 3).trimEnd()}...`;
-}
+export const endsWithSummaryCopy: (items: readonly string[], summary: { intro?: string; footer?: string }) => boolean = sharedEndsWithSummaryCopy;
+export const withoutSummaryEcho: (items: readonly string[], summary: { intro?: string; footer?: string; totalItems?: number; summaryCopy?: boolean }) => string[] = sharedWithoutSummaryEcho;
+export const totalReleaseItems: (group: ReleaseNoteGroup) => number = sharedTotalReleaseItems;
+export const truncateReleaseNoteItem: (item: string) => string = sharedTruncateItem;
 
 /** The update feed's pointer: the version it offers and when that release was published. */
 export interface OfferedRelease {

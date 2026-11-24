@@ -21,7 +21,7 @@ import { CLAUDE_CODE_PROVIDER } from "../core/contracts/claude-code.ts";
 import packageMetadata from "../../package.json" with { type: "json" };
 import { chatGPTModel } from "./chatgpt-bridge.ts";
 import { chatGPTStream } from "./chatgpt-stream.ts";
-import type { ChatGPTDispatchLifecycle } from "./chatgpt-request-cycle.ts";
+import type { SubscriptionDispatchLifecycle as ChatGPTDispatchLifecycle } from "./subscription-request-cycle.ts";
 import { createClaudeCodeProvider } from "./claude-code/provider.ts";
 import { streamClaudeCode } from "./claude-code/stream.ts";
 import { nativeSubscriptionId, nativeSubscriptionModel } from "./subscription-bridge.ts";

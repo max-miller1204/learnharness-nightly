@@ -1415,14 +1415,6 @@ test("main pushes the status to the remote window's main frame at its origin, an
 	assert.equal(push(), false, "a frame mid-teardown never interrupts the updater");
 });
 
-test("main.cjs pushes the remote window's status after every updater state change", () => {
-	const source = fs.readFileSync(path.join(import.meta.dirname, "..", "electron", "main.cjs"), "utf8");
-	const setState = source.slice(source.indexOf("function setUpdateState("), source.indexOf("/** Read the install record once at launch"));
-	assert.match(setState, /pushRemoteStatus\?\.\(\)/, "setUpdateState is the one place the snapshot moves");
-	assert.match(source, /pushRemoteStatus = createStatusPush\(\{ current: \(\) => serverList\.current\(\), updateEverything,/);
-	assert.match(source, /createServerList\(\{[^]*?selected: \(\) => pushRemoteStatus\?\.\(\),[^]*?\}\);/, "the server list is told when a server is selected (tests/desktop-server-list.test.ts holds the behaviour behind it)");
-});
-
 test("status carries the updater snapshot's revision, so the page can drop a read that a later push overtook", () => {
 	let appState: Record<string, unknown> = { status: "available", version: V72, revision: 7 };
 	const ue = createUpdateEverything({ appVersion: V71, updater: { state: () => appState } });
@@ -1433,4 +1425,136 @@ test("status carries the updater snapshot's revision, so the page can drop a rea
 		appState = { status: "available", version: V72, revision: bad };
 		assert.equal("revision" in ue.status(), false, `a ${JSON.stringify(bad)} revision is left out`);
 	}
+});
+
+test("packaged main.cjs pushes status to the open remote window on updater state changes and server selection", async () => {
+	const { EventEmitter } = await import("node:events");
+	const { createContext, runInContext } = await import("node:vm");
+	const { fileURLToPath } = await import("node:url");
+	const mainFile = fileURLToPath(new URL("../electron/main.cjs", import.meta.url));
+	const mainSource = fs.readFileSync(mainFile, "utf8");
+	const mainRequire = createRequire(mainFile);
+
+	class FakeUpdater extends EventEmitter {
+		autoDownload = true;
+		autoInstallOnAppQuit = true;
+		fullChangelog = false;
+		setFeedURL() {}
+		checkForUpdates() { return Promise.resolve(null); }
+		downloadUpdate() { return Promise.resolve([]); }
+		quitAndInstall() {}
+	}
+	const updater = new FakeUpdater();
+	const pushed: Array<{ channel: string; snapshot: Record<string, unknown> }> = [];
+	const remoteWin = Object.assign(new EventEmitter(), {
+		isDestroyed: () => false,
+		webContents: Object.assign(new EventEmitter(), {
+			mainFrame: {
+				url: `${ORIGIN}/chat/1`,
+				send: (channel: string, snapshot: Record<string, unknown>) => {
+					pushed.push({ channel, snapshot: JSON.parse(JSON.stringify(snapshot)) });
+				},
+			},
+		}),
+	});
+	let onSelected: (() => void) | undefined;
+	const app = Object.assign(new EventEmitter(), {
+		isPackaged: true,
+		name: "LearnHarness",
+		setName() {},
+		getPath: () => "/fixture/user-data",
+		getVersion: () => V71,
+		setPath() {},
+		requestSingleInstanceLock: () => false,
+		quit() {},
+		exit() {},
+		whenReady: async () => {},
+	});
+	const electron = {
+		app,
+		BrowserWindow: Object.assign(class extends EventEmitter {}, {
+			fromWebContents: () => null,
+			getAllWindows: () => [],
+			getFocusedWindow: () => null,
+		}),
+		WebContentsView: class {},
+		dialog: { showMessageBox: async () => ({ response: 0 }) },
+		Menu: { buildFromTemplate: (value: unknown) => value, setApplicationMenu() {} },
+		ipcMain: { on() {}, handle() {} },
+		nativeTheme: { shouldUseDarkColors: true, themeSource: "system", on() {} },
+		session: {
+			defaultSession: {
+				webRequest: { onBeforeSendHeaders() {} },
+				setPermissionRequestHandler() {},
+				setPermissionCheckHandler() {},
+			},
+		},
+		shell: {},
+		safeStorage: {},
+	};
+	const context = createContext({
+		require: (id: string) => {
+			if (id === "electron") return electron;
+			if (id === "electron-updater") return { autoUpdater: updater };
+			if (id === "./server-list.cjs") {
+				return {
+					createServerList: async (opts: { selected?: () => void }) => {
+						onSelected = opts.selected;
+						return {
+							current: () => ({ win: remoteWin, origin: ORIGIN }),
+							launch: async () => {},
+							reopen: () => {},
+							close: () => {},
+							chatgptSignIn: async () => ({ ok: false }),
+							chatgptCancel: async () => {},
+						};
+					},
+				};
+			}
+			if (id === "./update-everything-dialog.cjs") {
+				return { createUpdateEverythingDialog: () => ({ confirm: async () => ({ confirmed: false, keyboard: false }) }) };
+			}
+			if (id === "node:fs") {
+				return {
+					readFileSync: () => { throw new Error("ENOENT"); },
+					writeFileSync() {},
+					rmSync() {},
+					mkdirSync() {},
+					appendFileSync() {},
+				};
+			}
+			return mainRequire(id);
+		},
+		process: { argv: [], env: {}, platform: "linux", on() {} },
+		__dirname: path.dirname(mainFile),
+		URL,
+		AbortController,
+		setInterval: () => ({ unref() {} }),
+		setTimeout: () => ({ unref() {} }),
+		clearTimeout() {},
+	});
+	runInContext(mainSource, context, { filename: mainFile });
+	await runInContext("main()", context);
+
+	pushed.length = 0;
+	updater.emit("update-available", { version: V72, releaseNotes: "- **New.** Shipped." });
+	assert.equal(pushed.length, 1, "setUpdateState pushes the new status to the remote window");
+	assert.equal(pushed[0]!.channel, "lh:desktop-update-status");
+	assert.equal(pushed[0]!.snapshot.phase, "available");
+	assert.equal(pushed[0]!.snapshot.target, V72);
+	const availableRev = pushed[0]!.snapshot.revision as number;
+
+	updater.emit("update-downloaded", { version: V72 });
+	assert.equal(pushed.length, 2, "subsequent setUpdateState pushes the downloaded status");
+	assert.equal(pushed[1]!.snapshot.phase, "downloaded");
+	assert.equal(pushed[1]!.snapshot.target, V72);
+	assert.ok((pushed[1]!.snapshot.revision as number) > availableRev, "revision advances across pushes");
+
+	pushed.length = 0;
+	assert.ok(onSelected, "serverList receives a selected callback");
+	onSelected();
+	assert.equal(pushed.length, 1, "selecting a server pushes the current status to the remote window");
+	assert.equal(pushed[0]!.channel, "lh:desktop-update-status");
+	assert.equal(pushed[0]!.snapshot.phase, "downloaded");
+	assert.equal(pushed[0]!.snapshot.target, V72);
 });

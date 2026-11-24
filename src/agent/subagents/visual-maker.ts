@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { AssistantMessage, Message, Tool, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
-import { normalizeContext } from "@earendil-works/pi-ai";
+import type { Message, Tool, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
 import { processImage, type ProcessImageResult } from "../image-processing/index.ts";
 import { Type } from "typebox";
-import { piEngineFor, type PiEngine, type ThinkingLevel } from "../models.ts";
-import { providerEventObserver, type ProviderEventObserver } from "../provider-events.ts";
-import { backgroundCaptureStream, createBackgroundCapture, type BackgroundCapture } from "../background-capture.ts";
+import { piEngineFor, type PiEngine } from "../models.ts";
+import { providerEventObserver } from "../provider-events.ts";
+import { backgroundCaptureStream, createBackgroundCapture } from "../background-capture.ts";
 import { createWorkerRequestScope } from "../worker-request-admission.ts";
 import type { VisualResult } from "../../core/contracts.ts";
 import type { LearnerImage } from "../tools/learner-image.ts";
@@ -13,6 +12,7 @@ import type { PdfFigureImage, PdfFigureSource } from "../tools/pdf-figure.ts";
 import { embedLearnerImage, LEARNER_IMAGE_HREF } from "../../core/learner-image-svg.ts";
 import { annotationPlacementProblem } from "./annotation-svg.ts";
 import { getHeadless, type HeadlessApi } from "./headless.ts";
+import { streamOnce, toolTextResult } from "./pi-run.ts";
 
 /**
  * The visual-maker sub-agent: authors ONE precise SVG from a
@@ -515,52 +515,7 @@ export async function runVisualMaker(input: VisualMakerInput, opts: VisualMakerO
 }
 
 function toolText(toolCallId: string, toolName: string, value: string): ToolResultMessage {
-	return {
-		role: "toolResult",
-		toolCallId,
-		toolName,
-		content: [{ type: "text", text: value }],
-		isError: value.startsWith("ERROR:") || value.startsWith("RENDER ERROR"),
-		timestamp: Date.now(),
-	};
-}
-
-/** One raw model call (no agent loop): drain the event stream to the final
- *  AssistantMessage; provider errors and aborts throw so the loop's catch
- *  path keeps its old generateText semantics. */
-async function streamOnce(
-	engine: PiEngine,
-	systemPrompt: string,
-	messages: Message[],
-	tools: Tool[],
-	sessionId: string,
-	reasoning: ThinkingLevel | undefined,
-	abortSignal?: AbortSignal,
-	onProviderStreamEvent?: ProviderEventObserver,
-	capture?: BackgroundCapture,
-): Promise<AssistantMessage> {
-	// 0.87.1: provider-facing contexts are TranscriptContexts — the prompt
-	// and tool declarations fold into a leading system message.
-	// normalizeContext is the library's only Context→TranscriptContext entry.
-	const stream = engine.streamFn(engine.model, normalizeContext({ systemPrompt, messages, tools }), {
-		sessionId,
-		reasoning: reasoning && reasoning !== "off" ? reasoning : undefined,
-		signal: abortSignal,
-		onProviderStreamEvent: onProviderStreamEvent as never,
-	} as never);
-	for await (const event of stream) {
-		if (event.type === "done") { capture?.reply(event.message); return event.message; }
-		if (event.type === "error") {
-			capture?.reply(event.error);
-			if (event.reason === "aborted") {
-				const err = new Error("aborted");
-				err.name = "AbortError";
-				throw err;
-			}
-			throw new Error(event.error.errorMessage ?? "the model call failed");
-		}
-	}
-	throw new Error("the model stream ended without a result");
+	return toolTextResult(toolCallId, toolName, value, value.startsWith("ERROR:") || value.startsWith("RENDER ERROR"));
 }
 
 /** A 3-line numbered context window around the closest fuzzy match for a
