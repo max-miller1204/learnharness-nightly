@@ -704,6 +704,7 @@ export function AgentSection({
 									>
 										<ModelMenuList
 											models={catalog ?? undefined}
+											providers={body?.providers}
 											effectiveId={modelId}
 											effectiveProvider={provider}
 											vision={slot === "vision"}

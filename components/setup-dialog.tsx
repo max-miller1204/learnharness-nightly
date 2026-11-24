@@ -527,6 +527,7 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 												>
 													<ModelMenuList
 														models={slotCatalog}
+														providers={catalog?.providers}
 														effectiveId={entry?.id}
 														effectiveProvider={entry?.provider}
 														vision={slot === "vision"}

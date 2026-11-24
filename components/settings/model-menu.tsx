@@ -20,7 +20,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import type { ModelCatalogEntry } from "@/src/core";
+import type { CatalogProvider, ModelCatalogEntry } from "@/src/core";
 import { CLAUDE_CODE_PROVIDER, CUSTOM_PROVIDER, fuzzyScore, modelUnavailableMessage, subscriptionLabel } from "@/src/core";
 import { formatTokens } from "@/components/usage-format";
 import { SearchMenuList } from "./search-menu-list";
@@ -36,6 +36,7 @@ function priceLabel(cost: ModelCatalogEntry["cost"]): string {
  *  its own quiet line. */
 export function ModelMenuList({
 	models,
+	providers,
 	effectiveId,
 	effectiveProvider,
 	onPick,
@@ -44,6 +45,10 @@ export function ModelMenuList({
 }: {
 	/** The full catalog — undefined while it loads. */
 	models: ModelCatalogEntry[] | undefined;
+	/** The catalog's provider rows. A saved model's provider that is listed
+	 *  without a key or connection is not connected; the catalog drops its
+	 *  models, and reconnecting restores them. */
+	providers?: CatalogProvider[];
 	/** Currently effective id (the row gets the quiet highlight). */
 	effectiveId: string | undefined;
 	/** The effective id's provider (model-slots wave: the catalog
@@ -67,14 +72,18 @@ export function ModelMenuList({
 		? models?.filter((m) => m.input.includes("image") || m.provider === CUSTOM_PROVIDER.id)
 		: models;
 	// A saved model the loaded catalog lacks is never swapped for another:
-	// the menu says why the pick is needed.
+	// the menu says why the pick is needed. A disconnected provider hides its
+	// models without removing them, so that case names the connection.
+	const disconnected = providers?.some((p) => p.id === effectiveProvider && !p.keyPresent) ?? false;
 	const unavailable = !!models && !!effectiveId && !!effectiveProvider
 		&& !models.some((m) => m.id === effectiveId && m.provider === effectiveProvider);
 	return (
 		<>
 			{unavailable && (
 				<div role="status" data-testid="model-unavailable" className="mb-1.5 px-2 text-destructive">
-					{modelUnavailableMessage(effectiveProvider, effectiveId)}
+					{disconnected
+						? `The model ${effectiveProvider}/${effectiveId} needs its provider connected. Connect ${effectiveProvider} in Settings, Keys, or pick another model.`
+						: modelUnavailableMessage(effectiveProvider, effectiveId)}
 				</div>
 			)}
 			<SearchMenuList

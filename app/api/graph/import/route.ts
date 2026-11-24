@@ -55,9 +55,10 @@ interface ImportResult {
 	ok: boolean;
 	stats?: EmissionStats;
 	error?: string;
-	/** The machine discriminator when ok:false is a config refusal — the
-	 * BYOK models refusal (owner, 2026-09-22), a saved model the catalog
-	 * dropped (model_unavailable) or the provider-key refusal (2026-09-25); the client can open the setup/keys flow off it. An
+	/** The machine discriminator when ok:false is a config refusal: the BYOK
+	 * models refusal (owner, 2026-09-22), a saved model the catalog dropped
+	 * (model_unavailable) or the provider-key refusal (2026-09-25). Callers
+	 * can branch on it; the import dialog shows the row's message. An
 	 * unreachable subscription is an outage, not setup: import again later. */
 	code?: "models_not_configured" | (typeof MODEL_UNAVAILABLE) | (typeof PROVIDER_KEY_MISSING_CODE) | (typeof SUBSCRIPTION_UNREACHABLE_CODE);
 	missing?: string[];
