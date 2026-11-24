@@ -25,8 +25,10 @@ it("the host asks for a key only when the plugin's model still exists", async ()
 	}
 });
 
-it("the host knows the providers its catalog lists and no others", async () => {
-	assert.equal(await pluginKnowsProvider("opencode-go"), true);
-	assert.equal(await pluginKnowsProvider("chatgpt"), true);
-	for (const unknown of ["github", "../x", " opencode-go", ""]) assert.equal(await pluginKnowsProvider(unknown), false, JSON.stringify(unknown));
+it("the host knows every provider it could refuse for, whatever the connection state, and no others", async () => {
+	const { CUSTOM_PROVIDER } = await import("../src/core/auth-keys.ts");
+	const { catalogProviders } = await import("../src/server/model-catalog.ts");
+	for (const known of ["opencode-go", "chatgpt", "claude-code", CUSTOM_PROVIDER.id]) assert.equal(await pluginKnowsProvider(known), true, `${known} stays known with no key, endpoint or connection`);
+	for (const row of catalogProviders()) assert.equal(await pluginKnowsProvider(row.id), true, `catalog row ${row.id}`);
+	for (const unknown of ["github", "../x", " opencode-go", "opencode-go ", ""]) assert.equal(await pluginKnowsProvider(unknown), false, JSON.stringify(unknown));
 });

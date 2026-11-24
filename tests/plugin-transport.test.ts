@@ -123,16 +123,16 @@ it("a plugin that lets host inference's missing-key error escape is refused with
 	const { host } = fixture();
 	const asked: string[] = [];
 	const transport = createPluginTransport({ getHost: async () => host, directory: "/temporary/plugins", knownProvider: (provider) => { asked.push(provider); return provider === "opencode-go"; } });
-	host.call = async () => { throw Object.assign(new Error("No OpenCode Go key is set"), { code: "provider_key_missing", provider: " opencode-go ", slots: ["cheap", "invented"] }); };
+	host.call = async () => { throw Object.assign(new Error("No OpenCode Go key is set"), { code: "provider_key_missing", provider: "opencode-go", slots: ["cheap", "invented"] }); };
 	const refused = await transport.call("example", request({ operation: "summarize", input: {} }));
 	assert.equal(refused.status, 422);
-	assert.deepEqual(await refused.json(), providerKeyMissing("opencode-go", ["cheap"]), "trimmed provider, slots limited to the known names");
+	assert.deepEqual(await refused.json(), providerKeyMissing("opencode-go", ["cheap"]), "slots limited to the known names");
 	assert.deepEqual(asked, ["opencode-go"]);
 });
 it("a provider_key_missing error for a provider the host does not know keeps the plugin's own message and status", async () => {
 	const { host } = fixture();
 	const transport = createPluginTransport({ getHost: async () => host, directory: "/temporary/plugins", knownProvider: (provider) => provider === "opencode-go" });
-	for (const provider of ["github", "../../etc/passwd", "   ", "", 7, undefined]) {
+	for (const provider of ["github", "../../etc/passwd", " opencode-go ", "opencode-go\n", "   ", "", 7, undefined]) {
 		host.call = async () => { throw Object.assign(new Error("GitHub token is missing"), { code: "provider_key_missing", provider }); };
 		const refused = await transport.call("example", request({ operation: "summarize", input: {} }));
 		assert.equal(refused.status, 500, `provider ${JSON.stringify(provider)}`);
