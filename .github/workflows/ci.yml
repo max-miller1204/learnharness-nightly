@@ -162,6 +162,11 @@ jobs:
             platform: linux-x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
+    # pull-requests: write lets the e2e step's GitHub reporter post its PR
+    # comment. A fork's or Dependabot's run gets a read-only token and posts nothing.
+    permissions:
+      contents: read
+      pull-requests: write
     defaults:
       run:
         shell: bash
@@ -196,8 +201,9 @@ jobs:
       - run: node scripts/smoke-plan-labels.mjs
       - run: node scripts/build-server.mjs
       - run: node scripts/smoke-server.mjs --electron
-      # The e2e suite (tests/e2e/) on the build above, Linux only. Tests with
-      # agent steps need a signed-in coding agent, so they run locally only.
+      # The e2e suite (tests/e2e/) on the build above, Linux only, with its
+      # screenshot baselines (taken on this runner). Tests with agent steps
+      # need a signed-in coding agent, so they run locally only.
       - name: Restore the e2e browser
         if: matrix.platform == 'linux-x64'
         uses: actions/cache@v6
@@ -212,6 +218,7 @@ jobs:
         env:
           LH_E2E_SERVER: standalone
           E2E_TELEMETRY_DISABLED: "1"
+          GITHUB_TOKEN: ${{ github.token }}
         run: npx e2e run --exclude-tag agent --max-failures 3 --reporter list,junit
       - name: Upload the e2e report
         if: ${{ !cancelled() && matrix.platform == 'linux-x64' }}

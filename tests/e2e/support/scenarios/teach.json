@@ -1,21 +1,53 @@
 {
-	"_comment": "A teaching session: the prober reads two files in one turn (the fixture with no final newline, then the main fixture), asks one graded question, then acknowledges the answer. serve.ts writes the fixtures and passes their paths as FIXTURE and FIXTURE_NONL.",
-	"models": ["e2e-strong", "e2e-cheap", "e2e-vision"],
+	"_comment": "A teaching session: the prober reads two files in one turn (the fixture with no final newline, then the main fixture), asks one graded question, then acknowledges the answer. serve.ts writes the fixtures and passes their paths as FIXTURE and FIXTURE_NONL. A goal containing zz-e2e math gets one reply with inline math (math-rendering.e2e.ts).",
+	"models": [
+		"e2e-strong",
+		"e2e-cheap",
+		"e2e-vision"
+	],
 	"rules": [
 		{
+			"id": "math-reply",
+			"match": {
+				"lastRole": "user",
+				"lastIncludes": "zz-e2e math"
+			},
+			"reply": {
+				"text": "zz-e2e math: $A \\xrightarrow[\\text{below}]{\\text{above}} B$, $C \\xleftarrow{f} D$, $\\colorbox{yellow}{\\text{boxed text}}$ and $\\fbox{\\text{framed}}$."
+			}
+		},
+		{
 			"id": "probe-reads-fixture",
-			"match": { "lastRole": "user", "lastIncludes": "zz-e2e", "hasTool": "read" },
+			"match": {
+				"lastRole": "user",
+				"lastIncludes": "zz-e2e",
+				"hasTool": "read"
+			},
 			"times": 1,
 			"reply": {
 				"toolCalls": [
-					{ "name": "read", "arguments": { "path": "{{var:FIXTURE_NONL}}" } },
-					{ "name": "read", "arguments": { "path": "{{var:FIXTURE}}" } }
+					{
+						"name": "read",
+						"arguments": {
+							"path": "{{var:FIXTURE_NONL}}"
+						}
+					},
+					{
+						"name": "read",
+						"arguments": {
+							"path": "{{var:FIXTURE}}"
+						}
+					}
 				]
 			}
 		},
 		{
 			"id": "probe-asks-question",
-			"match": { "lastRole": "tool", "lastIncludes": "E2E-FIXTURE-SKY", "hasTool": "probe" },
+			"match": {
+				"lastRole": "tool",
+				"lastIncludes": "E2E-FIXTURE-SKY",
+				"hasTool": "probe"
+			},
 			"times": 1,
 			"reply": {
 				"toolCalls": [
@@ -23,7 +55,16 @@
 						"name": "probe",
 						"arguments": {
 							"question": "zz-e2e: which colour of sunlight scatters most in air?",
-							"options": [{ "label": "Blue", "value": "blue" }, { "label": "Red", "value": "red" }],
+							"options": [
+								{
+									"label": "Blue",
+									"value": "blue"
+								},
+								{
+									"label": "Red",
+									"value": "red"
+								}
+							],
 							"explanation": "Rayleigh scattering grows as the wavelength shrinks, so blue scatters most.",
 							"correctAnswer": "blue"
 						}
@@ -33,10 +74,18 @@
 		},
 		{
 			"id": "probe-acknowledges-answer",
-			"match": { "lastRole": "tool", "lastIncludes": "\"kind\":\"quiz\"", "hasTool": "probe" },
+			"match": {
+				"lastRole": "tool",
+				"lastIncludes": "\"kind\":\"quiz\"",
+				"hasTool": "probe"
+			},
 			"times": 1,
-			"reply": { "text": "zz-e2e acknowledged your answer: {{lastText}}" }
+			"reply": {
+				"text": "zz-e2e acknowledged your answer: {{lastText}}"
+			}
 		}
 	],
-	"fallback": { "text": "zz-e2e fallback reply." }
+	"fallback": {
+		"text": "zz-e2e fallback reply."
+	}
 }

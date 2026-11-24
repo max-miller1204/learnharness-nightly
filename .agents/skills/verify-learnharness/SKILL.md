@@ -86,10 +86,12 @@ signed-in page.
 **Agent steps.** `agent.act` and `agent.assert` run on your signed-in coding
 agent over ACP: Claude Code (`sonnet`) by default, Codex with
 `--agent codex`. They need that CLI signed in (`claude`, `codex login`).
-`agent.waitFor`, `agent.extract`, `assert({ vision })` and `e2e explore` need
-an agent with an AI SDK `model`, which the config does not set, so don't use
-them in tests (they fail with `MODEL_UNAVAILABLE`); wait with a locator
-instead. Tests with agent steps carry the tag `agent`. Pair every `agent.act`
+`agent.waitFor`, `agent.extract` and `e2e explore` run e2e's own agent on the
+owner's ChatGPT plan (`chatgpt("gpt-6-luna")`), which needs
+`npx e2e login openai` once per machine (`--device` prints a code to enter
+in a browser; only the user can do it). Prefer a locator wait over
+`agent.waitFor` in tests: CI has neither login. Tests with agent steps carry
+the tag `agent`. Pair every `agent.act`
 with a `screen` check so its recording can replay from `.e2e/cache/`, which
 stays on this machine.
 
@@ -135,8 +137,21 @@ Proof standards:
   expectation to make it pass.
 - Try to break it: the empty input, a reload mid-turn, a failing model.
 
+**Screenshots.** Tests tagged `visual` compare pixels with `toHaveScreenshot`
+(`math-rendering.e2e.ts`: arrows with labels and `\text` inside colour
+boxes). Baselines sit beside the test in `<file>-snapshots/`, named per OS
+(`-linux.png`), and CI's Linux runner is the reference: fonts and
+antialiasing differ between machines. A change that alters a drawing on
+purpose updates its baseline in the same commit: run the test with `-u`, look
+at the new image, and if CI then fails on it, take the image CI drew from the
+`e2e-report` artifact (`results/<test>/`) and commit that. Never update a
+baseline to make an unexplained diff pass. A `-darwin.png` baseline does not
+exist: on a Mac, run with `--exclude-tag visual` or leave the missing-baseline
+failure out of the verdict.
+
 CI runs `npx e2e run --exclude-tag agent` on the Linux standalone build
-(`.github/workflows/ci.yml`, job Standalone (linux-x64)) and uploads
+(`.github/workflows/ci.yml`, job Standalone (linux-x64)), posts the results as
+a PR comment and job summary (`@e2e-dev/github`), and uploads
 `.e2e/report.json`, `junit.xml` and `results/` as the `e2e-report` artifact.
 CI is a backstop, not the proof: it never runs agent steps.
 
@@ -145,16 +160,13 @@ evidence path, and every surface you did not drive.
 
 ## Bug bash
 
-Follow topic `bug-bash`. `e2e explore` runs e2e's built-in agent, which needs
-an AI SDK model: the ACP agents in `e2e.config.ts` cannot explore. Give the
-bug-bash config's agents a `model` (for example `chatgpt("gpt-6-luna")` from
-`e2e/oauth/chatgpt` after `npx e2e login openai`, or `anthropic(...)` from
-`@ai-sdk/anthropic` with `ANTHROPIC_API_KEY`), and ask the user before you
-spend on one. Here: explore a standalone build
+Follow topic `bug-bash`. Explorers run on ChatGPT: pass `--agent chatgpt`
+(the config's agent with `maxSteps: 40, maxModelCalls: 40`), or give each
+posture in the bug-bash config the same `chatgpt("gpt-6-luna")` model. It uses
+the owner's plan, so ask before a large fan-out. Here: explore a standalone build
 (`LH_E2E_SERVER=standalone`); port `0` already gives each explorer its own
 app, so no `reuseExisting`. Write an untracked `e2e.bugbash.config.ts` that
-spreads `e2e.config.ts` and gives the agents `maxSteps: 40, maxModelCalls: 40`
-and this context: "The local app has no provider key and its model is a
+spreads `e2e.config.ts` and gives its agents this context: "The local app has no provider key and its model is a
 scripted fake that only follows tests/e2e/support/scenarios/teach.json: a
 goal containing zz-e2e gets two file reads, one question and an
 acknowledgement; anything else gets 'zz-e2e fallback reply.' Not bugs: that

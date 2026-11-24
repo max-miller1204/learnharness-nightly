@@ -9,7 +9,7 @@ touches it.
 | Feature | Route | Test file |
 | --- | --- | --- |
 | [Pairing and sign-in](pairing.md) | `/pair` | `tests/e2e/pairing.e2e.ts`, `tests/e2e/auth.setup.e2e.ts` |
-| [Teaching session](teaching-session.md) | `/chat/new`, `/chat/<id>` | `tests/e2e/teaching-session.e2e.ts`, `tests/e2e/agent-teaching.e2e.ts` |
+| [Teaching session](teaching-session.md) | `/chat/new`, `/chat/<id>` | `tests/e2e/teaching-session.e2e.ts`, `tests/e2e/math-rendering.e2e.ts`, `tests/e2e/agent-teaching.e2e.ts` |
 | [Session list](session-list.md) | sidebar on every signed-in page | none |
 | [Settings](settings.md) | `/settings` | none |
 | [Knowledge graph and notes import](graph.md) | `/` | none |

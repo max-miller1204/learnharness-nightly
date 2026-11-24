@@ -1,6 +1,8 @@
 import type { E2EConfig } from "e2e";
 import { web } from "@e2e-dev/web";
 import { claudeCode, codex } from "@e2e-dev/acp";
+import { github } from "@e2e-dev/github";
+import { chatgpt } from "e2e/oauth/chatgpt";
 
 /**
  * End-to-end tests (tests/e2e/) and live drives over `npx e2e mcp`, against
@@ -10,8 +12,9 @@ import { claudeCode, codex } from "@e2e-dev/acp";
  *
  * `agent.act` and `agent.assert` run on a signed-in coding agent over ACP:
  * Claude Code by default (`claude` login), or Codex with `--agent codex`
- * (`codex login`). `agent.waitFor`, `agent.extract` and `e2e explore` need an
- * agent with an AI SDK `model`, which this config does not set.
+ * (`codex login`). `agent.waitFor`, `agent.extract` and `e2e explore` run
+ * e2e's own agent, which needs an AI SDK model: the owner's ChatGPT plan
+ * (`npx e2e login openai`, once per machine), read only when a step calls it.
  * The verify-learnharness skill (.agents/skills/) says how to use all of it.
  */
 const context = [
@@ -43,7 +46,11 @@ export default {
 		},
 	],
 	agents: {
-		default: { executor: claudeCode({ model: "sonnet" }), context },
-		codex: { executor: codex(), context },
+		default: { executor: claudeCode({ model: "sonnet" }), model: chatgpt("gpt-6-luna"), context },
+		codex: { executor: codex(), model: chatgpt("gpt-6-luna"), context },
+		// e2e's built-in agent on ChatGPT: `e2e explore --agent chatgpt` and bug bashes.
+		chatgpt: { model: chatgpt("gpt-6-luna"), context, maxSteps: 40, maxModelCalls: 40 },
 	},
+	// The PR comment and job summary on GitHub Actions; nothing elsewhere.
+	reporters: ["list", github()],
 } satisfies E2EConfig;

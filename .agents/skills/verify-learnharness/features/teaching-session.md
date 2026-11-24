@@ -14,7 +14,7 @@ Signed in, the Teaching button in the sidebar or `/chat/new`; type a goal and pr
 
 ## Driving it with e2e
 
-`tests/e2e/teaching-session.e2e.ts` (deterministic, fake model) and `tests/e2e/agent-teaching.e2e.ts` (tag `agent`: Claude Code starts the session from a plain-language goal). The fake model plays `tests/e2e/support/scenarios/teach.json` for any goal containing `zz-e2e`. Locators: `getByTestId("composer").getByRole("textbox")`, `getByTestId("question-dock")`, `getByRole("radio", /Blue/)`, the button "Submit answer". Wait for `/chat/chat_` in the URL before acting on the dock: the page moves there after the first turn.
+`tests/e2e/teaching-session.e2e.ts` (deterministic, fake model), `tests/e2e/math-rendering.e2e.ts` (tag `visual`: a screenshot of a reply's math) and `tests/e2e/agent-teaching.e2e.ts` (tag `agent`: Claude Code starts the session from a plain-language goal). The fake model plays `tests/e2e/support/scenarios/teach.json` for any goal containing `zz-e2e`. Locators: `getByTestId("composer").getByRole("textbox")`, `getByTestId("question-dock")`, `getByRole("radio", /Blue/)`, the button "Submit answer". Wait for `/chat/chat_` in the URL before acting on the dock: the page moves there after the first turn.
 
 ## Proof
 
