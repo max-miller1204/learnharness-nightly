@@ -1,7 +1,7 @@
 import { isPluginHostError } from "./plugin-host.ts";
 import { authRefusal } from "./auth.ts";
 import { MODEL_UNAVAILABLE, modelUnavailableMessage } from "../core/model-unavailable.ts";
-import { MODEL_SLOTS, MODELS_NOT_CONFIGURED_CODE, modelsNotConfigured, SUBSCRIPTION_UNREACHABLE_CODE, type ModelSlotName } from "../core/settings.ts";
+import { MODEL_SLOTS, MODELS_NOT_CONFIGURED_CODE, modelsNotConfigured, PROVIDER_KEY_MISSING_CODE, providerKeyMissing, SUBSCRIPTION_UNREACHABLE_CODE, type ModelSlotName } from "../core/settings.ts";
 import type { PluginFrontendContext, PluginInfo } from "../core/plugins.ts";
 
 /** Thin HTTP adapter, separately injectable so its tests never boot plugins. */
@@ -29,11 +29,23 @@ async function objectBody(request: Request): Promise<Record<string, unknown>> {
  * only the provider key is gone, or 503 when a subscription's status check
  * just failed. One refused because a slot it needs is unset throws code
  * "models_not_configured" with the `missing` slots, and the host answers 422
- * with the same setup envelope as a turn. */
+ * with the same setup envelope as a turn. Host inference with no provider key
+ * throws code "provider_key_missing" with the `provider`; a plugin that lets it
+ * escape gets the same key-missing envelope as a turn, with 422, but only for a
+ * provider id the host knows, matched exactly. Any other provider is the
+ * plugin's own error and keeps its message and status. */
 type KeyMissing = (provider: string, id: string) => object | null | Promise<object | null>;
-export function createPluginTransport(deps: { getHost(): Promise<PluginTransportHost>; directory: string; keyMissing?: KeyMissing }) {
+type KnownProvider = (provider: string) => boolean | Promise<boolean>;
+export function createPluginTransport(deps: { getHost(): Promise<PluginTransportHost>; directory: string; keyMissing?: KeyMissing; knownProvider?: KnownProvider }) {
 	const modelRefusal = async (error: unknown): Promise<Response | undefined> => {
-		const refusal = error as { code?: unknown; message?: unknown; model?: { provider?: unknown; id?: unknown }; missing?: unknown } | null;
+		const refusal = error as { code?: unknown; message?: unknown; model?: { provider?: unknown; id?: unknown }; missing?: unknown; provider?: unknown; slots?: unknown } | null;
+		if (refusal && typeof refusal === "object" && refusal.code === PROVIDER_KEY_MISSING_CODE && typeof refusal.provider === "string") {
+			const provider = refusal.provider;
+			if (provider.trim() && await deps.knownProvider?.(provider)) {
+				const slots = Array.isArray(refusal.slots) ? MODEL_SLOTS.filter((slot: ModelSlotName) => (refusal.slots as unknown[]).includes(slot)) : [];
+				return json(providerKeyMissing(provider, slots), 422);
+			}
+		}
 		if (refusal && typeof refusal === "object" && refusal.code === MODELS_NOT_CONFIGURED_CODE && Array.isArray(refusal.missing)) {
 			return json(modelsNotConfigured(MODEL_SLOTS.filter((slot: ModelSlotName) => (refusal.missing as unknown[]).includes(slot))), 422);
 		}
