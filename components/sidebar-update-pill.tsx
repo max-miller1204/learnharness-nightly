@@ -60,7 +60,7 @@ import { holdWhatsNew } from "@/components/whats-new-hold";
 import { UpdateReleaseNotes } from "@/components/release-notes-view";
 import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateDownloadedToast, showUpdateErrorToast, showUpdateEverythingResult, UNEXPECTED_ERROR } from "@/components/update-toasts";
 import { activeDesktopOffer, APP_VERSION, HOMEPAGE, desktopOffer, useDesktopAppUpdate, useUpdateState, type DesktopAppStatus, type UpdateState } from "@/components/settings/update-settings";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { focusVisible, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { downloadingTooltip, PREPARING_LABEL, retryTooltip } from "@/components/update-tooltips";
 import { cn } from "@/lib/utils";
 import { isExactVersion, isNewerVersion, sameReleaseTrack } from "@/selfhost/src/version-order.ts";
@@ -274,11 +274,6 @@ const CLOSE_DELAY_MS = 150;
 const TABBABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
 const tabbablesIn = (root: ParentNode | null | undefined): HTMLElement[] =>
 	root ? Array.from(root.querySelectorAll<HTMLElement>(TABBABLE)).filter((element) => element.getAttribute("tabindex") !== "-1" && !element.closest("[hidden], [inert]")) : [];
-
-/** Keyboard focus only, as components/ui/tooltip.tsx checks it (a DOM without :focus-visible counts as yes). */
-function focusVisible(element: Element): boolean {
-	try { return element.matches(":focus-visible"); } catch { return true; }
-}
 
 function useReducedMotion(): boolean {
 	const [reduced, setReduced] = useState(false);
