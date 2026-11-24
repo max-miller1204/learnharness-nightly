@@ -12,3 +12,5 @@ the feature file changes in the same commit.
 | [Session list](session-list.md) | sidebar on every signed-in page |
 | [Settings](settings.md) | `/settings` |
 | [Knowledge graph and notes import](graph.md) | `/` |
+| [Sidebar update pill and capsule](update-pill.md) | sidebar footer on every signed-in page |
+| [Client protocol](client-protocol.md) | `/.well-known/learnharness/server`, `/oauth/token`, `/api/*` |
