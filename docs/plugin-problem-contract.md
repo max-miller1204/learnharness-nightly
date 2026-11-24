@@ -13,10 +13,12 @@ This describes the matching source/build. Match the target app using the downloa
 - Native and plugin poses share the same synchronous one-active-problem gate and graph
   target validation. Failed/dangling poses do not activate a problem. An acknowledged
   pose ends the turn, including mixed tool batches, and owes no automatic continuation.
-  Before acknowledgment, the transcript shows a neutral working line for the call and
-  never its arguments, which include the committed solution and the tests. A call
-  that fails or never gets a result shows no arguments either. Accepted poses use the
-  statement-only problem card.
+  Before acknowledgment, the host's own transcript shows a neutral working line for the
+  call and never its arguments, which include the committed solution and the tests. A
+  call that fails or never gets a result shows no arguments either. A renderer
+  registered for the pose's tool name receives the full `input` while it streams and is
+  responsible for what it shows (see [plugin authoring](plugin-authoring.md)). Accepted
+  poses use the statement-only problem card.
 - Every pose has `statement`, `mode: "recall" | "discrimination" | "composition"`, optional
   `target: string[]`, required `modelSolution: string`, and plugin-defined `payload`.
   Common fields and their model-facing descriptions come from the native practice schema.
