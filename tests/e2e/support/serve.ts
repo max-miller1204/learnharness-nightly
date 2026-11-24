@@ -15,11 +15,18 @@
  * LH_E2E_SERVER=standalone serves the production build
  * (.next/standalone/server.js from `npm run build`) instead of `next dev`.
  * LH_E2E_SCENARIO=<file> picks another fake-model scenario.
+ * LH_E2E_FIXTURES=<dir>,<dir> copies each folder's chat_*.json and job_*.json
+ * into the data folder before the app starts (tests/fixtures/mobile-lesson).
+ * LH_E2E_TLS_PORT=<port> also serves the app over https on 127.0.0.1:<port>
+ * with a throwaway CA, for the phone app, which accepts only https servers
+ * (scripts/iphone-check/tls-cert.sh and tls-front.mjs); state.json names the
+ * address and the CA file.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import * as fs from "node:fs";
 import * as os from "node:os";
+import * as net from "node:net";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { issueSession } from "../../../selfhost/src/auth-store.ts";
@@ -57,6 +64,15 @@ const fixture = path.join(home, "zz-e2e-fixture.txt");
 const fixtureNoNewline = path.join(home, "zz-e2e-fixture-nonl.txt");
 fs.writeFileSync(fixture, "E2E-FIXTURE-SKY: Rayleigh scattering makes short (blue) wavelengths scatter most.\nzz-e2e second line.\n");
 fs.writeFileSync(fixtureNoNewline, "E2E-FIXTURE-NONL: this file has no final newline.\nzz-e2e last line, nothing after it.");
+// Session records and research jobs a test opens instead of teaching one first.
+for (const folder of (process.env.LH_E2E_FIXTURES ?? "").split(",").filter(Boolean)) {
+	for (const [prefix, target] of [["chat_", "chats"], ["job_", "jobs"]] as const) {
+		for (const file of fs.readdirSync(path.resolve(root, folder)).filter((name) => name.startsWith(prefix) && name.endsWith(".json"))) {
+			fs.mkdirSync(path.join(dataDir, target), { recursive: true });
+			fs.copyFileSync(path.resolve(root, folder, file), path.join(dataDir, target, file));
+		}
+	}
+}
 
 // A 1x1 PNG, for tests that put an image snapshot in a session record.
 const fixtureImage = path.join(home, "zz-e2e-image.png");
@@ -170,11 +186,23 @@ function passThrough(from: NodeJS.ReadableStream, to: NodeJS.WritableStream) {
 }
 passThrough(app.stdout!, process.stdout);
 passThrough(app.stderr!, process.stderr);
+// TLS in front of the app for the phone: a throwaway CA and a certificate for 127.0.0.1.
+let tlsFront: ChildProcess | undefined;
+const tlsPort = process.env.LH_E2E_TLS_PORT;
+let tls: InstanceState["tls"];
+if (tlsPort) {
+	const tlsDir = path.join(dir, "tls");
+	const made = spawnSync("bash", [path.join(root, "scripts/iphone-check/tls-cert.sh"), tlsDir], { stdio: ["ignore", "ignore", "inherit"] });
+	if (made.status !== 0) process.exit(made.status ?? 1);
+	tlsFront = spawn(process.execPath, [path.join(root, "scripts/iphone-check/tls-front.mjs"), tlsPort, port, path.join(tlsDir, "cert.pem"), path.join(tlsDir, "key.pem")], { stdio: ["ignore", "inherit", "inherit"] });
+	tls = { url: `https://127.0.0.1:${tlsPort}`, ca: path.join(tlsDir, "ca.pem") };
+}
 
 let stopping = false;
 async function stop(code: number) {
 	if (stopping) return;
 	stopping = true;
+	tlsFront?.kill();
 	if (app.pid && app.exitCode === null) {
 		try { process.kill(-app.pid, "SIGTERM"); } catch { /* already gone */ }
 		const deadline = Date.now() + 10_000;
@@ -202,6 +230,12 @@ async function until(what: string, timeoutMs: number, check: () => Promise<boole
 	await stop(1);
 }
 await until("/api/health answering", 180_000, async () => (await fetch(`${appUrl}/api/health`)).ok);
+if (tls) {
+	await until("the TLS front accepting", 10_000, () => new Promise<boolean>((resolve) => {
+		const socket = net.connect(Number(tlsPort), "127.0.0.1", () => { socket.destroy(); resolve(true); });
+		socket.on("error", () => resolve(false));
+	}));
+}
 
 // Seed the fake model the way Settings does, signed in as a hidden CLI session.
 const { token } = issueSession(dataDir, { method: "cli", hidden: true, ttlMs: 3600_000, client: { label: "e2e seed", deviceType: "bot" } });
@@ -241,7 +275,7 @@ if (mode === "dev") {
 	for (const route of ["/pair", "/chat/new", "/chat/chat_zzwarmup"]) await warm(route, route === "/pair" ? {} : { authorization: `Bearer ${token}` }).catch(() => {});
 }
 
-const state: InstanceState = { appUrl, mode, dataDir, home, authFile, modelLog, fixture, fixtureNoNewline, fixtureImage, fakeModel: fake.url, fakeControl: fake.control, scenario, ...(launchId ? { launchId } : {}), pid: process.pid };
+const state: InstanceState = { appUrl, mode, dataDir, home, authFile, modelLog, fixture, fixtureNoNewline, fixtureImage, fakeModel: fake.url, fakeControl: fake.control, scenario, tls, ...(launchId ? { launchId } : {}), pid: process.pid };
 fs.writeFileSync(stateFile(port), `${JSON.stringify(state, null, 2)}\n`);
 // Last, so a reader that finds the record finds a usable instance.
 if (launchId) publishLaunch(launchId, port);

@@ -4,7 +4,7 @@ import { expect } from "e2e";
 // Agent steps run on the signed-in coding agent in e2e.config.ts (Claude Code
 // by default). A passing run records the agent's actions in .e2e/cache, and
 // later runs replay them with no model call until the screen changes.
-describe("teaching session, driven by an agent", { session: "learner", tags: ["agent"] }, () => {
+describe("teaching session, driven by an agent", { session: "learner", tags: ["agent"], requires: ["browser"] }, () => {
 	test("the agent starts a session from a plain-language goal", async ({ app, agent, screen }) => {
 		await app.open("/");
 

@@ -7,7 +7,7 @@ import { instance, probeResults, sessionRequests, storedChat, type InstanceState
 
 // Plays tests/e2e/support/scenarios/teach.json on the fake model: the goal
 // makes the tutor read two files, ask one question, then acknowledge the answer.
-describe("teaching session", { session: "learner" }, () => {
+describe("teaching session", { session: "learner", requires: ["browser"] }, () => {
 	let state: InstanceState;
 	// A unique goal per test, so a session left by another test never matches.
 	let goal: string;

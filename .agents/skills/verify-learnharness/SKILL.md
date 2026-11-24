@@ -15,6 +15,16 @@ reference for everything e2e does; this skill only says how it applies here.
 It drives `e2e.config.ts` and the tests under `tests/e2e/**/*.e2e.ts`. The
 node unit tests (`npm test`, `tests/*.test.ts`) are a separate suite.
 
+The config declares a `web` and an `ios` target, and every command names one with `--target`:
+
+- `web`: the web app in a Chromium browser, on any machine. Its tests import
+  from `@e2e-dev/web` and declare `requires: ["browser"]`.
+- `ios`: the phone app (`apps/mobile`) on an iOS Simulator, on a Mac with
+  Xcode only. Its tests import from `tests/e2e/support/phone.ts` and declare
+  `requires: ["native-app"]`. [Phone](features/phone.md) has its launch,
+  drive and cleanup; the rest of this page is about `web` unless it says
+  otherwise.
+
 ## Launch
 
 You never start the app by hand. The config's `app.command` runs
@@ -57,8 +67,8 @@ any number of instances can share.
 Run these first, and again whenever anything looks off:
 
 ```bash
-npx e2e list                                   # config loads, every test listed; starts nothing
-npx e2e run tests/e2e/pairing.e2e.ts --retries 0   # the app boots, pairing works, a signed-in landmark renders
+npx e2e list --target web                      # config loads, every test listed; starts nothing
+npx e2e run --target web tests/e2e/pairing.e2e.ts --retries 0   # the app boots, pairing works, a signed-in landmark renders
 ```
 
 Exit `0` on both means the app starts, the engine runs, and sign-in works.
@@ -81,14 +91,14 @@ pressing Pair spends the code.
 
 **Scripted.** Write or extend a test under `tests/e2e/` for each flow the
 change touches (topic `writing-tests`), run only it
-(`npx e2e run tests/e2e/<feature>.e2e.ts:<line> --retries 0`), then the whole
-suite (`npx e2e run --exclude-tag agent`; add the agent tests
+(`npx e2e run --target web tests/e2e/<feature>.e2e.ts:<line> --retries 0`), then the whole
+suite (`npx e2e run --target web --exclude-tag agent`; add the agent tests
 when the change reaches what they drive). Stable handles here are
 `data-testid` (`composer`, `question-dock`, `session-row`, `settings-entry`,
 `stats-model`), roles and accessible names. Question options are radios
 named with their letter badge ("A Blue"), so match them with a RegExp.
 
-**Live.** `npx e2e mcp` is registered in `.mcp.json` and `.codex/config.toml`.
+**Live.** `npx e2e mcp --target web` is registered in `.mcp.json` and `.codex/config.toml`.
 `open_session` starts the same isolated instance; `observe`, `locate` before
 you write a locator, then copy each action's `Test line:` into the test
 (topic `mcp`). For a signed-in page, `open_session {test: "tests/e2e/pairing.e2e.ts:<line>"}`
@@ -119,12 +129,13 @@ of them: `modelRequests(state)`; tests share the instance, so filter by your
 goal); each line names the rule it matched, and a rule that never fired means
 the scenario fell through to its fallback.
 
-**What e2e does not drive.** The web target reaches the web UI and the HTTP API
-only. Not driven: the Electron desktop window, the phone app (`apps/mobile`)
-unless the config has a mobile target, and the self-hosted `lh` launcher
+**What e2e does not drive.** The `web` target reaches the web UI and the HTTP API
+only. Not driven: the Electron desktop window and the self-hosted `lh` launcher
 (`selfhost/`) with its update and rollback flow
-([#447](https://github.com/max-miller1204/learnharness-nightly/issues/447)).
-For those, run their own tests (`node --test selfhost/tests/*.test.ts`,
+([#447](https://github.com/max-miller1204/learnharness-nightly/issues/447)); on
+the phone, what [Phone](features/phone.md) lists. A phone change is driven with
+the `ios` target on a Mac; where there is no Mac, say that it was not driven.
+For the rest, run their own tests (`node --test selfhost/tests/*.test.ts`,
 `cd apps/mobile && npm test`) and say in the handover that the surface was not
 driven.
 
@@ -167,7 +178,7 @@ baseline to make an unexplained diff pass. A `-darwin.png` baseline does not
 exist: on a Mac, run with `--exclude-tag visual` or leave the missing-baseline
 failure out of the verdict.
 
-CI runs `npx e2e run --exclude-tag agent` on the Linux standalone build
+CI runs `npx e2e run --target web --exclude-tag agent` on the Linux standalone build
 (`.github/workflows/ci.yml`, job Standalone (linux-x64)). It writes the results
 to the job summary (`@e2e-dev/github`, with no token), uploads
 `.e2e/report.json`, `junit.xml` and `results/` as the `e2e-report` artifact and
@@ -205,11 +216,15 @@ once the bug is fixed, drop the tag and keep the test as a regression.
 ## Cleanup
 
 The runner stops the app it started, and `close_session` stops the one an
-MCP session started; serve.ts takes the fake model down with it. Never kill
-by process name. Cleanup never removes `.e2e/proof/` or `.e2e/report.json`.
+MCP session started; serve.ts takes the fake model (and, for the phone, the
+TLS front) down with it. Never kill by process name. Cleanup never removes
+`.e2e/proof/` or `.e2e/report.json`. The phone's simulator, build folder and
+DerivedData have their own cleanup in [Phone](features/phone.md).
 
 ## Helpers
 
 - `tests/e2e/support/serve.ts`: the launcher above (run by the config, not by hand).
 - `tests/e2e/support/instance.ts`: `instance(app.baseUrl)`, `modelRequests`, `storedChat`.
 - `tests/e2e/support/fake-model.ts`: the scripted model; its header documents the scenario format.
+- `tests/e2e/support/ios.sh`: `build`, `device-create` and `device-delete` for the phone.
+- `tests/e2e/support/phone.ts` and `phone-config.ts`: the phone's `test`, its pairing helpers, and the ports and paths the config shares with the tests.

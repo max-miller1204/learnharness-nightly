@@ -217,7 +217,7 @@ jobs:
         env:
           LH_E2E_SERVER: standalone
           E2E_TELEMETRY_DISABLED: "1"
-        run: npx e2e run --exclude-tag agent --max-failures 3 --reporter list,junit,markdown
+        run: npx e2e run --target web --exclude-tag agent --max-failures 3 --reporter list,junit,markdown
       # .e2e/ is a hidden folder, which upload-artifact skips unless told not to.
       - name: Upload the e2e report
         if: ${{ !cancelled() && matrix.platform == 'linux-x64' }}

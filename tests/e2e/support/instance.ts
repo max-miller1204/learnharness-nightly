@@ -27,6 +27,8 @@ export type InstanceState = {
 	launchId?: string;
 	/** serve.ts's pid. */
 	pid: number;
+	/** Set when serve.ts ran with LH_E2E_TLS_PORT: the https address in front of the app and the CA file that signs it. */
+	tls?: { url: string; ca: string };
 };
 
 /** Outside the checkout: `next dev` reloads the page when a file under it changes. */
@@ -99,6 +101,14 @@ export async function pairingCode(id: string): Promise<string> {
 	if (state.launchId !== id || state.pid !== pid) throw new Error(`the instance on port ${port} is not launch ${id} (it serves ${state.launchId ?? "no launch"}, pid ${state.pid})`);
 	return formatCode(createPairingLink(state.dataDir, { label: "e2e" }).code);
 }
+
+/**
+ * The `ios` target's server is a second launch of the same run: its id is
+ * derived from the run's (last hex digit swapped), so the runner, the workers
+ * and the secret provider, which all evaluate the config, agree on it without
+ * a handoff of their own.
+ */
+export const phoneLaunchId = (id: string) => `${id.slice(0, -1)}${id.endsWith("0") ? "1" : "0"}`;
 
 /** The instance behind `baseUrl`, once serve.ts has finished seeding it. */
 export async function instance(baseUrl: string, timeoutMs = 120_000): Promise<InstanceState> {

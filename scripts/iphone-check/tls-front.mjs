@@ -5,7 +5,7 @@
  * The phone app accepts only https:// servers, and the prove server listens
  * on plain HTTP. This ends TLS on 127.0.0.1:<listen port> and passes the raw
  * bytes to 127.0.0.1:<http port>, so streams and every route behave as they
- * do behind any TLS proxy. Used only by the iPhone simulator driver (drive.mjs).
+ * do behind any TLS proxy. Used by the iPhone simulator driver (drive.mjs) and by tests/e2e/support/serve.ts.
  */
 import { readFileSync } from "node:fs";
 import net from "node:net";

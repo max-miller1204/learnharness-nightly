@@ -1,18 +1,24 @@
 import type { E2EConfig } from "e2e";
 import { web } from "@e2e-dev/web";
+import { mobile } from "@e2e-dev/mobile";
 import { claudeCode, codex } from "@e2e-dev/acp";
 import { github } from "@e2e-dev/github";
 import { chatgpt } from "e2e/oauth/chatgpt";
-import { LAUNCH_ID_ENV, launchIdForConfig, pairingCode } from "./tests/e2e/support/instance.ts";
+import { LAUNCH_ID_ENV, launchIdForConfig, pairingCode, phoneLaunchId } from "./tests/e2e/support/instance.ts";
+import { phoneAppPath, phoneBundleId, phonePort, phoneTlsPort } from "./tests/e2e/support/phone-config.ts";
 
-// Names this launch for serve.ts and the pairing-code secret (instance.ts).
+// Names this launch for serve.ts and the pairing-code secrets (instance.ts).
 const launchId = launchIdForConfig();
 
 /**
  * End-to-end tests (tests/e2e/) and live drives over `npx e2e mcp`, against
- * one isolated LearnHarness per run: tests/e2e/support/serve.ts starts it on a
- * free port with a throwaway data folder and a scripted fake model, so tests
- * that use no `agent` step need no model and no provider key.
+ * one isolated LearnHarness per run: tests/e2e/support/serve.ts starts it with
+ * a throwaway data folder and a scripted fake model, so tests that use no
+ * `agent` step need no model and no provider key. The targets share it:
+ * `web` (a browser, on a free port) and `ios` (the phone app, apps/mobile, on
+ * an iOS Simulator, on fixed ports behind TLS). A run names its target with
+ * `--target` (the npm scripts and the MCP server settings do); the phone's
+ * build and simulator come from tests/e2e/support/ios.sh.
  *
  * `agent.act` and `agent.assert` run on a signed-in coding agent over ACP:
  * Claude Code by default (`claude` login), or Codex with `--agent codex`
@@ -37,6 +43,7 @@ export default {
 	timeout: 180_000,
 	targets: [
 		{
+			name: "web",
 			// Fixed locale, zone and motion, so a Mac and CI Linux render the same.
 			engine: web({ viewport: { width: 1280, height: 900 }, locale: "en-US", timezoneId: "UTC", reducedMotion: "reduce" }),
 			app: {
@@ -54,6 +61,33 @@ export default {
 				},
 			},
 		},
+		{
+			name: "ios",
+			// The simulator is pinned (E2E_IOS_DEVICE: its udid or name): left unset, the pool is every
+			// booted simulator, shared ones included.
+			engine: mobile({ platform: "ios", device: process.env.E2E_IOS_DEVICE }),
+			app: {
+				bundleId: phoneBundleId,
+				appPath: phoneAppPath,
+				// No url on a device target, so no {port}: the server takes the fixed ports.
+				readyUrl: `http://127.0.0.1:${phonePort}/api/health`,
+				command: {
+					executable: "node",
+					args: ["tests/e2e/support/serve.ts", phonePort],
+					env: {
+						// A launch of its own: a run can start both targets, and each server records itself under its id.
+						[LAUNCH_ID_ENV]: phoneLaunchId(launchId),
+						LH_E2E_TLS_PORT: phoneTlsPort,
+						LH_E2E_FIXTURES: "tests/fixtures/mobile-lesson,tests/fixtures/mobile-quiz",
+						LH_E2E_SCENARIO: "tests/fixtures/mobile-quiz/scenario.json",
+					},
+					inheritEnv: ["LH_E2E_SERVER"],
+					startupTimeout: 240_000,
+					shutdownTimeout: 20_000,
+					log: ".e2e/logs/app-ios.log",
+				},
+			},
+		},
 	],
 	agents: {
 		default: { executor: claudeCode({ model: "sonnet" }), model: chatgpt("gpt-6-luna"), context },
@@ -63,7 +97,7 @@ export default {
 	},
 	// A fresh pairing code for the run's instance, filled as a secret handle so
 	// the code stays out of the report, traces and the model's input.
-	secrets: { "pairing-code": () => pairingCode(launchId) },
+	secrets: { "pairing-code": () => pairingCode(launchId), "phone-pairing-code": () => pairingCode(phoneLaunchId(launchId)) },
 	// The job summary on GitHub Actions; nothing elsewhere. It posts no PR comment
 	// without a token, and ci.yml gives the e2e step none: a separate job posts it.
 	reporters: ["list", github()],
