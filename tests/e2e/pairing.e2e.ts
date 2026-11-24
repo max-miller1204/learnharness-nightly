@@ -1,0 +1,30 @@
+import { describe, test } from "@e2e-dev/web";
+import { expect } from "e2e";
+import { pairWithCode } from "./support/pair.ts";
+
+describe("pairing a browser", () => {
+	test("a signed-out page shows the pairing screen", async ({ app, screen }) => {
+		await app.open("/chat/new");
+
+		await expect(screen.getByRole("heading", "Pair this device")).toBeVisible({ timeout: 60_000 });
+		await expect(screen.getByTestId("settings-entry")).not.toBeVisible();
+	});
+
+	test("a wrong code is refused", async ({ app, screen }) => {
+		await app.open("/pair");
+
+		await screen.getByLabel("Pairing code").fill("AAAA-BBBB-CCCC");
+		await screen.getByRole("button", "Pair").click();
+
+		await expect(screen.getByTestId("pair-error")).toBeVisible();
+		await expect(screen.getByTestId("settings-entry")).not.toBeVisible();
+	});
+
+	test("a code typed on the pairing screen signs the browser in", async ({ app, screen }) => {
+		await app.open("/pair");
+
+		await pairWithCode(screen);
+
+		await expect(screen.getByTestId("settings-entry")).toBeVisible({ timeout: 60_000 });
+	});
+});

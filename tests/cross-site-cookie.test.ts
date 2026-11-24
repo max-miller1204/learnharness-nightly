@@ -64,7 +64,7 @@ describe("the login gate (proxy.ts), every signed-in route", () => {
 		const cookie = `${cookieName()}=${mintToken()}`;
 		const chats = (headers: Record<string, string>, method = "POST", url = `${origin}/api/chats`) =>
 			proxy(new NextRequest(url, { method, headers: { cookie, host, ...headers } }));
-		// The answer key's request (prove-learnharness references/api.md, issue #303).
+		// The request from issue #303.
 		assert.equal(chats({ "sec-fetch-site": "cross-site", "content-type": "application/json" }).status, 403, "cross-site, fetch metadata only");
 		assert.equal(chats(FETCH.crossSite).status, 403, "cross-site");
 		assert.equal(chats(FETCH.sameSite).status, 403, "same-site");

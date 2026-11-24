@@ -318,7 +318,7 @@ describe("workflow action versions", () => {
 	const sources: Record<string, { path: string; expected: string[]; npmCache: boolean }> = {
 		"ci.yml": {
 			path: "../.github/workflows/ci.yml",
-			expected: ["actions/checkout@v7", "actions/setup-node@v7", "./.github/actions/setup-deps", "actions/cache/restore@v6", "actions/cache/save@v6"],
+			expected: ["actions/checkout@v7", "actions/setup-node@v7", "./.github/actions/setup-deps", "actions/cache/restore@v6", "actions/cache/save@v6", "actions/cache@v6", "actions/upload-artifact@v7"],
 			npmCache: false,
 		},
 		"setup-deps": {

@@ -1,0 +1,107 @@
+name: e2e comment
+
+# Posts the e2e results of a CI run as one pull request comment, kept current.
+#
+# Trusted half: workflow_run always runs the default branch's copy of this
+# file, so a pull request cannot change the steps that hold the write token.
+# It checks out nothing and runs no PR code. The summary the CI run uploaded
+# (e2e-summary-<attempt>, written by the e2e markdown reporter) is data: it is
+# cleaned, has its @ defused and is cut to size, then goes to `gh` as a file
+# and never into a shell word. A header built from GitHub's own metadata (the
+# commit, the run, its conclusion) comes first, so nothing in the summary can
+# stand in for it. The PR comes from the CI run's own `pull_requests`, which is
+# empty for a fork's PR, so those are skipped (a fork's run has only a
+# read-only token and its results stay in the job summary); so are Dependabot's
+# runs and cancelled runs. Posting is best effort and never fails this
+# workflow. Because GitHub reads this file from the default branch, a change to
+# it takes effect only after it merges.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  comment:
+    name: Comment
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.path == '.github/workflows/ci.yml' &&
+      github.event.workflow_run.conclusion != 'cancelled' &&
+      github.event.workflow_run.triggering_actor.login != 'dependabot[bot]' &&
+      github.event.workflow_run.pull_requests[0].number != ''
+    concurrency:
+      group: e2e-comment-${{ github.event.workflow_run.pull_requests[0].number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      pull-requests: write
+    steps:
+      # The attempt is in the name: a rerun keeps the run id and the commit, and
+      # must read its own summary, not the first attempt's.
+      - name: Download the summary
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: e2e-summary-${{ github.event.workflow_run.run_attempt }}
+          path: ${{ runner.temp }}/e2e-summary
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Post the comment
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SUMMARY_DIR: ${{ runner.temp }}/e2e-summary
+        run: |
+          # Each step that can fail ends in `|| return 1`: `if ! post` turns errexit off inside it.
+          post() {
+            case "$PR_NUMBER" in ''|*[!0-9]*) echo "no pull request for this run"; return 0 ;; esac
+            # A run for an older commit must not overwrite the newer one's comment.
+            current=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq .head.sha) || return 1
+            if [ "$current" != "$HEAD_SHA" ]; then echo "the pull request moved on to $current"; return 0; fi
+            marker='<!-- learnharness-e2e-summary -->'
+            summary="$SUMMARY_DIR/summary.md"
+            body="$RUNNER_TEMP/body.md"
+            short=$(printf '%.7s' "$HEAD_SHA")
+            {
+              echo "$marker"
+              printf '**e2e** for commit `%s`, [CI run](%s) attempt %s, conclusion: %s\n\n' "$short" "$RUN_URL" "$RUN_ATTEMPT" "$RUN_CONCLUSION"
+            } > "$body"
+            if [ -f "$summary" ] && [ ! -L "$summary" ] && [ -s "$summary" ]; then
+              have=1
+              # The summary is data. Drop invalid UTF-8 and control characters, defuse
+              # @mentions, and only then cut it to GitHub's limit on a character boundary.
+              python3 - "$summary" >> "$body" <<'PY'
+          import sys
+          text = open(sys.argv[1], "rb").read().decode("utf-8", "ignore")
+          text = "".join(c for c in text if c in "\n\t" or (ord(c) >= 32 and ord(c) != 127))
+          text = text.replace("@", "@\u200b")
+          sys.stdout.write(text.encode("utf-8")[:60000].decode("utf-8", "ignore"))
+          PY
+              [ "$?" = 0 ] || return 1
+            else
+              have=0
+              echo "No e2e summary was written for this run." >> "$body"
+            fi
+            gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+              --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | startswith("<!-- learnharness-e2e-summary -->")) | .id' > "$RUNNER_TEMP/ids.txt" || return 1
+            id=$(sed -n 1p "$RUNNER_TEMP/ids.txt")
+            if [ -n "$id" ]; then
+              gh api -X PATCH "repos/$GH_REPO/issues/comments/$id" -F body=@"$body" > /dev/null || return 1
+            elif [ "$have" = 1 ]; then
+              gh api -X POST "repos/$GH_REPO/issues/$PR_NUMBER/comments" -F body=@"$body" > /dev/null || return 1
+            fi
+          }
+          # Best effort: a read-only token or an API error is reported, never a failed run.
+          if ! (post); then echo "::warning::the e2e comment was not posted"; fi
+          exit 0

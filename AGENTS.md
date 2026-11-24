@@ -13,6 +13,10 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - New specs are GitHub issues titled `Spec: <topic>`, published by idea-to-spec and revised in place. `docs/specs/` keeps the specs of shipped work.
 - Docs and code comments hold only what stays true: no status tables, done or later lists, counts, or "currently", "not yet" or "today" claims. Specs are exempt.
 
+## Verification
+
+- Prove a change in the running app with the `verify-learnharness` skill (`.agents/skills/verify-learnharness/`), built on e2e (`e2e.config.ts`, `tests/e2e/`), before saying it is done or merging. When a route or label a test relies on changes, update the test and its feature file in the same commit.
+
 ## User data
 
 - On-disk user data acquires compatibility obligations: persistent-schema changes are migrations with tolerant reads, not free edits plus wipe-your-dev-data. `data/jobs/` is scratch/transient, with no obligation.

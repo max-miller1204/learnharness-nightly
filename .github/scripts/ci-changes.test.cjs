@@ -10,7 +10,7 @@ const none = { typecheck: false, test: false, selfhost: false, standalone: false
 const all = { typecheck: true, test: true, selfhost: true, standalone: true, mobile: false };
 
 test("docs-only and other inert changes skip every gated job", () => {
-	assert.deepEqual(decide(["docs/self-hosting.md", "README.md", ".claude/skills/x/SKILL.md", ".github/workflows/pr-agent.yml", "docs/specs/ci-foundation.md"]), none);
+	assert.deepEqual(decide(["docs/self-hosting.md", "README.md", ".claude/skills/x/SKILL.md", ".agents/skills/x/SKILL.md", ".mcp.json", ".codex/config.toml", ".github/workflows/pr-agent.yml", "docs/specs/ci-foundation.md"]), none);
 });
 
 test("docs the app or plugin-authoring bundle ships run everything", () => {
@@ -27,8 +27,8 @@ test("test-only changes run typecheck and tests but no standalone build", () => 
 	assert.deepEqual(decide(["tests/jobs.test.ts", "tests/demos.test.tsx"]), { ...none, typecheck: true, test: true });
 });
 
-test("native renderer tests, helpers and fixtures also run the standalone builds", () => {
-	for (const file of ["tests/pdf-native-render.test.ts", "tests/browser-service.test.ts", "tests/helpers/tiny-pdf.ts", "tests/fixtures/a.json"]) {
+test("native renderer tests, helpers, fixtures and the e2e suite also run the standalone builds", () => {
+	for (const file of ["tests/pdf-native-render.test.ts", "tests/browser-service.test.ts", "tests/helpers/tiny-pdf.ts", "tests/fixtures/a.json", "tests/e2e/pairing.e2e.ts"]) {
 		assert.deepEqual(decide([file]), all, file);
 	}
 });

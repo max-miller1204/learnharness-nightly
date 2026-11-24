@@ -2,7 +2,7 @@ name: Dependabot auto-merge
 
 # Queues auto-merge (squash) on Dependabot's minor and patch PRs, so they merge
 # once `Check` is green. Majors and anything touching Pi or typebox wait for an
-# agent (a review round and prove-learnharness). The fork bot App token turns
+# agent (a review round and a verify-learnharness run). The fork bot App token turns
 # auto-merge on: a merge queued with the built-in token pushes to main without
 # starting CI or the nightly. See docs/specs/dependency-updates.md.
 #
