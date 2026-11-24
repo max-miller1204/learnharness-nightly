@@ -133,6 +133,8 @@ class TestWindow extends EventEmitter {
 	static all: TestWindow[] = [];
 	/** While set, a window's own page waits for it before a frame. */
 	static frameGate: Promise<void> | null = null;
+	/** Runs for each load of a page that is not the app's own, after the window's URL is set. */
+	static pageLoad: ((win: TestWindow, url: string) => Promise<void>) | null = null;
 	/** Opacity, show and own-page frame steps, in order. */
 	steps: string[] = [];
 	/** The windows created since `before`, in order. */
@@ -194,6 +196,7 @@ class TestWindow extends EventEmitter {
 		if (!url.startsWith("file:")) this.atLoad ??= this.contentView.children.map((view) => view.painted);
 		this.url = url;
 		this.webContents.mainFrame.url = url;
+		if (!url.startsWith("file:")) await TestWindow.pageLoad?.(this, url);
 	}
 	async loadFile(file: string, { query }: { query?: Record<string, string> } = {}) {
 		await this.loadURL(pathToFileURL(file).href + (query ? `?${new URLSearchParams(query)}` : ""));
@@ -1280,7 +1283,7 @@ type Published = { busy: boolean; removing: boolean; problem: { server: string; 
 async function removalFixture(t: test.TestContext, { defaultServer = beta as string | null, setUp = true, content = "", platform = "linux" } = {}) {
 	const directory = await fs.mkdtemp(path.join(tmpdir(), "lh-desktop-remove-"));
 	const originalFetch = globalThis.fetch;
-	t.after(async () => { globalThis.fetch = originalFetch; await fs.rm(directory, { recursive: true, force: true }); });
+	t.after(async () => { globalThis.fetch = originalFetch; TestWindow.pageLoad = null; await fs.rm(directory, { recursive: true, force: true }); });
 	const file = path.join(directory, "servers.json");
 	await fs.writeFile(file, content || JSON.stringify({
 		defaultServer, version: 1, ...(setUp ? {} : { setUp: false }),
@@ -1294,6 +1297,8 @@ async function removalFixture(t: test.TestContext, { defaultServer = beta as str
 		calls: [] as string[],
 		/** While set for an origin, its descriptor requests wait for the promise. */
 		holdDescriptor: new Map<string, Promise<void>>(),
+		/** While set for an origin, its page loads wait for the promise, or for their window to close. */
+		holdPage: new Map<string, Promise<void>>(),
 		/** Origins (or an origin and path) whose next answers are 503s, by count. */
 		unavailable: new Map<string, number>(),
 		/** The server an Update everything run is updating. */
@@ -1363,6 +1368,22 @@ async function removalFixture(t: test.TestContext, { defaultServer = beta as str
 		if (url.pathname === PROTOCOL_ROUTES.session) return Response.json({ authenticated: true });
 		if (url.pathname === PROTOCOL_ROUTES.token) return Response.json({ access_token: url.origin === alpha ? "alpha-secret" : "beta-secret", token_type: "Bearer" });
 		throw new Error("Unexpected request " + url.pathname);
+	};
+	// A page load goes through the window's own session, so it carries what the remote window adds.
+	TestWindow.pageLoad = async (win, url) => {
+		const origin = new URL(url).origin;
+		let bearer: string | null = null;
+		const respond = (answer: { requestHeaders?: Record<string, string> }) => { bearer = answer.requestHeaders?.Authorization ?? answer.requestHeaders?.authorization ?? null; };
+		const details = { resourceType: "mainFrame", method: "GET", url, webContentsId: win.webContents.id, requestHeaders: {} };
+		(win.options.webPreferences?.session as TestSession | undefined)?.beforeSend?.(details, respond);
+		fixture.calls.push(`${origin} /page ${bearer ?? "-"}`);
+		const gate = fixture.holdPage.get(origin);
+		if (!gate) return;
+		// A window destroyed during its load ends the load, as Electron's loadURL does.
+		await new Promise<void>((resolve, reject) => {
+			win.once("closed", () => reject(Object.assign(new Error("The load was aborted."), { code: "ERR_ABORTED" })));
+			void gate.then(resolve);
+		});
 	};
 	type FakeEvent = { sender: TestWindow["webContents"]; senderFrame: { url: string } };
 	let handler!: (event: FakeEvent, action: string, payload?: unknown) => Promise<unknown>;
@@ -1713,59 +1734,79 @@ test("a reopen or launch during a removal never reconnects the server being remo
 	}
 });
 
+/** Whether the Switch server… panel is open, without opening it. */
+const listOpen = () => TestWindow.all.some((win) => !win.destroyed && win.url.includes("server-list.html"));
+/** A promise and the function that settles it. */
+function gate() {
+	let open!: () => void;
+	const closed = new Promise<void>((resolve) => { open = resolve; });
+	return { closed, open };
+}
+/** Settles with "waiting" if `promise` is still pending after `ms`. */
+const settledWithin = (promise: Promise<unknown>, ms = 500) => Promise.race([promise.then(() => "settled"), new Promise<string>((resolve) => setTimeout(() => resolve("waiting"), ms))]);
+function endFixture(list: Awaited<ReturnType<typeof removalFixture>>) {
+	list.controller.close();
+	for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
+}
+
 test("choosing a server returns a plain result across the IPC bridge, never the native window", async (t) => {
-	const list = await removalFixture(t);
-	for (const server of ["local", alpha]) {
+	for (const [server, opened] of [["local", "http://localhost:3000"], [alpha, alpha]] as const) {
+		const list = await removalFixture(t);
 		const result = await list.send("connect", server);
 		assert.doesNotThrow(() => structuredClone(result), `${server}: the handler's result can cross IPC`);
-		list.controller.close();
-		for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
+		assert.equal((list.controller.appWindow() as TestWindow | null)?.url, opened, `${server}: the requested server opened`);
+		endFixture(list);
 	}
 });
 
 test("a Remove confirmed during a busy connect ends that connect and removes the server", async (t) => {
 	const list = await removalFixture(t);
+	t.after(() => endFixture(list));
 	// A reconnect of the open server is busy (its descriptor check waits) while the confirm is open.
 	await list.controller.launch();
-	let confirm!: () => void;
-	list.dialogGates.push(new Promise<void>((resolve) => { confirm = resolve; }));
+	const confirm = gate();
+	list.dialogGates.push(confirm.closed);
 	const removal = list.send("remove", beta);
 	await until(() => list.asked.length > 0);
-	let release!: () => void;
-	list.holdDescriptor.set(beta, new Promise<void>((resolve) => { release = resolve; }));
-	const reopened = list.controller.reopen();
-	await until(() => list.calls.some((call) => call.startsWith(`${beta} ${PROTOCOL_ROUTES.serverInfo}`)));
-	assert.equal((await list.state()).busy, true, "the reconnect is busy");
+	const descriptor = gate();
+	list.holdDescriptor.set(beta, descriptor.closed);
 	const sent = list.calls.length;
-	confirm();
+	const reopened = list.controller.reopen();
+	await until(() => list.calls.slice(sent).some((call) => call.startsWith(`${beta} ${PROTOCOL_ROUTES.serverInfo}`)));
+	assert.ok(list.calls.slice(sent).some((call) => call.startsWith(`${beta} ${PROTOCOL_ROUTES.serverInfo}`)), "the reconnect itself is waiting on the descriptor");
+	assert.equal((await list.state()).busy, true, "the reconnect is busy");
+	const confirmed = list.calls.length;
+	confirm.open();
 	await removal;
 	await reopened;
-	release();
+	descriptor.open();
 	await settle();
+	assert.equal(listOpen(), true, "the list stays open for the keyboard");
 	const state = await list.state();
 	assert.deepEqual(state.servers, [alpha], "the confirmed removal happened");
 	assert.equal(state.busy, false);
 	assert.equal(state.removing, false);
 	assert.equal(list.controller.current(), null, "no window onto the removed server");
-	assert.deepEqual(removedBearer(list, sent), [], "the removed bearer is never sent after the confirm");
-	assert.ok(TestWindow.all.some((win) => !win.destroyed), "the app keeps a window (the list) meanwhile");
+	assert.deepEqual(removedBearer(list, confirmed), [], "the removed bearer is never sent after the confirm");
 	assert.deepEqual((await openServerList(list.file, fakeSafeStorage)).origins, [alpha]);
 });
 
 test("a Remove confirmed during a busy connect to another server waits for it, then removes", async (t) => {
 	const list = await removalFixture(t);
-	let confirm!: () => void;
-	list.dialogGates.push(new Promise<void>((resolve) => { confirm = resolve; }));
+	t.after(() => endFixture(list));
+	const confirm = gate();
+	list.dialogGates.push(confirm.closed);
 	const removal = list.send("remove", alpha);
 	await until(() => list.asked.length > 0);
-	let release!: () => void;
-	list.holdDescriptor.set(beta, new Promise<void>((resolve) => { release = resolve; }));
+	const descriptor = gate();
+	list.holdDescriptor.set(beta, descriptor.closed);
+	const sent = list.calls.length;
 	const connecting = list.controller.launch();
-	await until(() => list.calls.some((call) => call.startsWith(`${beta} ${PROTOCOL_ROUTES.serverInfo}`)));
-	confirm();
+	await until(() => list.calls.slice(sent).some((call) => call.startsWith(`${beta} ${PROTOCOL_ROUTES.serverInfo}`)));
+	confirm.open();
 	await settle();
 	assert.deepEqual((await list.state()).servers, [alpha, beta], "still waiting on the connect");
-	release();
+	descriptor.open();
 	await connecting;
 	await removal;
 	const state = await list.state();
@@ -1773,6 +1814,87 @@ test("a Remove confirmed during a busy connect to another server waits for it, t
 	assert.equal(state.active, beta, "the other connect was left alone");
 	assert.equal(state.busy, false);
 	assert.equal(state.removing, false);
+});
+
+test("a Remove confirmed during a reconnect's slow page load cancels the load instead of waiting on it", async (t) => {
+	const list = await removalFixture(t);
+	t.after(() => endFixture(list));
+	// The list is showing and beta has no window; the confirm for beta's Remove is open.
+	list.panel();
+	const confirm = gate();
+	list.dialogGates.push(confirm.closed);
+	const removal = list.send("remove", beta);
+	await until(() => list.asked.length > 0);
+	// A Dock reopen starts a reconnect whose checks pass and whose page then loads slowly.
+	const page = gate();
+	t.after(() => page.open());
+	list.holdPage.set(beta, page.closed);
+	const reopened = list.controller.reopen();
+	await until(() => list.calls.some((call) => call.startsWith(`${beta} /page`)));
+	assert.ok(list.calls.some((call) => call.startsWith(`${beta} /page Bearer beta-secret`)), "the page load carries the bearer");
+	const loading = TestWindow.all.find((win) => win.url === beta)!;
+	const confirmed = list.calls.length;
+	confirm.open();
+	assert.equal(await settledWithin(removal), "settled", "Remove doesn't wait on a load it can cancel");
+	await reopened;
+	assert.equal(loading.destroyed, true, "the page load's window is gone");
+	assert.equal(listOpen(), true, "the list stays open for the keyboard");
+	assert.deepEqual(removedBearer(list, confirmed), [], "nothing more carries the removed bearer");
+	const state = await list.state();
+	assert.deepEqual(state.servers, [alpha]);
+	assert.equal(state.busy, false);
+	assert.equal(state.removing, false);
+});
+
+test("a Remove that fails after another connect closed the list reopens it with the error", async (t) => {
+	const list = await removalFixture(t);
+	t.after(() => endFixture(list));
+	const confirm = gate();
+	list.dialogGates.push(confirm.closed);
+	const removal = list.send("remove", alpha);
+	await until(() => list.asked.length > 0);
+	const descriptor = gate();
+	list.holdDescriptor.set(beta, descriptor.closed);
+	const sent = list.calls.length;
+	const connecting = list.send("connect", beta);
+	await until(() => list.calls.slice(sent).some((call) => call.startsWith(`${beta} ${PROTOCOL_ROUTES.serverInfo}`)));
+	confirm.open();
+	refuseWrites(t, list.file);
+	await settle();
+	descriptor.open();
+	await connecting;
+	await removal;
+	assert.equal(list.controller.current()?.origin, beta, "the other connect finished");
+	assert.equal(listOpen(), true, "the failure has a list to show it");
+	const state = await list.state() as unknown as { servers: string[]; notice: string };
+	assert.deepEqual(state.servers, [alpha, beta], "nothing was forgotten");
+	assert.equal(state.notice, "Couldn’t remove the saved server.");
+});
+
+test("a stale Remove confirmed while its server is being paired again neither removes nor cancels the new pairing", async (t) => {
+	for (const hold of ["descriptor", "page"] as const) {
+		const list = await removalFixture(t);
+		const confirm = gate();
+		list.dialogGates.push(confirm.closed);
+		const removal = list.send("remove", alpha);
+		await until(() => list.asked.length > 0);
+		const release = gate();
+		(hold === "page" ? list.holdPage : list.holdDescriptor).set(alpha, release.closed);
+		const sent = list.calls.length;
+		const pairing = list.send("pair", { origin: alpha, code });
+		await until(() => list.calls.slice(sent).some((call) => call.startsWith(hold === "page" ? `${alpha} /page` : `${alpha} ${PROTOCOL_ROUTES.serverInfo}`)));
+		if (hold === "page") assert.equal((await openServerList(list.file, fakeSafeStorage)).pairing(alpha) !== null, true, "the new credential is saved before its page loads");
+		confirm.open();
+		await settle();
+		release.open();
+		await pairing;
+		await removal;
+		assert.equal(list.controller.current()?.origin, alpha, `${hold}: the new pairing's window opened`);
+		const state = await list.state() as unknown as { servers: string[]; notice: string };
+		assert.deepEqual([...state.servers].sort(), [alpha, beta].sort(), `${hold}: the new pairing stays`);
+		assert.equal(state.notice, "This server was paired again, so it wasn’t removed.");
+		endFixture(list);
+	}
 });
 
 test("a check's session retries stop once its server is being removed", async (t) => {

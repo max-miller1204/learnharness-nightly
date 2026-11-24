@@ -29,6 +29,18 @@ function claimReloadScript(version) {
 const CHANNEL = "lh:server-list";
 const CHANGED = "lh:server-list:changed";
 // The shell carries only the theme mode in its query.
+/** `promise`, or a rejection with the signal's reason as soon as it aborts. */
+function untilAborted(promise, signal) {
+	return new Promise((resolve, reject) => {
+		const stop = () => reject(signal.reason);
+		if (signal.aborted) {
+			promise.catch(() => {});
+			return stop();
+		}
+		signal.addEventListener("abort", stop, { once: true });
+		promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
+	});
+}
 function isShell(value) {
 	try {
 		const url = new URL(value);
@@ -55,8 +67,9 @@ async function createServerList({
 	let problem = null;
 	let notice = "";
 	let connecting = null;
-	// The server `connecting` is for.
+	// The server `connecting` is for, and whether it is pairing it anew (a code, not a saved bearer).
 	let connectingServer = null;
+	let connectingPair = false;
 	// Resolvers of the Removes waiting for the busy work (a connect, a reset, a default write) to end.
 	const idle = [];
 	function endBusy() {
@@ -87,6 +100,12 @@ async function createServerList({
 			active: window ? active?.server ?? null : null, busy: busy || !!removing, removing: !!removing, problem,
 			notice: notice || (store.damaged ? "Couldn’t read the saved server list." : ""),
 		};
+	}
+	// A notice for a Remove that did nothing, in a list that is open to show it.
+	function tell(message) {
+		notice = message;
+		if (!closing) show();
+		publish();
 	}
 	function publish() {
 		if (controls && !controls.isDestroyed()) controls.webContents.send(CHANGED, snapshot());
@@ -201,6 +220,7 @@ async function createServerList({
 		const operation = new AbortController();
 		connecting = operation;
 		connectingServer = server;
+		connectingPair = !!code;
 		const options = { signal: operation.signal, retry: true };
 		// Closing the ghost dashboard cancels the connect quietly.
 		const hold = (win) => win.once("closed", () => { if (connecting === operation) operation.abort(); });
@@ -300,9 +320,10 @@ async function createServerList({
 				if (skeleton) await beforeLoad(skeleton);
 				try {
 					trace("real page load start", "remote");
-					await win.loadURL(server).catch((error) => {
+					// loadURL doesn't watch the signal: a cancelled connect stops waiting on it at once.
+					await untilAborted(win.loadURL(server).catch((error) => {
 						if (error.code !== "ERR_HTTP_RESPONSE_CODE_FAILURE") throw error;
-					});
+					}), operation.signal);
 					// Older protocol-compatible servers may still rewrite a
 					// late revocation to /pair. Keep the first load unseen,
 					// hidden or under the skeleton, until this check passes.
@@ -336,6 +357,7 @@ async function createServerList({
 		} finally {
 			connecting = null;
 			connectingServer = null;
+			connectingPair = false;
 			ghosting = false;
 			endBusy();
 			publish();
@@ -357,27 +379,38 @@ async function createServerList({
 			detail: "This forgets its pairing and saved credential here. Pair again to add it back.",
 		});
 		if (response !== 1 || removing || closing || store.damaged || !pairing) return;
+		// The confirm is for the pairing it was opened for: a replacement made meanwhile is a new
+		// one, kept, and nothing running for it is touched. Removed meanwhile (no pairing now):
+		// nothing left to say.
+		if (store.pairing(server) !== pairing) {
+			if (store.pairing(server)) tell(REPAIRED);
+			return;
+		}
 		// A connect that was busy when Confirm came is not a reason to drop it: the removal claims
-		// the server now, so nothing new starts for it, ends the connect that is for it (that
-		// connect would send its bearer), and waits for the busy work to settle.
+		// the server now, so nothing new starts for it, and waits for the busy work to settle.
 		removing = server;
 		try {
 			if (busy) {
-				publish();
+				// A connect on the saved bearer would keep sending it, through its page load too (which
+				// doesn't watch its signal): it ends now, window and all, and never holds the removal.
 				// The list comes first, so the app always has a window, and stays in front for the keyboard.
-				show();
-				if (connectingServer === server) connecting?.abort();
+				// A connect pairing the server anew sends no saved bearer: it finishes, and a pairing it
+				// replaced is then kept.
+				if (connecting && connectingServer === server && !connectingPair) {
+					show();
+					connecting.abort();
+					destroyContent();
+				}
+				publish();
 				while (busy) await new Promise((resolve) => idle.push(resolve));
 				if (closing || store.damaged) return;
-			}
-			if (store.pairing(server) !== pairing) {
-				// Paired again while this confirm was open: that is a new pairing, kept. Removed
-				// meanwhile (no pairing now): nothing left to say.
-				if (store.pairing(server)) notice = REPAIRED;
-				return;
+				if (store.pairing(server) !== pairing) {
+					if (store.pairing(server)) tell(REPAIRED);
+					return;
+				}
 			}
 			if (updatingServer() === server || updating?.origin === server) {
-				notice = HELD_BY_UPDATE;
+				tell(HELD_BY_UPDATE);
 				return;
 			}
 			// A failing check of another open server still shows its problem meanwhile.
@@ -399,6 +432,8 @@ async function createServerList({
 				const gone = !store.origins.includes(server);
 				if (gone && problem?.server === server) problem = null;
 				notice = gone ? "" : "Couldn’t remove the saved server.";
+				// A connect that finished meanwhile closed the list: the error needs one.
+				if (!gone) show();
 				// The sign-in's skipped cancel goes out after all, so the server doesn't hold that
 				// attempt pending until its own timeout, but only while the same pairing is verifiably
 				// still saved, in memory and on disk. Otherwise the bearer is forgotten: never sent.
