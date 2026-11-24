@@ -18,7 +18,9 @@ import { buildSummaryInput, countContributors, entryItems, fallbackItems, format
 
 const require = createRequire(import.meta.url);
 const electronNotes = require("../electron/release-notes.cjs") as {
-	releaseNoteGroups(info: unknown): Array<{ version: string; releasedAt?: string; items: string[]; totalItems: number; intro?: string; stats?: string; footer?: string }>;
+	releaseNoteGroups(info: unknown): Array<{ version: string; releasedAt?: string; items: string[]; totalItems: number; intro?: string; stats?: string; footer?: string; summaryCopy?: boolean }>;
+	extractReleaseNoteItems(note: unknown): { items: string[]; totalItems: number; intro?: string; stats?: string; footer?: string; summaryCopy?: boolean };
+	boundedGroup(group: unknown): { version: string; releasedAt?: string; items: string[]; totalItems: number; intro?: string; stats?: string; footer?: string; summaryCopy?: boolean } | null;
 	summaryBody(note: unknown): string;
 	FULL_CHANGELOG_MARKER: string;
 	capGroups(groups: unknown[]): { releaseNotes: Array<{ version: string; items: string[]; totalItems: number; intro?: string; stats?: string; footer?: string }>; omittedReleaseCount: number };
@@ -468,7 +470,7 @@ describe("electron release notes (T3 port)", () => {
 		assert.deepEqual(readNotesCache(dir).map((g) => g.version), [V(6), V(5)]);
 	});
 
-	it("preserves Electron slice-only truncation and unconditional trailing-echo stripping", () => {
+	it("preserves Electron truncation and unconditional trailing-echo stripping across release-notes entry points", () => {
 		const rules = require("../electron/release-note-rules.cjs") as {
 			sliceReleaseNoteItem: (item: string) => string;
 			stripTrailingSummaryEcho: (items: readonly string[], summary?: { intro?: string; footer?: string }) => string[];
@@ -476,10 +478,64 @@ describe("electron release notes (T3 port)", () => {
 		assert.equal(rules.sliceReleaseNoteItem("  keep   spaces  "), "  keep   spaces  ");
 		const padded = `  ${"a".repeat(220)}`;
 		assert.equal(rules.sliceReleaseNoteItem(padded), `  ${"a".repeat(215)}...`);
-		const eightWithFooter = [...Array.from({ length: 7 }, (_, i) => `item ${i + 1}`), "Plus 2 more bug fixes."];
+		const footer = "Plus 2 more bug fixes.";
+		const longItem = "x".repeat(230);
+		const truncatedLong = `${"x".repeat(217)}...`;
+		const eightWithFooter = [...Array.from({ length: 7 }, (_, i) => `item ${i + 1}`), footer];
 		assert.deepEqual(
-			rules.stripTrailingSummaryEcho(eightWithFooter, { footer: "Plus 2 more bug fixes." }),
+			rules.stripTrailingSummaryEcho(eightWithFooter, { footer }),
 			eightWithFooter.slice(0, -1),
 		);
+
+		// extractReleaseNoteItems truncates >220-char items in both generated summaries and plain lists.
+		const generatedBody = [
+			`**v${V(12)}** · 10 PRs`,
+			"",
+			`- ${longItem}`,
+			...Array.from({ length: 6 }, (_, i) => `- item ${i + 2}`),
+			`- ${footer}`,
+			"",
+			`### ${footer}`,
+			"",
+			electronNotes.FULL_CHANGELOG_MARKER,
+		].join("\n");
+		const extractedSummary = electronNotes.extractReleaseNoteItems(generatedBody);
+		assert.equal(extractedSummary.items.length, 8);
+		assert.equal(extractedSummary.items[0], truncatedLong);
+		assert.equal(extractedSummary.totalItems, 8);
+		assert.equal(extractedSummary.summaryCopy, false);
+
+		const extractedPlain = electronNotes.extractReleaseNoteItems(`- ${longItem}`);
+		assert.deepEqual(extractedPlain, { items: [truncatedLong], totalItems: 1 });
+
+		// releaseNoteGroups (feed note), summaryBody, and boundedGroup strip trailing footer echoes unconditionally.
+		const [feedGroup] = electronNotes.releaseNoteGroups({
+			version: V(12),
+			releaseNotes: [{ version: V(12), items: eightWithFooter, footer, totalItems: 8, summaryCopy: false }],
+		});
+		assert.equal(feedGroup!.items.length, 8);
+		assert.equal(feedGroup!.totalItems, 7);
+		assert.equal(feedGroup!.summaryCopy, true);
+
+		const renderedSummary = electronNotes.summaryBody({
+			version: V(12),
+			items: eightWithFooter,
+			footer,
+			totalItems: 8,
+			summaryCopy: false,
+		});
+		assert.ok(!renderedSummary.includes(`- ${footer}`), "summaryBody drops the trailing footer echo from bullet items");
+		assert.ok(renderedSummary.endsWith(`### ${footer}`));
+
+		const bounded = electronNotes.boundedGroup({
+			version: V(12),
+			items: [longItem, ...Array.from({ length: 6 }, (_, i) => `item ${i + 2}`), footer],
+			footer,
+			summaryCopy: false,
+		});
+		assert.equal(bounded!.items.length, 8);
+		assert.equal(bounded!.items[0], truncatedLong);
+		assert.equal(bounded!.totalItems, 7);
+		assert.equal(bounded!.summaryCopy, false);
 	});
 });
