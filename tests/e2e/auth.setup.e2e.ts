@@ -1,15 +1,16 @@
 import { test } from "@e2e-dev/web";
-import { expect } from "e2e";
-import { createPairingLink } from "../../selfhost/src/auth-store.ts";
-import { instance } from "./support/instance.ts";
+import { expect, secrets } from "e2e";
 
-// Signs the browser in the way `npm run pair` does: a one-time pairing link,
-// opened in the browser. Tests that declare `session: "learner"` start signed in.
+// Signs the browser in with a one-time pairing code, typed on the pairing
+// screen (what `npm run pair` prints). The code is the `pairing-code` secret
+// (e2e.config.ts): a handle, so it never reaches report.json or a trace, which
+// a `/pair#token=<code>` link would. Tests that declare `session: "learner"`
+// start signed in.
 test.setup("pair the browser as the learner", { sessions: ["learner"] }, async ({ app, screen, session, browser }) => {
-	const state = await instance(app.baseUrl);
-	const { code } = createPairingLink(state.dataDir, { label: "e2e" });
+	await app.open("/pair");
 
-	await app.open(`/pair#token=${code}`);
+	await screen.getByLabel("Pairing code").fill(secrets.get("pairing-code"));
+	await screen.getByRole("button", "Pair").click();
 
 	await expect(screen.getByTestId("settings-entry")).toBeVisible({ timeout: 60_000 });
 	await expect(browser).not.toHaveURL(/\/pair/);

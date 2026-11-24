@@ -6,6 +6,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createPairingLink, formatCode } from "../../../selfhost/src/auth-store.ts";
 
 export type InstanceState = {
 	appUrl: string;
@@ -24,6 +25,34 @@ export type InstanceState = {
 /** Outside the checkout: `next dev` reloads the page when a file under it changes. */
 export const instanceDir = (port: string) => path.join(os.tmpdir(), "learnharness-e2e", port);
 export const stateFile = (port: string) => path.join(instanceDir(port), "state.json");
+
+/**
+ * One run's id. e2e.config.ts sets it once when the runner loads the config;
+ * the runner's workers and serve.ts (through `inheritEnv`) inherit it. serve.ts
+ * records the port it got under it, so a secret provider, which has no
+ * `app.baseUrl`, can find the run's instance.
+ */
+export const RUN_ENV = "LH_E2E_RUN";
+export const runPointer = (run: string) => path.join(os.tmpdir(), "learnharness-e2e", `run-${run}.json`);
+
+/**
+ * A fresh one-time pairing code for this run's instance, as the pairing
+ * screen shows it. Backs the `pairing-code` secret in e2e.config.ts, so a
+ * test fills it as a secret handle and the code never reaches a report or a
+ * trace. A provider runs on every fill, so each fill gets its own code.
+ */
+export async function pairingCode(): Promise<string> {
+	const run = process.env[RUN_ENV];
+	if (!run) throw new Error(`${RUN_ENV} is not set: tests/e2e/support/instance.ts needs e2e.config.ts to have loaded`);
+	const deadline = Date.now() + 120_000;
+	while (!fs.existsSync(runPointer(run))) {
+		if (Date.now() > deadline) throw new Error(`no instance for run ${run}: serve.ts did not finish starting (see .e2e/logs/app.log)`);
+		await new Promise((r) => setTimeout(r, 250));
+	}
+	const { port } = JSON.parse(fs.readFileSync(runPointer(run), "utf8")) as { port: string };
+	const state = await instance(`http://127.0.0.1:${port}`);
+	return formatCode(createPairingLink(state.dataDir, { label: "e2e" }).code);
+}
 
 /** The instance behind `baseUrl`, once serve.ts has finished seeding it. */
 export async function instance(baseUrl: string, timeoutMs = 120_000): Promise<InstanceState> {

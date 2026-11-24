@@ -3,6 +3,11 @@ import { web } from "@e2e-dev/web";
 import { claudeCode, codex } from "@e2e-dev/acp";
 import { github } from "@e2e-dev/github";
 import { chatgpt } from "e2e/oauth/chatgpt";
+import { randomUUID } from "node:crypto";
+import { pairingCode, RUN_ENV } from "./tests/e2e/support/instance.ts";
+
+// Names this run for serve.ts and the pairing-code secret (instance.ts).
+process.env[RUN_ENV] ??= randomUUID();
 
 /**
  * End-to-end tests (tests/e2e/) and live drives over `npx e2e mcp`, against
@@ -56,6 +61,10 @@ export default {
 		// e2e's built-in agent on ChatGPT: `e2e explore --agent chatgpt` and bug bashes.
 		chatgpt: { model: chatgpt("gpt-6-luna"), context: `${context} ${fakeModel}`, maxSteps: 40, maxModelCalls: 40 },
 	},
-	// The PR comment and job summary on GitHub Actions; nothing elsewhere.
+	// A fresh pairing code for the run's instance, filled as a secret handle so
+	// the code stays out of the report, traces and the model's input.
+	secrets: { "pairing-code": pairingCode },
+	// The job summary on GitHub Actions; nothing elsewhere. It posts no PR comment
+	// without a token, and ci.yml gives the e2e step none: a separate job posts it.
 	reporters: ["list", github()],
 } satisfies E2EConfig;
