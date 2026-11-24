@@ -211,7 +211,7 @@ jobs:
       # No GITHUB_TOKEN here: this matrix runs PR code and stays read-only. The
       # GitHub reporter then writes the job summary only. The PR comment comes
       # from e2e-comment.yml, which runs from the default branch after this
-      # workflow and reads the e2e-summary artifact below.
+      # workflow and reads the e2e-summary artifact below (named by attempt, so a rerun has its own).
       - name: e2e
         if: matrix.platform == 'linux-x64'
         env:
@@ -240,7 +240,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-summary
+          name: e2e-summary-${{ github.run_attempt }}
           path: .e2e/summary.md
           include-hidden-files: true
           if-no-files-found: ignore

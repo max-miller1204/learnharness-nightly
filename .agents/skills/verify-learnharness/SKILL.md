@@ -171,9 +171,11 @@ CI runs `npx e2e run --exclude-tag agent` on the Linux standalone build
 (`.github/workflows/ci.yml`, job Standalone (linux-x64)). It writes the results
 to the job summary (`@e2e-dev/github`, with no token), uploads
 `.e2e/report.json`, `junit.xml` and `results/` as the `e2e-report` artifact and
-`summary.md` as `e2e-summary`. The separate `e2e comment` job, the only one
-with `pull-requests: write`, posts that summary as one PR comment; it runs no
-PR code and skips fork and Dependabot PRs.
+`summary.md` as `e2e-summary-<run attempt>`. The `e2e comment` workflow
+(`.github/workflows/e2e-comment.yml`, run from the default branch after CI, the
+only place with `pull-requests: write`) posts that summary as one PR comment
+under a header built from GitHub's own metadata; it runs no PR code, never fails
+its run, and skips fork, Dependabot and cancelled runs.
 CI is a backstop, not the proof: it never runs agent steps.
 
 In the handover, name every flow you drove, its test, PASS or FAIL, the
