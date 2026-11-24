@@ -105,7 +105,7 @@ Security fixes don't wait for Monday. They arrive as one grouped PR per ecosyste
 | PR | How it merges |
 |---|---|
 | Minor/patch batch, or a security PR whose biggest change is minor or patch | Auto-merges (squash) when `Check` is green. `.github/workflows/dependabot-auto-merge.yml` (on `pull_request_target`, so it always runs `main`'s copy) queues it with the fork bot App token, so the merge runs CI and the nightly on `main`. |
-| A major, or a security PR that needs a major | Waits for an agent: one review round and a `prove-learnharness` run, then `gh pr merge <N> --auto --squash`. |
+| A major, or a security PR that needs a major | Waits for an agent: one review round and a `verify-learnharness` run, then `gh pr merge <N> --auto --squash`. |
 | `pi`, or any PR touching Pi or typebox | Arrives red by design. The SDK plugins' lockfiles pin Pi and typebox through their generated `.sdk/package.json`. An agent runs `npm install` at the root, then `npm run sdk && npm install` in each SDK plugin, adapts code to Pi's changes, pushes to the Dependabot branch, and then treats it like a major. |
 
 Dependabot reads the SDK plugins through their committed `.sdk/package.json` (only that file is committed; the rest of `.sdk/` stays generated). `Lint` fails when one is missing or differs from what `npm run sdk` writes.

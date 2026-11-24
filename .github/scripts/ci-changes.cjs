@@ -47,6 +47,9 @@ const INERT = [
 	/^docs\//,
 	/^[^/]+\.md$/,
 	/^\.claude\//,
+	/^\.agents\//,
+	/^\.mcp\.json$/,
+	/^\.codex\//,
 	/^\.github\/ISSUE_TEMPLATE\//,
 	/^\.github\/workflows\/pr-agent\.yml$/,
 ];

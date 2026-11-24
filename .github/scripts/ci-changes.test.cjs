@@ -10,7 +10,7 @@ const none = { typecheck: false, test: false, selfhost: false, standalone: false
 const all = { typecheck: true, test: true, selfhost: true, standalone: true, mobile: false };
 
 test("docs-only and other inert changes skip every gated job", () => {
-	assert.deepEqual(decide(["docs/self-hosting.md", "README.md", ".claude/skills/x/SKILL.md", ".github/workflows/pr-agent.yml", "docs/specs/ci-foundation.md"]), none);
+	assert.deepEqual(decide(["docs/self-hosting.md", "README.md", ".claude/skills/x/SKILL.md", ".agents/skills/x/SKILL.md", ".mcp.json", ".codex/config.toml", ".github/workflows/pr-agent.yml", "docs/specs/ci-foundation.md"]), none);
 });
 
 test("docs the app or plugin-authoring bundle ships run everything", () => {
