@@ -400,7 +400,8 @@ async function createServerList({
 		if (action === "state") return snapshot();
 		if (action === "link") return typeof value === "string" && value.length <= 8192 ? parsePairLink(value) : null;
 		if (busy || removing || closing) return;
-		if (action === "connect" && (value === "local" || store.origins.includes(value))) return connect(value);
+		// Nothing is returned: the window connect resolves with is native and can't cross IPC.
+		if (action === "connect" && (value === "local" || store.origins.includes(value))) { await connect(value); return; }
 		if (action === "reset" && store.damaged) {
 			busy = true;
 			try {

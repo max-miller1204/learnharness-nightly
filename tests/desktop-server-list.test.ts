@@ -1713,6 +1713,16 @@ test("a reopen or launch during a removal never reconnects the server being remo
 	}
 });
 
+test("choosing a server returns a plain result across the IPC bridge, never the native window", async (t) => {
+	const list = await removalFixture(t);
+	for (const server of ["local", alpha]) {
+		const result = await list.send("connect", server);
+		assert.doesNotThrow(() => structuredClone(result), `${server}: the handler's result can cross IPC`);
+		list.controller.close();
+		for (const window of TestWindow.all) if (!window.destroyed) window.destroy();
+	}
+});
+
 test("a check's session retries stop once its server is being removed", async (t) => {
 	const list = await removalFixture(t);
 	await list.controller.launch();
