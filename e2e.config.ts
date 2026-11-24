@@ -8,8 +8,10 @@ import { claudeCode, codex } from "@e2e-dev/acp";
  * free port with a throwaway data folder and a scripted fake model, so tests
  * that use no `agent` step need no model and no provider key.
  *
- * `agent.*` steps run on a signed-in coding agent over ACP: Claude Code by
- * default (`claude` login), or Codex with `--agent codex` (`codex login`).
+ * `agent.act` and `agent.assert` run on a signed-in coding agent over ACP:
+ * Claude Code by default (`claude` login), or Codex with `--agent codex`
+ * (`codex login`). `agent.waitFor`, `agent.extract` and `e2e explore` need an
+ * agent with an AI SDK `model`, which this config does not set.
  * The verify-learnharness skill (.agents/skills/) says how to use all of it.
  */
 const context = [
@@ -23,7 +25,8 @@ export default {
 	timeout: 180_000,
 	targets: [
 		{
-			engine: web({ viewport: { width: 1280, height: 900 } }),
+			// Fixed locale, zone and motion, so a Mac and CI Linux render the same.
+			engine: web({ viewport: { width: 1280, height: 900 }, locale: "en-US", timezoneId: "UTC", reducedMotion: "reduce" }),
 			app: {
 				url: "http://127.0.0.1:0",
 				readyUrl: "http://127.0.0.1:{port}/api/health",
@@ -32,6 +35,8 @@ export default {
 					args: ["tests/e2e/support/serve.ts", "{port}"],
 					inheritEnv: ["LH_E2E_*"],
 					startupTimeout: 240_000,
+					// serve.ts gives Next 10 s to stop before it kills its process group.
+					shutdownTimeout: 20_000,
 					log: ".e2e/logs/app.log",
 				},
 			},

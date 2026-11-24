@@ -43,8 +43,10 @@ every run, and every worktree, gets its own app. It:
 Ready when `/api/health` answers (the runner waits for it). The app's output
 goes to `.e2e/logs/app.log`.
 
-`next dev` holds a lock on the checkout's `.next/dev`: if you already run
-`npm run dev` in this checkout, stop it or use `LH_E2E_SERVER=standalone`.
+`next dev` runs one copy per checkout. Your own `npm run dev`, an open MCP
+session or a running explorer in the same checkout makes a second dev-mode
+run fail: stop the other one, or run with `LH_E2E_SERVER=standalone`, which
+any number of instances can share.
 
 ## Doctor
 
@@ -84,16 +86,21 @@ signed-in page.
 **Agent steps.** `agent.act` and `agent.assert` run on your signed-in coding
 agent over ACP: Claude Code (`sonnet`) by default, Codex with
 `--agent codex`. They need that CLI signed in (`claude`, `codex login`).
-Tests with agent steps carry the tag `agent`. Pair every `agent.act` with a
-`screen` check so its recording can replay from `.e2e/cache/`.
+`agent.waitFor`, `agent.extract`, `assert({ vision })` and `e2e explore` need
+an agent with an AI SDK `model`, which the config does not set, so don't use
+them in tests (they fail with `MODEL_UNAVAILABLE`); wait with a locator
+instead. Tests with agent steps carry the tag `agent`. Pair every `agent.act`
+with a `screen` check so its recording can replay from `.e2e/cache/`, which
+stays on this machine.
 
 **The fake model.** It never judges content. A change to prompts, tool
 schemas or provider code needs a real-model look: start a live session and
 set a real model in Settings, or add a scenario rule that calls the changed
 tool with the new input (and one that fails, `POST <fakeControl>/__fake/fail?mode=http500|broken-stream|hang`).
-Read what the app sent the model with `modelRequests(state)`; each line names
-the rule it matched, and a rule that never fired means the scenario fell
-through to its fallback.
+Read what one session sent the model with `sessionRequests(state, goal)` (all
+of them: `modelRequests(state)`; tests share the instance, so filter by your
+goal); each line names the rule it matched, and a rule that never fired means
+the scenario fell through to its fallback.
 
 **What e2e does not drive.** The Electron desktop window, the phone app
 (`apps/mobile`: `@e2e-dev/mobile` can drive it on the Mac's iOS Simulator,
@@ -117,8 +124,9 @@ Proof standards:
   Not internal setters, not test-only endpoints. Seeding through the API
   routes Settings uses is fine.
 - Check the action and the resulting state, not only the final screen: the
-  stored record (`storedChat(state, id)`, `data/chats/<id>.json`) and what
-  the model received (`modelRequests(state)`).
+  stored record (`storedChat(state, id)`, `data/chats/<id>.json`, read with
+  `expect.poll`: it is written after the screen updates) and what the model
+  received (`sessionRequests(state, goal)`).
 - Assert exactly: a tool result equals its file byte for byte, not "contains".
 - Compare with the answer key, not your idea of right: the `Spec:` issue the
   PR links, a shipped spec in `docs/specs/`, or the base commit's behavior.
@@ -137,7 +145,12 @@ evidence path, and every surface you did not drive.
 
 ## Bug bash
 
-Follow topic `bug-bash`. Here: explore a standalone build
+Follow topic `bug-bash`. `e2e explore` runs e2e's built-in agent, which needs
+an AI SDK model: the ACP agents in `e2e.config.ts` cannot explore. Give the
+bug-bash config's agents a `model` (for example `chatgpt("gpt-6-luna")` from
+`e2e/oauth/chatgpt` after `npx e2e login openai`, or `anthropic(...)` from
+`@ai-sdk/anthropic` with `ANTHROPIC_API_KEY`), and ask the user before you
+spend on one. Here: explore a standalone build
 (`LH_E2E_SERVER=standalone`); port `0` already gives each explorer its own
 app, so no `reuseExisting`. Write an untracked `e2e.bugbash.config.ts` that
 spreads `e2e.config.ts` and gives the agents `maxSteps: 40, maxModelCalls: 40`
@@ -147,9 +160,12 @@ goal containing zz-e2e gets two file reads, one question and an
 acknowledgement; anything else gets 'zz-e2e fallback reply.' Not bugs: that
 fallback reply, the 503 from /api/stt/token (no dictation key), and
 'Updates unavailable' in the sidebar footer." Charters come from the feature
-map (`features/`). Output goes to `.e2e/bugbash/<slug>` (gitignored). A
-finding is a bug only once `tests/bugbash/<slug>.e2e.ts` fails on the
-reported defect.
+map (`features/`); every charter there starts signed in, so pass
+`--session learner` and raise `--max-steps` and `--timeout` (defaults 8 steps,
+10 minutes). Output goes to `.e2e/bugbash/<slug>` (gitignored). A finding is a
+bug only once a repro test, `tests/e2e/bugbash/<slug>.e2e.ts` tagged
+`bugbash`, fails on the reported defect. Commit only repros of confirmed bugs;
+once the bug is fixed, drop the tag and keep the test as a regression.
 
 ## Cleanup
 

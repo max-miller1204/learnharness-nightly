@@ -49,6 +49,14 @@ export function modelRequests(state: InstanceState): ModelRequest[] {
 	return fs.readFileSync(state.modelLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as ModelRequest);
 }
 
+/** The requests of one session: the ones whose first user message holds `goal`. */
+export function sessionRequests(state: InstanceState, goal: string): ModelRequest[] {
+	return modelRequests(state).filter((r) => {
+		const first = r.request.messages?.find((m) => m.role === "user");
+		return JSON.stringify(first?.content ?? "").includes(goal);
+	});
+}
+
 /** A stored session record, as the server wrote it to disk. */
 export function storedChat(state: InstanceState, chatId: string): { messages?: unknown[] } & Record<string, unknown> {
 	return JSON.parse(fs.readFileSync(path.join(state.dataDir, "chats", `${chatId}.json`), "utf8"));

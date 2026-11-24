@@ -8,7 +8,7 @@ describe("pairing a browser", () => {
 		await app.open("/chat/new");
 
 		await expect(screen.getByRole("heading", "Pair this device")).toBeVisible({ timeout: 60_000 });
-		await expect(screen.getByTestId("settings-entry")).toBeHidden();
+		await expect(screen.getByTestId("settings-entry")).not.toBeVisible();
 	});
 
 	test("a wrong code is refused", async ({ app, screen }) => {
@@ -18,7 +18,7 @@ describe("pairing a browser", () => {
 		await screen.getByRole("button", "Pair").click();
 
 		await expect(screen.getByTestId("pair-error")).toBeVisible();
-		await expect(screen.getByTestId("settings-entry")).toBeHidden();
+		await expect(screen.getByTestId("settings-entry")).not.toBeVisible();
 	});
 
 	test("a code typed on the pairing screen signs the browser in", async ({ app, screen }) => {
@@ -26,7 +26,7 @@ describe("pairing a browser", () => {
 		const { code } = createPairingLink(state.dataDir, { label: "e2e typed code" });
 		await app.open("/pair");
 
-		await screen.getByLabel("Pairing code").fill(formatCode(code));
+		await screen.getByLabel("Pairing code").pressSequentially(formatCode(code));
 		await screen.getByRole("button", "Pair").click();
 
 		await expect(screen.getByTestId("settings-entry")).toBeVisible({ timeout: 60_000 });

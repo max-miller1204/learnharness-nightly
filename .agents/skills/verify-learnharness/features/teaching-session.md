@@ -19,7 +19,7 @@ Signed in, the Teaching button in the sidebar or `/chat/new`; type a goal and pr
 ## Proof
 
 - On screen: both read cards, the question with exactly the options Blue and Red, then "zz-e2e acknowledged your answer", and the dock gone.
-- To the model (`modelRequests(state)`): each `read` result equals its fixture file byte for byte (one has no final newline), and the answer request carries "blue".
+- To the model (`sessionRequests(state, goal)`): each `read` result equals its fixture file byte for byte (one has no final newline), and the answer request carries "blue".
 - On disk (`storedChat(state, id)`): the goal, the fixture text, the question and the acknowledgement.
 
 ## Charters
