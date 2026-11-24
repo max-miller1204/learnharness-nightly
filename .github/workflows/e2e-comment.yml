@@ -1,0 +1,81 @@
+name: e2e comment
+
+# Posts the e2e results of a CI run as one pull request comment, kept current.
+#
+# Trusted half: workflow_run always runs the default branch's copy of this
+# file, so a pull request cannot change the steps that hold the write token.
+# It checks out nothing and runs no PR code. The summary the CI run uploaded
+# (e2e-summary, written by the e2e markdown reporter) is data: it goes to
+# `gh` as a file and never into a shell word. The PR comes from the CI run's
+# own `pull_requests`, which is empty for a fork's PR, so those are skipped
+# (a fork's run has only a read-only token and its results stay in the job
+# summary). Because GitHub reads this file from the default branch, a change
+# to it takes effect only after it merges.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  comment:
+    name: Comment
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.path == '.github/workflows/ci.yml' &&
+      github.event.workflow_run.pull_requests[0].number != ''
+    concurrency:
+      group: e2e-comment-${{ github.event.workflow_run.pull_requests[0].number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      pull-requests: write
+    steps:
+      - name: Download the summary
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: e2e-summary
+          path: ${{ runner.temp }}/e2e-summary
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Post the comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          SUMMARY_DIR: ${{ runner.temp }}/e2e-summary
+        run: |
+          set -euo pipefail
+          case "$PR_NUMBER" in ''|*[!0-9]*) echo "no pull request for this run"; exit 0 ;; esac
+          # A run for an older commit must not overwrite the newer one's comment.
+          current=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq .head.sha)
+          if [ "$current" != "$HEAD_SHA" ]; then echo "the pull request moved on to $current"; exit 0; fi
+          marker='<!-- learnharness-e2e-summary -->'
+          summary="$SUMMARY_DIR/summary.md"
+          body="$RUNNER_TEMP/body.md"
+          if [ -f "$summary" ] && [ ! -L "$summary" ] && [ -s "$summary" ]; then
+            have=1
+            # Keep the body under GitHub's limit, drop a cut multibyte character, defuse @mentions.
+            dd if="$summary" of="$RUNNER_TEMP/cut.md" bs=60000 count=1 2>/dev/null
+            iconv -f UTF-8 -t UTF-8 -c "$RUNNER_TEMP/cut.md" > "$RUNNER_TEMP/clean.md"
+            sed 's/@/@\xE2\x80\x8B/g' "$RUNNER_TEMP/clean.md" > "$RUNNER_TEMP/safe.md"
+            { echo "$marker"; cat "$RUNNER_TEMP/safe.md"; printf '\n<sub>Commit %s, [CI run](%s)</sub>\n' "$HEAD_SHA" "$RUN_URL"; } > "$body"
+          else
+            have=0
+            { echo "$marker"; printf 'No e2e results for commit %s: the e2e step did not run or wrote no summary. See the [CI run](%s).\n' "$HEAD_SHA" "$RUN_URL"; } > "$body"
+          fi
+          gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | startswith("<!-- learnharness-e2e-summary -->")) | .id' > "$RUNNER_TEMP/ids.txt"
+          id=$(sed -n 1p "$RUNNER_TEMP/ids.txt")
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GH_REPO/issues/comments/$id" -F body=@"$body" > /dev/null
+          elif [ "$have" = 1 ]; then
+            gh api -X POST "repos/$GH_REPO/issues/$PR_NUMBER/comments" -F body=@"$body" > /dev/null
+          fi
