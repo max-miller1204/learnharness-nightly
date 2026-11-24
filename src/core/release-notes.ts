@@ -36,17 +36,25 @@ function isCopyOf(item: string, text: string | undefined): boolean {
  * as the last item (scripts/generate-release-notes.ts entryItems). Every stored or sent copy of the
  * notes keeps it, for old readers; what a new client shows drops it: only that one trailing item,
  * compared as the full text with both sides normalized, never another bullet.
+ *
+ * The copy is last, so the item limits cut it off first. Once a list is full (the cap), a last item
+ * that reads like the footer is the copy only if the whole count says the list was not cut: a whole
+ * count (without the intro) that reaches the list's length means every item is a real one, and the
+ * copy was the item that fell off.
  */
-export function withoutSummaryEcho(items: readonly string[], { intro, footer }: { intro?: string; footer?: string }): string[] {
+export function withoutSummaryEcho(items: readonly string[], { intro, footer, totalItems }: { intro?: string; footer?: string; totalItems?: number }): string[] {
 	const last = items.length > 0 ? normalized(items[items.length - 1]) : "";
-	const echoes = last !== "" && (isCopyOf(last, footer) || isCopyOf(last, intro));
-	return echoes ? items.slice(0, -1) : [...items];
+	const matches = last !== "" && (isCopyOf(last, footer) || isCopyOf(last, intro));
+	const copyWasCut = items.length >= MAX_RELEASE_NOTE_ITEMS && isCount(totalItems) && totalItems - (intro ? 1 : 0) >= items.length;
+	return matches && !copyWasCut ? items.slice(0, -1) : [...items];
 }
+
+const isCount = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0;
 
 /** The release's whole count: what the feed said, else the shown items and the intro (T3's totalItems). */
 export const totalReleaseItems = (group: ReleaseNoteGroup): number => {
 	const shown = withoutSummaryEcho(group.items, group).length;
-	return typeof group.totalItems === "number" && Number.isInteger(group.totalItems) && group.totalItems >= 0
+	return isCount(group.totalItems)
 		? Math.max(group.totalItems, shown)
 		: shown + (group.intro ? 1 : 0);
 };

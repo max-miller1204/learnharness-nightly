@@ -130,6 +130,27 @@ describe("notes limits", () => {
 		assert.deepEqual(dates("2026-11-14T08:00:00Z", pointer), ["2026-11-14T08:00:00Z", "2026-11-14T08:00:00Z"], "a readable note time wins");
 	});
 
+	it("a real highlight in the last slot that reads like the footer is kept, on the server and the desktop", () => {
+		const footer = "Plus 2 more bug fixes.";
+		const real = [...Array.from({ length: 7 }, (_, i) => `**Feature ${i + 1}.** Detail ${i + 1}.`), footer];
+		const stored = [...real, footer]; // the generator's old-client copy follows the eighth highlight, then the cut drops it
+		const [server] = groupsBetween(feedNotesToGroups([{ version: V(12), publishedAt: "", items: stored, footer }]), undefined, V(12)).releaseNotes;
+		const [desktopFull] = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: [{ version: V(12), items: stored, footer }] });
+		const [desktop] = electronNotes.bridgeNotes(electronNotes.capGroups([desktopFull]).releaseNotes, 0).releaseNotes;
+		for (const [name, shown] of [["server", server!], ["desktop", desktop!]] as const) {
+			assert.equal(shown.items.length, 8, `${name} sends 8 items`);
+			assert.deepEqual(withoutSummaryEcho(shown.items, shown), real, `${name} shows the eighth highlight`);
+			assert.equal(releaseLinkLabel(shown), "View release on GitHub", `${name}: nothing is hidden`);
+		}
+		// The old-client copy still goes when it is the last item, whether or not the list is full.
+		const seven = real.slice(0, 7);
+		for (const group of [feedNotesToGroups([{ version: V(12), publishedAt: "", items: [...seven, footer], footer }])[0]!, electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: [{ version: V(12), items: [...seven, footer], footer }] })[0]!]) {
+			assert.deepEqual(withoutSummaryEcho(group.items, group), seven);
+		}
+		assert.deepEqual(withoutSummaryEcho(real, { footer, totalItems: 7 }), seven, "a full list with its copy last: the copy goes");
+		assert.deepEqual(withoutSummaryEcho(real, { footer }), seven, "with no whole count the last item is the copy (as before)");
+	});
+
 	it("one limit set everywhere: the server's groups and cache match the desktop's, 8 items of 220 characters, counted whole", () => {
 		const long = "y".repeat(600);
 		const note = { version: V(12), publishedAt: "", items: [...Array.from({ length: 8 }, (_, i) => `item ${i}`), long], intro: undefined };
