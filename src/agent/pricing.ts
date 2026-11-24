@@ -1,6 +1,7 @@
 /** Per-call API-dollar calculation. Record-time capture prices each call from
  *  the dispatched model's own rates (never re-reading the live catalog) and
- *  skips $0 placeholder models that are not known to be free. Read-time
+ *  skips placeholder models that are not listed in the catalog, routers with no bill
+ *  and paid plans with no dollar rate. Read-time
  *  fallback (src/server/pricing.ts) shares computeCallCost and liveCatalogModel.
  *  Never mutate saved native messages: calculateCost mutates its usage.cost. */
 import { calculateCost, type Api, type Model, type Usage } from "@earendil-works/pi-ai";
@@ -46,7 +47,7 @@ export function liveCatalogModel(id: string): PricedModel | undefined {
 	return piModels().getModel(id.slice(0, colon), id.slice(colon + 1));
 }
 
-function hasNonZeroRate(cost: Model<Api>["cost"]): boolean {
+export function hasNonZeroRate(cost: Model<Api>["cost"]): boolean {
 	return [cost, ...(cost.tiers ?? [])].some(
 		(rate) => rate.input > 0 || rate.output > 0 || rate.cacheRead > 0 || rate.cacheWrite > 0,
 	);
@@ -56,13 +57,33 @@ export function isKnownFreeModelId(id: string): boolean {
 	return /(?:^|[:/-])free(?:$|[:/-])/i.test(id);
 }
 
-/** Whether a model's rates are real and safe to persist (not an unpriced provider or $0 placeholder). */
+/** Paid plans that deduct credits but ship all-zero per-token rates in the
+ *  catalog: every token-plan provider, plus individual models of other providers. */
+const UNRATED_PAID_PLAN_PROVIDER = /-token-plan(?:-|$)/;
+const UNRATED_PAID_MODELS: ReadonlySet<string> = new Set([
+	"zai:glm-5.2-highspeed",
+	"zai:glm-5.3-highspeed",
+	"zai-coding-cn:glm-5.3-highspeed",
+	"vercel-ai-gateway:reflection/beam",
+]);
+
+/** Whether this model is a paid plan whose catalog entry carries no dollar rate.
+ *  With zero rates its cost is unknown, never $0.00. */
+export function isUnratedPaidModelId(id: string): boolean {
+	const colon = id.indexOf(":");
+	return UNRATED_PAID_MODELS.has(id) || (colon > 0 && UNRATED_PAID_PLAN_PROVIDER.test(id.slice(0, colon)));
+}
+
+/** Whether a model's rates are real and safe to persist (not an unpriced provider,
+ *  a paid plan with no dollar rate, or a $0 placeholder). */
 export function hasRecordableCost(model: DispatchedModel): boolean {
 	const modelId = `${model.provider}:${model.id}`;
 	if (isUnpricedModelId(modelId) || !model.cost) return false;
-	// Do not freeze $0 placeholder rates unless the model id marks it free;
-	// leaving costUsd absent lets later catalog updates price it at read time.
-	return model.free === true || hasNonZeroRate(model.cost) || isKnownFreeModelId(model.id);
+	if (model.free === true || hasNonZeroRate(model.cost) || isKnownFreeModelId(model.id)) return true;
+	// All-zero rates. A listed model is free unless it is a paid plan with no
+	// dollar rate or a router whose bill the catalog cannot show. A call's cost is
+	// fixed when it runs, so a later catalog price never rewrites a free call.
+	return model.provider !== "openrouter" && !isUnratedPaidModelId(modelId) && liveCatalogModel(modelId) !== undefined;
 }
 
 function dispatchedCost(call: Partial<CallUsage>, model: DispatchedModel): number | null {

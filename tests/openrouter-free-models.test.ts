@@ -102,9 +102,10 @@ it("validates reported totals and preserves explicitly unpriced providers", asyn
 	assert.equal(captureCallUsage({ ...usage, cost: { ...usage.cost, totalFromProvider: false } }, free).costUsd, 0);
 });
 
-it("preserves free catalog models and main's token plan cost", () => {
+it("preserves free catalog models and leaves paid token plans with no dollar rate unknown", () => {
 	const call = { inputTokens: 100, outputTokens: 100 };
-	for (const id of ["google:gemma-4-26b-a4b-it", "google:gemma-4-31b-it", "radius:recursive/flint", "opencode:big-pickle", "qwen-token-plan:qwen3.7-max"]) {
+	for (const id of ["google:gemma-4-26b-a4b-it", "google:gemma-4-31b-it", "radius:recursive/flint", "opencode:big-pickle"]) {
 		assert.equal(callCost(call, id), 0, id);
 	}
+	assert.equal(callCost(call, "qwen-token-plan:qwen3.7-max"), null);
 });
