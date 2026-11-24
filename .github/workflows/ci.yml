@@ -162,11 +162,6 @@ jobs:
             platform: linux-x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
-    # pull-requests: write lets the e2e step's GitHub reporter post its PR
-    # comment. A fork's or Dependabot's run gets a read-only token and posts nothing.
-    permissions:
-      contents: read
-      pull-requests: write
     defaults:
       run:
         shell: bash
@@ -213,13 +208,15 @@ jobs:
       - name: Install the e2e browser
         if: matrix.platform == 'linux-x64'
         run: npx e2e-web install chromium --with-deps
+      # No GITHUB_TOKEN here: this matrix runs PR code and stays read-only. The
+      # GitHub reporter then writes the job summary only, and the e2e-comment
+      # job below posts the PR comment from the summary.md this step writes.
       - name: e2e
         if: matrix.platform == 'linux-x64'
         env:
           LH_E2E_SERVER: standalone
           E2E_TELEMETRY_DISABLED: "1"
-          GITHUB_TOKEN: ${{ github.token }}
-        run: npx e2e run --exclude-tag agent --max-failures 3 --reporter list,junit
+        run: npx e2e run --exclude-tag agent --max-failures 3 --reporter list,junit,markdown
       - name: Upload the e2e report
         if: ${{ !cancelled() && matrix.platform == 'linux-x64' }}
         uses: actions/upload-artifact@v7
@@ -233,6 +230,54 @@ jobs:
             .e2e/results
           if-no-files-found: warn
           retention-days: 7
+      # Only the summary, so the comment job downloads no traces or screenshots.
+      - name: Upload the e2e summary
+        if: ${{ !cancelled() && matrix.platform == 'linux-x64' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-summary
+          path: .e2e/summary.md
+          if-no-files-found: ignore
+          retention-days: 1
+
+  # Posts the e2e results as one PR comment, kept current. A separate job so
+  # the matrix above, which runs PR code, never holds a write token: this job
+  # checks out nothing, runs no PR code and treats summary.md as data (it goes
+  # to gh as a file, never into a shell word). A fork's or Dependabot's run has
+  # a read-only token and posts nothing; the job summary still has the results.
+  # Not in `check`'s needs: a missing comment never fails a PR.
+  e2e-comment:
+    name: e2e comment
+    needs: standalone
+    if: ${{ !cancelled() && needs.standalone.result != 'skipped' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: e2e-summary
+      - name: Post the comment
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          [ -s summary.md ] || { echo "no e2e summary to post"; exit 0; }
+          marker='<!-- learnharness-e2e-summary -->'
+          # Defuse @mentions in app text, keep the body under GitHub's limit.
+          { echo "$marker"; sed 's/@/@\xE2\x80\x8B/g' summary.md | head -c 60000 | iconv -f UTF-8 -t UTF-8 -c; } > body.md
+          id=$(gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | startswith("<!-- learnharness-e2e-summary -->")) | .id' | head -n1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GH_REPO/issues/comments/$id" -F body=@body.md > /dev/null
+          else
+            gh api -X POST "repos/$GH_REPO/issues/$PR_NUMBER/comments" -F body=@body.md > /dev/null
+          fi
 
   mobile:
     name: Mobile
