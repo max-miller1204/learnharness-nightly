@@ -73,6 +73,10 @@ Use a server with `attachment-uploads-v1` and the fake model's teach scenario. G
 
 - **Copies.** After sending, removing and refusing Files picks, and after leaving the screen, `adb shell run-as <package> ls cache/attachments` shows no leftover copies. A Files pick over 50 MiB is refused with "A picked file exceeds the 50 MiB per-file limit." without a copy appearing.
 
+Library and files, as written:
+
+- **Library and files.** Pick two photos from the photo picker and the PDF from Files. The photos are named `photo-YYYYMMDD-HHMMSS.jpg` and `...-2.jpg`, and a camera photo is timestamped too. The PDF keeps `sample-3page.pdf`, not an ID like `document:21`. Remove one photo and check the server released its reservation. Force a failure (stop the server mid-upload, or revoke the pairing), check the error and Retry, then restore and Retry until ready.
+
 ### Session basics
 
 - On a server without `session-basics-v1` (the pinned `bfb1e5d`), a long press opens no menu and TalkBack lists no row actions. Search and the switch still work.
