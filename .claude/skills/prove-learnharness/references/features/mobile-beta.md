@@ -28,7 +28,7 @@ Record each observation, the device screenshot or recording, and the saved serve
 
 The phone surface is proved on an iOS Simulator on the Mac, not on an emulator on the ThinkPad. Android runs are not part of this recipe: the Android material is kept in [the Android archive](../android-archive.md).
 
-- **Device.** An iPhone 17 Pro on iOS 26.5 (`xcrun simctl list devices` shows its udid; the shared one is `8C1A7F98-6DCD-4EFC-AA99-D249EEE90B44`). `device_list` shows the Mac as host id `local`, label "This machine", when it runs on the Mac itself, and as the host labeled `intel-mac` from other machines. Call `device_list`, then `device_open` with the `hostId` and device `id` it gives. Use the command `device_open` returns for launching and input, and `device_screenshot` for screenshots. The bare `agent-device` in the commands below uses its own per-directory session, separate from the one behind that wrapper. Use `xcrun simctl` for what the tool can't do: booting, `keychain`, `status_bar`, `addmedia`, `ui`, `io` and `spawn`.
+- **Device.** An iPhone 17 Pro on iOS 26.5 (`xcrun simctl list devices` shows its udid; the shared one is `8C1A7F98-6DCD-4EFC-AA99-D249EEE90B44`). `device_list` shows the Mac as host id `local`, label "This machine", when it runs on the Mac itself, and as the host labeled `intel-mac` from other machines. Call `device_list`, then `device_open` with the `hostId` and device `id` it gives (a disposable device is listed by its create name, such as `lh-proof`, not "iPhone 17 Pro"), and `device_close` when done so the T3 panel does not point at a deleted device. Use the command `device_open` returns for launching and input, and `device_screenshot` for screenshots. The bare `agent-device` in the commands below uses its own per-directory session, separate from the one behind that wrapper. Use `xcrun simctl` for what the tool can't do: booting, `keychain`, `status_bar`, `addmedia`, `ui`, `io` and `spawn`.
 - **What it does not cover.** Xcode 27, and with it the iOS 27 simulator runtime, runs only on Apple silicon, so this Intel Mac stays on Xcode 26.5 and iOS 26.5. Rendering differences that exist only on iOS 27, Liquid Glass included, are not covered. Every receipt for a phone change says it ran on iOS 26.5.
 - **Tools.** Node 22 builds the app (`mise where node@22`) and Node 26 runs the server. Ruby, CocoaPods, `agent-device` and `exiftool` come from `dots pkg add` and mise. `eas` runs through `npx eas`. The Mac has no Homebrew, watchman (Metro works without it), Chrome or AXe, and `gh` is not logged in there.
 - **When to rebuild the app.** Rebuild the native app only when `apps/mobile` native inputs change: `app.json`, `plugins/`, native dependencies in `package.json`, or `ios/`. A JavaScript-only diff is served by Metro to the app already installed.
@@ -69,7 +69,7 @@ APP=~/lh-dd/Build/Products/Debug-iphonesimulator/LearnHarnessNightly.app
 
 A Debug build embeds no bundle, so the app can only run what Metro serves it. If `main.jsbundle` is there, the build is not the Debug one and the run proves the wrong thing.
 
-Boot the simulator, trust the CA, install the app and start Metro. `xcrun simctl boot` on a booted device exits 149, so wait with `bootstatus -b` alone, which also boots a shut-down device. Port 8081 must be free: another process serving it can warm another checkout's bundle.
+Boot the simulator, trust the CA, install the app and start Metro. The Metro block assumes the working directory is `apps/mobile` and `PATH=$N22:$PATH`, both set by the native-build block above, so set them yourself when that block is skipped because `~/lh-dd` is reused. A new simulator's first boot took 61 s (19 s is the warm case). `xcrun simctl boot` on a booted device exits 149, so wait with `bootstatus -b` alone, which also boots a shut-down device. Port 8081 must be free: another process serving it can warm another checkout's bundle.
 
 ```bash
 xcrun simctl bootstatus $U -b
@@ -83,7 +83,7 @@ echo $(lsof -nP -iTCP:8081 -sTCP:LISTEN -t) > $RUN/metro.pid
 curl -fsS --max-time 600 -o /dev/null "http://127.0.0.1:8081/.expo/.virtual-metro-entry.bundle?platform=ios&dev=true&hot=false&lazy=true&transform.engine=hermes&transform.bytecode=1&unstable_transformProfile=hermes-stable"
 ```
 
-`$!` is the `npm exec` wrapper, so the listener's own pid comes from `lsof`: both pid files are needed to stop Metro. After the app launches, confirm that `$RUN/metro.log` shows the app's own request for its iOS bundle: it must have come from this Metro. Then pair through the Pair screen:
+`$!` is the `npm exec` wrapper, so the listener's own pid comes from `lsof`: both pid files are needed to stop Metro. The `/status` poll prints two harmless `curl: (7)` lines while Metro starts. The log never names the requester, so read it by order: the warm-up fetch logs `iOS Bundled ... (2977 modules)`, and the app's own request is the SECOND `iOS Bundled ... index.ts (1 module)` line, followed by the app's `Require cycle` warnings. After the app launches, check that second line is there: it shows the app loaded its bundle from this Metro. Then pair through the Pair screen:
 
 ```bash
 CODE=$(curl -s -X POST -H "authorization: Bearer $APP_TOKEN" -H "origin: $APP_URL" -H 'content-type: application/json' -d '{"label":"x"}' $APP_URL/api/auth/pairing-token | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).credential')
@@ -97,7 +97,7 @@ agent-device press 'label="Not Now" role=button' --settle     # the system web s
 agent-device snapshot -i                  # then press the row for https://127.0.0.1:$port by its ref
 ```
 
-Saved servers rows from earlier pairings pile up, and `press 'label="Open"'` then fails with `AMBIGUOUS_MATCH`. Refs expire after any action, so take a fresh `agent-device snapshot -i` and press the row whose URL text is your `https://127.0.0.1:$port` by its ref. `EXPO_PUBLIC_CI_OPEN_SESSIONS` makes each new connection open the next listed session instead of a tapped row ([`apps/mobile/src/workspace-view.ts`](../../../../../apps/mobile/src/workspace-view.ts)). Only a dev bundle reads it: a release or update bundle never carries it. Before a check that starts from tapping a session row, restart Metro with it unset.
+With `EXPO_PUBLIC_CI_OPEN_SESSIONS` set, the first pairing on a fresh simulator opens the lesson immediately, so pressing the saved row by ref applies only after a relaunch. Saved servers rows from earlier pairings pile up, and `press 'label="Open"'` then fails with `AMBIGUOUS_MATCH`. Refs expire after any action, so take a fresh `agent-device snapshot -i` and press the row whose URL text is your `https://127.0.0.1:$port` by its ref. `EXPO_PUBLIC_CI_OPEN_SESSIONS` makes each new connection open the next listed session instead of a tapped row ([`apps/mobile/src/workspace-view.ts`](../../../../../apps/mobile/src/workspace-view.ts)). Only a dev bundle reads it: a release or update bundle never carries it. Before a check that starts from tapping a session row, restart Metro with it unset.
 
 Screenshots: `agent-device screenshot` writes 1x point-sized images (402 by 874), and `xcrun simctl io $U screenshot` writes 1206 by 2622. A check in pixels, such as a 300 px threshold, holds only at 3x: use `agent-device screenshot --pixel-density 3 out.png`.
 
@@ -110,18 +110,18 @@ mkdir -p $RUN/frames
 xcrun simctl io $U recordVideo --codec=h264 --force $RUN/open.mov & REC=$!
 # ... the interaction ...
 kill -INT $REC; sleep 3
-ffmpeg -v error -i $RUN/open.mov -fps_mode passthrough $RUN/frames/f%03d.png
+ffmpeg -loglevel fatal -i $RUN/open.mov -fps_mode passthrough $RUN/frames/f%03d.png
 ffprobe -v error -select_streams v -show_entries frame=pts_time -of csv=p=0 $RUN/open.mov
 magick compare -metric AE $RUN/frames/f001.png $RUN/frames/f002.png null:
 ```
 
-`ffmpeg -vsync 0` fails on ffmpeg 9.1: use `-fps_mode passthrough`. `magick compare -metric AE` prints the number of differing pixels between two frames. Where they work, `agent-device record start` and `record stop` also give frame evidence.
+`ffmpeg -vsync 0` fails on ffmpeg 9.1: use `-fps_mode passthrough`. At `-loglevel error` it prints `non monotonically increasing dts` lines and still exits 0: ignore them or use `-loglevel fatal`. `magick compare -metric AE` prints the number of differing pixels between two frames. Where they work, `agent-device record start` and `record stop` also give frame evidence.
 
 ### Rules and gotchas
 
 - **Saved servers.** After a force-stop or a reinstall the app opens Saved servers: open the disposable server's row before selecting a session. A text size change drops a relaunched app there too, but not a running one.
 - **Restore what you change.** Restore every setting you change (appearance, text size, rotation, Reduce Motion, the status bar override, the trusted CA, the saved server row, imported photos) and read it back before the receipt. [Cleanup and restore](#cleanup-and-restore) lists the commands.
-- **Sessions are bound to the directory.** An `agent-device` session belongs to the working directory it started in: another directory answers `DEVICE_IN_USE`, and its message names the session address, in the form `cwd:<hash>:default`. Close it with `agent-device close --session "$SESSION"`, where `SESSION` is that address or the name from `agent-device session list` run in the same directory. From another directory `close --session default` answers `SESSION_NOT_FOUND`. Never take over another session's device.
+- **Sessions are bound to the directory.** An `agent-device` session belongs to the working directory it started in: another directory answers `DEVICE_IN_USE`, and its message names the session address, in the form `cwd:<hash>:<suffix>` (the suffix was `ios` for an app opened with `--platform ios`): copy it from the `DEVICE_IN_USE` message. Close it with `agent-device close --session "$SESSION"`, where `SESSION` is that address or the name from `agent-device session list` run in the same directory. From another directory `session list` is empty and `close --session default` answers `SESSION_NOT_FOUND`. Never take over another session's device.
 - **First launch and toasts.** A React Native warning overlay can cover the first screen, and a LogBox toast (Metro logged `TypeError: Cannot convert 100 to BigInt` three times) blocks typing with `TEXT_ENTRY_MISMATCH`. Both clear with `agent-device react-native dismiss-overlay`.
 - **Text size.** `xcrun simctl ui $U content_size bogus` prints `Invalid argument` and still exits 0, so read the size back with `xcrun simctl ui $U content_size`.
 - **`stop.sh` on macOS.** `stop.sh` reads `/proc`, so it cannot stop its own processes on macOS (issue #420). Kill by pid instead, as in the cleanup list. `flock` and `setsid` are not needed on macOS: `lib.sh` supplies stand-ins.
@@ -130,15 +130,18 @@ magick compare -metric AE $RUN/frames/f001.png $RUN/frames/f002.png null:
 
 ### Cleanup and restore
 
-- **Processes.** `kill $(cat $RUN/tls.pid $RUN/metro.pid $RUN/metro-npx.pid $RUN/head/app.pid $RUN/head/fake-model.pid)`. Keep exactly one simulator booted.
-- **Disposable simulator.** `xcrun simctl delete $U` removes the CA, the saved server, the photos and every setting at once. Run it from a `trap ... EXIT` so a failure deletes it too.
+A `trap` cannot span separate shell invocations, so a walk driven one command at a time needs a cleanup script that runs these steps.
+
+- **Processes.** `kill $(cat $RUN/tls.pid $RUN/metro.pid $RUN/metro-npx.pid $RUN/head/app.pid $RUN/head/fake-model.pid)`, and also the footprint sampler and any `recordVideo` job (`kill -INT $REC`). `agent-device close` leaves the XCTest runner (`xcodebuild test-without-building`) running on a SHARED simulator: end it. A disposable simulator's runner dies with `simctl delete`.
+- **Booted simulators.** Exactly one stays booted. While a disposable simulator runs, shut the shared one down (`xcrun simctl shutdown "$SHARED"`). Afterwards delete the disposable one and boot the shared one back (`xcrun simctl bootstatus "$SHARED" -b`). The trap runs both.
+- **Disposable simulator.** `xcrun simctl delete $U` removes the CA, the saved server, the photos and every setting at once. Call `device_close` for it first, so the T3 panel does not point at a deleted device.
 - **Shared simulator.** Restore each of these:
   - `xcrun simctl status_bar $U clear`.
   - Remove the saved server row in the app, then `xcrun simctl keychain $U reset`, which untrusts the CA and also clears saved passwords. Or reuse one CA directory across runs, and say so in the receipt.
-  - Photos you imported: `simctl` has no delete-media. Record the baseline asset count before importing, and when the library must be pristine, use a disposable simulator and `xcrun simctl erase` it.
+  - Photos you imported: `simctl` has no delete-media. A fresh simulator holds 6 stock photos, so record the baseline asset count before importing, and when the library must be pristine, use a disposable simulator and `xcrun simctl erase` it.
   - Reduce Motion: put back its ORIGINAL value, including when it started enabled. Read it with `xcrun simctl spawn $U defaults read com.apple.Accessibility ReduceMotionEnabled` before and after.
   - Appearance, text size and orientation: set them back and read them back.
-- **Files.** `~/lh-dd`, the clone and the per-run TLS directory (`rm -rf "$TLS"`) are the only things a run leaves on the Mac's disk.
+- **Files.** `rm -rf "$TLS"`, and `rm -rf "$RUN"` once the receipt is written: it holds `auth.json`, a bearer token. `~/.agent-device` keeps logs and session folders, so clear what the run added. `~/lh-dd` and the clone stay.
 
 ### What the old driver needs
 
@@ -184,8 +187,13 @@ Use a server with `attachment-uploads-v1` and the fake model's teach scenario. U
   sips -s format heic zz-gps.jpg --out zz-sample.heic
   xcrun simctl addmedia $U zz-gps.jpg zz-sample.heic
   ```
-  Import is expensive: `mediaanalysisd` runs near 800% CPU for minutes and starves the XCTest runner, so wait for it to settle before driving. The paperclip's label is `Attach`, its menu items are `[other]` nodes, and in the Photos picker select photos by a fresh ref, then `press 'label="Done"'`. The picker shows "Location Is Included" for the GPS photo, so the check below is not vacuous. Send, then find the stored bytes in `$RUN/head/data-attachments/claimed/<attachment id>` (the id is in the chat record's `attachments`) and read them: `exiftool -a -G1 -s -FileType -MIMEType -Orientation -GPS:all -XMP:all -IPTC:all "$f"`. A JPEG and a HEIC from Photo library are both stored as `image/jpeg` with no GPS, XMP or IPTC tags and Orientation kept, and the chip ends in `.jpg` ([spec](../../../../../docs/specs/mobile-beta.md): "on both platforms"). Record the Photos baseline asset count first and restore as in [Cleanup and restore](#cleanup-and-restore).
-- **WebP (iOS).** `addmedia` refuses a WebP (`File type unsupported`) and Photos cannot hold one, so a WebP from Photo library is not runnable on iOS. Test it through Files: copy the file into `~/Library/Developer/CoreSimulator/Devices/$U/data/Containers/Shared/AppGroup/<the group.com.apple.FileProvider.LocalStorage id>/File Provider Storage/`, then Attach, Files, Browse, On My iPhone. It is stored as `image/webp`, unconverted.
+  Import is expensive: `mediaanalysisd` runs near 800% CPU for minutes and starves the XCTest runner, so wait for it to settle before driving (it took 280 s). The paperclip's label is `Attach`, its menu items are `[other]` nodes, and in the Photos picker select photos by a fresh ref, then `press 'label="Done"'`. The picker shows "Location Is Included" for the GPS photo alone and "2 Photos, Locations Included" for both selected, so the check below is not vacuous. The stored chips are `zz-sample.jpg` and `zz-gps.jpg`. Send, then find the stored bytes in `$RUN/head/data-attachments/claimed/<attachment id>` (the id is in the chat record's `attachments`) and read them: `exiftool -a -G1 -s -FileType -MIMEType -Orientation -GPS:all -XMP:all -IPTC:all "$f"`. A JPEG and a HEIC from Photo library are both stored as `image/jpeg` with no GPS, XMP or IPTC tags and Orientation kept, and the chip ends in `.jpg` ([spec](../../../../../docs/specs/mobile-beta.md): "on both platforms"). A fresh simulator already holds 6 stock photos, so the baseline asset count is 6, not 0: record it first, and restore as in [Cleanup and restore](#cleanup-and-restore).
+- **WebP (iOS).** `addmedia` refuses a WebP (`File type unsupported`) and Photos cannot hold one, so a WebP from Photo library is not runnable on iOS. Test it through Files: find the app group folder and copy the file into its `File Provider Storage/`, then Attach, Files, Browse, On My iPhone:
+  ```bash
+  G=$(for d in ~/Library/Developer/CoreSimulator/Devices/$U/data/Containers/Shared/AppGroup/*/; do [ "$(plutil -extract MCMMetadataIdentifier raw "$d/.com.apple.mobile_container_manager.metadata.plist" 2>/dev/null)" = group.com.apple.FileProvider.LocalStorage ] && echo "$d"; done)
+  cp zz-sample.webp "${G}File Provider Storage/"
+  ```
+  It is stored as `image/webp`, unconverted.
 - **iOS.** On the TestFlight build, check the two permission texts, that a HEIC library photo uploads as `.jpg` JPEG, and that no microphone prompt or Info.plist string exists.
 
 ## Session basics (mobile parity area 4)
@@ -206,13 +214,13 @@ Follow the [spec's Proof section](../../../../../docs/specs/mobile-session-open.
   ```bash
   for i in $(seq 1 30); do agent-device swipe 200 150 200 750 --count 3 --pause-ms 50 >/dev/null; agent-device snapshot -i | grep -q 'Teach me maximum likelihood' && break; done
   ```
-  It took 161 s on the long fixture. `agent-device scroll bottom` fails and `scroll top` works once filling in has finished. Run it on a warm open and on a cold open (force-stop first) right after the transcript shows. The cold run is the harder case. Press the app's ‹ to time Back.
-- **Status-bar tap (proof 2).** Test it in a separate fresh open, while history is still filling: tap the status bar (`agent-device press` at the top edge of the screen), then check that the view goes to the top and the oldest drawn message stays anchored as older ones fill in above it. If the tool's press does not reach the status bar, the observation is BLOCKED and the owner's TestFlight check stays.
-- **The 500 ms commit limit (proof 2).** Back timing and screenshots do not test it. Capture commit times with the React DevTools Profiler connected to the Debug app's Metro, or a Hermes profile (`npx react-native profile-hermes`). If neither runs, exactly this observation is BLOCKED.
-- **No WebView (proof 3).** Search the tree: `agent-device snapshot -i | grep -i webview` must print nothing. If the snapshot does not show element types, this observation is BLOCKED.
+  It found the first message at round 8, after 175 s, on the long fixture. `agent-device scroll bottom` fails and `scroll top` works once filling in has finished. Run it on a warm open and on a cold open (force-stop first) right after the transcript shows. The cold run is the harder case. Press the app's ‹ to time Back.
+- **Status-bar tap (proof 2).** Test it in a separate fresh open, while history is still filling: tap the status bar with `agent-device press 200 10`, which took the long session from near its end to its first message. Then check that the oldest drawn message stays anchored as older ones fill in above it: that part is an observation to make, not one the tap alone shows. If the press does not reach the status bar, the observation is BLOCKED and the owner's TestFlight check stays.
+- **The 500 ms commit limit (proof 2).** Back timing and screenshots do not test it. Capture commit times with the React DevTools Profiler connected to the Debug app's Metro, or a Hermes profile. `npx react-native profile-hermes` fails, because the CLI wants `@react-native-community/cli` in `devDependencies`, and the React DevTools Profiler has not been tried. Until one of them runs, exactly this observation is BLOCKED.
+- **No WebView (proof 3).** Search the tree: `agent-device snapshot -i | grep -i webview` must print nothing. The snapshot shows element types, so this observation runs.
 - **The Scroll to end threshold (proof 5).** The threshold is 100 points on both platforms. `swipe` has no duration option, so drag slowly with `agent-device gesture pan 200 300 0 90 3000` or `agent-device scroll up --pixels 90 --duration-ms 3000` (points, 3 s). From the end, 90 points up leaves "Scroll to end" absent, and 120 to 130 points shows it. Take screenshots with `--pixel-density 3` when the check is in pixels (100 points is 300 px).
 - **Text size and the period at the wrap width (proof 8).** Change the text size with `xcrun simctl ui $U content_size <size>` (`increment` and `decrement` step it one size at a time, and `xcrun simctl ui --help` lists the names) until the sentence's equation just fits its line, reopening the math cases session each time. iOS has fixed steps, not the fine steps the Android notes use. Put the size back and read it back with `xcrun simctl ui $U content_size`.
-- **Rotation.** Screenshots keep their portrait dimensions in landscape, with the content drawn sideways, so their size proves nothing. Read the root frame from the accessibility tree: `agent-device orientation landscape-left; agent-device snapshot -i --json | grep -A3 '"rect"' | head` shows width 874 and height 402. Then `agent-device orientation portrait`. No command reads the orientation back.
+- **Rotation.** Screenshots keep their portrait dimensions in landscape, with the content drawn sideways, so their size proves nothing. Read the root frame from the accessibility tree: `agent-device orientation landscape-left; agent-device snapshot -i --json | grep -A4 '"rect"' | head -5` shows width 874 and height 402 (a `y` key sits between `x` and `width`, so a shorter `-A` stops before the height). Portrait shows 402 by 874. Then `agent-device orientation portrait`. No command reads the orientation back.
 - **Reduce Motion (proof 5).** Read the original value first: `xcrun simctl spawn $U defaults read com.apple.Accessibility ReduceMotionEnabled`. Label selectors for the switch tap without toggling it, so use the coordinate:
   ```bash
   agent-device open com.apple.Preferences
@@ -223,9 +231,9 @@ Follow the [spec's Proof section](../../../../../docs/specs/mobile-session-open.
   Read the value back, then open the app and check Scroll to end. With Reduce Motion off, Scroll to end animated over about 20 frames in 0.3 s. With it on, it gave 3 frames, a jump. Switch it back with the same coordinate and restore the ORIGINAL value, including when it started enabled.
 - **Keyboard (proof 5).** `agent-device type $'\t'` reports "Typed 1 chars" but is not a Tab, and `keyboard dismiss` answers `UNSUPPORTED_OPERATION`. Activating the focused button from a hardware keyboard has no way to run here, so that observation is BLOCKED.
 - **VoiceOver (proofs 4, 5).** VoiceOver speech output is not observable on the simulator. The touch and Reduce Motion parts of proof 5 run here. Proof 4, and the VoiceOver double tap of proof 5, are BLOCKED for that observation and are the owner's TestFlight check.
-- **Memory (proof 2).** `xctrace` does not work here: `--attach` by name fails, `--device $U --attach <pid>` ignores `--time-limit` and SIGINT, leaves an unusable trace and a `DTServiceHub`, and hangs the simulator until `xcrun simctl shutdown $U` and `bootstatus -b`. Do not run it. The simulator's app is a Mac process, so sample its footprint (process memory, not heap bytes) once a second:
+- **Memory (proof 2).** `xctrace` does not work here: `--attach` by name fails, `--device $U --attach <pid>` ignores `--time-limit` and SIGINT, leaves an unusable trace and a `DTServiceHub`, and hangs the simulator until `xcrun simctl shutdown $U` and `bootstatus -b`. Do not run it. The simulator's app is a Mac process, so sample its footprint (process memory, not heap bytes) about once every 1.5 s (one `footprint` call takes about 1.5 s, and a bare `pgrep` on the app name returns one pid per booted simulator, so the pattern names this device):
   ```bash
-  PID=$(pgrep -f 'LearnHarnessNightly.app/LearnHarnessNightly$')
+  PID=$(pgrep -f "Devices/$U/.*/LearnHarnessNightly.app/LearnHarnessNightly$" | head -1)
   while :; do echo "$(date +%T) $(footprint $PID | sed -n 2p)"; sleep 1; done > $RUN/mem.txt
   ```
   (`ps -o rss= -p $PID` is the coarser alternative.) Open the long session, scroll nowhere, and wait until filling in has finished (20 s after the transcript shows). Then run two rounds, each a fling to the top until the first message shows, then Scroll to end and a 4 s wait. A round's window runs from its first fling to the end of its 4 s wait, and its peak is the largest footprint sample inside it. The spec's limit stays: round 2's peak at most 10% above round 1's. The spec's `dumpsys meminfo` TOTAL PSS is the Android measure. Memory on the simulator is the Mac process's, not a phone's: say so in the receipt. Rounds started while filling in is still going compare a partly loaded session with a fully loaded one, so they don't measure this.
