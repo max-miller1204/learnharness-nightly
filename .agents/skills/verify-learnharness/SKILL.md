@@ -206,8 +206,10 @@ goal containing zz-e2e gets two file reads, one question and an
 acknowledgement; anything else gets 'zz-e2e fallback reply.' Not bugs: that
 fallback reply, the 503 from /api/stt/token (no dictation key), and
 'Updates unavailable' in the sidebar footer." Charters come from the feature
-map (`features/`); every charter there starts signed in, so pass
-`--session learner` and raise `--max-steps` and `--timeout` (defaults 8 steps,
+map (`features/`); every `web` charter starts signed in, so pass
+`--session learner`. A phone charter (`ios`) starts from a fresh app: a device
+has no sessions, so pass none, and run it through the wrapper
+(`tests/e2e/support/ios.sh e2e explore ...`, [Phone](features/phone.md)). Raise `--max-steps` and `--timeout` (defaults 8 steps,
 10 minutes). Output goes to `.e2e/bugbash/<slug>` (gitignored). A finding is a
 bug only once a repro test, `tests/e2e/bugbash/<slug>.e2e.ts` tagged
 `bugbash`, fails on the reported defect. Commit only repros of confirmed bugs;
@@ -226,5 +228,5 @@ DerivedData have their own cleanup in [Phone](features/phone.md).
 - `tests/e2e/support/serve.ts`: the launcher above (run by the config, not by hand).
 - `tests/e2e/support/instance.ts`: `instance(app.baseUrl)`, `modelRequests`, `storedChat`.
 - `tests/e2e/support/fake-model.ts`: the scripted model; its header documents the scenario format.
-- `tests/e2e/support/ios.sh`: `build`, `device-create` and `device-delete` for the phone.
-- `tests/e2e/support/phone.ts` and `phone-config.ts`: the phone's `test`, its pairing helpers, and the ports and paths the config shares with the tests.
+- `tests/e2e/support/ios.sh`: `build` and `e2e <command>` (which owns the simulator, ports and cleanup of a phone run), `devices` and `device-delete` for the phone.
+- `tests/e2e/support/phone.ts`, `phone-config.ts` and `ios-device.ts`: the phone's `test` and pairing helpers, what the config needs from the wrapper's environment, and the check that a simulator is one the wrapper made.
