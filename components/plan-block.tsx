@@ -32,42 +32,14 @@ import { useAppearance } from "@/components/settings/appearance";
 import { InteractionLayerOwner, useInteractionLayer } from "./interaction-layers";
 
 /**
- * PLAN BLOCKS — the plan lives in the chat (wave 4): persisted
- * `data-plan-block` parts render as DAG blocks in the transcript flow, and
- * the right sidebar is retired.
- *
- * - kind "full": the whole DAG, BORDERLESS — no wrapping chrome, the SVG
- *   scales to the full column width (viewBox = layout extent + GRAPH_PAD,
- *   so strokes/glow never clip), natural height, labels capped at the
- *   chat's reading size (textCap: fills the column, never oversizes text).
- * - Clicking opens the full plan in a session-scoped focus overlay
- *   (absolute inside the session area, below the drag bar — chrome-melt
- *   wave, 2026-09-19; was a fixed inset-0 full-screen popup) —
- *   the LIVE plan: the latest tree from the transcript with statuses
- *   derived at click time (contracts/plan.ts derivePlanStatuses). Blocks
- *   are frozen snapshots rendered exactly as carried (never re-derived);
- *   the popup is the live view (user decision, 2026-09).
- *
- * Hand-built SVG everywhere (user decision): placement runs on dagre
- * (mermaid's engine) in components/plan-layout.ts; the skin is ours — no
- * coupling to the graph stream's internals. Box sizes come from the real
- * label text measured in the real font (usePlanLayout below, #671). Pan/zoom
- * in the popup is harvested from the retired tree panel's graph (fit-floor
- * semantics: fully zoomed out IS the fit; panning locks at the floor).
+ * In-chat plan DAG blocks (frozen snapshots rendered as stored) and the live
+ * session-scoped focus overlay (latest transcript tree with derived statuses).
  */
 
-// ─── Measuring the labels (#671) ──────────────────────────────────────────────
-
-/** The label type every plan view draws its titles in. Width-relevant
- *  classes only (size + weight) — the probe measures with exactly these.
- *  font-medium is the HEAVIEST weight any status draws (the current node,
- *  TEXT.current below), so every box fits its text at any status and the
- *  layout never shifts when the current step moves (owner, #671 design). */
+/** Width-relevant classes for measuring node labels at the heaviest status weight
+ *  so box sizes do not shift when the active node changes. */
 const LABEL_TYPE = "text-xs";
 const PROBE_TYPE = `${LABEL_TYPE} font-medium`;
-/** A fixed sample for size/visibility changes. It cannot represent every
- *  title's glyphs: font settings and completed font loads also invalidate
- *  measurement, even when this sample keeps exactly the same dimensions. */
 const SENTINEL_TEXT = "Hamburgefonstiv 0123 漢字";
 
 /** The hidden probe a diagram carries in a fixed-size sibling SVG. It
