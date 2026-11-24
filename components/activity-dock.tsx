@@ -333,9 +333,15 @@ export function ActivitySection({ feed: feedProp }: { feed?: ActivityFeed }) {
 	const abortRef = useRef({ blobs, refresh, setAbortStates });
 	abortRef.current = { blobs, refresh, setAbortStates };
 
-	const totalCost = useMemo(() => {
+	const { totalCost, unpricedCount } = useMemo(() => {
 		const priced = blobs.map((b) => b.cost).filter((c): c is number => c !== null);
-		return priced.length === 0 ? null : priced.reduce((a, c) => a + c, 0);
+		return {
+			totalCost: priced.length === 0 ? null : priced.reduce((a, c) => a + c, 0),
+			// Unknown means a model call whose cost is not known. A job with no call yet
+			// has no model, a plan-billed one is labeled by its plan, and a graph
+			// extraction is not on the money channel.
+			unpricedCount: blobs.filter((b) => b.process !== "extraction" && (b.steps ?? 0) > 0 && b.cost === null && !subscriptionLabel(b.model)).length,
+		};
 	}, [blobs]);
 
 	const abort = useCallback(async (blob: ActivityBlob) => {
@@ -383,7 +389,7 @@ export function ActivitySection({ feed: feedProp }: { feed?: ActivityFeed }) {
 				Background agents
 				{blobs.length > 0 && (
 					<span className="ml-auto tabular-nums" data-testid="activity-total-cost" title="Total running cost (inferred)">
-						{planCostLabel(totalCost, subscriptionLabels(blobs.map((blob) => blob.model)))}
+						{planCostLabel(totalCost, subscriptionLabels(blobs.map((blob) => blob.model)), undefined, unpricedCount)}
 				</span>
 				)}
 			</div>

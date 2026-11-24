@@ -83,7 +83,7 @@ describe("graphCostSummary (the cost pill's fold)", () => {
 		// unpriced run renders "—". Newest first: 200 (both unpriced), 100.
 		assert.equal(s.runs[0]!.dollars, null);
 		assert.notEqual(s.runs[1]!.dollars, null);
-		assert.equal(s.unpricedRuns, 1); // run-level: only the both-stages run
+		assert.equal(s.unpricedRuns, 2); // run-level: every run with an unknown stage, counted once
 	});
 
 	test("recent runs cap: newest survive", () => {

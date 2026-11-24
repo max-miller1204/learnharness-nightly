@@ -26,10 +26,13 @@ export interface StageCost {
 	/** Subscription stage-runs, excluded from API dollars and unpriced counts. */
 	subscriptionRuns?: number;
 	subscriptionProviders?: string[];
-	/** Inferred USD summed over PRICED runs (partial when unpricedRuns > 0). */
+	/** Inferred USD summed over the calls that priced (partial when unpricedRuns > 0). */
 	dollars: number;
 	/** Stage-runs whose model is missing from Pi's catalog (render "—", never zero). */
 	unpricedRuns: number;
+	/** Runs where at least one API part is priced, so `dollars` is known spend
+	 *  (partial when the same run is also counted in `unpricedRuns`). */
+	pricedRuns?: number;
 	/** Runs that billed this stage. */
 	runs: number;
 	/** Token totals across every run. */
@@ -48,8 +51,10 @@ export interface RecentRun {
 	kind: "extraction";
 	/** Chat title / source file path / fixed label for naming runs. */
 	title: string;
-	/** Whole-run inferred USD; null only when EVERY stage is unpriced. */
+	/** Whole-run inferred USD over the calls that priced; null when none did. */
 	dollars: number | null;
+	/** Some API call of this run has no known cost (dollars may still be known). */
+	unpriced: boolean;
 	tokens: CallUsage;
 	/** What the run merged into the graph; absent on failed runs. */
 	merged?: EmissionStats;
@@ -61,7 +66,7 @@ export interface GraphCostSummary {
 	subscriptionProviders?: string[];
 	/** Inferred USD across all priced stages of all runs. */
 	totalDollars: number;
-	/** Runs with no priced API stage and at least one unknown stage. */
+	/** Runs with at least one API call of unknown cost, counted once per run. */
 	unpricedRuns: number;
 	/** The billable pipeline stages. (Wave 7, owner ruling 2026-09-23:
 	 *  the embedding stage is gone with the provider embedder; the
@@ -92,19 +97,34 @@ const ZERO_TOKENS: CallUsage = {
 	reasoningTokens: undefined,
 };
 
-const emptyStage = (): StageCost => ({ dollars: 0, unpricedRuns: 0, runs: 0, tokens: { ...ZERO_TOKENS } });
+const emptyStage = (): StageCost => ({ dollars: 0, unpricedRuns: 0, pricedRuns: 0, runs: 0, tokens: { ...ZERO_TOKENS } });
 
-/** One stage's dollars over its steps; null when the model is unpriced
- *  (all-or-nothing: a stage runs one model). */
-function stageDollars(model: string, steps: readonly CallUsage[], price: CallPricer): number | null {
-	if (isSubscriptionModel(model) || steps.length === 0) return null;
-	let total = 0;
+/** One part of a run (extractor, image reader or auditor) folded over its calls.
+ *  Known spend and unknown calls are kept apart, so a part with one billed and
+ *  one unbilled call keeps the billed dollars and carries an unknown mark. */
+interface PartCost {
+	subscription: boolean;
+	calls: number;
+	/** Dollars over the calls that priced. */
+	dollars: number;
+	/** At least one call priced. */
+	priced: boolean;
+	/** At least one call has no known cost. */
+	unknown: boolean;
+}
+
+function partCost(model: string, steps: readonly CallUsage[], price: CallPricer): PartCost {
+	const part: PartCost = { subscription: isSubscriptionModel(model), calls: steps.length, dollars: 0, priced: false, unknown: false };
+	if (part.subscription) return part;
 	for (const step of steps) {
 		const c = price(step, model);
-		if (c === null) return null;
-		total += c;
+		if (c === null) part.unknown = true;
+		else {
+			part.dollars += c;
+			part.priced = true;
+		}
 	}
-	return total;
+	return part;
 }
 
 /** Merge one step-set's tokens into an accumulating CallUsage. */
@@ -129,41 +149,43 @@ export function graphCostSummary(input: CostSummaryInput, price: CallPricer): Gr
 
 	const foldExtractionRun = (run: ExtractionRunUsage, title: string) => {
 		const stages = run.stages ?? { extractor: { model: "unknown", steps: [] }, auditor: { model: "unknown", steps: [] } };
-		// Per-stage: tokens always count; dollars only when priced.
+		const image = stages.imageReader;
+		// An image's description (item 26) is part of extracting from that file.
+		const extractionParts = [partCost(stages.extractor.model, stages.extractor.steps, price), ...(image ? [partCost(image.model, image.steps, price)] : [])];
+		const auditPart = partCost(stages.auditor.model, stages.auditor.steps, price);
+		const parts = [...extractionParts, auditPart];
+		// A part with no calls billed nothing and is not unknown (a run cancelled
+		// after the extractor has an empty audit). A run with no calls at all has
+		// no known cost, so each of its API stages is unknown.
+		const noCalls = parts.every((part) => part.calls === 0);
+		const unknownOf = (part: PartCost) => !part.subscription && (part.unknown || (noCalls && part.calls === 0));
+
 		extraction.runs++;
 		mergeTokens(extraction.tokens, stages.extractor.steps);
-		const extDollars = stageDollars(stages.extractor.model, stages.extractor.steps, price);
-		// An image's description (item 26) is part of extracting from that file.
-		const image = stages.imageReader;
-		const imgDollars = image ? stageDollars(image.model, image.steps, price) : null;
 		if (image) mergeTokens(extraction.tokens, image.steps);
-		// Each part of the stage is a subscription, unpriced or dollars. A run carries each mark at most
-		// once, and a mixed run carries both (owner, 2026-11-17: like a subscription extractor beside an
-		// unpriced auditor).
-		const parts: Array<[string, number | null]> = [[stages.extractor.model, extDollars], ...(image ? [[image.model, imgDollars] as [string, number | null]] : [])];
-		const subscriptionParts = parts.filter(([model]) => isSubscriptionModel(model));
-		if (subscriptionParts.length > 0) {
+		// A run carries each mark at most once, and a mixed run carries both
+		// (owner, 2026-11-17: like a subscription extractor beside an unpriced auditor).
+		const subscriptionModels = [stages.extractor.model, ...(image ? [image.model] : [])].filter(isSubscriptionModel);
+		if (subscriptionModels.length > 0) {
 			extraction.subscriptionRuns = (extraction.subscriptionRuns ?? 0) + 1;
-			extraction.subscriptionProviders = [...new Set([...(extraction.subscriptionProviders ?? []), ...subscriptionLabels(subscriptionParts.map(([model]) => model))])];
+			extraction.subscriptionProviders = [...new Set([...(extraction.subscriptionProviders ?? []), ...subscriptionLabels(subscriptionModels)])];
 		}
-		if (parts.some(([model, dollars]) => !isSubscriptionModel(model) && dollars === null)) extraction.unpricedRuns++;
-		for (const [model, dollars] of parts) if (!isSubscriptionModel(model) && dollars !== null) extraction.dollars += dollars;
+		if (extractionParts.some(unknownOf)) extraction.unpricedRuns++;
+		if (extractionParts.some((part) => part.priced)) extraction.pricedRuns = (extraction.pricedRuns ?? 0) + 1;
+		for (const part of extractionParts) extraction.dollars += part.dollars;
 
 		audit.runs++;
 		mergeTokens(audit.tokens, stages.auditor.steps);
-		const audDollars = stageDollars(stages.auditor.model, stages.auditor.steps, price);
-		if (isSubscriptionModel(stages.auditor.model)) {
+		if (auditPart.subscription) {
 			audit.subscriptionRuns = (audit.subscriptionRuns ?? 0) + 1;
 			audit.subscriptionProviders = [...new Set([...(audit.subscriptionProviders ?? []), ...subscriptionLabels([stages.auditor.model])])];
 		}
-		else if (audDollars === null) audit.unpricedRuns++;
-		else audit.dollars += audDollars;
+		if (unknownOf(auditPart)) audit.unpricedRuns++;
+		if (auditPart.priced) audit.pricedRuns = (audit.pricedRuns ?? 0) + 1;
+		audit.dollars += auditPart.dollars;
 
-		// Run-level: null only when EVERY stage is unpriced.
-		const allStages: Array<number | null> = [extDollars, audDollars, ...(image ? [imgDollars] : [])];
-		const runDollars = allStages.every((d) => d === null)
-			? null
-			: allStages.reduce<number>((a, d) => a + (d ?? 0), 0);
+		// Run-level: null only when no API part priced a call; unknown is counted once.
+		const runPriced = parts.some((part) => part.priced);
 		const subscriptionRuns = [stages.extractor, stages.auditor, ...(image ? [image] : [])].filter((stage) => isSubscriptionModel(stage.model)).length;
 		const allSteps = [...stages.extractor.steps, ...stages.auditor.steps, ...(image?.steps ?? [])];
 		runs.push({
@@ -173,7 +195,8 @@ export function graphCostSummary(input: CostSummaryInput, price: CallPricer): Gr
 			durationMs: run.durationMs,
 			kind: "extraction",
 			title,
-			dollars: runDollars,
+			dollars: runPriced ? parts.reduce((sum, part) => sum + part.dollars, 0) : null,
+			unpriced: parts.some(unknownOf),
 			tokens: sumSteps(allSteps),
 			...(run.stats ? { merged: run.stats } : {}),
 		});
@@ -189,8 +212,7 @@ export function graphCostSummary(input: CostSummaryInput, price: CallPricer): Gr
 	runs.sort((a, b) => b.startedAt - a.startedAt);
 	const capped = runs.slice(0, input.recentCap ?? 10);
 
-	// A run is "unpriced" when it billed nothing countable at all.
-	const unpricedRuns = runs.filter((r) => r.dollars === null && (r.subscriptionRuns ?? 0) < 2).length;
+	const unpricedRuns = runs.filter((r) => r.unpriced).length;
 	const subscriptionRuns = (extraction.subscriptionRuns ?? 0) + (audit.subscriptionRuns ?? 0);
 	return {
 		...(subscriptionRuns ? { subscriptionRuns, subscriptionProviders: [...new Set([...(extraction.subscriptionProviders ?? []), ...(audit.subscriptionProviders ?? [])])] } : {}),

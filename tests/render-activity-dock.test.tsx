@@ -279,6 +279,27 @@ describe("activity section render", () => {
 		assert.match(html, /activity-total-cost[^>]*>\$0\.0040</);
 	});
 
+	it("marks the running total partial only for jobs that made a call of unknown cost", () => {
+		const usageOf = (model: string) => ({ model, inputTokens: 10_000, outputTokens: 1000, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, steps: 1 });
+		const priced = job({ id: "a", usage: usageOf("openrouter:z-ai/glm-5.3-flash") });
+		const unknown = (id: string) => job({ id, usage: usageOf("openrouter:openrouter/auto"), createdAt: new Date(NOW - 20_000).toISOString() });
+		const header = (feed: ActivityFeed) => renderToStaticMarkup(<ActivitySection feed={feed} />).match(/activity-total-cost[^>]*>([^<]*)</)?.[1];
+		const feed = (jobs: ActivityFeed["jobs"], extractions: ActivityFeed["extractions"] = []): ActivityFeed => ({ jobs, extractions });
+		assert.equal(header(feed([priced, unknown("b")])), "$0.0020 + 1 unpriced");
+		assert.equal(header(feed([priced, unknown("b"), unknown("c")])), "$0.0020 + 2 unpriced");
+		assert.equal(header(feed([priced])), "$0.0020", "fully priced stays a plain total");
+		// A job that has not made a call yet has no model and no known cost to miss.
+		assert.equal(header(feed([priced, job({ id: "b" })])), "$0.0020");
+		// A graph extraction does not ride the money channel and is never counted as unknown.
+		assert.equal(header(feed([priced], [{ id: "cx", chatId: "cx", title: "Lesson", phase: "merging", startedAt: NOW - 60_000 }])), "$0.0020");
+		// A plan-billed job is labeled by its plan, not unknown.
+		const plan = job({ id: "p", usage: usageOf("chatgpt:gpt-5") });
+		assert.equal(header(feed([priced, plan])), "$0.0020 + ChatGPT");
+		// Plan names with no known dollars keep the unknown count.
+		assert.equal(header(feed([plan, unknown("b")])), "ChatGPT + 1 unpriced");
+		assert.equal(header(feed([unknown("b")])), "\u2014", "nothing known stays the dash");
+	});
+
 	it("expanded card: END stays on the face row, the title isn't repeated (#450)", async () => {
 		const dom = parseHTML("<html><body><div id='root'></div></body></html>");
 		const globals = { window: dom.window, self: dom.window, document: dom.document, HTMLElement: dom.window.HTMLElement,

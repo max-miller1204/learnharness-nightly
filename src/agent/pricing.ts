@@ -1,6 +1,7 @@
 /** Per-call API-dollar calculation. Record-time capture prices each call from
  *  the dispatched model's own rates (never re-reading the live catalog) and
- *  skips $0 placeholder models that are not known to be free. Read-time
+ *  stores $0 only for models positively known to be free. An all-zero entry that
+ *  is not (a paid plan, a router) stores nothing and reads as unknown. Read-time
  *  fallback (src/server/pricing.ts) shares computeCallCost and liveCatalogModel.
  *  Never mutate saved native messages: calculateCost mutates its usage.cost. */
 import { calculateCost, type Api, type Model, type Usage } from "@earendil-works/pi-ai";
@@ -46,7 +47,7 @@ export function liveCatalogModel(id: string): PricedModel | undefined {
 	return piModels().getModel(id.slice(0, colon), id.slice(colon + 1));
 }
 
-function hasNonZeroRate(cost: Model<Api>["cost"]): boolean {
+export function hasNonZeroRate(cost: Model<Api>["cost"]): boolean {
 	return [cost, ...(cost.tiers ?? [])].some(
 		(rate) => rate.input > 0 || rate.output > 0 || rate.cacheRead > 0 || rate.cacheWrite > 0,
 	);
@@ -56,13 +57,25 @@ export function isKnownFreeModelId(id: string): boolean {
 	return /(?:^|[:/-])free(?:$|[:/-])/i.test(id);
 }
 
-/** Whether a model's rates are real and safe to persist (not an unpriced provider or $0 placeholder). */
+/** Zero-rate models known to be free by name, not by an id marker: OpenCode's
+ *  free tier, Google's Gemma models, NVIDIA's hosted catalog and Mistral's Labs
+ *  models, all free-tier hosted APIs. Every other all-zero entry (a paid plan or
+ *  a router that hides the backend's bill) is unknown, never free. */
+const NAMED_FREE_MODEL = /^(?:opencode:|google:gemma-|nvidia:|mistral:labs-)/;
+
+/** Whether a call on this model costs $0.00 for certain. An explicit free marker
+ *  always counts; a name on the free list counts only while its rates are zero. */
+export function isPositivelyFreeModel(model: { provider: string; id: string; cost?: Model<Api>["cost"]; free?: boolean }): boolean {
+	if (model.free === true || isKnownFreeModelId(model.id)) return true;
+	return model.cost !== undefined && !hasNonZeroRate(model.cost) && NAMED_FREE_MODEL.test(`${model.provider}:${model.id}`);
+}
+
+/** Whether a model's rates are real and safe to persist. Real rates and models
+ *  positively known to be free are. An all-zero entry that is neither is
+ *  unknown: it stores nothing, so a later catalog fix can still price it. */
 export function hasRecordableCost(model: DispatchedModel): boolean {
-	const modelId = `${model.provider}:${model.id}`;
-	if (isUnpricedModelId(modelId) || !model.cost) return false;
-	// Do not freeze $0 placeholder rates unless the model id marks it free;
-	// leaving costUsd absent lets later catalog updates price it at read time.
-	return model.free === true || hasNonZeroRate(model.cost) || isKnownFreeModelId(model.id);
+	if (isUnpricedModelId(`${model.provider}:${model.id}`) || !model.cost) return false;
+	return hasNonZeroRate(model.cost) || isPositivelyFreeModel(model);
 }
 
 function dispatchedCost(call: Partial<CallUsage>, model: DispatchedModel): number | null {

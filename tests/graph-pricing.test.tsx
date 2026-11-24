@@ -3,7 +3,7 @@ import React from "react";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderWithInteractionLayers as renderToStaticMarkup } from "./interaction-layer-render.tsx";
-import { GraphCostControl } from "../components/graph-view.tsx";
+import { GraphCostControl, GraphCostPanel } from "../components/graph-view.tsx";
 import { graphCostSummary } from "../src/core/cost-summary.ts";
 import { callCost } from "../src/server/pricing.ts";
 import type { CallUsage, ExtractionRunUsage } from "../src/core/contracts.ts";
@@ -32,10 +32,69 @@ test("known zero, mixed priced/unknown, and subscription headline semantics stay
 	const mixed = summary([priced, historical]);
 	assert.equal(mixed.unpricedRuns, 1);
 	assert.ok(mixed.totalDollars > 0);
-	assert.match(headline([priced, historical]), new RegExp(`>\\$${mixed.totalDollars.toFixed(2).replace(".", "\\.")}<\\/button>`));
+	assert.match(headline([priced, historical]), new RegExp(`>\\$${mixed.totalDollars.toFixed(2).replace(".", "\\.")} \\+ 1 unpriced<\\/button>`));
 	const plan = run([usage()], "chatgpt:fixture");
 	assert.match(headline([plan]), />ChatGPT<\/button>/);
 	assert.match(headline([plan, zero]), />\$0\.00 \+ ChatGPT<\/button>/);
+});
+
+test("a run with a priced extractor and an unpriced image reader shows its known spend, marked partial", () => {
+	const model = "anthropic:claude-haiku-4-5";
+	const imageRun: ExtractionRunUsage = {
+		startedAt: 1, at: "fixture", durationMs: 1,
+		stages: {
+			extractor: { model, steps: [usage({ costUsd: 0.12 })] },
+			auditor: { model, steps: [] },
+			imageReader: { model, steps: [usage()] },
+		},
+	};
+	const costs = summary([imageRun]);
+	assert.ok(Math.abs(costs.stages.extraction.dollars - 0.12) < 1e-9, "the extractor's spend is known");
+	assert.equal(costs.stages.extraction.unpricedRuns, 1);
+	assert.equal(costs.stages.extraction.pricedRuns, 1);
+	assert.equal(costs.stages.audit.unpricedRuns, 0, "an audit with no calls is not unpriced");
+	assert.equal(costs.unpricedRuns, 1, "unpriced is counted once per run");
+	const html = headline([imageRun]);
+	assert.match(html, />\$0\.12 \+ 1 unpriced<\/button>/);
+	assert.doesNotMatch(html, />\u2014<\/button>/);
+	// The panel agrees with the headline: the extraction row keeps its known dollars and its mark.
+	const panel = renderToStaticMarkup(<GraphCostPanel costs={costs} />);
+	assert.match(panel, /Extraction[\s\S]*?\$0\.\d{3}[\s\S]*?\+1 unpriced/);
+	assert.equal((panel.match(/unpriced/g) ?? []).length, 3, "header, one stage row and the run row mark it; the header does not repeat its count");
+});
+
+test("a run with both stages unpriced counts once", () => {
+	const both = run([usage()], undefined, 3);
+	assert.equal(summary([both]).unpricedRuns, 1);
+	assert.doesNotMatch(headline([both]), /unpriced/, "no known dollars, so the headline stays unknown");
+	const priced = run([usage({ cacheWrite1hTokens: 0 })]);
+	assert.match(headline([priced, both]), /\+ 1 unpriced<\/button>/);
+});
+
+test("a run cancelled after the extractor billed keeps its spend with no unpriced mark", () => {
+	const model = "anthropic:claude-haiku-4-5";
+	const cancelled: ExtractionRunUsage = {
+		startedAt: 1, at: "fixture", durationMs: 1,
+		stages: { extractor: { model, steps: [usage({ cacheWrite1hTokens: 0 })] }, auditor: { model: "unknown", steps: [] } },
+	};
+	const costs = summary([cancelled]);
+	assert.equal(costs.unpricedRuns, 0);
+	assert.equal(costs.stages.audit.unpricedRuns, 0);
+	const html = headline([cancelled]);
+	assert.match(html, new RegExp(`>\\$${costs.totalDollars.toFixed(2).replace(".", "\\.")}</button>`));
+	assert.doesNotMatch(html, /unpriced/);
+});
+
+test("a stage with a billed call and an unbilled call keeps the billed spend, marked partial", () => {
+	const model = "anthropic:claude-haiku-4-5";
+	const split: ExtractionRunUsage = {
+		startedAt: 1, at: "fixture", durationMs: 1,
+		stages: { extractor: { model, steps: [usage({ costUsd: 0.12 }), usage()] }, auditor: { model, steps: [usage({ costUsd: 0.01 })] } },
+	};
+	const costs = summary([split]);
+	assert.ok(Math.abs(costs.stages.extraction.dollars - 0.12) < 1e-9);
+	assert.equal(costs.unpricedRuns, 1);
+	assert.match(headline([split]), />\$0\.13 \+ 1 unpriced<\/button>/);
 });
 
 test("graph stage and recent-run aggregates preserve known one-hour cache writes", () => {

@@ -1,7 +1,7 @@
 /** API-dollar estimates. Recorded calls store their record-time costUsd; older
  * records without it fall back to Pi's live catalog first, then the retired
  * models table. Catalog resolution is key-independent. */
-import { computeCallCost, hasRecordableCost, isKnownFreeModelId, isUnpricedModelId, liveCatalogModel, type PricedModel } from "../agent/pricing.ts";
+import { computeCallCost, hasNonZeroRate, isKnownFreeModelId, isPositivelyFreeModel, isUnpricedModelId, liveCatalogModel, type PricedModel } from "../agent/pricing.ts";
 import { RETIRED_MODELS } from "./retired-models.ts";
 import type { CallUsage, ChatRecord, JobRecord, TurnUsage } from "../core/contracts.ts";
 import { sessionCost as foldSessionCost, turnCost as foldTurnCost, jobCost as foldJobCost } from "../core/prices.ts";
@@ -19,11 +19,11 @@ export function callCost(call: Partial<CallUsage>, modelId: string): number | nu
 		return typeof call.costUsd === "number" && Number.isFinite(call.costUsd) && call.costUsd >= 0 ? call.costUsd : null;
 	}
 	const model = catalogModel(modelId);
-	const colon = modelId.indexOf(":");
 	if (model && (model.free === true || isKnownFreeModelId(modelId))) {
 		return computeCallCost(call, { cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
 	}
-	if (model && modelId.startsWith("openrouter:") && !hasRecordableCost({ provider: modelId.slice(0, colon), id: modelId.slice(colon + 1), cost: model.cost })) return null;
+	// All-zero rates carry a dollar figure only for a model known to be free.
+	if (model && !hasNonZeroRate(model.cost) && !isPositivelyFreeModel({ provider: modelId.slice(0, modelId.indexOf(":")), id: modelId.slice(modelId.indexOf(":") + 1), cost: model.cost, free: model.free })) return null;
 	return computeCallCost(call, model);
 }
 
