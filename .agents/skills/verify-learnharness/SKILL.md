@@ -25,12 +25,15 @@ every run, and every worktree, gets its own app. It:
   data folder and key store. Your real `data/` and `auth.json` are never read.
   It lives outside the checkout because `next dev` reloads the page when a
   file under the checkout changes.
-- runs no provider key (`LH_IGNORE_ENV_KEYS=1`) and starts a scripted fake
+- runs no provider key (`LH_IGNORE_ENV_KEYS=1`), and sets every variable that
+  could point it at real data or a real install (`LH_SELFHOST`, `LH_HOME`,
+  the update feed and so on) to an isolated value, because `next dev` loads
+  the checkout's `.env*` files and a variable passed to it wins over them. It starts a scripted fake
   model (`tests/e2e/support/fake-model.ts`) that fills the Strong, Cheap and
   Vision slots as `e2e-strong`, `e2e-cheap`, `e2e-vision`. It plays
   `tests/e2e/support/scenarios/teach.json` (read two files, ask one question,
   acknowledge the answer). `LH_E2E_SCENARIO=<file>` picks another scenario.
-- serves `next dev` by default (about 10 s to ready). `LH_E2E_SERVER=standalone`
+- serves `next dev` by default. `LH_E2E_SERVER=standalone`
   serves the production build instead: build it first with
   `npm run build && node scripts/build-server.mjs`. In a checkout with a
   `data/` folder, move it aside for the build and back after: the build
@@ -62,16 +65,19 @@ Exit `0` on both means the app starts, the engine runs, and sign-in works.
 
 ## Drive
 
-**Sign-in.** `tests/e2e/auth.setup.e2e.ts` mints a one-time pairing code in
-the instance's data folder (what `npm run pair` does) and opens
-`/pair#token=<code>`, then saves the session `learner`. A test that declares
+**Sign-in.** The config's `pairing-code` secret mints a one-time pairing code
+in the instance's data folder (what `npm run pair` does) each time it is
+filled. `tests/e2e/auth.setup.e2e.ts` fills it into the "Pairing code" field on
+`/pair` and saves the session `learner`. A test that declares
 `{ session: "learner" }` starts signed in. A signed-out page shows "Pair this
-device".
+device". Always fill the code as `secrets.get("pairing-code")`: a code typed as
+a string, or opened as `/pair#token=<code>`, lands in `report.json` and the
+traces.
 
 **Scripted.** Write or extend a test under `tests/e2e/` for each flow the
 change touches (topic `writing-tests`), run only it
 (`npx e2e run tests/e2e/<feature>.e2e.ts:<line> --retries 0`), then the whole
-suite (`npx e2e run --exclude-tag agent`, about 30 s; add the agent tests
+suite (`npx e2e run --exclude-tag agent`; add the agent tests
 when the change reaches what they drive). Stable handles here are
 `data-testid` (`composer`, `question-dock`, `session-row`, `settings-entry`,
 `stats-model`), roles and accessible names. Question options are radios
@@ -80,8 +86,12 @@ named with their letter badge ("A Blue"), so match them with a RegExp.
 **Live.** `npx e2e mcp` is registered in `.mcp.json` and `.codex/config.toml`.
 `open_session` starts the same isolated instance; `observe`, `locate` before
 you write a locator, then copy each action's `Test line:` into the test
-(topic `mcp`). `open_session {test: "tests/e2e/auth.setup.e2e.ts"}` gets you a
-signed-in page.
+(topic `mcp`). For a signed-in page, `open_session {test: "tests/e2e/pairing.e2e.ts:<line>"}`
+with the line of the `test(` call "a code typed on the pairing screen signs the
+browser in" runs that test and hands you the session on the screen it ended on,
+signed in. Or open a plain session, go to `/pair`, and call `type_secret` with
+the secret name `pairing-code` into the "Pairing code" field, then tap Pair. A
+setup file alone cannot be opened this way (`NO_TESTS`).
 
 **Agent steps.** `agent.act` and `agent.assert` run on your signed-in coding
 agent over ACP: Claude Code (`sonnet`) by default, Codex with
@@ -104,11 +114,14 @@ of them: `modelRequests(state)`; tests share the instance, so filter by your
 goal); each line names the rule it matched, and a rule that never fired means
 the scenario fell through to its fallback.
 
-**What e2e does not drive.** The Electron desktop window, the phone app
-(`apps/mobile`: `@e2e-dev/mobile` can drive it on the Mac's iOS Simulator,
-but this config has no mobile target), and the self-hosted `lh` launcher (`selfhost/`). For those, run their
-own tests (`node --test selfhost/tests/*.test.ts`, `apps/mobile` checks) and
-say in the handover that the surface was not driven.
+**What e2e does not drive.** The web target reaches the web UI and the HTTP API
+only. Not driven: the Electron desktop window, the phone app (`apps/mobile`)
+unless the config has a mobile target, and the self-hosted `lh` launcher
+(`selfhost/`) with its update and rollback flow
+([#447](https://github.com/max-miller1204/learnharness-nightly/issues/447)).
+For those, run their own tests (`node --test selfhost/tests/*.test.ts`,
+`cd apps/mobile && npm test`) and say in the handover that the surface was not
+driven.
 
 ## Evidence
 
@@ -150,9 +163,12 @@ exist: on a Mac, run with `--exclude-tag visual` or leave the missing-baseline
 failure out of the verdict.
 
 CI runs `npx e2e run --exclude-tag agent` on the Linux standalone build
-(`.github/workflows/ci.yml`, job Standalone (linux-x64)), posts the results as
-a PR comment and job summary (`@e2e-dev/github`), and uploads
-`.e2e/report.json`, `junit.xml` and `results/` as the `e2e-report` artifact.
+(`.github/workflows/ci.yml`, job Standalone (linux-x64)). It writes the results
+to the job summary (`@e2e-dev/github`, with no token), uploads
+`.e2e/report.json`, `junit.xml` and `results/` as the `e2e-report` artifact and
+`summary.md` as `e2e-summary`. The separate `e2e comment` job, the only one
+with `pull-requests: write`, posts that summary as one PR comment; it runs no
+PR code and skips fork and Dependabot PRs.
 CI is a backstop, not the proof: it never runs agent steps.
 
 In the handover, name every flow you drove, its test, PASS or FAIL, the

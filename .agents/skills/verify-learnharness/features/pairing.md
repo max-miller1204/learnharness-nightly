@@ -13,7 +13,7 @@ Open any page signed out, or a link from `npm run pair`, `lh pair`, or Settings 
 
 ## Driving it with e2e
 
-`tests/e2e/pairing.e2e.ts` (signed out) and `tests/e2e/auth.setup.e2e.ts` (the `learner` session every signed-in test uses). Codes come from `createPairingLink(state.dataDir)` (`selfhost/src/auth-store.ts`), the function `npm run pair` calls. Locators: the heading "Pair this device", the textbox "Pairing code", the button "Pair", `pair-error`, and `settings-entry` as the signed-in landmark.
+`tests/e2e/pairing.e2e.ts` (signed out) and `tests/e2e/auth.setup.e2e.ts` (the `learner` session every signed-in test uses). Both fill the `pairing-code` secret (`e2e.config.ts`, `tests/e2e/support/instance.ts`), which mints a one-time code with `createPairingLink` (`selfhost/src/auth-store.ts`, the function `npm run pair` calls) in the instance's data folder, so the code stays out of `report.json` and traces. Locators: the heading "Pair this device", the textbox "Pairing code", the button "Pair", `pair-error`, and `settings-entry` as the signed-in landmark. No test opens `/pair#token=<code>`: a link puts the code in the URL, which reports record.
 
 ## Proof
 
@@ -28,5 +28,5 @@ pair-relink|web|default|Signed in (--session learner), open /pair and then a fre
 
 ## Gotchas
 
-- A pairing code is one-time: mint a fresh one per test.
+- A pairing code is one-time: each fill of the `pairing-code` secret mints a fresh one.
 - The session cookie is named after the port (`lh_session_<port>`), so a session from another run never applies.
