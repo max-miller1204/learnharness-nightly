@@ -497,3 +497,14 @@ describe("tutor citations leaving the record", () => {
 		assert.ok(!text.includes("lh-citation:"));
 	});
 });
+
+describe("compaction marker id format", () => {
+	it("persists the standard msg_<timestamp>_<suffix> message id format", () => {
+		const marker = newCompactionMarker("Summary text", {
+			firstKeptMessageId: "msg_keep_1",
+			tokensBefore: 120_000,
+			at: "2026-10-05T00:00:00.000Z",
+		});
+		assert.match(marker.id, /^msg_[0-9a-z]+_[0-9a-f]{8}$/);
+	});
+});

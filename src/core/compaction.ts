@@ -38,7 +38,7 @@ import type { PlanTree } from "./contracts/plan.ts";
 import { derivePlanStatusesLh, derivedNodeStatus } from "./contracts/plan.ts";
 import { COMPACTED_HISTORY_HEADER } from "./contracts/chat.ts";
 import type { LhMessage, LhMarkerMessage } from "./native-messages.ts";
-import { randomUuid } from "./random-uuid.ts";
+import { newMessageId } from "./message-id.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model, ToolResultMessage, SystemMessage } from "@earendil-works/pi-ai";
 
@@ -283,7 +283,7 @@ export interface CompactionDetails {
  * cut it names sits deep in history: the UI renders both places. */
 export function newCompactionMarker(summary: string, details: CompactionDetails): LhMarkerMessage {
 	return {
-		id: randomUuid(),
+		id: newMessageId(),
 		role: "custom",
 		customType: "compaction",
 		content: `${COMPACTED_HISTORY_HEADER}\n\n${summary.trim()}`,
