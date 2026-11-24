@@ -585,6 +585,51 @@ it("Wave C: markers injected mid-run (custom role, follow-up delivery) append to
 	assert.equal(again.messages.length, state.messages.length, "same id upserts, never appends a second copy");
 });
 
+
+	for (const order of [["pose", "grep"], ["grep", "pose"]] as const) {
+		it(`a plugin pose stays a problem card when a call that shares its id ends ${order[0] === "pose" ? "after" : "before"} it`, async () => {
+			// Providers can repeat or reuse a call id: the pose, a grep with the pose's id and a slow
+			// read are one message. Each call takes only its own tool's execution, whichever ends
+			// first, and the pose never falls back to the generic card holding its hidden fields.
+			const input = { statement: "Sum two numbers", mode: "composition", modelSolution: "SECRET-SOLUTION", payload: { tests: ["SECRET-TESTS"] } };
+			const pluginProblem = { protocolVersion: 1, problemId: "p-one", pluginId: "coding", typeId: "code", label: "Coding problem", contractVersion: 1,
+				input, problemSchema: { type: "object" }, submissionSchema: { type: "string" }, requiresSubmissionRefinement: false, requiresProcessing: true };
+			const enc = new TextEncoder();
+			let push: (e: unknown) => void = () => {};
+			const body = new ReadableStream<Uint8Array>({
+				start(controller) {
+					push = (e) => controller.enqueue(enc.encode(e === "[DONE]" ? "data: [DONE]\n\n" : `data: ${JSON.stringify(e)}\n\n`));
+				},
+			});
+			globalThis.fetch = dietFetch({ userText: "q", stream: () => new Response(body, { status: 200 }) });
+			const m = model();
+			void m.send({ type: "text", text: "q" });
+			const settle = () => new Promise((r) => setTimeout(r, 0));
+			push({ type: "message_start", message: { role: "assistant", content: [
+				{ type: "toolCall", id: "p", name: "coding_problem", arguments: input },
+				{ type: "toolCall", id: "p", name: "grep", arguments: { pattern: "x" } },
+				{ type: "toolCall", id: "r", name: "read", arguments: { path: "slow.md" } },
+			] } });
+			await settle();
+			const ends = {
+				pose: () => push({ type: "tool_execution_end", toolCallId: "p", toolName: "coding_problem", isError: false, result: { content: [{ type: "text", text: "Problem posed" }], details: { pluginProblem } } }),
+				grep: () => push({ type: "tool_execution_end", toolCallId: "p", toolName: "grep", isError: false, result: { content: [{ type: "text", text: "no matches" }], details: null } }),
+			};
+			const tools = () => m.getState().messages.flatMap((v) => v.parts).filter((p) => p.type.startsWith("tool-"));
+			for (const which of order) {
+				ends[which](); await settle();
+				const pose = tools().find((p) => p.type === "tool-coding_problem")!, grep = tools().find((p) => p.type === "tool-grep")!;
+				if (order.indexOf(which) === 1 || which === "pose") assert.equal(pose.pluginProblem?.problemId, "p-one", `after ${which} ends the pose is a problem card`);
+				assert.equal(grep.pluginProblem, undefined, "the grep is never a problem card");
+			}
+			const [pose, grep, read] = [tools().find((p) => p.type === "tool-coding_problem")!, tools().find((p) => p.type === "tool-grep")!, tools().find((p) => p.type === "tool-read")!];
+			assert.equal(pose.pluginProblem?.problemId, "p-one");
+			assert.equal(grep.state, "output-available"); assert.equal(grep.pluginProblem, undefined);
+			assert.equal(read.state, "input-streaming");
+			push("[DONE]");
+		});
+	}
+
 	it("a provider error rides VERBATIM (owner ruling) — no masking anywhere", async () => {
 		globalThis.fetch = dietFetch({
 			userText: "q",

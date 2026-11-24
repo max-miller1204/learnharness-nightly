@@ -40,7 +40,7 @@ import {
 	type SessionPricing,
 } from "../src/core";
 
-import { copyImmutableData, pendingPluginQuestionOf, pluginQuestionCallsOf } from "../src/core/index.ts";
+import { copyImmutableData, pendingPluginQuestionOf, pluginQuestionCallsOf, withLiveExecution } from "../src/core/index.ts";
 import { pluginQuestionOccurrenceKey, samePluginQuestionOccurrence, type PluginQuestionAnswerState, type PluginQuestionSnapshot, type PluginQuestionOccurrence } from "../src/core/index.ts";
 
 import type { PluginProblemSnapshot, PluginProblemSubmissionState } from "../src/core/index.ts";
@@ -710,7 +710,7 @@ export class SessionModel {
 					| null;
 				const text = result?.content?.find((c) => c.type === "text")?.text ?? "The tool call failed.";
 				this.mutate(() => {
-					this.executions = new Map(this.executions).set(agent.toolCallId, {
+					this.executions = withLiveExecution(this.executions, agent.toolCallId, agent.toolName, {
 						isError: agent.isError,
 						output: result?.details,
 						errorText: text,

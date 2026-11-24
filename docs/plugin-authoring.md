@@ -551,6 +551,10 @@ Frontend `registerCodeBlock({language, mount})` receives source/meta/incomplete 
 optional result content and `background` on a later worker card. Mount into the supplied
 HTMLElement and return cleanup; replacement/unregister/disable aborts its signal.
 Async cleanup is supported. Errors/missing renderers fall back to readable source/results.
+The fallback card shows a tool's arguments only once the call has a result: a call still
+streaming shows a working line, and a call with no result shows its name alone. A renderer
+receives `input` in every state, so a renderer for a tool whose arguments hold data the
+learner must not see (a problem's solution) must leave those fields out of its output.
 
 Fence hooks participate in shared extensible Markdown, but not `mountMarkdown`.
 Built-in Mermaid/dedicated/hidden tool claims stay reserved; collisions report errors.

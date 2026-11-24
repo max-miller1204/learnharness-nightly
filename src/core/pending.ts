@@ -179,7 +179,7 @@ const ACTIVITY_LABELS: Record<string, string> = {
  *  part renders in the dock, never a live card. */
 export function toolActivityLabel(tool: string): string {
 	if ((QUESTION_TOOLS as readonly string[]).includes(tool)) return "Writing a question…";
-	return ACTIVITY_LABELS[tool] ?? "Working…";
+	return Object.hasOwn(ACTIVITY_LABELS, tool) ? ACTIVITY_LABELS[tool]! : "Working…";
 }
 
 export function streamingToolActivity(messages: UIMessage[]): string | null {

@@ -36,7 +36,7 @@ import type { AssistantMessage, ImageContent, ToolResultMessage } from "@earendi
 import type { LhMarkerMessage, LhMessage } from "./native-messages.ts";
 import { modelSolutionForConclude, PRACTICE_CONCLUDE_TOOL, problemInputForConclude, SEND_TO_USER_TOOL, sendToUserText, pluginQuestionResultMatches } from "./native-messages.ts";
 import { readPluginQuestionMessageAnnotation, readPluginQuestionCancellation, type PluginQuestionAnnotationRead } from "./plugin-questions.ts";
-import { pluginProblemForCall, type PluginProblemSnapshot } from "./plugin-problems.ts";
+import { pluginProblemForCall, readPluginProblemSnapshot, type PluginProblemSnapshot } from "./plugin-problems.ts";
 import { activeCompactionOf, type CompactionDetails } from "./compaction.ts";
 import { QUESTION_TOOLS } from "./pending.ts";
 import type { SubagentArtifactData, SubagentResultMeta } from "./contracts/jobs.ts";
@@ -91,6 +91,32 @@ export interface LiveExecution {
 	/** The failure text (output-error parts). */
 	errorText?: string;
 	result?: Pick<ToolResultMessage, "content" | "details" | "isError">;
+	/** The tool this execution ran. A call id can repeat across a message's calls, so an
+	 *  execution is only ever a call's own when its tool is the call's tool. */
+	toolName?: string;
+}
+
+const executionKey = (toolCallId: string, toolName: string) => `${toolCallId}\u0000${toolName}`;
+
+/** The live execution of one call: the one of its own tool, which is stored under the bare
+ *  call id unless another tool's execution already holds that id (withLiveExecution). An
+ *  execution without a tool name is the call's by id, as before. */
+export function liveExecutionOf(executions: ReadonlyMap<string, LiveExecution> | undefined, toolCallId: string, toolName: string): LiveExecution | undefined {
+	const own = executions?.get(executionKey(toolCallId, toolName));
+	if (own) return own;
+	const bare = executions?.get(toolCallId);
+	return bare && (bare.toolName === undefined || bare.toolName === toolName) ? bare : undefined;
+}
+
+/** The executions with one more recorded. An execution of another tool never replaces the one
+ *  that holds a call id: a later call that reuses the id lands beside it, under a key of its
+ *  own tool. */
+export function withLiveExecution(executions: ReadonlyMap<string, LiveExecution>, toolCallId: string, toolName: string, execution: LiveExecution): Map<string, LiveExecution> {
+	const next = new Map(executions);
+	const bare = next.get(toolCallId);
+	const held = bare?.toolName !== undefined && bare.toolName !== toolName;
+	next.set(held ? executionKey(toolCallId, toolName) : toolCallId, { ...execution, toolName });
+	return next;
 }
 
 /** The live turn's execution layer, maintained by the session hook. */
@@ -267,7 +293,12 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 						continue;
 					}
 					const part = toolPartOf(block, live, streamingMessage);
-					const pluginProblem = pluginProblemForCall(messages, { messageId: m.id, contentIndex, toolCallId: block.id, toolName: block.name });
+					// The record knows a pose once its turn's results are appended. A pose whose
+					// execution ended earlier in the turn (a slow tool is still running beside it)
+					// is the same pose: its stored result carries the same snapshot, and without
+					// it the call would fall to a generic card holding its hidden fields.
+					const pluginProblem = pluginProblemForCall(messages, { messageId: m.id, contentIndex, toolCallId: block.id, toolName: block.name })
+						?? liveExecutionPluginProblem(liveExecutionOf(live?.executions, block.id, block.name));
 					if (pluginProblem) { part.pluginProblem = pluginProblem; part.input = pluginProblem.input; }
 					if ((QUESTION_TOOLS as readonly string[]).includes(block.name)) {
 						part.sourceMessageId = m.id;
@@ -299,7 +330,7 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 					// open. Live, that is its execution's clean end; in the record,
 					// its paired result (the toolResult branch above).
 					if (block.name === PRACTICE_CONCLUDE_TOOL) {
-						const exec = live?.executions.get(block.id);
+						const exec = liveExecutionOf(live?.executions, block.id, block.name);
 						if (exec && !exec.isError) joinConcludeReveal(part, messages);
 					}
 					rest.push(part);
@@ -341,6 +372,12 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 	return out;
 }
 
+/** The plugin problem a clean live execution's result carries, if it is a pose. */
+function liveExecutionPluginProblem(exec: LiveExecution | undefined): PluginProblemSnapshot | null {
+	if (!exec || exec.isError || exec.result?.isError) return null;
+	return readPluginProblemSnapshot((exec.result?.details as { pluginProblem?: unknown } | null | undefined)?.pluginProblem);
+}
+
 /** The dock-owned tools: question tools (client-owned results — the dock
  *  mounts on the dangling call) and the practice pose (its ack is FINAL —
  *  details: null, never replaced — and the card + dock read the call's
@@ -368,7 +405,7 @@ function toolPartOf(
 		toolCallId: block.id,
 		input: block.arguments,
 	};
-	const exec = live?.executions.get(block.id);
+	const exec = liveExecutionOf(live?.executions, block.id, block.name);
 	const isQuestion = isPlaceholderResultTool(block.name);
 	if (exec) {
 		if (exec.result) part.result = exec.result;
