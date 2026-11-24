@@ -280,6 +280,7 @@ export function readDesktopAppStatus(value: unknown): DesktopAppStatus | null {
 		...(typeof group.releasedAt === "string" && group.releasedAt.length <= MAX_RELEASED_AT_LENGTH ? { releasedAt: group.releasedAt } : {}),
 		items: group.items,
 		...(Number.isInteger(group.totalItems) && (group.totalItems as number) >= 0 ? { totalItems: Math.min(group.totalItems as number, MAX_TOTAL_ITEMS) } : {}),
+		...(typeof group.summaryCopy === "boolean" ? { summaryCopy: group.summaryCopy } : {}),
 		...summaryFields(group),
 	}));
 	const { releaseNotes } = capReleaseNoteGroups(groups);

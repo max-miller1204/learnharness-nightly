@@ -200,7 +200,7 @@ export function createSelfUpdater(deps: SelfUpdaterDeps) {
 	};
 
 	const notesFor = (feed: LatestFeed) => {
-		const groups = feedNotesToGroups(feed.notes ?? []);
+		const groups = feedNotesToGroups(feed.notes ?? [], { version: feed.version, releasedAt: feed.publishedAt });
 		try { deps.mergeNotes(groups); } catch { /* the cache is a convenience; never fail a check */ }
 		const known = isExactVersion(deps.currentVersion);
 		return groupsBetween(groups, known ? deps.currentVersion : undefined, feed.version);

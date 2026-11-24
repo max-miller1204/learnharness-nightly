@@ -42,6 +42,7 @@
  */
 const fs = require("node:fs");
 const path = require("node:path");
+const { readableReleasedAt, noteReleasedAt } = require("./release-dates.cjs");
 
 const MAX_RELEASE_NOTE_GROUPS = 6;
 const MAX_RELEASE_NOTE_ITEMS_PER_GROUP = 8;
@@ -150,9 +151,13 @@ function extractReleaseNoteSummary(summary) {
 		if (/^[-*]\s+/.test(line)) items.push(line.replace(/^[-*]\s+/, ""));
 		else intro.push(plain);
 	}
+	const shown = items.slice(0, MAX_RELEASE_NOTE_ITEMS_PER_GROUP).map(truncateItem);
+	const introText = intro.length > 0 ? intro.join(" ") : undefined;
 	return {
-		items: items.slice(0, MAX_RELEASE_NOTE_ITEMS_PER_GROUP).map(truncateItem),
+		items: shown,
 		totalItems: items.length + intro.length,
+		// A generated body lists real items only: a full list ending like its footer ends in a real item.
+		...(shown.length === MAX_RELEASE_NOTE_ITEMS_PER_GROUP && endsWithSummaryCopy(shown, { intro: introText, footer }) ? { summaryCopy: false } : {}),
 		...(intro.length > 0 ? { intro: intro.join(" ") } : {}),
 		...(stats ? { stats } : {}),
 		...(footer ? { footer } : {}),
@@ -190,15 +195,8 @@ function extractItems(note) {
 	return extractReleaseNoteItems(note).items;
 }
 
-// The update feed dates only the offered version; prerelease versions carry their UTC build day.
-const PRERELEASE_BUILD_DAY = /-(?:nightly|preview)\.(\d{4})(\d{2})(\d{2})\.\d+$/;
-
-// A date the page can show: YYYY-MM-DD, or an ISO time with a zone. Anything else is dropped.
-const RELEASED_AT = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
-const MAX_RELEASED_AT_LENGTH = 40;
-function safeReleasedAt(value) {
-	return typeof value === "string" && value.length <= MAX_RELEASED_AT_LENGTH && RELEASED_AT.test(value) && Number.isFinite(Date.parse(value)) ? value : undefined;
-}
+// How a note is dated is shared with the server and the pages (electron/release-dates.cjs).
+const safeReleasedAt = readableReleasedAt;
 
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -210,12 +208,6 @@ function releaseNotesOfOfferedVersion(info) {
 	if (typeof info.releaseNotes !== "string" || !info.releaseName) return info.releaseNotes;
 	const namesVersion = new RegExp(`(?:^|[^\\w.-])v?${escapeRegExp(info.version)}(?![\\w.-])`);
 	return namesVersion.test(info.releaseName) ? info.releaseNotes : undefined;
-}
-
-function releasedAtOf(version, offeredVersion, releaseDate) {
-	if (version === offeredVersion && safeReleasedAt(releaseDate)) return releaseDate;
-	const day = PRERELEASE_BUILD_DAY.exec(version);
-	return day ? `${day[1]}-${day[2]}-${day[3]}` : undefined;
 }
 
 /**
@@ -241,8 +233,9 @@ function releaseNoteGroups(info) {
 		// T3 drops a release with nothing to show; a footer alone is something.
 		if (note.totalItems === 0 && !note.stats && !note.footer) continue;
 		seen.add(version);
-		// A feed note carries its own publish time (the server reads the same one); else T3's rule.
-		const releasedAt = safeReleasedAt(entry.releasedAt) ?? releasedAtOf(version, info.version, info.releaseDate);
+		// A feed note carries its own publish time (the server reads the same one). noteReleasedAt is the
+		// rule the server and the pages use: the note's time, the pointer's for the offered version, the build day.
+		const releasedAt = noteReleasedAt(entry.releasedAt, version, { version: info.version, releasedAt: info.releaseDate });
 		groups.push({ version, ...note, ...(releasedAt ? { releasedAt } : {}) });
 	}
 	return groups;
@@ -252,7 +245,12 @@ function releaseNoteGroups(info) {
  * Old clients read only `items`, so the generator also writes the intro or footer once more as the
  * last item. The groups main keeps, caches and sends over the bridge keep that copy (a page from
  * before the fields shows it); counting and the release page drop it. Only that one trailing item,
- * compared as the full text with both sides normalized (src/core/release-notes.ts withoutSummaryEcho).
+ * compared as the full text with both sides normalized, as src/core/release-notes.ts withoutSummaryEcho
+ * does. This is the position rule, for a list whose whole is known: a feed note or a body before
+ * the item limits cut it. A cut list cannot show whether its last item is the copy, so the group
+ * records the decision (`summaryCopy`) where the whole list is read, for a full list that ends like
+ * the copy (the one shape a cut hides), and every bounding step after (main's cap, the cache, the
+ * bridge) keeps it; the pages follow the record.
  */
 function isCopyOf(item, text) {
 	if (text === undefined) return false;
@@ -261,10 +259,22 @@ function isCopyOf(item, text) {
 	return whole !== "" && (item === whole || item === truncateItem(whole));
 }
 
-function withoutSummaryEcho(items, { intro, footer } = {}) {
+function endsWithSummaryCopy(items, { intro, footer } = {}) {
 	const last = items.length > 0 ? cleanText(items[items.length - 1]) : "";
-	const echoes = last !== "" && (isCopyOf(last, footer) || isCopyOf(last, intro));
-	return echoes ? items.slice(0, -1) : [...items];
+	return last !== "" && (isCopyOf(last, footer) || isCopyOf(last, intro));
+}
+
+/**
+ * The decision for a full list that ends like the copy: true when the whole list is that list (the
+ * copy is last), false when `whole` is longer (the cut took the copy off). Nothing for any other list.
+ */
+function wholeListCopy(whole, shown, summary) {
+	const cut = shown.slice(0, MAX_RELEASE_NOTE_ITEMS_PER_GROUP);
+	return cut.length === MAX_RELEASE_NOTE_ITEMS_PER_GROUP && endsWithSummaryCopy(cut, summary) ? { summaryCopy: whole.length === MAX_RELEASE_NOTE_ITEMS_PER_GROUP } : {};
+}
+
+function withoutSummaryEcho(items, summary = {}) {
+	return endsWithSummaryCopy(items, summary) ? items.slice(0, -1) : [...items];
 }
 
 /** A feed note's own fields (latest.json notes, selfhost/src/release.ts FeedNote). */
@@ -275,7 +285,7 @@ function feedNoteFields(entry) {
 		if (value) summary[key] = value;
 	}
 	const items = entry.items.filter((item) => typeof item === "string").map(cleanText).filter(Boolean);
-	return { items, totalItems: withoutSummaryEcho(items, summary).length + (summary.intro ? 1 : 0), ...summary };
+	return { items, totalItems: withoutSummaryEcho(items, summary).length + (summary.intro ? 1 : 0), ...wholeListCopy(items, items, summary), ...summary };
 }
 
 /**
@@ -375,7 +385,11 @@ function boundedGroup(group) {
 	const counted = withoutSummaryEcho(all, summary).length + (summary.intro ? 1 : 0);
 	const totalItems = Number.isInteger(group.totalItems) && group.totalItems >= items.length ? Math.min(group.totalItems, MAX_TOTAL_ITEMS) : counted;
 	const releasedAt = safeReleasedAt(group.releasedAt);
-	return { version: group.version, ...(releasedAt ? { releasedAt } : {}), items, totalItems, ...summary };
+	// The copy is last only while the list is whole: the cut above takes it off the end. A recorded
+	// decision is kept as it is (this runs again over main's cut output, the cache and the bridge); a
+	// group with none, stored before the field, stays without one.
+	const summaryCopy = typeof group.summaryCopy === "boolean" ? group.summaryCopy && all.length <= MAX_RELEASE_NOTE_ITEMS_PER_GROUP : undefined;
+	return { version: group.version, ...(releasedAt ? { releasedAt } : {}), items, totalItems, ...summary, ...(summaryCopy === undefined ? {} : { summaryCopy }) };
 }
 
 /**
