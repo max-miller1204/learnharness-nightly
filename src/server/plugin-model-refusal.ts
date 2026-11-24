@@ -9,3 +9,9 @@ export async function pluginKeyMissing(provider: string, id: string): Promise<ob
 	if (catalogModelGone(provider, id)) return null;
 	return connectionRefusal(provider, []);
 }
+
+/** Whether the host lists the provider, from the same rows host inference
+ *  validates a plugin's model provider against. */
+export async function pluginKnowsProvider(provider: string): Promise<boolean> {
+	return (await import("./model-catalog.ts")).catalogProviders().some((p) => p.id === provider);
+}

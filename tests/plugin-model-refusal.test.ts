@@ -10,7 +10,7 @@ after(() => fs.rmSync(directory, { recursive: true, force: true }));
 process.env.LH_AUTH_FILE = path.join(directory, "auth.json");
 process.env.LH_DATA_DIR = directory;
 fs.writeFileSync(process.env.LH_AUTH_FILE, "{}");
-const { pluginKeyMissing } = await import("../src/server/plugin-model-refusal.ts");
+const { pluginKeyMissing, pluginKnowsProvider } = await import("../src/server/plugin-model-refusal.ts");
 
 it("the host asks for a key only when the plugin's model still exists", async () => {
 	const saved = process.env.OPENCODE_API_KEY;
@@ -23,4 +23,10 @@ it("the host asks for a key only when the plugin's model still exists", async ()
 	} finally {
 		if (saved === undefined) delete process.env.OPENCODE_API_KEY; else process.env.OPENCODE_API_KEY = saved;
 	}
+});
+
+it("the host knows the providers its catalog lists and no others", async () => {
+	assert.equal(await pluginKnowsProvider("opencode-go"), true);
+	assert.equal(await pluginKnowsProvider("chatgpt"), true);
+	for (const unknown of ["github", "../x", " opencode-go", ""]) assert.equal(await pluginKnowsProvider(unknown), false, JSON.stringify(unknown));
 });

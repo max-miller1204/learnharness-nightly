@@ -160,7 +160,14 @@ test("every model is explicit and available: missing, unknown, removed keys and 
 	const fallback = createPluginInference({ signal: f.signal.signal, dataDirectory: f.directory }, { ...f.deps, engineForSpec: () => ({ model: { provider: "another-provider", id: "another-model" } as never, streamFn: () => { throw new Error("must not run"); } }) });
 	await assert.rejects(fallback.engineFor(spec, "user"), /explicitly selected model/);
 	f.removeKey();
-	await assert.rejects(f.adapter.engineFor(spec, "user"), (error: unknown) => (error as { code?: string }).code === "provider_key_missing");
+	await assert.rejects(f.adapter.engineFor(spec, "user"), (error: unknown) => {
+		const refusal = error as { code?: string; provider?: string; slots?: unknown; error?: string; message?: string };
+		assert.equal(refusal.code, "provider_key_missing");
+		assert.equal(refusal.provider, spec.provider, "the transport relies on the thrown provider");
+		assert.deepEqual(refusal.slots, []);
+		assert.equal(refusal.message, refusal.error);
+		return true;
+	});
 	assert.equal(f.calls.length, 0);
 	assert.deepEqual(ledger(f.directory), []);
 });

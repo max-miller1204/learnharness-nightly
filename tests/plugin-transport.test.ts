@@ -121,12 +121,24 @@ it("a plugin's model_unavailable refusal is 422 with its message, unless only th
 });
 it("a plugin that lets host inference's missing-key error escape is refused with 422 and the key-missing envelope, not a plain 500", async () => {
 	const { host } = fixture();
-	const missing = providerKeyMissing("opencode-go", []);
-	host.call = async () => { throw Object.assign(new Error(missing.error), missing); };
-	const transport = createPluginTransport({ getHost: async () => host, directory: "/temporary/plugins" });
+	const asked: string[] = [];
+	const transport = createPluginTransport({ getHost: async () => host, directory: "/temporary/plugins", knownProvider: (provider) => { asked.push(provider); return provider === "opencode-go"; } });
+	host.call = async () => { throw Object.assign(new Error("No OpenCode Go key is set"), { code: "provider_key_missing", provider: " opencode-go ", slots: ["cheap", "invented"] }); };
 	const refused = await transport.call("example", request({ operation: "summarize", input: {} }));
 	assert.equal(refused.status, 422);
-	assert.deepEqual(await refused.json(), missing);
-	host.call = async () => { throw Object.assign(new Error("No key"), { code: "provider_key_missing" }); };
-	assert.equal((await transport.call("example", request({ operation: "summarize", input: {} }))).status, 500, "a code with no provider is not a key refusal");
+	assert.deepEqual(await refused.json(), providerKeyMissing("opencode-go", ["cheap"]), "trimmed provider, slots limited to the known names");
+	assert.deepEqual(asked, ["opencode-go"]);
+});
+it("a provider_key_missing error for a provider the host does not know keeps the plugin's own message and status", async () => {
+	const { host } = fixture();
+	const transport = createPluginTransport({ getHost: async () => host, directory: "/temporary/plugins", knownProvider: (provider) => provider === "opencode-go" });
+	for (const provider of ["github", "../../etc/passwd", "   ", "", 7, undefined]) {
+		host.call = async () => { throw Object.assign(new Error("GitHub token is missing"), { code: "provider_key_missing", provider }); };
+		const refused = await transport.call("example", request({ operation: "summarize", input: {} }));
+		assert.equal(refused.status, 500, `provider ${JSON.stringify(provider)}`);
+		assert.deepEqual(await refused.json(), { error: "GitHub token is missing" });
+	}
+	const bare = createPluginTransport({ getHost: async () => host, directory: "/temporary/plugins" });
+	host.call = async () => { throw Object.assign(new Error("No OpenCode Go key is set"), { code: "provider_key_missing", provider: "opencode-go" }); };
+	assert.equal((await bare.call("example", request({ operation: "summarize", input: {} }))).status, 500, "with no provider check the error stays generic");
 });

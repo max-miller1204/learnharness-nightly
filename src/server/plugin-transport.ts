@@ -30,14 +30,20 @@ async function objectBody(request: Request): Promise<Record<string, unknown>> {
  * "models_not_configured" with the `missing` slots, and the host answers 422
  * with the same setup envelope as a turn. Host inference with no provider key
  * throws code "provider_key_missing" with the `provider`; a plugin that lets it
- * escape gets the same key-missing envelope as a turn, with 422. */
+ * escape gets the same key-missing envelope as a turn, with 422, but only for a
+ * provider the host knows. Any other provider is the plugin's own error and
+ * keeps its message and status. */
 type KeyMissing = (provider: string, id: string) => object | null | Promise<object | null>;
-export function createPluginTransport(deps: { getHost(): Promise<PluginTransportHost>; directory: string; keyMissing?: KeyMissing }) {
+type KnownProvider = (provider: string) => boolean | Promise<boolean>;
+export function createPluginTransport(deps: { getHost(): Promise<PluginTransportHost>; directory: string; keyMissing?: KeyMissing; knownProvider?: KnownProvider }) {
 	const modelRefusal = async (error: unknown): Promise<Response | undefined> => {
 		const refusal = error as { code?: unknown; message?: unknown; model?: { provider?: unknown; id?: unknown }; missing?: unknown; provider?: unknown; slots?: unknown } | null;
-		if (refusal && typeof refusal === "object" && refusal.code === PROVIDER_KEY_MISSING_CODE && typeof refusal.provider === "string" && refusal.provider) {
-			const slots = Array.isArray(refusal.slots) ? MODEL_SLOTS.filter((slot: ModelSlotName) => (refusal.slots as unknown[]).includes(slot)) : [];
-			return json(providerKeyMissing(refusal.provider, slots), 422);
+		if (refusal && typeof refusal === "object" && refusal.code === PROVIDER_KEY_MISSING_CODE && typeof refusal.provider === "string") {
+			const provider = refusal.provider.trim();
+			if (provider && await deps.knownProvider?.(provider)) {
+				const slots = Array.isArray(refusal.slots) ? MODEL_SLOTS.filter((slot: ModelSlotName) => (refusal.slots as unknown[]).includes(slot)) : [];
+				return json(providerKeyMissing(provider, slots), 422);
+			}
 		}
 		if (refusal && typeof refusal === "object" && refusal.code === MODELS_NOT_CONFIGURED_CODE && Array.isArray(refusal.missing)) {
 			return json(modelsNotConfigured(MODEL_SLOTS.filter((slot: ModelSlotName) => (refusal.missing as unknown[]).includes(slot))), 422);
