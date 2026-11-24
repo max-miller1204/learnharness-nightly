@@ -66,6 +66,7 @@ export function launchIdForConfig(): string {
 /** Publishes `{ port, pid }` for a launch, whole or not at all (the record is renamed into place). */
 export function publishLaunch(id: string, port: string) {
 	const file = launchPointer(id);
+	fs.mkdirSync(path.dirname(file), { recursive: true });
 	fs.writeFileSync(`${file}.tmp`, `${JSON.stringify({ port, pid: process.pid })}\n`);
 	fs.renameSync(`${file}.tmp`, file);
 }

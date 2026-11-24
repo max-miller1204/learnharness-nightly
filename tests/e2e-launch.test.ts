@@ -5,8 +5,15 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, it } from "node:test";
+import { after, afterEach, before, describe, it } from "node:test";
 import { instanceDir, launchPointer, pairingCode, publishLaunch, stateFile, unpublishLaunch, type InstanceState } from "./e2e/support/instance.ts";
+
+// A fresh, empty temp folder, so nothing depends on a learnharness-e2e folder already being there
+// (a CI runner has none): the records and instance folders all live under os.tmpdir().
+let realTmp: string | undefined;
+let tmp = "";
+before(() => { realTmp = process.env.TMPDIR; tmp = fs.mkdtempSync(path.join(os.tmpdir(), "lh-e2e-launch-")); process.env.TMPDIR = tmp; });
+after(() => { if (realTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = realTmp; fs.rmSync(tmp, { recursive: true, force: true }); });
 
 const made: string[] = [];
 afterEach(() => { for (const file of made.splice(0)) fs.rmSync(file, { recursive: true, force: true }); });
