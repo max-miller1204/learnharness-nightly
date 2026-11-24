@@ -127,6 +127,11 @@ Proof standards:
   expectation to make it pass.
 - Try to break it: the empty input, a reload mid-turn, a failing model.
 
+CI runs `npx e2e run --exclude-tag agent` on the Linux standalone build
+(`.github/workflows/ci.yml`, job Standalone (linux-x64)) and uploads
+`.e2e/report.json`, `junit.xml` and `results/` as the `e2e-report` artifact.
+CI is a backstop, not the proof: it never runs agent steps.
+
 In the handover, name every flow you drove, its test, PASS or FAIL, the
 evidence path, and every surface you did not drive.
 

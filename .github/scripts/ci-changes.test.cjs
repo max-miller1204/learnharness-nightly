@@ -27,8 +27,8 @@ test("test-only changes run typecheck and tests but no standalone build", () => 
 	assert.deepEqual(decide(["tests/jobs.test.ts", "tests/demos.test.tsx"]), { ...none, typecheck: true, test: true });
 });
 
-test("native renderer tests, helpers and fixtures also run the standalone builds", () => {
-	for (const file of ["tests/pdf-native-render.test.ts", "tests/browser-service.test.ts", "tests/helpers/tiny-pdf.ts", "tests/fixtures/a.json"]) {
+test("native renderer tests, helpers, fixtures and the e2e suite also run the standalone builds", () => {
+	for (const file of ["tests/pdf-native-render.test.ts", "tests/browser-service.test.ts", "tests/helpers/tiny-pdf.ts", "tests/fixtures/a.json", "tests/e2e/pairing.e2e.ts"]) {
 		assert.deepEqual(decide([file]), all, file);
 	}
 });

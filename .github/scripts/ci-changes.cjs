@@ -54,11 +54,12 @@ const INERT = [
 	/^\.github\/workflows\/pr-agent\.yml$/,
 ];
 
-// The standalone job runs these tests natively on each OS, and helpers and
-// fixtures can be shared with them, so they count as more than test-only.
+// The standalone job runs these tests natively on each OS, and the e2e suite
+// on its Linux build, and helpers and fixtures can be shared with them, so
+// they count as more than test-only.
 const STANDALONE_TESTS = [
 	/^tests\/(pdf-native-render|pdf-ops|svg-native-render|browser-service)\.test\.ts$/,
-	/^tests\/(helpers|fixtures)\//,
+	/^tests\/(helpers|fixtures|e2e)\//,
 ];
 
 const WEB_GATES = ["typecheck", "test", "selfhost", "standalone"];
