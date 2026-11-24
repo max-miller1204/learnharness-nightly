@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { InteractionLayersProvider } from "../components/interaction-layers.tsx";
 import { PlanBlock, PlanDiagram, PlanPopup, latestTree, type PopupMessage } from "../components/plan-block.tsx";
-import { blockLayout, chartMeasure, edgePathD, topoFor } from "../components/plan-layout.ts";
+import { blockLayout, chartMeasure, edgePathD, topoFor } from "../src/core/plan-layout.ts";
 import { PlanMarginalia } from "../components/plan-window.tsx";
 import { derivePlanStatuses, derivedNodeStatus, type PlanBlockData, type PlanTree } from "../src/core/contracts.ts";
 

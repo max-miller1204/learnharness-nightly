@@ -7,6 +7,7 @@ import type { CallUsage, JobKind, JobRecord } from "@/src/core";
 import { isModelsRefusal, isProviderKeyRefusal, subscriptionLabel, subscriptionLabels } from "@/src/core";
 import { formatTokens, planCostLabel } from "@/components/usage-format";
 import { useServerEvent, useServerResync } from "@/components/server-events";
+import { useNow } from "@/components/use-now";
 
 /**
  * THE BACKGROUND-AGENTS SECTION (owner, sidebar round — the successor of
@@ -298,17 +299,6 @@ export function formatElapsed(ms: number): string {
 }
 
 // ─── The section (the sidebar's bottom strip) ─────────────────────────────────
-
-/** A 1s heartbeat while the section is populated — elapsed lines tick. */
-function useNow(active: boolean): number {
-	const [now, setNow] = useState(() => Date.now());
-	useEffect(() => {
-		if (!active) return;
-		const t = setInterval(() => setNow(Date.now()), 1000);
-		return () => clearInterval(t);
-	}, [active]);
-	return now;
-}
 
 const KIND_ICON: Record<JobKind, typeof SearchIcon> = {
 	research: SearchIcon,

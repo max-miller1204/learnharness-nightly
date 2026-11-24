@@ -303,10 +303,6 @@ export function parseSideOpenInput(raw: unknown): boolean {
 
 // ─── threads ─────────────────────────────────────────────────────────────────
 
-export function newSideThreadId(): string {
-	return `side_${Date.now().toString(36)}_${randomUuid().slice(0, 8)}`;
-}
-
 export function newSideThread(anchor: SideChatAnchor, at = new Date().toISOString()): SideChatThread {
 	return { id: `side_${anchor.messageId}`, anchor, open: true, createdAt: at, messages: [] };
 }

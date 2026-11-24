@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { PlanMarginalia, planExists } from "../components/plan-window.tsx";
 import type { PopupMessage } from "../components/plan-block.tsx";
-import { blockLayout, chartMeasure, edgePathD, type LayoutNode } from "../components/plan-layout.ts";
+import { blockLayout, chartMeasure, edgePathD, type LayoutNode } from "../src/core/plan-layout.ts";
 import type { PlanTree } from "../src/core/contracts.ts";
 
 // The plan marginalia: the bare diagram in the dock band's right flank —

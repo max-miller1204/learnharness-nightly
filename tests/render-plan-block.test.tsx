@@ -16,7 +16,7 @@ import {
 	NODE_W_MIN,
 	PAD_X,
 	type LabelMeasure,
-} from "../components/plan-layout.ts";
+} from "../src/core/plan-layout.ts";
 import type { PlanBlockData, PlanTree } from "../src/core/contracts.ts";
 
 // Plan blocks: the pure layered layout, the frozen-snapshot rendering

@@ -6,21 +6,25 @@ import { MaximizeIcon, MinusIcon, PlusIcon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fitGraphView, fitZoomFor, zoomedGraphView, type Viewport } from "@/components/pan-zoom";
 import {
+	ARROW_HEAD,
 	blockLayout,
 	chartMeasure,
 	edgePathD,
+	GLOW_BLUR,
+	GLOW_MARGIN,
+	GLOW_REACH,
+	GRAPH_PAD,
 	HEAD_H,
 	HEAD_W,
+	latestTree,
 	NODE_W_MIN,
 	STROKE_W,
 	type LabelMeasure,
 	type LayoutNode,
 	type PlanLayout,
-} from "@/components/plan-layout";
+	type PopupMessage,
+} from "@/src/core/plan-layout";
 import type { PlanBlockData, PlanNodeStatus } from "@/src/core";
-// Shared with the phone (mobile follow-up 1): the drawing constants and the
-// transcript's latest plan, from the same module as the layout.
-import { ARROW_HEAD, GLOW_BLUR, GLOW_MARGIN, GLOW_REACH, GRAPH_PAD, latestTree, type PopupMessage } from "@/src/core/plan-layout";
 export { ARROW_HEAD, GLOW_BLUR, GLOW_MARGIN, GLOW_REACH, GRAPH_PAD, latestTree, type PopupMessage } from "@/src/core/plan-layout";
 import { derivedNodeStatus, derivePlanStatuses } from "@/src/core";
 import { Hint } from "@/components/ui/hint";
