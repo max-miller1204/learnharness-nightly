@@ -284,11 +284,15 @@ function fmtRunCost(dollars: number | null, providers: readonly string[] = []): 
 function graphProviders(value: { subscriptionRuns?: number; subscriptionProviders?: string[] }): string[] {
 	return value.subscriptionProviders ?? ((value.subscriptionRuns ?? 0) > 0 ? ["ChatGPT"] : []);
 }
-function graphUsageLabel(costs: Pick<GraphCostSummary, "stages">): string {
+function graphUsageLabel(costs: Pick<GraphCostSummary, "stages"> & Partial<Pick<GraphCostSummary, "unpricedRuns">>): string {
 	const stages = [costs.stages.extraction, costs.stages.audit];
 	const providers = [...new Set(stages.flatMap(graphProviders))];
 	const { totalDollars, unpricedRuns, pricedRuns } = displayCostTotals(costs);
 	return planCostLabel(pricedRuns > 0 ? totalDollars : null, providers, (value) => `$${value.toFixed(2)}`, unpricedRuns);
+}
+
+function stagePricedRuns(stage: GraphCostSummary["stages"]["extraction"]): number {
+	return stage.pricedRuns ?? Math.max(0, stage.runs - stage.unpricedRuns - (stage.subscriptionRuns ?? 0));
 }
 
 /**
@@ -300,7 +304,7 @@ function graphUsageLabel(costs: Pick<GraphCostSummary, "stages">): string {
  * (The core fold's naming stage was then culled outright — 2026-09-24 —
  * so the recent-runs list carries extraction runs only.)
  */
-export function displayCostTotals(costs: Pick<GraphCostSummary, "stages">): {
+export function displayCostTotals(costs: Pick<GraphCostSummary, "stages"> & Partial<Pick<GraphCostSummary, "unpricedRuns">>): {
 	totalDollars: number;
 	unpricedRuns: number;
 	/** Runs with known API spend, including runs that are only partly priced. */
@@ -310,9 +314,9 @@ export function displayCostTotals(costs: Pick<GraphCostSummary, "stages">): {
 	// 2026-09-30 — digest-aware extraction replaced it).
 	return {
 		totalDollars: costs.stages.extraction.dollars + costs.stages.audit.dollars,
-		unpricedRuns: costs.stages.extraction.unpricedRuns + costs.stages.audit.unpricedRuns,
-		pricedRuns: [costs.stages.extraction, costs.stages.audit].reduce((sum, stage) =>
-			sum + (stage.pricedRuns ?? Math.max(0, stage.runs - stage.unpricedRuns - (stage.subscriptionRuns ?? 0))), 0),
+		// Counted once per run; stage counts only stand in for a summary without the run-level figure.
+		unpricedRuns: costs.unpricedRuns ?? costs.stages.extraction.unpricedRuns + costs.stages.audit.unpricedRuns,
+		pricedRuns: stagePricedRuns(costs.stages.extraction) + stagePricedRuns(costs.stages.audit),
 	};
 }
 
@@ -374,14 +378,14 @@ export function GraphCostControl({ costs }: { costs: GraphCostSummary }) {
  * not tracked anymore — the headline sums the displayed stages only and
  * naming-kind runs never reach the list.
  */
-function GraphCostPanel({ costs }: { costs: GraphCostSummary }) {
+export function GraphCostPanel({ costs }: { costs: GraphCostSummary }) {
 	const stageRows: [string, GraphCostSummary["stages"]["extraction"]][] = [
 		["Extraction", costs.stages.extraction],
 		["Audit", costs.stages.audit],
 	];
 	// The displayed figures come from displayCostTotals (naming excluded —
 	// the pill and this panel must agree).
-	const { unpricedRuns, pricedRuns } = displayCostTotals(costs);
+	const { unpricedRuns } = displayCostTotals(costs);
 	return (
 		<div className="w-80 max-w-[calc(100vw-1.5rem)] rounded-xl border bg-card/95 p-3 text-xs shadow-lg backdrop-blur">
 			<div className="mb-2 flex items-baseline justify-between">
@@ -390,7 +394,7 @@ function GraphCostPanel({ costs }: { costs: GraphCostSummary }) {
 				</span>
 				<span className="text-foreground tabular-nums">
 					{graphUsageLabel(costs)}
-					{unpricedRuns > 0 && pricedRuns === 0 && (
+					{unpricedRuns > 0 && !graphUsageLabel(costs).includes("unpriced") && (
 						<span className="text-muted-foreground"> · {unpricedRuns} unpriced</span>
 					)}
 				</span>
@@ -400,8 +404,8 @@ function GraphCostPanel({ costs }: { costs: GraphCostSummary }) {
 					<div key={label} className="flex items-baseline justify-between gap-2 text-[11px]">
 						<span className="shrink-0 text-muted-foreground">{label}</span>
 						<span className="min-w-0 text-right tabular-nums">
-							{fmtRunCost(stage.runs - stage.unpricedRuns - (stage.subscriptionRuns ?? 0) <= 0 ? null : stage.dollars, graphProviders(stage))}
-							{stage.unpricedRuns > 0 && (stage.runs - stage.unpricedRuns - (stage.subscriptionRuns ?? 0) > 0 || (stage.subscriptionRuns ?? 0) > 0) && (
+							{fmtRunCost(stagePricedRuns(stage) > 0 ? stage.dollars : null, graphProviders(stage))}
+							{stage.unpricedRuns > 0 && (stagePricedRuns(stage) > 0 || (stage.subscriptionRuns ?? 0) > 0) && (
 								<span className="text-muted-foreground"> +{stage.unpricedRuns} unpriced</span>
 							)}
 							<span className="text-muted-foreground">
@@ -425,7 +429,7 @@ function GraphCostPanel({ costs }: { costs: GraphCostSummary }) {
 									</span>
 								)}
 							</span>
-							<span className="shrink-0 tabular-nums">{fmtRunCost(run.dollars, graphProviders(run))}{run.dollars === null && run.subscriptionRuns === 1 ? " +1 unpriced" : ""}</span>
+							<span className="shrink-0 tabular-nums">{fmtRunCost(run.dollars, graphProviders(run))}{run.unpriced && (run.dollars !== null || (run.subscriptionRuns ?? 0) > 0) ? " +1 unpriced" : ""}</span>
 						</div>
 					))}
 			</div>
