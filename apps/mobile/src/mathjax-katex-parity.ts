@@ -9,23 +9,21 @@ import TexParser from "mathjax-full/js/input/tex/TexParser.js";
 import type { ParseMethod } from "mathjax-full/js/input/tex/Types.js";
 import { TextMacrosMethods } from "mathjax-full/js/input/tex/textmacros/TextMacrosMethods.js";
 
-/** The width KaTeX gives \xrightarrow and \xleftarrow at least (katexImagesData in its stretchy.ts). */
+/** The width KaTeX gives \xrightarrow and \xleftarrow at least (katexImagesData in its stretchy.ts),
+ *  in em of the arrow's own size, so it shrinks in a script style as KaTeX's does. */
 const ARROW_MIN_WIDTH = "1.469em";
-/** KaTeX pads a label by 0.5em of the text's size on each side (.x-arrow-pad). MathJax sets the
- *  label at script size, and an em in it is that much smaller, so the padding is written in the
- *  em of the label: the text's em over the script size multiplier, which is 1/√2. */
-const LABEL_EM = Math.SQRT2;
-const PAD = `${String(LABEL_EM / 2)}em`;
+/** KaTeX pads a label by 0.5em on each side (.x-arrow-pad), an em of the label's script-size
+ *  text; the em of MathJax's mpadded around a label is that same em. */
+const LABEL_PADDING = { width: "+1em", lspace: ".5em" };
 
 /** \xrightarrow[below]{above}: MathJax's xArrow (ams) with KaTeX's minimum width and label padding. */
 const xArrow: ParseMethod = (parser, name, chr: number) => {
   name = String(name);
-  const def = { width: `+${String(LABEL_EM)}em`, lspace: PAD };
+  const def = LABEL_PADDING;
   const bot = parser.GetBrackets(name);
   const first = parser.ParseArg(name);
   const dstrut = parser.create("node", "mspace", [], { depth: ".25em" });
-  let arrow = parser.create("token", "mo", { stretchy: true, minsize: ARROW_MIN_WIDTH, texClass: TEXCLASS.REL }, String.fromCodePoint(chr));
-  arrow = parser.create("node", "mstyle", [arrow], { scriptlevel: 0 });
+  const arrow = parser.create("token", "mo", { stretchy: true, minsize: ARROW_MIN_WIDTH, texClass: TEXCLASS.REL }, String.fromCodePoint(chr));
   const mml = parser.create("node", "munderover", [arrow]);
   let mpadded = parser.create("node", "mpadded", [first, dstrut], def);
   NodeUtil.setAttribute(mpadded, "voffset", "-.2em");
@@ -44,8 +42,10 @@ const xArrow: ParseMethod = (parser, name, chr: number) => {
 };
 
 new CommandMap("lh-xarrows", { xrightarrow: ["XArrow", 0x2192], xleftarrow: ["XArrow", 0x2190] }, { XArrow: xArrow });
-/** Before the ams package (priority -1), whose \xrightarrow and \xleftarrow these replace. */
-export const XArrowConfiguration = Configuration.create("lh-xarrows", { handler: { macro: ["lh-xarrows"] }, priority: -2 });
+/** Ahead of the ams package (priority 5), whose \xrightarrow and \xleftarrow these replace, and
+ *  behind the macros MathJax keeps for the user (\newcommand, \renewcommand and \let at -1,
+ *  configured macros at 3), so a user's own definition of either command wins. */
+export const XArrowConfiguration = Configuration.create("lh-xarrows", { handler: { macro: ["lh-xarrows"] }, priority: 4 });
 
 // \colorbox, \fcolorbox, \fbox and \mbox hold their content as text, which MathJax's textmacros
 // package parses, and it has no \text (the command is math-only in MathJax). In LaTeX and KaTeX
