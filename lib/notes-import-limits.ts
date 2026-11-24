@@ -60,3 +60,17 @@ export function validNotesPath(path: string, filename: string): boolean {
 		&& parts.every((part) => part.length > 0 && part !== "." && part !== "..")
 		&& (parts.at(-1) === filename || path === filename);
 }
+
+export const notesPath = (file: File): string => file.webkitRelativePath || file.name;
+
+/** From the last dot of the file name, lower-cased. A leading or trailing dot is not an extension. */
+export const extensionLabel = (name: string): string => {
+	const dot = name.lastIndexOf(".");
+	return dot > 0 && dot < name.length - 1 ? name.slice(dot).toLowerCase() : "no extension";
+};
+
+export const unsupportedSummary = (extensions: readonly string[]): string =>
+	`Skipped ${extensions.length} ${extensions.length === 1 ? "file that isn't" : "files that aren't"} a supported type (${[...new Set(extensions)].join(", ")}).`;
+
+export const unsafeSummary = (count: number): string =>
+	`Skipped ${count} ${count === 1 ? "file with a name" : "files with names"} the import can't use (e.g. a ':' in the name).`;

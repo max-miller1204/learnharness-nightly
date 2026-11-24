@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useNotifyHub } from "@/components/server-events";
 import { InstallUpdateDialog } from "@/components/install-update-dialog";
-import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateErrorToast, UNEXPECTED_ERROR } from "@/components/update-toasts";
+import { APP_VERSION, HOMEPAGE } from "@/components/app-info";
+import { CHECK_ERROR, CHECK_FAILED_TITLE, CHECK_UNAVAILABLE, DOWNLOAD_FAILED_TITLE, DOWNLOAD_START_FAILED_TITLE, INSTALL_FAILED_TITLE, showUpdateErrorToast, UNEXPECTED_ERROR } from "@/components/update-toast-helpers";
 import { updateButtonTooltip } from "@/components/update-tooltips";
 import { capReleaseNoteGroups, type ReleaseNoteGroup } from "@/src/core";
 import { BRIDGE_FAILED, readBridgeAnswer, readUpdateEverythingResult, readUpdateEverythingRun, runIsLive, type BridgeAnswer, type UpdateEverythingResult, type UpdateEverythingRun } from "@/components/update-everything-logic";
@@ -122,8 +123,7 @@ export type DesktopUpdateBridge = {
 /** The local desktop window's full bridge (electron/preload.cjs), not the remote one. */
 const localDesktopBridge = () => (typeof window.lh?.getUpdateState === "function" ? window.lh : undefined);
 
-export const APP_VERSION = process.env.LH_VERSION ?? "";
-export const HOMEPAGE = process.env.LH_HOMEPAGE ?? "";
+export { APP_VERSION, HOMEPAGE };
 const UNAVAILABLE_UPDATES_DETAIL = "Automatic updates are not available in this build.";
 
 const isUpdateState = (value: unknown): value is UpdateState =>

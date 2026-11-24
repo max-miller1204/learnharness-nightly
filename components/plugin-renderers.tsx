@@ -1,52 +1,20 @@
 "use client";
 
-import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { QUESTION_TOOLS, type ArtifactPartProps, type LhViewPart, type PluginCodeBlockProps, type PluginToolRenderProps } from "@/src/core";
-import { usePlugins } from "@/components/plugins";
-import { type CodeBlockRegistration, type ToolRendererRegistration, type PluginMount } from "@/components/plugin-manager";
+import { useContext, useMemo, type ReactNode } from "react";
+import { QUESTION_TOOLS, type ArtifactPartProps, type LhViewPart, type PluginToolRenderProps } from "@/src/core";
+import { usePlugins } from "@/components/plugins-context";
+import { BUILTIN_MERMAID_LANGUAGE, PluginCodeBlock, RendererMount } from "@/components/plugin-code-block";
+import { type PluginMount } from "@/components/plugin-manager";
 import { artifactRenderers } from "@/components/artifacts";
 import { LiveToolCard } from "@/components/artifacts/live-tool-card";
 import { ToolCallCard } from "@/components/artifacts/tool-call-card";
 import { DispatchCard } from "@/components/artifacts/dispatch-card";
 import { JobsContext } from "@/components/jobs-context";
 
-/** The Markdown dispatch uses this same exclusive built-in language. */
-export const BUILTIN_MERMAID_LANGUAGE = "mermaid";
+export { BUILTIN_MERMAID_LANGUAGE, PluginCodeBlock };
 
-/** Only actual exclusive presentation claims: not every backend/internal tool.
- * A function avoids eager access across the existing artifact/chat module cycle. */
 export function reservedToolRendererNames(): string[] {
 	return [...new Set([...Object.keys(artifactRenderers), ...QUESTION_TOOLS, "plan_init"])];
-}
-
-function RendererMount({ registration, mount, label, fallback }: {
-	registration: CodeBlockRegistration | ToolRendererRegistration;
-	mount: PluginMount;
-	label: string;
-	fallback: ReactNode;
-}) {
-	const { manager } = usePlugins();
-	const container = useRef<HTMLDivElement>(null);
-	const [failure, setFailure] = useState<{ mount: PluginMount; error: string }>();
-	const failed = failure?.mount === mount;
-	useEffect(() => {
-		if (!manager || !container.current) return;
-		return manager.mountRenderer(registration, mount, container.current, error => setFailure({ mount, error }));
-	}, [manager, registration, mount]);
-	if (!manager || failed) return <>
-		{failed && <p role="alert" className="text-xs text-destructive">{label}: {failure.error}</p>}
-		{fallback}
-	</>;
-	return <div ref={container} data-plugin-renderer={label} className="min-w-0" />;
-}
-
-export function PluginCodeBlock({ language, source, meta, incomplete, fallback }: Omit<PluginCodeBlockProps, "signal"> & { fallback: ReactNode }) {
-	const { snapshot } = usePlugins();
-	const registration = snapshot.codeBlocks.find(entry => entry.renderer.language === language);
-	const mount = useMemo<PluginMount>(() => (container, signal) => registration?.renderer.mount(container, { language, source, meta, incomplete, signal }),
-		[registration, language, source, meta, incomplete]);
-	if (!registration) return <>{fallback}</>;
-	return <RendererMount registration={registration} mount={mount} label={`Plugin code block (${language})`} fallback={fallback} />;
 }
 
 /** Preserve native text (and an honest image attachment note) when no details

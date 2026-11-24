@@ -1,17 +1,18 @@
 "use client";
 
-import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { SERVER_EVENT_TYPES, type PluginFrontendModule, type ServerEvent } from "@/src/core";
 import { useNotifyHub } from "@/components/server-events";
-import { PluginFrontendManager, type PluginHost, type PluginMount, type PluginSnapshot } from "@/components/plugin-manager";
+import { PluginFrontendManager, type PluginHost, type PluginMount } from "@/components/plugin-manager";
 import { createPluginUiStore, PluginUiHost } from "@/components/plugin-ui-host";
 import { BUILTIN_MERMAID_LANGUAGE, reservedToolRendererNames } from "@/components/plugin-renderers";
+import { EMPTY_PLUGIN_SNAPSHOT, PluginsContext, usePlugins } from "@/components/plugins-context";
 
-const EMPTY: PluginSnapshot = { plugins: [], codeBlocks: [], toolRenderers: [], directory: "", conflicts: [], loading: true, refreshing: false };
+export { usePlugins };
+
 const emptySubscribe = () => () => {};
-const emptySnapshot = () => EMPTY;
-const PluginsContext = createContext<{ manager: PluginFrontendManager | null; snapshot: PluginSnapshot; uiStore: ReturnType<typeof createPluginUiStore> | null }>({ manager: null, snapshot: EMPTY, uiStore: null });
+const emptySnapshot = () => EMPTY_PLUGIN_SNAPSHOT;
 
 /** A deferred last-release makes React StrictMode's setup/cleanup/setup one
  * activation lifetime, while a genuine provider teardown still disposes. */
@@ -109,10 +110,6 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
 	const snapshot = useSyncExternalStore(manager?.subscribe ?? emptySubscribe, manager?.getSnapshot ?? emptySnapshot, emptySnapshot);
 	return <PluginsContext.Provider value={{ manager, snapshot, uiStore }}>{children}</PluginsContext.Provider>;
 }
-
-/** Missing-provider fallback is intentional: existing sidebar render tests and
- * independent shells don't need plugin infrastructure to render. */
-export function usePlugins() { return useContext(PluginsContext); }
 
 /** Render inside SettingsDialogProvider: host widgets keep the real app contexts. */
 export function PluginWidgets() {

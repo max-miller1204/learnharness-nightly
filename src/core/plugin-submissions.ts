@@ -4,7 +4,7 @@ import type { LhMessage } from "./native-messages.ts";
 import type { PluginQuestionOccurrence, PluginQuestionSnapshot } from "./plugin-questions.ts";
 import type { PluginProblemSnapshot } from "./plugin-problems.ts";
 import type { AnswerRequest, ClientQuestion, QuestionData, QuizQuestionType } from "./question-core.ts";
-import { clonePluginQuestionJson } from "./plugin-questions.ts";
+import { clonePluginQuestionJson } from "./immutable-data.ts";
 import type { PluginSurfaceTarget } from "./plugin-ui.ts";
 
 type Immutable<T> = T extends (...args: never[]) => unknown ? T : T extends object ? { readonly [K in keyof T]: Immutable<T[K]> } : T;

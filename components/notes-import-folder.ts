@@ -1,10 +1,11 @@
 import { createGitignoreFilter, parseIgnoreFile, type IgnoreFile } from "@/lib/ignore-patterns";
 import {
-	CODE_CAP_MESSAGE, EXCLUDED_FOLDERS, excludedFileName, importKind, MAX_CODE_FILE_BYTES, MAX_CODE_FILES,
-	MAX_CODE_TOTAL_BYTES, MAX_IMPORT_BYTES, validNotesPath,
+	CODE_CAP_MESSAGE, EXCLUDED_FOLDERS, excludedFileName, extensionLabel, importKind, MAX_CODE_FILE_BYTES, MAX_CODE_FILES,
+	MAX_CODE_TOTAL_BYTES, MAX_IMPORT_BYTES, notesPath as relativePath, unsafeSummary, unsupportedSummary, validNotesPath,
 } from "@/lib/notes-import-limits";
 import type { ImportEstimateInput } from "@/lib/notes-import-estimate";
-import { unsafeSummary, unsupportedSummary } from "./notes-import-queue";
+
+export { extensionLabel, relativePath };
 
 /** The browser's measures for the estimate endpoint (docs/specs/extract-more-types.md, "Folder picks"). */
 export type FolderMeasures = ImportEstimateInput;
@@ -33,14 +34,6 @@ export interface FolderPlan {
 	unsafe: number;
 	measures: FolderMeasures;
 }
-
-export const relativePath = (file: File): string => file.webkitRelativePath || file.name;
-
-/** From the last dot of the file name, lower-cased. A dot that starts the name (".DS_Store") or ends it ("notes.") is not an extension. */
-export const extensionLabel = (name: string): string => {
-	const dot = name.lastIndexOf(".");
-	return dot > 0 && dot < name.length - 1 ? name.slice(dot).toLowerCase() : "no extension";
-};
 
 /** Hidden (dot-prefixed) segments and default-excluded folders below the picked root, or an excluded file name.
  * The root is segment 0 and stays importable even when hidden. */

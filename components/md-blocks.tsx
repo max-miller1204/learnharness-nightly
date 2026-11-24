@@ -43,7 +43,7 @@ import { MermaidError } from "@/components/mermaid-error";
 import { blurAfterPointerClick } from "@/components/focus-hygiene";
 import { chartSize, useSessionMermaid } from "@/components/session-overlay";
 import { Hint } from "@/components/ui/hint";
-import { BUILTIN_MERMAID_LANGUAGE, PluginCodeBlock } from "@/components/plugin-renderers";
+import { BUILTIN_MERMAID_LANGUAGE, PluginCodeBlock } from "@/components/plugin-code-block";
 
 /** Local rendering profile for host-mounted, display-only Markdown. Ordinary
  * transcript rendering (including SSR/static Streamdown) stays interactive. */
