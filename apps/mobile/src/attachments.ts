@@ -139,7 +139,7 @@ export class AttachmentDraft {
     catch (error) { if (!(error instanceof ApiError && error.status === 404)) throw error; }
   }
 
-  private async upload(row: DraftFile, generation: number): Promise<boolean> {
+  private async upload(row: DraftFile, generation: number, retried = false): Promise<boolean> {
     const { api, put } = this.deps;
     if (!row.grant || row.grant.deadline <= this.now()) {
       if (row.grant) {
@@ -166,6 +166,10 @@ export class AttachmentDraft {
     if (result.status !== 204) {
       let code: string | undefined;
       try { code = JSON.parse(result.body)?.code; } catch { /* The response may be plain text. */ }
+      if (!this.deps.chatId && !retried && result.status === 404 && code !== OPENING_DELETED && generation === this.generation) {
+        row.grant = undefined;
+        return this.upload(row, generation, true);
+      }
       throw new ApiError(uploadFailure(result.body), result.status, code);
     }
     return true;

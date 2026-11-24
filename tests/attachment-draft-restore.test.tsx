@@ -690,3 +690,35 @@ it("releases late grants and rotates concurrent uploads once", async () => {
 	await finishUploads();
 	assert.ok(latest.files.every(row => row.ready));
 });
+
+it("recovers an opening when a deleted reservation makes an in-flight PUT return 404", async () => {
+	await render();
+	await attach(pdf("late.pdf"));
+	const oldDraft = latest.getDraftId();
+	retiredReservations = 1;
+	const transfer = transfers[0]!;
+	transfer.status = 404;
+	transfer.responseText = JSON.stringify({ error: "Pending attachment not found." });
+	await act(async () => { transfer.finish(); });
+	await settle(); await settle();
+	assert.notEqual(latest.getDraftId(), oldDraft);
+	assert.equal(transfers.length, 1);
+	await finishUploads();
+	assert.equal(latest.files[0]?.ready, true);
+	assert.equal(latest.files[0]?.name, "late.pdf");
+});
+
+it("stops after a missing PUT grant and an ordinary reservation 404", async () => {
+	await render();
+	await attach(pdf("missing.pdf"));
+	const before = latest.getDraftId();
+	plain404 = true;
+	const transfer = transfers[0]!;
+	transfer.status = 404;
+	transfer.responseText = JSON.stringify({ error: "Pending attachment not found." });
+	await act(async () => { transfer.finish(); });
+	await settle(); await waitMs(30);
+	assert.equal(latest.getDraftId(), before);
+	assert.equal(calls.filter(call => call.method === "POST" && call.url === "/api/attachments").length, 2);
+	assert.ok(latest.files[0]?.error);
+});

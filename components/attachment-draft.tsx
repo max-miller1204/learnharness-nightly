@@ -213,7 +213,7 @@ export function useAttachmentDraft(chatId?: string) {
 		const base = { id: row.grant.id, name: row.name, at: Date.now() };
 		storeAttachment(chatId, row.folder ? { ...base, files: folderManifest(row.folder) } : { ...base, mimeType: row.file!.type, size: row.file!.size });
 	};
-	const uploadFile = async (row: DraftFile, version: number) => {
+	const uploadFile = async (row: DraftFile, version: number, retried = false): Promise<boolean | undefined> => {
 		if (!row.grant?.uploadUrl || row.grant.deadline <= Date.now()) {
 			if (row.grant) {
 				await deleteGrant(row.grant.id);
@@ -225,10 +225,16 @@ export function useAttachmentDraft(chatId?: string) {
 			});
 		}
 		if (!live(row) || generation.current !== version) return;
-		await putBytes(row, row.file!, row.grant.uploadUrl!, loaded => {
-			row.progress = row.file!.size ? Math.round(loaded * 100 / row.file!.size) : 0;
-			changed();
-		});
+		try {
+			await putBytes(row, row.file!, row.grant.uploadUrl!, loaded => {
+				row.progress = row.file!.size ? Math.round(loaded * 100 / row.file!.size) : 0;
+				changed();
+			});
+		} catch (error) {
+			if (chatId || retried || !(error instanceof RequestError) || error.status !== 404 || error.code === OPENING_DELETED || generation.current !== version) throw error;
+			row.grant = undefined;
+			return uploadFile(row, version, true);
+		}
 		return true;
 	};
 	// Renew grants for the files that have not arrived, a few uploads at a
@@ -237,6 +243,7 @@ export function useAttachmentDraft(chatId?: string) {
 		const folder = row.folder!;
 		const total = folder.files.reduce((sum, { file }) => sum + file.size, 0);
 		const byPath = new Map(folder.files.map(({ file, path }) => [path, file]));
+		let retriedMissing = false;
 		// Each round finishes at least one file, so this bounds a misbehaving server.
 		for (let round = 0; round <= folder.files.length + 1; round++) {
 			if (!live(row) || generation.current !== version) return;
@@ -274,7 +281,14 @@ export function useAttachmentDraft(chatId?: string) {
 					} catch (error) { failure ??= error; }
 				}
 			}));
-			if (failure !== undefined) throw failure;
+			if (failure !== undefined) {
+				if (chatId || retriedMissing || !(failure instanceof RequestError) || failure.status !== 404 || failure.code === OPENING_DELETED || generation.current !== version) throw failure;
+				retriedMissing = true;
+				const grant = row.grant;
+				row.grant = undefined;
+				if (grant) void deleteGrant(grant.id).catch(() => {});
+				continue;
+			}
 			if (!finished && live(row)) break;
 		}
 		throw new Error("Upload failed. Try again.");
