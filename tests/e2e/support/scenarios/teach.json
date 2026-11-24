@@ -1,11 +1,33 @@
 {
-	"_comment": "A teaching session: the prober reads two files in one turn (the fixture with no final newline, then the main fixture), asks one graded question, then acknowledges the answer. serve.ts writes the fixtures and passes their paths as FIXTURE and FIXTURE_NONL. A goal containing zz-e2e math gets one reply with inline math (math-rendering.e2e.ts).",
+	"_comment": "A teaching session: the prober reads two files in one turn (the fixture with no final newline, then the main fixture), asks one graded question, then acknowledges the answer. serve.ts writes the fixtures and passes their paths as FIXTURE and FIXTURE_NONL. A goal containing zz-e2e math gets one reply with inline math (math-rendering.e2e.ts). A goal containing zz-e2e hang gets a reply held back for two minutes, so a turn stays running until the test stops it, and one containing zz-e2e slow gets its reply after 1.5 seconds, so a turn can be watched live (client-protocol.e2e.ts).",
 	"models": [
 		"e2e-strong",
 		"e2e-cheap",
 		"e2e-vision"
 	],
 	"rules": [
+		{
+			"id": "hang-reply",
+			"match": {
+				"lastRole": "user",
+				"lastIncludes": "zz-e2e hang"
+			},
+			"reply": {
+				"text": "zz-e2e hang: this reply is held back so a test can stop the turn.",
+				"delayMs": 120000
+			}
+		},
+		{
+			"id": "slow-reply",
+			"match": {
+				"lastRole": "user",
+				"lastIncludes": "zz-e2e slow"
+			},
+			"reply": {
+				"text": "zz-e2e slow: this reply comes after a short wait.",
+				"delayMs": 1500
+			}
+		},
 		{
 			"id": "math-reply",
 			"match": {
