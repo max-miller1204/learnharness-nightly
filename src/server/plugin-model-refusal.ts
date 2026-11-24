@@ -9,3 +9,9 @@ export async function pluginKeyMissing(provider: string, id: string): Promise<ob
 	if (catalogModelGone(provider, id)) return null;
 	return connectionRefusal(provider, []);
 }
+
+/** Whether the host could ever refuse for this exact provider id: a static
+ *  set that holds whatever the connection state is when the refusal arrives. */
+export async function pluginKnowsProvider(provider: string): Promise<boolean> {
+	return (await import("./model-catalog.ts")).hostProviderIds().has(provider);
+}

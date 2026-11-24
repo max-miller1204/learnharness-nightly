@@ -118,4 +118,5 @@ export async function getPluginQuestionTypeResolver(): Promise<Host["resolveQues
 	return (await getPluginHost()).resolveQuestionType;
 }
 export const pluginTransport = createPluginTransport({ getHost: getPluginHost, directory: pluginDirectory,
-	keyMissing: async (provider, id) => (await import("./plugin-model-refusal.ts")).pluginKeyMissing(provider, id) });
+	keyMissing: async (provider, id) => (await import("./plugin-model-refusal.ts")).pluginKeyMissing(provider, id),
+	knownProvider: async (provider) => (await import("./plugin-model-refusal.ts")).pluginKnowsProvider(provider) });
