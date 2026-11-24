@@ -22,6 +22,11 @@ const context = [
 	"The tutor asks questions in the question dock under the transcript; the learner picks an option and submits.",
 	"The sidebar lists sessions and folders; Settings holds models, providers and devices.",
 ].join(" ");
+// What explorers must not report: the instance's model is serve.ts's scripted fake.
+const fakeModel = [
+	"The tutor is a scripted fake model: a goal containing zz-e2e gets two file reads, one question and an acknowledgement; anything else gets 'zz-e2e fallback reply.'.",
+	"Not bugs: that fallback reply, a 503 from /api/stt/token (dictation has no key), and 'Updates unavailable' in the sidebar footer.",
+].join(" ");
 
 export default {
 	tests: "tests/e2e/**/*.e2e.ts",
@@ -49,7 +54,7 @@ export default {
 		default: { executor: claudeCode({ model: "sonnet" }), model: chatgpt("gpt-6-luna"), context },
 		codex: { executor: codex(), model: chatgpt("gpt-6-luna"), context },
 		// e2e's built-in agent on ChatGPT: `e2e explore --agent chatgpt` and bug bashes.
-		chatgpt: { model: chatgpt("gpt-6-luna"), context, maxSteps: 40, maxModelCalls: 40 },
+		chatgpt: { model: chatgpt("gpt-6-luna"), context: `${context} ${fakeModel}`, maxSteps: 40, maxModelCalls: 40 },
 	},
 	// The PR comment and job summary on GitHub Actions; nothing elsewhere.
 	reporters: ["list", github()],
