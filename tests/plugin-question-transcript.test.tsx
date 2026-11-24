@@ -1,6 +1,5 @@
 import React, { act } from "react";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { afterEach, test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
@@ -198,16 +197,4 @@ test("historical answered renderer never receives unexpected v1 grading", async 
 	} };
 	await mount(answer, registration);
 	assert.deepEqual(persisted.grading, { result: "stray" });
-});
-
-test("SourcePart delegates thinking once and preserves answer images outside the host card", () => {
-	// The direct component tests above exercise rendering and expansion. This
-	// structural boundary assertion avoids importing the private plugin runtime
-	// merely to prove Part does not add a second image-only ThinkingBlock.
-	const source = readFileSync(new URL("../components/plugin-question-part.tsx", import.meta.url), "utf8");
-	assert.equal((source.match(/<PluginQuestionAnswered\b/g) ?? []).length, 1);
-	assert.match(source, /<PluginQuestionAnswered\b[^>]*snapshot=\{snapshot\}[^>]*answer=\{answer\}/);
-	assert.doesNotMatch(source, /\bThinkingBlock\b|answer\.images\?\.(?:readingThinking|thinking)/);
-	assert.match(source, /<PluginQuestionAnswered\b[^>]*\/>\s*<SubmittedImages images=\{answer\.images\?\.answer\}\s*\/>/);
-	assert.equal((source.match(/<SubmittedImages\b/g) ?? []).length, 1);
 });

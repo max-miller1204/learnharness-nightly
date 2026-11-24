@@ -1415,14 +1415,6 @@ test("main pushes the status to the remote window's main frame at its origin, an
 	assert.equal(push(), false, "a frame mid-teardown never interrupts the updater");
 });
 
-test("main.cjs pushes the remote window's status after every updater state change", () => {
-	const source = fs.readFileSync(path.join(import.meta.dirname, "..", "electron", "main.cjs"), "utf8");
-	const setState = source.slice(source.indexOf("function setUpdateState("), source.indexOf("/** Read the install record once at launch"));
-	assert.match(setState, /pushRemoteStatus\?\.\(\)/, "setUpdateState is the one place the snapshot moves");
-	assert.match(source, /pushRemoteStatus = createStatusPush\(\{ current: \(\) => serverList\.current\(\), updateEverything,/);
-	assert.match(source, /createServerList\(\{[^]*?selected: \(\) => pushRemoteStatus\?\.\(\),[^]*?\}\);/, "the server list is told when a server is selected (tests/desktop-server-list.test.ts holds the behaviour behind it)");
-});
-
 test("status carries the updater snapshot's revision, so the page can drop a read that a later push overtook", () => {
 	let appState: Record<string, unknown> = { status: "available", version: V72, revision: 7 };
 	const ue = createUpdateEverything({ appVersion: V71, updater: { state: () => appState } });

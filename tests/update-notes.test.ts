@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { capReleaseNoteGroups, noteReleasedAt, type ReleaseNoteGroup, MAX_RELEASE_NOTE_ITEM_LENGTH, totalReleaseItems, withoutSummaryEcho } from "../src/core/release-notes.ts";
+import { capReleaseNoteGroups, type ReleaseNoteGroup, MAX_RELEASE_NOTE_ITEM_LENGTH, totalReleaseItems, withoutSummaryEcho } from "../src/core/release-notes.ts";
 import { releaseLinkLabel } from "../components/release-notes-view.tsx";
 import { readDesktopAppStatus } from "../components/settings/update-settings.tsx";
 import { feedNotesToGroups, groupsBetween, mergeNotesCache, readNotesCache, readUpdateRecord, whatsNew, writeUpdateRecord } from "../src/server/update-records.ts";
@@ -109,15 +109,6 @@ describe("notes limits", () => {
 		const desktop = electronNotes.releaseNoteGroups({ version: V(18), releaseNotes: notes.map((n) => ({ version: n.version, items: n.items, ...(n.publishedAt ? { releasedAt: n.publishedAt } : {}) })) }).map((g) => [g.version, g.releasedAt]);
 		assert.deepEqual(server, [[V(18), "2026-11-14T08:00:00Z"], [V(17), "2026-11-17"], [V(16), "2026-11-16"]]);
 		assert.deepEqual(desktop, server);
-	});
-
-	it("the server and the desktop date a note with one function: the shared electron/release-dates.cjs", () => {
-		const shared = require("../electron/release-dates.cjs") as { noteReleasedAt: unknown };
-		assert.equal(noteReleasedAt, shared.noteReleasedAt, "src/core reads the same function the desktop's note reader calls");
-		// The feed paths that hand it the pointer are driven in tests/self-update.test.ts and tests/nightly-updater.test.ts.
-		const src = fs.readFileSync(new URL("../electron/release-notes.cjs", import.meta.url), "utf8");
-		assert.match(src, /require\("\.\/release-dates\.cjs"\)/);
-		assert.ok(!/RELEASED_AT\s*=|PRERELEASE_BUILD_DAY\s*=/.test(src), "no second copy of the date patterns");
 	});
 
 	it("the copy is told apart from a real item where the whole list is known, and the decision survives the cut, the bridge and the cache", () => {

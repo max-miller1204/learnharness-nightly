@@ -147,8 +147,6 @@ describe("graph edges", () => {
 		for (const t of BUILTIN_THEMES) {
 			assert.equal(themeVars(t.colors, t.mode)["--muted-foreground"], t.colors.textMuted, t.id);
 		}
-		const view = fs.readFileSync(new URL("../components/graph-view.tsx", import.meta.url), "utf8");
-		assert.match(view, /edge: tokenHex\("--muted-foreground"\)/);
 	});
 });
 

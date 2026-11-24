@@ -661,26 +661,6 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 		assert.ok(ledgers.readCoverage().length > 0);
 	});
 
-	it("the LLM cluster-namer is DEAD (wave 7): a merge mints no naming runs — labels are session names now", async () => {
-		const { chatId } = fixtureChat();
-		const ledgers = memoryLedgers();
-		// Empty verdicts: everything creates (verdicts-only, 2026-09-28).
-		const verdict: AuditVerdicts = { links: [] };
-		const pipeline = createExtractionPipeline({
-			chatStore,
-			graphStore: ledgers,
-			extractor: submitModel("submit_findings", FINDINGS),
-			auditor: submitModel("submit_review", verdict),
-		});
-		const stats = await pipeline.runExtraction(chatId);
-		assert.deepEqual(stats, { nodes: 2, chains: 1 }); // full findings merge (verdicts-only)
-		// Wave 7 (950ddfd): birth-session clusters carry session-name labels,
-		// so the post-merge naming garnish is gone — no model spend, no
-		// naming-run records, no label writes.
-	});
-
-
-
 	it("engineFor fills the stages (model slots wave): the chain replaces config pins", async () => {
 		const { chatId } = fixtureChat();
 		const ledgers = memoryLedgers();

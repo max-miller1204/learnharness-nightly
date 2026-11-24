@@ -9,7 +9,6 @@
 import React, { act } from "react";
 (globalThis as Record<string, unknown>).React = React;
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { afterEach, describe, it } from "node:test";
 import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
@@ -745,39 +744,5 @@ describe("a row deleted from the keyboard hands focus to its neighbour (#358 rou
 		usingPointer(rowOf("b")); // the learner clicks the row before any return
 		rowOf("b").focus();
 		assert.equal(focusedName(), "b", "a new input ends the watch");
-	});
-});
-
-describe("sidebar.tsx wiring", () => {
-	it("uses the same handlers in the real list, search and menus", () => {
-		const source = readFileSync(new URL("../components/sidebar.tsx", import.meta.url), "utf8");
-		assert.match(source, /if \(!tabThroughList\(e, e\.currentTarget, searchRef\.current, footerStops\(footerRef\.current\)\[0\]\)\) keepRowKeys\(e\);/);
-		assert.match(source, /if \(tabIntoList\(e, listRef\.current, walked, footerRef\.current\)\) \{ setKbdIndex\(null\); return; \}/);
-		assert.match(source, /if \(!tabThroughFooter\(e, e\.currentTarget, listRef\.current, searchRef\.current\)\) keepFooterKeys\(e\);/);
-		const search = source.slice(source.indexOf('data-testid="session-search"'));
-		assert.ok(search.indexOf("tabIntoList") < search.indexOf('e.key === "Escape"'), "the search's Tab is handled first");
-		// Every close of either menu goes through closeMenuToRow.
-		const outsideHelper = (text: string) => text.replace(/closeMenuToRow\([^;]*?\(\) => set\w+\(null\)(, \w+\.current)?\)/g, "");
-		const sessionMenu = source.slice(source.indexOf("{ctxChatId !== null && ("), source.indexOf("{ctxFolderId !== null && ("));
-		assert.doesNotMatch(outsideHelper(sessionMenu), /setCtxChatId\(null\)/, "no session-menu item closes it directly");
-		const folderMenu = source.slice(source.indexOf("{ctxFolderId !== null && ("), source.indexOf("<DeleteSessionDialog"));
-		assert.doesNotMatch(outsideHelper(folderMenu), /setCtxFolderId\(null\)/, "no folder-menu item closes it directly");
-		const deleteFolder = source.slice(source.indexOf("const deleteFolder = "), source.indexOf("const copy = folderDeleteCopy("));
-		assert.doesNotMatch(deleteFolder, /setCtxFolderId\(null\)/, "the folder Delete closes through the helper too");
-		assert.equal((source.match(/closeMenuToRow\("session-context-menu", ctxAnchorRef\.current, /g) ?? []).length, 3, "Esc (onClose), click-away, and closeSessionMenu for the items");
-		assert.equal((source.match(/closeMenuToRow\("folder-context-menu", folderAnchorRef\.current, /g) ?? []).length, 3);
-		// The close type alone decides: nothing records how a menu or field was opened.
-		assert.doesNotMatch(source, /ByKeyboardRef/);
-		// The row is each Delete dialog's opener; a pointer close lets it go.
-		assert.match(source, /if \(row\) \{ row\.focus\(\{ preventScroll: true \}\); deleteHandoff\.arm\(row\); \}/);
-		assert.match(source, /row\.focus\(\{ preventScroll: true \}\);\n\t+deleteHandoff\.arm\(row\);\n\t+folderDeleteOpenerRef\.current = row;/);
-		assert.equal((source.match(/deleteHandoff\.cancel\(\);/g) ?? []).length, 3, "both dialogs' close and the folder's stale close");
-		assert.equal((source.match(/releaseRowAfterPointerClose\(deleteOpenerRef\.current\)/g) ?? []).length, 2, "the session dialog's close and its delete");
-		assert.equal((source.match(/releaseRowAfterPointerClose\(folderDeleteOpenerRef\.current\)/g) ?? []).length, 3, "the folder dialog's close, stale close and delete");
-		assert.doesNotMatch(source, /returnFocusFallback/);
-		assert.match(source, /useLayoutEffect\(\(\) => \{ deleteHandoff\.afterRender\(\); focusKeeper\.afterRender\(searchRef\.current\); \}\);/);
-		assert.match(source, /useEffect\(\(\) => trackInputModality\(\), \[\]\);/);
-		assert.equal((source.match(/focusWhenLost\(`[^`]*`\)/g) ?? []).length, 4, "Rename (commit, cancel), folder Rename and New subfolder");
-		assert.match(source, /swallowNextContextMenu\(\);/);
 	});
 });

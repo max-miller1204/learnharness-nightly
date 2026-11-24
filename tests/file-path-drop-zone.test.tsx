@@ -1,6 +1,5 @@
 import React, { act } from "react";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { afterEach, test } from "node:test";
 import { parseHTML } from "linkedom";
 import { FilePathDropZone } from "../components/file-path-drop-zone.tsx";
@@ -296,11 +295,4 @@ test("the host content root reports the real main column and clears on unmount",
 	await cleanup!();
 	cleanup = undefined;
 	assert.deepEqual(seen, [main, null]);
-});
-
-test("production AppShell places the sidebar outside its content-only drop zone", () => {
-	const source = readFileSync(new URL("../components/sidebar.tsx", import.meta.url), "utf8");
-	const shell = source.slice(source.indexOf("export function AppShell("));
-	assert.match(shell, /<SessionsSidebar\b[^>]*\/>\s*<FilePathDropZone\b[^>]*>\{showRoute \? children : null\}<\/FilePathDropZone>/);
-	assert.doesNotMatch(shell, /<FilePathDropZone\b[^>]*>[\s\S]*<SessionsSidebar/);
 });

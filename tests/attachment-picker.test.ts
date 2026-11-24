@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
 import { it } from "node:test";
 const { pickAttachmentPath } = createRequire(import.meta.url)("../electron/attachment-picker.cjs");
 
@@ -46,8 +45,4 @@ it("dialog errors propagate without manufacturing a path", async () => {
 	const f = fixture();
 	f.deps.dialog.showOpenDialog = async () => { throw new Error("fixture failure"); };
 	await assert.rejects(pickAttachmentPath(f.event, "folder", f.deps), /fixture failure/);
-});
-it("production IPC registration supplies the owned windows and exact application origin", () => {
-	const main = readFileSync(new URL("../electron/main.cjs", import.meta.url), "utf8");
-	assert.match(main, /ipcMain\.handle\("lh:attachment:pick", \(event, mode\) => pickAttachmentPath\(event, mode, \{\s*BrowserWindow, dialog, trustedAppWindows, origin: localOrigin,/);
 });

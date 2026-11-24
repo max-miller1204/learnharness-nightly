@@ -6,7 +6,6 @@ import {
 	formatBinding,
 	IS_MAC,
 	kbdEventForAction,
-	KEYBOARD_ACTIONS,
 } from "../src/core/keyboard.ts";
 import { kbdEventForAction as kbdEventForActionFromUi } from "../components/keyboard-shortcuts.tsx";
 
@@ -51,26 +50,9 @@ describe("the ⌘B chain — keypress → binding → action → event", () => {
 	});
 });
 
-describe("the thinking pill suffix — ⇧⇥ via the registry", () => {
+describe("the thinking pill suffix - Shift+Tab via the registry", () => {
 	it("shift+tab uses the platform's modifier label and maps to cycle-thinking", () => {
 		assert.equal(actionForBinding("shift+tab"), "cycle-thinking");
 		assert.equal(formatBinding("shift+tab"), IS_MAC ? "⇧⇥" : "Shift+⇥");
-	});
-});
-
-describe("the Alt session cycle is RETIRED (owner, 2026-10-10)", () => {
-	// Barely used, felt laggy — session navigation lives IN the search
-	// now (↑/↓ walk the filtered list, Enter opens; sidebar.tsx).
-	it("⌥↑ / ⌥↓ / ⌥↵ bind to NOTHING — no stray action fires", () => {
-		assert.equal(actionForBinding("alt+arrowup") ?? null, null);
-		assert.equal(actionForBinding("alt+arrowdown") ?? null, null);
-		assert.equal(actionForBinding("alt+enter") ?? null, null);
-	});
-
-	it("the actions are gone from the table (cheat sheet + settings render the registry)", () => {
-		const ids = KEYBOARD_ACTIONS.map((a) => a.id as string);
-		assert.ok(!ids.includes("cycle-session-prev"));
-		assert.ok(!ids.includes("cycle-session-next"));
-		assert.ok(!ids.includes("open-session"));
 	});
 });

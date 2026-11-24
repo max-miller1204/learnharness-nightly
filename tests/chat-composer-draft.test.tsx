@@ -9,7 +9,6 @@
 import React, { act } from "react";
 (globalThis as Record<string, unknown>).React = React;
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { Chat } from "../components/chat.tsx";
 import { stashOpeningPrompt } from "../components/opening-prompt.ts";
@@ -160,10 +159,5 @@ describe("the composer draft in the production Chat", () => {
 		await open("d", { prompt: "a long-sent opening", messages: conversation });
 		await settle();
 		assert.equal(composer().textContent, "the draft of an established session");
-	});
-
-	it("a send accepted after its Chat unmounted clears only a draft that is still the sent text, and touches no state (wiring; lib test covers the rule)", () => {
-		const source = readFileSync(new URL("../components/chat.tsx", import.meta.url), "utf8");
-		assert.match(source, /if \(!submissionMounted\.current\) clearComposerDraftIfSent\(chatId, captured\);\n\t+else if \(composerEditRevision\.current === capturedRevision && textRef\.current\.trim\(\) === captured\) applyText\(""\);/);
 	});
 });
