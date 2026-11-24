@@ -55,8 +55,14 @@ describe("teaching session", { session: "learner" }, () => {
 
 		await expect(reply(screen)).toBeVisible({ timeout: 60_000 });
 		await expect(screen.getByTestId("question-dock")).not.toBeVisible();
+		// The tutor's last message is the probe tool's result: it names the option the learner picked.
 		const answered = sessionRequests(state, goal).find((r) => r.rule === "probe-acknowledges-answer");
-		expect(JSON.stringify(answered?.request.messages?.slice(-2) ?? [])).toMatch(/blue/i);
+		const result = answered?.request.messages?.at(-1);
+		expect(result?.role).toBe("tool");
+		const quiz = JSON.parse(String(result?.content)) as { kind: string; answers: Array<{ label: string }>; correct: boolean };
+		expect(quiz.kind).toBe("quiz");
+		expect(quiz.answers.map((a) => a.label)).toEqual(["Blue"]);
+		expect(quiz.correct).toBe(true);
 	});
 
 	test("the session is stored and survives a reload", async ({ screen, browser }) => {
