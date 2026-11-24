@@ -7,6 +7,8 @@ import { TEXCLASS } from "mathjax-full/js/core/MmlTree/MmlNode.js";
 import NodeUtil from "mathjax-full/js/input/tex/NodeUtil.js";
 import TexParser from "mathjax-full/js/input/tex/TexParser.js";
 import type { ParseMethod } from "mathjax-full/js/input/tex/Types.js";
+import BaseMethods from "mathjax-full/js/input/tex/base/BaseMethods.js";
+import type { TextParser } from "mathjax-full/js/input/tex/textmacros/TextParser.js";
 import { TextMacrosMethods } from "mathjax-full/js/input/tex/textmacros/TextMacrosMethods.js";
 
 /** The width KaTeX gives \xrightarrow and \xleftarrow at least (katexImagesData in its stretchy.ts),
@@ -49,9 +51,31 @@ export const XArrowConfiguration = Configuration.create("lh-xarrows", { handler:
 
 // \colorbox, \fcolorbox, \fbox and \mbox hold their content as text, which MathJax's textmacros
 // package parses, and it has no \text (the command is math-only in MathJax). In LaTeX and KaTeX
-// \text inside text is plain text, so it is the braced argument.
-new CommandMap("lh-text-macros", { text: ["Macro", "{#1}", 1] }, TextMacrosMethods as unknown as Record<string, ParseMethod>);
-export const TextInTextConfiguration = Configuration.create("lh-text-in-text", { handler: { macro: ["lh-text-macros"] } });
+// \text inside text is plain text, so it is the braced argument. It is the text parser's fallback
+// for a command it doesn't know, so a user's own \text, which the fallback finds in the math
+// parser's macros, is expanded as before.
+const COMMENT = /(?<!\\)((?:\\\\)*)%[^\n]*$/;
+/** The text parser's own fallback for a command it has no entry for, with \text added. */
+const textFallback = (parser: TextParser, name: string) => {
+  const texParser = parser.texParser;
+  const macro = texParser.lookup("macro", name) as { _func?: unknown } | null;
+  if (name === "text" && macro?._func === BaseMethods.HBox) {
+    // A % comments out the rest of its line, braces included, so the argument is unclosed when
+    // a comment reaches the end of it. MathJax's brace counting doesn't see comments.
+    const start = parser.i;
+    const argument = parser.GetArgument(name);
+    if (COMMENT.test(argument)) parser.Error("MissingCloseBrace", "Missing close brace");
+    parser.i = start;
+    TextMacrosMethods.Macro(parser, name, "{#1}", 1);
+    return;
+  }
+  if (macro && macro._func !== TextMacrosMethods.Macro) parser.Error("MathMacro", "%1 is only supported in math mode", `\\${name}`);
+  texParser.parse("macro", [parser, name]);
+};
+export const TextInTextConfiguration = Configuration.create("lh-text-in-text", {
+  fallback: { macro: textFallback as unknown as ParseMethod },
+  priority: 4,
+});
 
 /** Package names to add to the TeX input's packages. */
 export const PARITY_PACKAGES = ["lh-xarrows"];

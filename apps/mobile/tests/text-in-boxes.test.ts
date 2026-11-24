@@ -44,3 +44,17 @@ test("math and other text commands still work inside a box that holds \\text", (
   // A command that only works in math mode is still refused inside text, as MathJax does.
   assert.equal(drawTex(String.raw`\colorbox{yellow}{\frac{1}{2}}`, true), undefined);
 });
+
+test("a user's own \\text wins inside a box too", () => {
+  const foo = drawTex(String.raw`\colorbox{yellow}{foo}`, true) ?? assert.fail("foo");
+  const drawn = drawTex(String.raw`\renewcommand{\text}[1]{foo}\colorbox{yellow}{\text{hi}}`, true) ?? assert.fail("not drawn");
+  for (const mode of ["light", "dark"] as const) assert.ok(same(pixels(drawn.svg[mode], mode), pixels(foo.svg[mode], mode)), mode);
+});
+
+test("a % in the text comments out the braces after it, so the box is refused as it is on the web", () => {
+  for (const tex of [String.raw`\colorbox{yellow}{\text{hi% there}}`, String.raw`\fcolorbox{red}{yellow}{\text{hi%}}`, String.raw`\fbox{\text{a\%b% c}}`]) {
+    assert.equal(drawTex(tex, true), undefined, tex);
+  }
+  // A comment that ends at a line break, and a % that is escaped, comment nothing out.
+  for (const tex of ["\\colorbox{yellow}{\\text{hi% there\n}}", String.raw`\colorbox{yellow}{\text{50\% off}}`]) assert.ok(drawTex(tex, true), tex);
+});
