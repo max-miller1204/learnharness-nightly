@@ -1,8 +1,9 @@
 "use client";
 
+import { listenForDeletions } from "./session-deletion";
 import { useEffect, useRef, useState } from "react";
 import { FolderIcon, PaperclipIcon } from "lucide-react";
-import { ATTACHMENT_FOLDERS, ATTACHMENT_STATUS, ATTACHMENT_UPLOADS, hasCapability, PROTOCOL_ROUTES, type AttachmentFolderGrantResponse, type AttachmentGrantResponse, type AttachmentSend, type AttachmentTarget, type ServerInfo } from "@/src/core";
+import { OPENING_DELETED, ATTACHMENT_FOLDERS, ATTACHMENT_STATUS, ATTACHMENT_UPLOADS, hasCapability, PROTOCOL_ROUTES, type AttachmentFolderGrantResponse, type AttachmentGrantResponse, type AttachmentSend, type AttachmentTarget, type ServerInfo } from "@/src/core";
 import { attachmentLimitError, ATTACHMENT_UNAVAILABLE, folderFilesAsAttachments, folderLimitError, folderPathError, randomUuid, skippedFolderNotice } from "@/src/core";
 import type { AttachmentReference } from "@/src/core";
 import { dropStoredAttachments, isForgotten, onStoredAttachmentsDropped, readStoredAttachments, storeAttachment, storedLimitInputs, type StoredAttachment } from "@/lib/attachment-drafts";
@@ -103,8 +104,9 @@ function putBytes(row: DraftFile, file: File, url: string, progress: (loaded: nu
 			settle();
 			if (upload.status === 204) { resolve(); return; }
 			let message = "Upload failed. Try again.";
-			try { message = JSON.parse(upload.responseText).error || message; } catch { /* Non-JSON proxy error. */ }
-			reject(new Error(message));
+			let code: string | undefined;
+			try { const body = JSON.parse(upload.responseText); message = body.error || message; code = body.code; } catch { /* Non-JSON proxy error. */ }
+			reject(new RequestError(upload.status, message, code));
 		};
 		upload.onerror = upload.onabort = () => { settle(); reject(new Error("Upload interrupted. Try again.")); };
 		upload.send(file);
@@ -112,7 +114,7 @@ function putBytes(row: DraftFile, file: File, url: string, progress: (loaded: nu
 }
 
 class RequestError extends Error {
-	constructor(public status: number, message: string) { super(message); }
+	constructor(public status: number, message: string, public code?: string) { super(message); }
 }
 
 /** The server's `expiresAt` on this device's clock. The response's Date
@@ -127,7 +129,10 @@ async function postGrant<T extends { expiresAt: number }>(url: string, body?: un
 	const response = await fetch(url, body === undefined ? { method: "POST" } : {
 		method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
 	});
-	if (!response.ok) throw new RequestError(response.status, await attachmentResponseError(response));
+	if (!response.ok) {
+		const body = await response.clone().json().catch(() => null);
+		throw new RequestError(response.status, await attachmentResponseError(response), body?.code);
+	}
 	const grant = await response.json() as T;
 	return { ...grant, deadline: localDeadline(grant.expiresAt, response.headers.get("date")) };
 }
@@ -135,6 +140,7 @@ async function postGrant<T extends { expiresAt: number }>(url: string, body?: un
 /** One composer per session: callers key it by the chat id (app/chat/[id]/page.tsx), so
  * the hook lives for one `chatId`. */
 export function useAttachmentDraft(chatId?: string) {
+	useEffect(() => { listenForDeletions(); }, []);
 	const [info, setInfo] = useState<ServerInfo>();
 	const [infoDone, setInfoDone] = useState(false);
 	/** Server info could not be read (error, 503 or timeout), as opposed to read and lacking a capability. */
@@ -146,6 +152,8 @@ export function useAttachmentDraft(chatId?: string) {
 	const [, redraw] = useState(0);
 	const files = useRef<DraftFile[]>([]);
 	const openingDraft = useRef<string>(null);
+	const resettingOpening = useRef(false);
+	const generation = useRef(0);
 	const lastSend = useRef<{ identity: string; id: string }>(null);
 	const changed = () => redraw(n => n + 1);
 	// Until the session's saved uploads are shown or ruled out, a Send waits
@@ -205,7 +213,7 @@ export function useAttachmentDraft(chatId?: string) {
 		const base = { id: row.grant.id, name: row.name, at: Date.now() };
 		storeAttachment(chatId, row.folder ? { ...base, files: folderManifest(row.folder) } : { ...base, mimeType: row.file!.type, size: row.file!.size });
 	};
-	const uploadFile = async (row: DraftFile) => {
+	const uploadFile = async (row: DraftFile, version: number, retried = false): Promise<boolean | undefined> => {
 		if (!row.grant?.uploadUrl || row.grant.deadline <= Date.now()) {
 			if (row.grant) {
 				await deleteGrant(row.grant.id);
@@ -216,27 +224,34 @@ export function useAttachmentDraft(chatId?: string) {
 				...target(), name: row.file!.name, mimeType: row.file!.type, size: row.file!.size,
 			});
 		}
-		if (!live(row)) return;
-		await putBytes(row, row.file!, row.grant.uploadUrl!, loaded => {
-			row.progress = row.file!.size ? Math.round(loaded * 100 / row.file!.size) : 0;
-			changed();
-		});
+		if (!live(row) || generation.current !== version) return;
+		try {
+			await putBytes(row, row.file!, row.grant.uploadUrl!, loaded => {
+				row.progress = row.file!.size ? Math.round(loaded * 100 / row.file!.size) : 0;
+				changed();
+			});
+		} catch (error) {
+			if (chatId || retried || !(error instanceof RequestError) || error.status !== 404 || error.code === OPENING_DELETED || generation.current !== version) throw error;
+			row.grant = undefined;
+			return uploadFile(row, version, true);
+		}
 		return true;
 	};
 	// Renew grants for the files that have not arrived, a few uploads at a
 	// time, until all are in. A folder whose reservation is gone starts over.
-	const uploadFolder = async (row: DraftFile) => {
+	const uploadFolder = async (row: DraftFile, version: number) => {
 		const folder = row.folder!;
 		const total = folder.files.reduce((sum, { file }) => sum + file.size, 0);
 		const byPath = new Map(folder.files.map(({ file, path }) => [path, file]));
+		let retriedMissing = false;
 		// Each round finishes at least one file, so this bounds a misbehaving server.
 		for (let round = 0; round <= folder.files.length + 1; round++) {
-			if (!live(row)) return;
+			if (!live(row) || generation.current !== version) return;
 			let grants: (AttachmentFolderGrantResponse & { deadline: number }) | undefined;
 			if (row.grant) {
 				try { grants = await postGrant<AttachmentFolderGrantResponse>(PROTOCOL_ROUTES.renewAttachmentFolder(row.grant.id)); }
 				catch (error) {
-					if (!(error instanceof RequestError && error.status === 404)) throw error;
+					if (!(error instanceof RequestError && error.status === 404 && error.code !== OPENING_DELETED)) throw error;
 					row.grant = undefined; // Expired and collected: reserve the folder again.
 					continue;
 				}
@@ -244,6 +259,7 @@ export function useAttachmentDraft(chatId?: string) {
 				grants = await postGrant<AttachmentFolderGrantResponse>(PROTOCOL_ROUTES.attachments, { ...target(), name: folder.name, files: folderManifest(folder) });
 				row.grant = { id: grants.id, deadline: grants.deadline };
 			}
+			if (generation.current !== version) return;
 			if (!grants.files.length) return true;
 			const loaded = new Map<string, number>();
 			const base = total - grants.files.reduce((sum, { path }) => sum + (byPath.get(path)?.size ?? 0), 0);
@@ -265,30 +281,62 @@ export function useAttachmentDraft(chatId?: string) {
 					} catch (error) { failure ??= error; }
 				}
 			}));
-			if (failure !== undefined) throw failure;
+			if (failure !== undefined) {
+				if (chatId || retriedMissing || !(failure instanceof RequestError) || failure.status !== 404 || failure.code === OPENING_DELETED || generation.current !== version) throw failure;
+				retriedMissing = true;
+				const grant = row.grant;
+				row.grant = undefined;
+				if (grant) void deleteGrant(grant.id).catch(() => {});
+				continue;
+			}
 			if (!finished && live(row)) break;
 		}
 		throw new Error("Upload failed. Try again.");
 	};
 	const start = (row: DraftFile) => {
-		if (row.work || !live(row)) return;
+		if (row.work || !live(row) || resettingOpening.current) return;
+		const version = generation.current;
 		row.ready = false;
 		row.error = undefined;
 		row.progress = 0;
 		row.work = (async () => {
 			try {
-				if (await (row.folder ? uploadFolder(row) : uploadFile(row))) {
+				if (await (row.folder ? uploadFolder(row, version) : uploadFile(row, version)) && generation.current === version) {
 					row.ready = true;
 					if (live(row)) keep(row);
 				}
 			} catch (error) {
-				row.error = error instanceof Error ? error.message : "Upload failed. Try again.";
+				if (!chatId && version === generation.current && error instanceof RequestError && error.code === OPENING_DELETED) resetOpening();
+				else row.error = error instanceof Error ? error.message : "Upload failed. Try again.";
 			} finally {
 				row.work = undefined;
 				changed();
 			}
 		})();
 		changed();
+	};
+	const resetOpening = () => {
+		if (chatId || resettingOpening.current) return;
+		resettingOpening.current = true;
+		generation.current++;
+		openingDraft.current = randomUuid();
+		lastSend.current = null;
+		const selected = [...files.current];
+		const pending = selected.map(row => {
+			for (const upload of row.uploads) upload.abort();
+			row.ready = false;
+			row.error = undefined;
+			return Promise.resolve(row.work).then(() => {
+				const grant = row.grant;
+				row.grant = undefined;
+				if (grant) void deleteGrant(grant.id).catch(() => {});
+			});
+		});
+		changed();
+		void Promise.all(pending).then(() => {
+			resettingOpening.current = false;
+			for (const row of files.current) if (live(row)) start(row);
+		});
 	};
 	const add = (rows: DraftFile[]) => {
 		files.current = [...files.current, ...rows];
@@ -332,7 +380,7 @@ export function useAttachmentDraft(chatId?: string) {
 	 * the learner saw. */
 	const prepare = async (identity: string, onUnavailable?: () => void, selected: DraftFile[] = files.current): Promise<AttachmentSend | null> => {
 		await Promise.all(selected.map(row => row.work));
-		if (files.current !== selected || selected.some(row => !row.ready || !row.grant)) {
+		if (resettingOpening.current || files.current !== selected || selected.some(row => !row.ready || !row.grant)) {
 			onUnavailable?.();
 			return null;
 		}
@@ -344,6 +392,7 @@ export function useAttachmentDraft(chatId?: string) {
 	const accept = (send: AttachmentSend) => {
 		files.current = files.current.filter(row => !row.grant || !send.attachmentUploadIds.includes(row.grant.id));
 		if (chatId) dropStoredAttachments(chatId, send.attachmentUploadIds);
+		else { openingDraft.current = null; lastSend.current = null; }
 		setValidation(undefined);
 		changed();
 	};
@@ -389,7 +438,7 @@ export function useAttachmentDraft(chatId?: string) {
 	}), [chatId]);
 	return {
 		enabled, folders: enabled && folders, files: files.current, validation, getDraftId: () => openingDraft.current ??= randomUuid(),
-		select, selectFolder, drop, remove, retry: start, prepare, accept,
+		select, selectFolder, drop, remove, retry: start, prepare, accept, resetOpening,
 		/** The draft's attachments right now (`files` is what the last render saw). */
 		current: () => files.current,
 		/** Whether the session's saved uploads are still being loaded. */

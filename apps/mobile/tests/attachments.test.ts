@@ -224,3 +224,66 @@ test("upload routes stay on the paired origin", () => {
   assert.throws(() => api.upload("https://other.example/api/attachments/upload"), /Invalid LearnHarness route/);
   assert.throws(() => api.upload("//other.example/x"), /Invalid LearnHarness route/);
 });
+
+test("retired opening keeps picks and uploads them under a fresh draft", async () => {
+  const { draft, calls, puts } = harness({});
+  draft.add([photo, pdf]);
+  await settle(); await settle();
+  const old = draft.draftId();
+  const before = await draft.prepare("prompt");
+  draft.resetOpening();
+  await settle(); await settle(); await settle();
+  assert.notEqual(draft.draftId(), old);
+  assert.equal(draft.rows.length, 2);
+  assert.equal(puts.length, 4);
+  const reservations = calls.filter(call => call.method === "POST").map(call => call.body as { draftId: string });
+  assert.equal(reservations[2]!.draftId, reservations[3]!.draftId);
+  assert.notEqual(reservations[2]!.draftId, old);
+  assert.notEqual((await draft.prepare("prompt"))!.sendId, before!.sendId);
+  draft.dispose();
+});
+
+test("a late PUT 404 rechecks the opening and re-uploads after deletion", async () => {
+  let ids = 0, grants = 0, puts = 0;
+  let finish!: (value: { status: number; body: string }) => void;
+  const held = new Promise<{ status: number; body: string }>(resolve => { finish = resolve; });
+  const api = apiClient(async (url, init) => {
+    if (init.method === "DELETE") return new Response(null, { status: 204 });
+    assert.equal(url.slice(origin.length), PROTOCOL_ROUTES.attachments);
+    grants++;
+    if (grants === 2) return Response.json({ code: "opening-deleted", error: "Deleted" }, { status: 404 });
+    return Response.json({ id: `grant-${grants}`, uploadUrl: `/upload?id=${grants}`, expiresAt: Date.now() + 600_000 }, { status: 201 });
+  }, origin, "token");
+  const put: PutFile = async () => ++puts === 1 ? held : { status: 204, body: "" };
+  const draft = new AttachmentDraft({ api, put, newId: () => `id-${++ids}`, changed: () => {} });
+  draft.add([pdf]);
+  await settle();
+  const before = draft.draftId();
+  finish({ status: 404, body: JSON.stringify({ error: "Pending attachment not found." }) });
+  for (let i = 0; i < 8; i++) await settle();
+  assert.notEqual(draft.draftId(), before);
+  assert.equal(grants, 3);
+  assert.equal(puts, 2);
+  assert.equal(draft.rows[0]?.ready, true);
+  assert.equal(draft.rows[0]?.name, pdf.name);
+  draft.dispose();
+});
+
+test("an ordinary 404 during re-reservation stops without rotating", async () => {
+  let ids = 0, reservations = 0, puts = 0;
+  const api = apiClient(async () => {
+    reservations++;
+    return reservations === 1
+      ? Response.json({ id: "grant", uploadUrl: "/upload", expiresAt: Date.now() + 600_000 }, { status: 201 })
+      : Response.json({ error: "Not found" }, { status: 404 });
+  }, origin, "token");
+  const draft = new AttachmentDraft({ api, put: async () => { puts++; return { status: 404, body: "Not found" }; }, newId: () => `id-${++ids}`, changed: () => {} });
+  draft.add([pdf]);
+  const before = draft.draftId();
+  for (let i = 0; i < 5; i++) await settle();
+  assert.equal(reservations, 2);
+  assert.equal(puts, 1);
+  assert.equal(draft.draftId(), before);
+  assert.ok(draft.rows[0]?.error);
+  draft.dispose();
+});

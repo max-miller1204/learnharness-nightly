@@ -19,7 +19,7 @@ import { OPENING_PROMPT_FAILURE } from "@/components/opening-prompt";
 import { PathInput } from "@/components/path-input";
 import { DraftAttachmentChips, useAttachmentDraft } from "./attachment-draft";
 import { AttachFilesButton } from "@/components/attach-files-button";
-import { SessionStarter } from "@/components/start-session";
+import { OpeningDeletedError, SessionStarter } from "@/components/start-session";
 import type { TurnUsage } from "@/src/core";
 
 /**
@@ -168,9 +168,10 @@ export function Home({
 			if (upload) attachments.accept(upload);
 			router.push(target);
 		} catch (error) {
+			if (error instanceof OpeningDeletedError) attachments.resetOpening();
 			startingRef.current = false;
 			setBusy(false);
-			setStartError(error instanceof Error ? error.message : OPENING_PROMPT_FAILURE);
+			setStartError(error instanceof OpeningDeletedError ? "That session was deleted. Your attachments are uploading again; send when they are ready." : error instanceof Error ? error.message : OPENING_PROMPT_FAILURE);
 		}
 	};
 

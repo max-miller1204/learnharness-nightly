@@ -561,3 +561,40 @@ it("grant timing follows the server's clock, not a skewed device clock", async t
 	assert.equal(draft.files[1]!.ready, true);
 	assert.equal(puts.at(-1), "/upload/file-4");
 });
+
+it("a folder with a missing PUT rechecks its retired opening before retrying", async t => {
+	let reservations = 0;
+	const drafts: string[] = [];
+	t.mock.method(globalThis, "fetch", async (url: string, init?: RequestInit) => {
+		if (!init?.method) return Response.json({ capabilities: ["attachment-uploads-v1", "attachment-folders-v1"] });
+		if (init.method === "DELETE") return new Response(null, { status: 204 });
+		if (url.startsWith("/api/attachments/folder-")) return Response.json({ id: "folder-3", expiresAt: Date.now() + 600_000, files: [] });
+		assert.equal(url, "/api/attachments");
+		const body = JSON.parse(String(init.body));
+		drafts.push(body.draftId);
+		reservations++;
+		if (reservations === 2) return Response.json({ code: "opening-deleted", error: "Deleted" }, { status: 404 });
+		return Response.json({ id: `folder-${reservations}`, expiresAt: Date.now() + 600_000, files: [{ path: "a.md", uploadUrl: `/upload/${reservations}` }] }, { status: 201 });
+	});
+	let puts = 0;
+	class Upload {
+		upload = {};
+		status = 204;
+		responseText = "";
+		onload?: () => void;
+		open() {}
+		send() { if (++puts === 1) { this.status = 404; this.responseText = '{"error":"Pending attachment not found."}'; } queueMicrotask(() => this.onload?.()); }
+	}
+	const descriptor = Object.getOwnPropertyDescriptor(globalThis, "XMLHttpRequest");
+	Object.defineProperty(globalThis, "XMLHttpRequest", { value: Upload, configurable: true });
+	t.after(() => { if (descriptor) Object.defineProperty(globalThis, "XMLHttpRequest", descriptor); else Reflect.deleteProperty(globalThis, "XMLHttpRequest"); });
+	let draft!: AttachmentDraft;
+	await fixture({ desktop: false, onDraft: value => { draft = value; } });
+	const file = Object.assign(new File(["x"], "a.md"), { webkitRelativePath: "Notes/a.md" });
+	await act(async () => { draft.selectFolder([file]); });
+	for (let i = 0; i < 5; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+	assert.equal(reservations, 3);
+	assert.equal(drafts[0], drafts[1]);
+	assert.notEqual(drafts[1], drafts[2]);
+	assert.equal(draft.files[0]?.ready, true);
+});

@@ -1,7 +1,7 @@
 // Uploads through attachment-uploads-v1, as the web composer does
 // (components/attachment-draft.tsx). No React Native imports, so tests run in Node.
 import {
-  PROTOCOL_ROUTES, type AttachmentGrantResponse, type AttachmentSend, type AttachmentTarget,
+  OPENING_DELETED, PROTOCOL_ROUTES, type AttachmentGrantResponse, type AttachmentSend, type AttachmentTarget,
 } from "../../../src/client-protocol/index.ts";
 import { attachmentLimitError } from "../../../src/core/attachment-limits.ts";
 import { ApiError, type MobileApi } from "./protocol";
@@ -100,6 +100,8 @@ export class AttachmentDraft {
   private lastSend: { identity: string; id: string } | null = null;
   private lifetime = new AbortController();
   private opening: string | null = null;
+  private generation = 0;
+  private resetting = false;
 
   /** Without `chatId`, the files belong to an opening draft that has no session yet. */
   constructor(private readonly deps: {
@@ -137,7 +139,7 @@ export class AttachmentDraft {
     catch (error) { if (!(error instanceof ApiError && error.status === 404)) throw error; }
   }
 
-  private async upload(row: DraftFile): Promise<boolean> {
+  private async upload(row: DraftFile, generation: number, retried = false): Promise<boolean> {
     const { api, put } = this.deps;
     if (!row.grant || row.grant.deadline <= this.now()) {
       if (row.grant) {
@@ -149,7 +151,7 @@ export class AttachmentDraft {
         { ...this.target(), name: row.name, mimeType: row.mimeType, size: row.size }, row.cancel.signal);
       row.grant = { id: body.id, uploadUrl: body.uploadUrl, deadline: localDeadline(body.expiresAt, date, this.now()) };
     }
-    if (!this.live(row)) return false;
+    if (!this.live(row) || generation !== this.generation) return false;
     const { url, headers } = api.upload(row.grant.uploadUrl);
     let result;
     try {
@@ -161,26 +163,56 @@ export class AttachmentDraft {
       if (row.cancel.signal.aborted) throw error;
       throw new Error("Upload interrupted. Try again.");
     }
-    if (result.status !== 204) throw new Error(uploadFailure(result.body));
+    if (result.status !== 204) {
+      let code: string | undefined;
+      try { code = JSON.parse(result.body)?.code; } catch { /* The response may be plain text. */ }
+      if (!this.deps.chatId && !retried && result.status === 404 && code !== OPENING_DELETED && generation === this.generation) {
+        row.grant = undefined;
+        return this.upload(row, generation, true);
+      }
+      throw new ApiError(uploadFailure(result.body), result.status, code);
+    }
     return true;
   }
 
   private start(row: DraftFile) {
-    if (row.work || !this.live(row)) return;
+    if (row.work || !this.live(row) || this.resetting) return;
+    const generation = this.generation;
     row.ready = false;
     row.error = undefined;
     row.progress = 0;
     row.work = (async () => {
       try {
-        if (await this.upload(row)) row.ready = true;
+        if (await this.upload(row, generation) && generation === this.generation) row.ready = true;
       } catch (error) {
-        if (this.live(row)) row.error = error instanceof Error ? error.message : "Upload failed. Try again.";
+        if (!this.deps.chatId && generation === this.generation && error instanceof ApiError && error.code === OPENING_DELETED) this.resetOpening();
+        else if (this.live(row) && generation === this.generation) row.error = error instanceof Error ? error.message : "Upload failed. Try again.";
       } finally {
         row.work = undefined;
         this.deps.changed();
       }
     })();
     this.deps.changed();
+  }
+
+  resetOpening() {
+    if (this.deps.chatId || this.resetting) return;
+    this.resetting = true;
+    this.generation++;
+    this.opening = this.deps.newId();
+    this.lastSend = null;
+    const selected = [...this.rows];
+    for (const row of selected) { row.ready = false; row.error = undefined; }
+    this.deps.changed();
+    void Promise.all(selected.map(async row => {
+      await row.work;
+      const grant = row.grant;
+      row.grant = undefined;
+      if (grant) void this.discard(grant.id).catch(() => {});
+    })).then(() => {
+      this.resetting = false;
+      for (const row of this.rows) this.start(row);
+    });
   }
 
   /** Adds the picks and starts uploading, or refuses them all with the limit they exceed. */
@@ -227,7 +259,7 @@ export class AttachmentDraft {
   async prepare(identity: string): Promise<AttachmentSend | null> {
     const selected = this.rows;
     await Promise.all(selected.map((row) => row.work));
-    if (this.rows !== selected || selected.some((row) => !row.ready || !row.grant)) {
+    if (this.resetting || this.rows !== selected || selected.some((row) => !row.ready || !row.grant)) {
       if (this.rows.some((row) => row.error)) this.say("Some files didn't upload. Retry or remove them, then send again.");
       return null;
     }
@@ -243,6 +275,7 @@ export class AttachmentDraft {
     this.release(this.rows.filter(sent));
     this.rows = this.rows.filter((row) => !sent(row));
     this.notice = undefined;
+    if (!this.deps.chatId) { this.opening = null; this.lastSend = null; }
     this.deps.changed();
   }
 

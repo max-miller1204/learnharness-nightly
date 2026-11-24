@@ -35,7 +35,7 @@ interface PendingFolder {
 }
 
 export class AttachmentError extends Error {
-	constructor(public status: number, message: string) { super(message); }
+	constructor(public status: number, message: string, public code?: string) { super(message); }
 }
 
 const active = (globalThis as typeof globalThis & { lhActiveAttachmentUploads?: Map<string, number>; lhCancelledAttachmentUploads?: Set<string> });
@@ -210,9 +210,10 @@ export function reserveAttachmentFolder(owner: string, request: AttachmentFolder
 
 /** Fresh grants for a pending folder's files that have not arrived, so a slow
  * or failed upload can resume without sending finished files again. */
-export function renewAttachmentFolder(id: string, owner: string): AttachmentFolderGrantResponse {
+export function renewAttachmentFolder(id: string, owner: string, checkTarget: (target: AttachmentTarget) => void = () => {}): AttachmentFolderGrantResponse {
 	const folder = pendingFolder(id);
 	if (!folder || folder.owner !== owner) throw new AttachmentError(404, "Pending attachment not found.");
+	checkTarget(folder.target);
 	return grantFolder(folder, false);
 }
 
@@ -240,12 +241,20 @@ function grantFolder(folder: PendingFolder, created: boolean): AttachmentFolderG
 }
 
 export async function receiveAttachment(
-	id: string, grant: string, owner: string, request: Request, currentOwner: () => void,
+	id: string, grant: string, owner: string, request: Request, currentOwner: (target: AttachmentTarget) => void,
 ): Promise<void> {
 	const upload = pending(id);
-	if (!upload || upload.owner !== owner || upload.expiresAt <= Date.now() || !/^[A-Za-z0-9_-]{43}$/.test(grant) ||
+	if (!upload) throw new AttachmentError(404, "Pending attachment not found.");
+	if (upload.owner !== owner || upload.expiresAt <= Date.now() || !/^[A-Za-z0-9_-]{43}$/.test(grant) ||
 		!timingSafeEqual(signature(upload), Buffer.from(grant, "base64url"))) {
 		throw new AttachmentError(403, "Invalid or expired attachment upload grant.");
+	}
+	try { currentOwner(upload.target); } catch (error) {
+		if (error instanceof AttachmentError && error.status === 404) {
+			if (upload.folder) { const folder = pendingFolder(upload.folder); if (folder) { try { discardFolder(folder); } catch { /* Running transfers settle separately. */ } } }
+			else removePending(id);
+		}
+		throw error;
 	}
 	const contentLength = request.headers.get("content-length");
 	if (contentLength !== null && contentLength !== String(upload.size)) throw new AttachmentError(400, new AttachmentSizeMismatch().message);
@@ -264,7 +273,16 @@ export async function receiveAttachment(
 			const [oldDigest, newDigest] = await Promise.all([attachmentDigest(body), attachmentDigest(part)]);
 			if (oldDigest !== newDigest) throw new AttachmentError(409, "Different bytes were already uploaded with this grant.");
 		}
-		currentOwner();
+		try { currentOwner(upload.target); } catch (error) {
+			if (error instanceof AttachmentError && error.status === 404) {
+				cancelled.add(id);
+				if (upload.folder) {
+					const folder = pendingFolder(upload.folder);
+					if (folder) { try { discardFolder(folder); } catch { /* active members clean up on completion */ } }
+				}
+			}
+			throw error;
+		}
 		if (!retry) fs.renameSync(/* turbopackIgnore: true */ part, /* turbopackIgnore: true */ body);
 	} catch (error) {
 		if (error instanceof AttachmentSizeMismatch) throw new AttachmentError(400, error.message);
@@ -308,6 +326,22 @@ function discardFolder(folder: PendingFolder): void {
 function removeFolder(folder: PendingFolder): void {
 	for (const file of folder.files) removePending(file.member);
 	unlink(folderFile(folder.id));
+}
+
+export function discardPendingForChat(chatId: string, openingId: (owner: string, draftId: string) => string): void {
+	const matches = (owner: string, target: AttachmentTarget) => "chatId" in target ? target.chatId === chatId : openingId(owner, target.draftId) === chatId;
+	const files = entries(staging);
+	for (const id of folderIds(files)) {
+		const folder = pendingFolder(id);
+		if (folder && matches(folder.owner, folder.target)) {
+			try { discardFolder(folder); } catch (error) { if (!(error instanceof AttachmentError && error.status === 409)) throw error; }
+		}
+	}
+	for (const id of pendingIds(files)) {
+		const upload = pending(id);
+		if (!upload || !matches(upload.owner, upload.target)) continue;
+		if (uploads.has(id)) cancelled.add(id); else removePending(id);
+	}
 }
 
 export function discardAttachment(id: string, owner: string): void {

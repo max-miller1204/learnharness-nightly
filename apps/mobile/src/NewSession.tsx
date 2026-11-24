@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ComponentRef } from "react";
 import { FlatList, Keyboard, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
-  ATTACHMENT_UPLOADS, PROTOCOL_ROUTES, PRACTICE_CONTROLS_V1, PRACTICE_CONTROL_ROUTES, hasCapability,
+  OPENING_DELETED, ATTACHMENT_UPLOADS, PROTOCOL_ROUTES, PRACTICE_CONTROLS_V1, PRACTICE_CONTROL_ROUTES, hasCapability,
   type ChatKind, type ChatListResponse, type CreateChatRequest, type CreateChatResponse,
   type GraphContextPick, type PracticePropositionsResponse, type ServerInfo, type StartWithAttachmentsRequest,
 } from "../../../src/client-protocol/index.ts";
-import type { MobileApi } from "./protocol";
+import { ApiError, type MobileApi } from "./protocol";
 import { errorText, refusedByServer } from "./use-session";
 import { Button, Field, Notice } from "./ui";
 import { fonts, radius, space, useTheme } from "./theme";
@@ -91,6 +91,12 @@ export function NewSession({ api, info, kind, back, open, connectionFault }: {
       open(id);
     } catch (error) {
       if (signal.aborted || connectionFault(error)) return;
+      if (error instanceof ApiError && error.code === OPENING_DELETED) {
+        attachments.resetOpening();
+        setUnconfirmedStart(false);
+        setError("That session was deleted. Your attachments are uploading again; send when they are ready.");
+        return;
+      }
       const refused = refusedByServer(error);
       unconfirmed = !refused && !!attachments.rows.length;
       setUnconfirmedStart(unconfirmed);

@@ -35,7 +35,7 @@ const storage = {
 const keyOf = (id: string) => ATTACHMENT_DRAFT_KEY_PREFIX + id;
 const stored = (id: string) => values.has(keyOf(id)) ? (JSON.parse(values.get(keyOf(id))!) as { rows: { id: string; name: string }[] }).rows : [];
 
-interface Call { method: string; url: string; keepalive?: boolean }
+interface Call { method: string; url: string; keepalive?: boolean; body?: string }
 
 /** What a real fetch does: a request waiting on `held` ends when its signal aborts. */
 const heldUntilAborted = (held: Promise<void> | null, signal?: AbortSignal | null) => held === null ? Promise.resolve() : new Promise<void>((resolve, reject) => {
@@ -50,6 +50,9 @@ let statusOf: Map<string, number>;
 let transfers: Scripted[] = [];
 let capabilities: string[] = [];
 let grants = 0;
+let retiredReservations = 0;
+let plain404 = false;
+let holdReservation: Promise<void> | undefined;
 let statusFailure = false;
 /** While set, the server's answer to a status check waits for it. */
 let holdStatus: Promise<void> | null = null;
@@ -81,29 +84,33 @@ class Scripted {
 
 let cleanup: (() => Promise<void>) | undefined;
 let latest!: AttachmentDraft;
-let render!: (id: string) => Promise<void>;
+let render!: (id?: string) => Promise<void>;
 let doc!: Document;
 const saved: Record<string, PropertyDescriptor | undefined> = {};
 
 beforeEach(async () => {
-	values.clear(); calls = []; transfers = []; statusOf = new Map(); grants = 0; statusFailure = false; holdStatus = null; holdIds = new Map(); holdInfo = null; infoFailure = false; infoStatus = 200; restoreTimeouts.info = 5000; restoreTimeouts.check = 5000; deleteAnswers = []; statusSignals = []; quota = Infinity;
+	values.clear(); calls = []; transfers = []; statusOf = new Map(); grants = 0; retiredReservations = 0; plain404 = false; holdReservation = undefined; statusFailure = false; holdStatus = null; holdIds = new Map(); holdInfo = null; infoFailure = false; infoStatus = 200; restoreTimeouts.info = 5000; restoreTimeouts.check = 5000; deleteAnswers = []; statusSignals = []; quota = Infinity;
 	capabilities = ["attachment-uploads-v1", "attachment-status-v1"];
 	const { window: win, document } = parseHTML("<html><body><div id='root'></div></body></html>");
 	doc = document;
 	Object.defineProperty(win, "localStorage", { configurable: true, value: storage });
+	Object.defineProperty(win, "BroadcastChannel", { configurable: true, value: undefined });
 	const originals: Record<string, unknown> = {
 		window: win, document, Node: win.Node, HTMLElement: win.HTMLElement, Element: win.Element, Event: win.Event, CustomEvent: win.CustomEvent,
 		IS_REACT_ACT_ENVIRONMENT: true, XMLHttpRequest: Scripted,
 		fetch: async (input: string, init?: RequestInit) => {
 			const method = init?.method ?? "GET";
 			const url = String(input);
-			calls.push({ method, url, keepalive: init?.keepalive });
+			calls.push({ method, url, keepalive: init?.keepalive, body: typeof init?.body === "string" ? init.body : undefined });
 			if (url === "/.well-known/learnharness/server") {
 				await heldUntilAborted(holdInfo, init?.signal);
 				if (infoFailure) throw new TypeError("offline");
 				return infoStatus === 200 ? Response.json({ capabilities }) : new Response("unavailable", { status: infoStatus });
 			}
 			if (method === "POST" && url === "/api/attachments") {
+				if (plain404) return Response.json({ error: "Not found" }, { status: 404 });
+				if (retiredReservations > 0) { retiredReservations--; return Response.json({ code: "opening-deleted", error: "Opening draft no longer available." }, { status: 404 }); }
+				if (holdReservation && JSON.parse(String(init?.body)).name === "waiting.pdf") await holdReservation;
 				const id = randomUUID();
 				statusOf.set(id, 204);
 				grants++;
@@ -131,7 +138,7 @@ beforeEach(async () => {
 	}
 	const { createRoot } = await import("react-dom/client");
 	const root = createRoot(document.getElementById("root")!);
-	function Session({ id }: { id: string }) {
+	function Session({ id }: { id?: string }) {
 		const draft = useAttachmentDraft(id);
 		latest = draft;
 		return <DraftAttachmentChips draft={draft} />;
@@ -565,4 +572,153 @@ describe("stored attachment state reads tolerantly (AGENTS.md)", () => {
 		forgetStoredAttachments("a");
 		assert.equal(values.has(keyOf("a")), false);
 	});
+});
+
+it("another tab publishes deletion even when storage writes fail", async () => {
+	const { Worker } = await import("node:worker_threads");
+	const id = `chat_cross_tab_${randomUUID()}`;
+	let channel!: { onmessage?: (event: { data: unknown }) => void };
+	class QuietChannel { onmessage?: (event: { data: unknown }) => void; constructor() { channel = this; } postMessage() {} }
+	Object.defineProperty(window, "BroadcastChannel", { configurable: true, value: QuietChannel });
+	await render(id);
+	await attach(pdf());
+	const grant = latest.files[0]!.grant!.id;
+	const moduleUrl = new URL("../components/session-deletion.ts", import.meta.url).href;
+	const worker = new Worker(`
+		require("tsx/esm/api").register();
+		const { parentPort, workerData } = require("node:worker_threads");
+		class BroadcastChannel { postMessage(data) { parentPort.postMessage({ data }); } }
+		global.window = { BroadcastChannel, addEventListener() {}, dispatchEvent() {}, get localStorage() { throw new Error("blocked"); } };
+		global.CustomEvent = class { constructor(type, init) { this.type = type; this.detail = init.detail; } };
+		import(workerData.moduleUrl).then(mod => { mod.beginSessionDelete(workerData.id)(true); parentPort.postMessage("deleted"); }).catch(error => { throw error; });
+	`, { eval: true, workerData: { moduleUrl, id }, execArgv: ["--import", "tsx"] });
+	try {
+		await new Promise<void>((resolve, reject) => { worker.on("message", message => { if (message?.data) channel.onmessage?.({ data: message.data }); else if (message === "deleted") resolve(); }); worker.once("error", reject); });
+		await waitMs(100);
+		await finishUploads();
+		assert.equal(values.has(keyOf(id)), false);
+		assert.deepEqual(readStoredAttachments(id), []);
+		assert.ok(calls.some(call => call.method === "DELETE" && call.url === `/api/attachments/${grant}`));
+	} finally { await worker.terminate(); }
+});
+
+
+it("rotates a retired opening and re-uploads selected files", async () => {
+	await render();
+	await attach(pdf());
+	await finishUploads();
+	const draftId = latest.getDraftId();
+	const oldGrant = latest.files[0]!.grant!.id;
+	await act(async () => { latest.resetOpening(); });
+	await settle();
+	assert.notEqual(latest.getDraftId(), draftId);
+	assert.equal(latest.files[0]!.name, pdf().name);
+	assert.notEqual(latest.files[0]!.grant!.id, oldGrant);
+	await finishUploads();
+	assert.equal(latest.files[0]!.ready, true);
+	const send = await latest.prepare("new");
+	assert.ok(send);
+	const resumedDraft = latest.getDraftId();
+	await act(async () => { latest.accept(send!); });
+	const afterAccept = latest.getDraftId();
+	assert.notEqual(afterAccept, resumedDraft);
+});
+
+it("a batch publishes once and a duplicate fallback event refreshes once", async () => {
+	const notices: unknown[] = [];
+	class Channel { onmessage?: (event: { data: unknown }) => void; constructor() { receiver = this; } postMessage(value: unknown) { notices.push(value); } }
+	let receiver!: Channel;
+	Object.defineProperty(window, "BroadcastChannel", { configurable: true, value: Channel });
+	const { listenForDeletions, beginSessionDeletes, SESSIONS_DELETED_EVENT } = await import("../components/session-deletion.ts");
+	listenForDeletions();
+	let events = 0;
+	window.addEventListener(SESSIONS_DELETED_EVENT, () => { events++; });
+	const ids = [randomUUID(), randomUUID()];
+	beginSessionDeletes(ids)(ids);
+	assert.equal(notices.length, 1);
+	assert.equal(events, 0, "the caller owns the local UI update");
+	const remote = { ids: [randomUUID(), randomUUID()], nonce: randomUUID() };
+	receiver.onmessage?.({ data: remote });
+	const event = new window.Event("storage");
+	Object.defineProperties(event, { key: { value: "lh:session-deleted" }, newValue: { value: JSON.stringify(remote) } });
+	window.dispatchEvent(event);
+	assert.equal(events, 1);
+});
+
+
+it("reattaching after deletion rotates the opening and keeps both files", async () => {
+	await render();
+	await attach(pdf("first.pdf"));
+	await finishUploads();
+	const oldDraft = latest.getDraftId();
+	retiredReservations = 1;
+	await attach(pdf("second.pdf"));
+	await settle();
+	assert.notEqual(latest.getDraftId(), oldDraft);
+	assert.deepEqual(latest.files.map(file => file.name), ["first.pdf", "second.pdf"]);
+	assert.equal(transfers.length, 2);
+	await finishUploads();
+	assert.ok(latest.files.every(file => file.ready));
+});
+
+
+it("does not repeatedly reserve when the server returns an ordinary 404", async () => {
+	await render();
+	plain404 = true;
+	await attach(pdf());
+	await waitMs(40);
+	assert.equal(calls.filter(call => call.method === "POST" && call.url === "/api/attachments").length, 1);
+	assert.ok(latest.files[0]?.error);
+});
+
+it("releases late grants and rotates concurrent uploads once", async () => {
+	await render();
+	let release!: () => void;
+	holdReservation = new Promise<void>(resolve => { release = resolve; });
+	await attach(pdf("waiting.pdf"));
+	retiredReservations = 1;
+	await attach(pdf("retired.pdf"));
+	holdReservation = undefined;
+	release();
+	await waitMs(30);
+	const reservations = calls.filter(call => call.method === "POST" && call.url === "/api/attachments").map(call => JSON.parse(call.body!));
+	assert.equal(reservations.length, 4);
+	assert.equal(reservations[0].draftId, reservations[1].draftId);
+	assert.notEqual(reservations[0].draftId, reservations[2].draftId);
+	assert.equal(reservations[2].draftId, reservations[3].draftId);
+	assert.ok(calls.some(call => call.method === "DELETE"), "the late grant is released");
+	await finishUploads();
+	assert.ok(latest.files.every(row => row.ready));
+});
+
+it("recovers an opening when a deleted reservation makes an in-flight PUT return 404", async () => {
+	await render();
+	await attach(pdf("late.pdf"));
+	const oldDraft = latest.getDraftId();
+	retiredReservations = 1;
+	const transfer = transfers[0]!;
+	transfer.status = 404;
+	transfer.responseText = JSON.stringify({ error: "Pending attachment not found." });
+	await act(async () => { transfer.finish(); });
+	await settle(); await settle();
+	assert.notEqual(latest.getDraftId(), oldDraft);
+	assert.equal(transfers.length, 1);
+	await finishUploads();
+	assert.equal(latest.files[0]?.ready, true);
+	assert.equal(latest.files[0]?.name, "late.pdf");
+});
+
+it("stops after a missing PUT grant and an ordinary reservation 404", async () => {
+	await render();
+	await attach(pdf("missing.pdf"));
+	const before = latest.getDraftId();
+	plain404 = true;
+	const transfer = transfers[0]!;
+	transfer.status = 404;
+	transfer.responseText = JSON.stringify({ error: "Pending attachment not found." });
+	await act(async () => { transfer.finish(); });
+	await settle(); await waitMs(30);
+	assert.equal(latest.getDraftId(), before);
+	assert.equal(calls.filter(call => call.method === "POST" && call.url === "/api/attachments").length, 2);
+	assert.ok(latest.files[0]?.error);
 });

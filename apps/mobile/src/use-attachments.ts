@@ -196,6 +196,7 @@ export function useAttachments(api: MobileApi, chatId?: string) {
     prepare: (identity: string) => draft.prepare(identity),
     accept: (send: AttachmentSend) => draft.accept(send),
     draftId: () => draft.draftId(),
+    resetOpening: () => draft.resetOpening(),
   };
 }
 
