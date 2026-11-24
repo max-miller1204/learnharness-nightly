@@ -231,7 +231,7 @@ function activate(ctx) {
     if (!pin?.model) throw Object.assign(new Error('Configure the cheap model slot or choose a Flashcards model override.'), { code: 'models_not_configured', missing: ['cheap'] });
     const entry = catalog.models.find(m => m.provider === pin.model.provider && m.id === pin.model.id);
     // The host answers 422 model_unavailable, or asks for the key when only the key is missing.
-    if (!entry) throw Object.assign(new Error(`The model ${pin.model.provider}/${pin.model.id} is no longer available. Pick another model in Settings${settings.modelOverride ? ' or as the Flashcards model' : ''}.`),
+    if (!entry) throw Object.assign(new Error(`The model ${pin.model.provider}/${pin.model.id} is no longer available. Pick another model in Settings.`),
       { code: 'model_unavailable', model: { provider: pin.model.provider, id: pin.model.id } });
     const thinkingLevel = settings.thinkingOverride ?? pin.thinkingLevel;
     if (thinkingLevel && !entry.supportedLevels.includes(thinkingLevel)) fail('The selected thinking level is not supported by this model.');

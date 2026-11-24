@@ -103,7 +103,7 @@ it("a plugin with no model configured is refused with 422 and the same setup env
 it("a plugin's model_unavailable refusal is 422 with its message, unless only the provider key is missing", async () => {
 	const { host } = fixture();
 	const model = { provider: "opencode-go", id: "retired" };
-	const message = "The model opencode-go/retired is no longer available. Pick another model in Settings or as the Flashcards model.";
+	const message = "The model opencode-go/retired is no longer available. Pick another model in Settings.";
 	host.call = async () => { throw Object.assign(new Error(message), { code: "model_unavailable", model }); };
 	const asked: unknown[] = [];
 	const gone = createPluginTransport({ getHost: async () => host, directory: "/temporary/plugins", keyMissing: (provider, id) => { asked.push({ provider, id }); return null; } });

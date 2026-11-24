@@ -1222,6 +1222,6 @@ test('a saved model the catalog no longer has fails generation as model_unavaila
   h.catalog.models = [{ provider: 'mock', id: 'other', name: 'Other', supportedLevels: ['off'], contextWindow: 100000, maxTokens: 8192 }];
   await h.call('save-settings', { modelOverride: { provider: 'mock', id: 'gone' } });
   await assert.rejects(h.call('preflight-file', fileInput()), error => error.code === 'model_unavailable' && error.model.provider === 'mock' && error.model.id === 'gone'
-    && error.message === 'The model mock/gone is no longer available. Pick another model in Settings or as the Flashcards model.');
+    && error.message === 'The model mock/gone is no longer available. Pick another model in Settings.');
   assert.equal(h.workers.starts, 0);
 });
