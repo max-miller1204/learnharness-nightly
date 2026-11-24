@@ -3,11 +3,10 @@ import { web } from "@e2e-dev/web";
 import { claudeCode, codex } from "@e2e-dev/acp";
 import { github } from "@e2e-dev/github";
 import { chatgpt } from "e2e/oauth/chatgpt";
-import { randomUUID } from "node:crypto";
-import { pairingCode, RUN_ENV } from "./tests/e2e/support/instance.ts";
+import { LAUNCH_ID_ENV, launchIdForConfig, pairingCode } from "./tests/e2e/support/instance.ts";
 
-// Names this run for serve.ts and the pairing-code secret (instance.ts).
-process.env[RUN_ENV] ??= randomUUID();
+// Names this launch for serve.ts and the pairing-code secret (instance.ts).
+const launchId = launchIdForConfig();
 
 /**
  * End-to-end tests (tests/e2e/) and live drives over `npx e2e mcp`, against
@@ -46,7 +45,8 @@ export default {
 				command: {
 					executable: "node",
 					args: ["tests/e2e/support/serve.ts", "{port}"],
-					inheritEnv: ["LH_E2E_*"],
+					env: { [LAUNCH_ID_ENV]: launchId },
+					inheritEnv: ["LH_E2E_SERVER", "LH_E2E_SCENARIO"],
 					startupTimeout: 240_000,
 					// serve.ts gives Next 10 s to stop before it kills its process group.
 					shutdownTimeout: 20_000,
@@ -63,7 +63,7 @@ export default {
 	},
 	// A fresh pairing code for the run's instance, filled as a secret handle so
 	// the code stays out of the report, traces and the model's input.
-	secrets: { "pairing-code": pairingCode },
+	secrets: { "pairing-code": () => pairingCode(launchId) },
 	// The job summary on GitHub Actions; nothing elsewhere. It posts no PR comment
 	// without a token, and ci.yml gives the e2e step none: a separate job posts it.
 	reporters: ["list", github()],

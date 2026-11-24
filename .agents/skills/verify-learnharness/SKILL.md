@@ -28,7 +28,8 @@ every run, and every worktree, gets its own app. It:
 - runs no provider key (`LH_IGNORE_ENV_KEYS=1`), and sets every variable that
   could point it at real data or a real install (`LH_SELFHOST`, `LH_HOME`,
   the update feed and so on) to an isolated value, because `next dev` loads
-  the checkout's `.env*` files and a variable passed to it wins over them. It starts a scripted fake
+  the checkout's `.env*` files and a variable passed to it wins over them
+  (every key those files define is passed empty, found with Next's own loader). It starts a scripted fake
   model (`tests/e2e/support/fake-model.ts`) that fills the Strong, Cheap and
   Vision slots as `e2e-strong`, `e2e-cheap`, `e2e-vision`. It plays
   `tests/e2e/support/scenarios/teach.json` (read two files, ask one question,
@@ -72,7 +73,11 @@ filled. `tests/e2e/auth.setup.e2e.ts` fills it into the "Pairing code" field on
 `{ session: "learner" }` starts signed in. A signed-out page shows "Pair this
 device". Always fill the code as `secrets.get("pairing-code")`: a code typed as
 a string, or opened as `/pair#token=<code>`, lands in `report.json` and the
-traces.
+traces. serve.ts redacts `#token=` in the app's output, which holds a startup
+pairing link. A code filled into the plain field is not masked in a screenshot
+taken before Pair is pressed; that is accepted, because the code is one-time,
+the instance listens on loopback only and is thrown away with the run, and
+pressing Pair spends the code.
 
 **Scripted.** Write or extend a test under `tests/e2e/` for each flow the
 change touches (topic `writing-tests`), run only it

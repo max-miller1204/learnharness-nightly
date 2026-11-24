@@ -17,12 +17,13 @@
  * LH_E2E_SCENARIO=<file> picks another fake-model scenario.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { createRequire } from "node:module";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { issueSession } from "../../../selfhost/src/auth-store.ts";
 import { startFakeModel } from "./fake-model.ts";
-import { instanceDir, RUN_ENV, runPointer, stateFile, type InstanceState } from "./instance.ts";
+import { instanceDir, LAUNCH_ID_ENV, publishLaunch, stateFile, unpublishLaunch, type InstanceState } from "./instance.ts";
 
 const port = process.argv[2];
 if (!port || !/^\d+$/.test(port)) {
@@ -32,6 +33,12 @@ if (!port || !/^\d+$/.test(port)) {
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const mode = process.env.LH_E2E_SERVER === "standalone" ? "standalone" : "dev";
 const scenario = path.resolve(root, process.env.LH_E2E_SCENARIO ?? "tests/e2e/support/scenarios/teach.json");
+// The launch this instance serves (e2e.config.ts); a hand start has none.
+const launchId = process.env[LAUNCH_ID_ENV];
+if (launchId && !/^[0-9a-f-]{36}$/.test(launchId)) {
+	console.error(`serve: ${LAUNCH_ID_ENV} is not a launch id`);
+	process.exit(2);
+}
 const dir = instanceDir(port);
 const home = path.join(dir, "home");
 const dataDir = path.join(dir, "data");
@@ -70,10 +77,30 @@ if (mode === "standalone") {
 }
 
 // `next dev` loads the checkout's .env* files, and a variable passed to the
-// process wins over them. So every variable that could point the instance at
-// real data, a real install or a real account is set here, to an isolated
-// value or to empty/off, even when this file does not need it: a .env.local
-// then changes nothing. Add a variable here when the app starts reading one.
+// process wins over them, an empty one included. So every key any of those
+// files defines is passed empty (found with the loader Next itself uses, not
+// from a list), and the variables that could point the instance at real data,
+// a real install or a real account are set below to an isolated value or to
+// empty/off even when no file defines them.
+function checkoutEnvKeys(dirs: string[]): string[] {
+	const { loadEnvConfig, resetEnv } = createRequire(path.join(root, "node_modules/next/package.json"))("@next/env") as {
+		loadEnvConfig(dir: string, dev: boolean, log: { info(): void; error(): void }, forceReload: boolean): { loadedEnvFiles: Array<{ env: Record<string, string | undefined> }> };
+		resetEnv(): void;
+	};
+	const quiet = { info() {}, error() {} };
+	const keys = new Set<string>();
+	const nodeEnv = process.env.NODE_ENV;
+	// Which files load depends on NODE_ENV and the dev flag, so ask for each combination.
+	for (const [env, dev] of [["development", true], ["production", false], ["test", false]] as const) {
+		process.env.NODE_ENV = env;
+		for (const dir of dirs) for (const file of loadEnvConfig(dir, dev, quiet, true).loadedEnvFiles) for (const key of Object.keys(file.env)) keys.add(key);
+	}
+	resetEnv();
+	if (nodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = nodeEnv;
+	keys.delete("NODE_ENV");
+	return [...keys];
+}
+const blankedEnv: Record<string, string> = Object.fromEntries(checkoutEnvKeys([root, path.join(root, ".next/standalone")]).map((key) => [key, ""]));
 const isolatedEnv: Record<string, string> = {
 	// Where the instance keeps its data.
 	LH_DATA_DIR: dataDir,
@@ -104,9 +131,10 @@ const app: ChildProcess = spawn(server[0], server.slice(1), {
 	cwd: mode === "standalone" ? path.join(root, ".next/standalone") : root,
 	// Its own process group, so stopping it also stops the server Next forks.
 	detached: true,
-	stdio: ["ignore", "inherit", "inherit"],
+	stdio: ["ignore", "pipe", "pipe"],
 	// Next types NODE_ENV as always set; `next dev` sets it itself.
 	env: {
+		...blankedEnv,
 		PATH: process.env.PATH,
 		HOME: home,
 		LANG: "C.UTF-8",
@@ -119,6 +147,24 @@ const app: ChildProcess = spawn(server[0], server.slice(1), {
 	} as NodeJS.ProcessEnv,
 });
 
+// The app's output passes through with pairing codes redacted: the app prints
+// a startup pairing link, and the runner quotes this output in its errors and traces.
+function passThrough(from: NodeJS.ReadableStream, to: NodeJS.WritableStream) {
+	let pending = "";
+	const write = (line: string) => to.write(line.replace(/#token=[^\s&"')]+/g, "#token=<redacted>"));
+	from.setEncoding?.("utf8");
+	from.on("data", (chunk: string) => {
+		pending += chunk;
+		const end = pending.lastIndexOf("\n");
+		if (end < 0) return;
+		write(pending.slice(0, end + 1));
+		pending = pending.slice(end + 1);
+	});
+	from.on("end", () => { if (pending) write(pending); });
+}
+passThrough(app.stdout!, process.stdout);
+passThrough(app.stderr!, process.stderr);
+
 let stopping = false;
 async function stop(code: number) {
 	if (stopping) return;
@@ -129,6 +175,7 @@ async function stop(code: number) {
 		while (app.exitCode === null && app.signalCode === null && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
 		try { process.kill(-app.pid, "SIGKILL"); } catch { /* already gone */ }
 	}
+	if (launchId) unpublishLaunch(launchId);
 	await fake.close();
 	process.exit(code);
 }
@@ -190,6 +237,6 @@ if (mode === "dev") {
 
 const state: InstanceState = { appUrl, mode, dataDir, home, authFile, modelLog, fixture, fixtureNoNewline, fakeModel: fake.url, fakeControl: fake.control, scenario };
 fs.writeFileSync(stateFile(port), `${JSON.stringify(state, null, 2)}\n`);
-// Last, so a reader that finds the pointer finds a usable instance.
-if (process.env[RUN_ENV]) fs.writeFileSync(runPointer(process.env[RUN_ENV]), `${JSON.stringify({ port })}\n`);
+// Last, so a reader that finds the record finds a usable instance.
+if (launchId) publishLaunch(launchId, port);
 console.log(`serve: ready (${mode}) at ${appUrl}, state in ${stateFile(port)}`);

@@ -3,6 +3,7 @@
  * data folder, the fake model's request log and control URL, the fixture
  * files. Keyed by the app's port, which `app.baseUrl` carries.
  */
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -27,29 +28,61 @@ export const instanceDir = (port: string) => path.join(os.tmpdir(), "learnharnes
 export const stateFile = (port: string) => path.join(instanceDir(port), "state.json");
 
 /**
- * One run's id. e2e.config.ts sets it once when the runner loads the config;
- * the runner's workers and serve.ts (through `inheritEnv`) inherit it. serve.ts
- * records the port it got under it, so a secret provider, which has no
- * `app.baseUrl`, can find the run's instance.
+ * One launch's id, shared by the config's `app.command` (as LH_E2E_LAUNCH_ID)
+ * and the `pairing-code` secret provider, which has no `app.baseUrl` to find
+ * its instance by. serve.ts records its port and pid under the id once the
+ * instance is usable and removes the record when it stops.
  */
-export const RUN_ENV = "LH_E2E_RUN";
-export const runPointer = (run: string) => path.join(os.tmpdir(), "learnharness-e2e", `run-${run}.json`);
+export const LAUNCH_ID_ENV = "LH_E2E_LAUNCH_ID";
+/** The environment variable that hands the id from a process that evaluated the config to the ones it starts. */
+export const LAUNCH_HANDOFF_ENV = "LH_E2E_LAUNCH";
+const LAUNCH_ID = /^[0-9a-f-]{36}$/;
+export const launchPointer = (id: string) => {
+	if (!LAUNCH_ID.test(id)) throw new Error(`not a launch id: ${id}`);
+	return path.join(os.tmpdir(), "learnharness-e2e", `launch-${id}.json`);
+};
 
 /**
- * A fresh one-time pairing code for this run's instance, as the pairing
- * screen shows it. Backs the `pairing-code` secret in e2e.config.ts, so a
+ * The id for the config being evaluated. The runner evaluates the config and
+ * starts the app; its workers evaluate it again and must use the runner's id,
+ * so the id is handed down in LH_E2E_LAUNCH as `<pid>:<id>`. A second
+ * evaluation in the same process (one `e2e mcp` server opening two sessions)
+ * is a different launch and gets its own id.
+ */
+export function launchIdForConfig(): string {
+	const [owner, inherited] = (process.env[LAUNCH_HANDOFF_ENV] ?? "").split(":");
+	if (owner && inherited && Number(owner) !== process.pid && LAUNCH_ID.test(inherited)) return inherited;
+	const id = randomUUID();
+	process.env[LAUNCH_HANDOFF_ENV] = `${process.pid}:${id}`;
+	return id;
+}
+
+/** Publishes `{ port, pid }` for a launch, whole or not at all (the record is renamed into place). */
+export function publishLaunch(id: string, port: string) {
+	const file = launchPointer(id);
+	fs.writeFileSync(`${file}.tmp`, `${JSON.stringify({ port, pid: process.pid })}\n`);
+	fs.renameSync(`${file}.tmp`, file);
+}
+export function unpublishLaunch(id: string) {
+	fs.rmSync(launchPointer(id), { force: true });
+	fs.rmSync(`${launchPointer(id)}.tmp`, { force: true });
+}
+
+/**
+ * A fresh one-time pairing code for the instance of launch `id`, as the
+ * pairing screen shows it. Backs the `pairing-code` secret in e2e.config.ts, so a
  * test fills it as a secret handle and the code never reaches a report or a
  * trace. A provider runs on every fill, so each fill gets its own code.
  */
-export async function pairingCode(): Promise<string> {
-	const run = process.env[RUN_ENV];
-	if (!run) throw new Error(`${RUN_ENV} is not set: tests/e2e/support/instance.ts needs e2e.config.ts to have loaded`);
+export async function pairingCode(id: string): Promise<string> {
+	const file = launchPointer(id);
 	const deadline = Date.now() + 120_000;
-	while (!fs.existsSync(runPointer(run))) {
-		if (Date.now() > deadline) throw new Error(`no instance for run ${run}: serve.ts did not finish starting (see .e2e/logs/app.log)`);
+	while (!fs.existsSync(file)) {
+		if (Date.now() > deadline) throw new Error(`no instance for launch ${id}: serve.ts did not finish starting (see .e2e/logs/app.log)`);
 		await new Promise((r) => setTimeout(r, 250));
 	}
-	const { port } = JSON.parse(fs.readFileSync(runPointer(run), "utf8")) as { port: string };
+	const { port, pid } = JSON.parse(fs.readFileSync(file, "utf8")) as { port: string; pid: number };
+	try { process.kill(pid, 0); } catch { throw new Error(`the instance of launch ${id} (serve.ts pid ${pid}) is no longer running`); }
 	const state = await instance(`http://127.0.0.1:${port}`);
 	return formatCode(createPairingLink(state.dataDir, { label: "e2e" }).code);
 }
