@@ -176,8 +176,17 @@ const hasInstallableDownload = (state) =>
 const hasDownloadableOffer = (state) =>
 	state.status === "available" || (state.status === "error" && state.errorContext === "download" && state.availableVersion !== null);
 
+/** T3's shouldBroadcastDownloadProgress (for a state already "downloading"): report
+ *  the first known percent, then each whole 10% and 100%. Unknown size never reports. */
+function shouldReportDownloadProgress(current, next) {
+	if (next === null) return false;
+	if (current === null) return true;
+	return Math.floor(next / 10) !== Math.floor(current / 10) || next === 100;
+}
+
 module.exports = {
 	hasDownloadableOffer,
+	shouldReportDownloadProgress,
 	INSTALL_RECORD_FILE,
 	createInitialUpdateState,
 	isOffered,

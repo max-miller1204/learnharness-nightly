@@ -43,20 +43,21 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { readableReleasedAt, noteReleasedAt } = require("./release-dates.cjs");
+const {
+	MAX_RELEASE_NOTE_GROUPS,
+	MAX_RELEASE_NOTE_ITEMS: MAX_RELEASE_NOTE_ITEMS_PER_GROUP,
+	MAX_NOTE_VERSION_LENGTH,
+	MAX_OMITTED_RELEASE_COUNT,
+	MAX_TOTAL_ITEMS,
+	SUMMARY_LIMITS,
+	cleanNoteText: cleanText,
+	boundedNoteText: boundedText,
+	truncateReleaseNoteItem: truncateItem,
+	endsWithSummaryCopy,
+	withoutSummaryEcho,
+} = require("./release-note-rules.cjs");
 
-const MAX_RELEASE_NOTE_GROUPS = 6;
-const MAX_RELEASE_NOTE_ITEMS_PER_GROUP = 8;
-const MAX_RELEASE_NOTE_ITEM_LENGTH = 220;
 const NOTES_CACHE_KEEP = 30;
-// The feed's own bounds (selfhost/src/release.ts FEED_NOTE_LIMITS): longer text is dropped.
-const SUMMARY_LIMITS = { intro: 600, stats: 120, footer: 220 };
-
-const cleanText = (value) => (typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "");
-
-function boundedText(value, limit) {
-	const text = cleanText(value);
-	return text && text.length <= limit ? text : undefined;
-}
 
 const HTML_ENTITY_REPLACEMENTS = new Map([
 	["amp", "&"],
@@ -96,11 +97,6 @@ function stripMarkup(input, keepBold = false) {
 			.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1"),
 	);
 	return keepBold ? markdown : markdown.replace(/\*\*([^*]+)\*\*/g, "$1");
-}
-
-function truncateItem(item) {
-	if (item.length <= MAX_RELEASE_NOTE_ITEM_LENGTH) return item;
-	return `${item.slice(0, MAX_RELEASE_NOTE_ITEM_LENGTH - 3).trimEnd()}...`;
 }
 
 function normalizeLine(line) {
@@ -242,39 +238,12 @@ function releaseNoteGroups(info) {
 }
 
 /**
- * Old clients read only `items`, so the generator also writes the intro or footer once more as the
- * last item. The groups main keeps, caches and sends over the bridge keep that copy (a page from
- * before the fields shows it); counting and the release page drop it. Only that one trailing item,
- * compared as the full text with both sides normalized, as src/core/release-notes.ts withoutSummaryEcho
- * does. This is the position rule, for a list whose whole is known: a feed note or a body before
- * the item limits cut it. A cut list cannot show whether its last item is the copy, so the group
- * records the decision (`summaryCopy`) where the whole list is read, for a full list that ends like
- * the copy (the one shape a cut hides), and every bounding step after (main's cap, the cache, the
- * bridge) keeps it; the pages follow the record.
- */
-function isCopyOf(item, text) {
-	if (text === undefined) return false;
-	const whole = cleanText(text);
-	// As written, or as the item limits cut it (a 600-character intro's copy is cut to 220).
-	return whole !== "" && (item === whole || item === truncateItem(whole));
-}
-
-function endsWithSummaryCopy(items, { intro, footer } = {}) {
-	const last = items.length > 0 ? cleanText(items[items.length - 1]) : "";
-	return last !== "" && (isCopyOf(last, footer) || isCopyOf(last, intro));
-}
-
-/**
  * The decision for a full list that ends like the copy: true when the whole list is that list (the
  * copy is last), false when `whole` is longer (the cut took the copy off). Nothing for any other list.
  */
 function wholeListCopy(whole, shown, summary) {
 	const cut = shown.slice(0, MAX_RELEASE_NOTE_ITEMS_PER_GROUP);
 	return cut.length === MAX_RELEASE_NOTE_ITEMS_PER_GROUP && endsWithSummaryCopy(cut, summary) ? { summaryCopy: whole.length === MAX_RELEASE_NOTE_ITEMS_PER_GROUP } : {};
-}
-
-function withoutSummaryEcho(items, summary = {}) {
-	return endsWithSummaryCopy(items, summary) ? items.slice(0, -1) : [...items];
 }
 
 /** A feed note's own fields (latest.json notes, selfhost/src/release.ts FeedNote). */
@@ -334,6 +303,17 @@ function compareVersions(a, b) {
 	return Number(pa[6]) - Number(pb[6]);
 }
 
+const isExactVersion = (version) => typeof version === "string" && VERSION_RE.test(version);
+const isNewerVersion = (a, b) => isExactVersion(a) && isExactVersion(b) && compareVersions(a, b) > 0;
+const releaseTrack = (version) => {
+	const match = typeof version === "string" ? VERSION_RE.exec(version) : null;
+	return match ? (match[4] ?? "") : null;
+};
+const sameReleaseTrack = (a, b) => {
+	const track = releaseTrack(a);
+	return track !== null && track === releaseTrack(b);
+};
+
 /** What main keeps for the local window: the first 6 shown groups, bounded, and how many more. */
 function capGroups(groups) {
 	const shown = (Array.isArray(groups) ? groups : []).map(boundedGroup).filter(Boolean);
@@ -363,17 +343,13 @@ function mergeNotesCache(dataDir, groups) {
 	fs.renameSync(temp, file);
 }
 
-const MAX_VERSION_LENGTH = 64;
-const MAX_OMITTED_RELEASE_COUNT = 1000;
-const MAX_TOTAL_ITEMS = 10000;
-
 /**
  * One group as every reader may keep it (main's state for the local window,
  * the notes cache, the remote page): a valid version, the rendered fields
  * only, each bounded. Null when the group can't be shown.
  */
 function boundedGroup(group) {
-	if (!group || typeof group.version !== "string" || group.version.length > MAX_VERSION_LENGTH || !VERSION_RE.test(group.version) || !Array.isArray(group.items)) return null;
+	if (!group || typeof group.version !== "string" || group.version.length > MAX_NOTE_VERSION_LENGTH || !VERSION_RE.test(group.version) || !Array.isArray(group.items)) return null;
 	const summary = {};
 	for (const [key, limit] of Object.entries(SUMMARY_LIMITS)) {
 		const value = boundedText(group[key], limit);
@@ -404,4 +380,4 @@ function bridgeNotes(releaseNotes, omittedReleaseCount) {
 	return { releaseNotes: shown, omittedReleaseCount: omitted };
 }
 
-module.exports = { releaseNoteGroups, capGroups, mergeNotesCache, extractItems, extractReleaseNoteItems, compareVersions, bridgeNotes, boundedGroup, safeReleasedAt, summaryBody, FULL_CHANGELOG_MARKER };
+module.exports = { releaseNoteGroups, capGroups, mergeNotesCache, extractItems, extractReleaseNoteItems, compareVersions, isExactVersion, isNewerVersion, releaseTrack, sameReleaseTrack, bridgeNotes, boundedGroup, safeReleasedAt, summaryBody, FULL_CHANGELOG_MARKER };

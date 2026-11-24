@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { PATHS } from "../../config.ts";
 import { writeFileAtomicSync } from "../store/atomic-write.ts";
-import { capReleaseNoteGroups, MAX_RELEASE_NOTE_ITEMS, endsWithSummaryCopy, noteReleasedAt, totalReleaseItems, truncateReleaseNoteItem, type OfferedRelease, type ReleaseNoteGroup } from "../core/release-notes.ts";
+import { capReleaseNoteGroups, MAX_RELEASE_NOTE_ITEMS, MAX_TOTAL_ITEMS, endsWithSummaryCopy, noteReleasedAt, totalReleaseItems, truncateReleaseNoteItem, type OfferedRelease, type ReleaseNoteGroup } from "../core/release-notes.ts";
 import { compareVersions, FEED_NOTE_LIMITS, FEED_NOTES_KEEP, isExactVersion, type FeedNote } from "../../selfhost/src/release.ts";
 
 export interface UpdateRecord {
@@ -73,7 +73,7 @@ function parseGroups(value: unknown, offered?: OfferedRelease, whole = false): R
 			version: entry.version,
 			...(releasedAt ? { releasedAt } : {}),
 			items,
-			totalItems: Number.isInteger(entry.totalItems) && (entry.totalItems as number) >= items.length ? Math.min(entry.totalItems as number, 10000) : counted,
+			totalItems: Number.isInteger(entry.totalItems) && (entry.totalItems as number) >= items.length ? Math.min(entry.totalItems as number, MAX_TOTAL_ITEMS) : counted,
 			...summary,
 			...(summaryCopy === undefined ? {} : { summaryCopy }),
 		});
