@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { capReleaseNoteGroups, MAX_RELEASE_NOTE_ITEM_LENGTH, totalReleaseItems, withoutSummaryEcho } from "../src/core/release-notes.ts";
+import { capReleaseNoteGroups, noteReleasedAt, MAX_RELEASE_NOTE_ITEM_LENGTH, totalReleaseItems, withoutSummaryEcho } from "../src/core/release-notes.ts";
 import { releaseLinkLabel } from "../components/release-notes-view.tsx";
 import { feedNotesToGroups, groupsBetween, mergeNotesCache, readNotesCache, readUpdateRecord, whatsNew, writeUpdateRecord } from "../src/server/update-records.ts";
 import { buildSummaryInput, countContributors, entryItems, fallbackItems, formatSummary, parseHighlights, pullRequestFor, readPullRequests, releaseStats, trimPullRequestBody, type PullRequest } from "../scripts/generate-release-notes.ts";
@@ -110,24 +110,13 @@ describe("notes limits", () => {
 		assert.deepEqual(desktop, server);
 	});
 
-	it("a note's own time is unreadable: the server and the desktop date it alike, the pointer's time for the offered note, else the build day", () => {
-		const pointer = "2026-11-12T00:00:00Z";
-		const dates = (publishedAt: string, pointerTime: unknown) => {
-			const notes = [{ version: V(18), publishedAt, items: ["the offered note"] }, { version: V(17), publishedAt, items: ["an older note"] }];
-			const server = feedNotesToGroups(notes, { version: V(18), releasedAt: pointerTime }).map((g) => g.releasedAt);
-			const desktop = electronNotes.releaseNoteGroups({
-				version: V(18),
-				releaseDate: pointerTime,
-				releaseNotes: notes.map((n) => ({ version: n.version, items: n.items, ...(n.publishedAt ? { releasedAt: n.publishedAt } : {}) })),
-			}).map((g) => g.releasedAt);
-			assert.deepEqual(desktop, server, `${JSON.stringify(publishedAt.slice(0, 20))} with the pointer ${JSON.stringify(pointerTime)}`);
-			return server;
-		};
-		for (const unreadable of ["last week", "2026-13-45", "", `2026-11-12T00:00:00Z${"x".repeat(80)}`]) {
-			assert.deepEqual(dates(unreadable, pointer), [pointer, "2026-11-17"], "the offered note takes the pointer's time; an older one its build day");
-			assert.deepEqual(dates(unreadable, "also unreadable"), ["2026-11-18", "2026-11-17"], "no readable pointer: the build day");
-		}
-		assert.deepEqual(dates("2026-11-14T08:00:00Z", pointer), ["2026-11-14T08:00:00Z", "2026-11-14T08:00:00Z"], "a readable note time wins");
+	it("the server and the desktop date a note with one function: the shared electron/release-dates.cjs", () => {
+		const shared = require("../electron/release-dates.cjs") as { noteReleasedAt: unknown };
+		assert.equal(noteReleasedAt, shared.noteReleasedAt, "src/core reads the same function the desktop's note reader calls");
+		// The feed paths that hand it the pointer are driven in tests/self-update.test.ts and tests/nightly-updater.test.ts.
+		const src = fs.readFileSync(new URL("../electron/release-notes.cjs", import.meta.url), "utf8");
+		assert.match(src, /require\("\.\/release-dates\.cjs"\)/);
+		assert.ok(!/RELEASED_AT\s*=|PRERELEASE_BUILD_DAY\s*=/.test(src), "no second copy of the date patterns");
 	});
 
 	it("a real highlight in the last slot that reads like the footer is kept, on the server and the desktop", () => {
@@ -139,16 +128,34 @@ describe("notes limits", () => {
 		const [desktop] = electronNotes.bridgeNotes(electronNotes.capGroups([desktopFull]).releaseNotes, 0).releaseNotes;
 		for (const [name, shown] of [["server", server!], ["desktop", desktop!]] as const) {
 			assert.equal(shown.items.length, 8, `${name} sends 8 items`);
+			assert.equal(shown.totalItems, 8, `${name} counts 8`);
 			assert.deepEqual(withoutSummaryEcho(shown.items, shown), real, `${name} shows the eighth highlight`);
 			assert.equal(releaseLinkLabel(shown), "View release on GitHub", `${name}: nothing is hidden`);
 		}
-		// The old-client copy still goes when it is the last item, whether or not the list is full.
-		const seven = real.slice(0, 7);
-		for (const group of [feedNotesToGroups([{ version: V(12), publishedAt: "", items: [...seven, footer], footer }])[0]!, electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: [{ version: V(12), items: [...seven, footer], footer }] })[0]!]) {
-			assert.deepEqual(withoutSummaryEcho(group.items, group), seven);
-		}
-		assert.deepEqual(withoutSummaryEcho(real, { footer, totalItems: 7 }), seven, "a full list with its copy last: the copy goes");
-		assert.deepEqual(withoutSummaryEcho(real, { footer }), seven, "with no whole count the last item is the copy (as before)");
+	});
+
+	it("a full list whose last item reads like the footer: the copy only when the whole count says items were cut", () => {
+		const footer = "Plus 2 more bug fixes.";
+		const seven = Array.from({ length: 7 }, (_, i) => `**Feature ${i + 1}.** Detail ${i + 1}.`);
+		const shape = (items: string[], totalItems: number) => ({ version: V(12), items, totalItems, footer });
+		// What the release script writes (at most 7 highlights, then the copy), as it is stored whole or cut.
+		const whole = shape([...seven, footer], 7);
+		assert.deepEqual(withoutSummaryEcho(whole.items, whole), seven, "7 highlights and the copy: the copy goes");
+		assert.equal(releaseLinkLabel(whole), "View release on GitHub");
+		// A count above the list (items the feed counted but did not send): the last item is still the copy.
+		const counted = shape([...seven, footer], 9);
+		assert.deepEqual(withoutSummaryEcho(counted.items, counted), seven, "7 and the copy with a count of 9: the copy goes, as it always did");
+		assert.equal(releaseLinkLabel(counted), "2 more changes on GitHub");
+		// A full list with no item missing: the count equals its length, so the last item is a real highlight.
+		const eight = shape([...seven, footer], 8);
+		assert.deepEqual(withoutSummaryEcho(eight.items, eight), eight.items, "8 real items and a count of 8: all shown");
+		assert.equal(releaseLinkLabel(eight), "View release on GitHub");
+		// A list shorter than the cap has no cut, whatever the count says.
+		const short = shape([...seven.slice(0, 3), footer], 3);
+		assert.deepEqual(withoutSummaryEcho(short.items, short), seven.slice(0, 3));
+		assert.deepEqual(withoutSummaryEcho([...seven, footer], { footer }), seven, "no count: the last item is the copy");
+		// An intro stands for one of the counted items.
+		assert.deepEqual(withoutSummaryEcho(Array.from({ length: 8 }, (_, i) => (i === 7 ? "3 bug fixes." : `item ${i}`)), { intro: "3 bug fixes.", totalItems: 9 }).length, 8, "7 items and the intro make 8 real: nothing was cut");
 	});
 
 	it("one limit set everywhere: the server's groups and cache match the desktop's, 8 items of 220 characters, counted whole", () => {

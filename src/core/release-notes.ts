@@ -5,6 +5,7 @@
  * df09ced7) and apps/desktop/src/updates/releaseNotes.ts: at most 6 groups,
  * 8 items per group, 220 characters per item. Client-safe: no Node imports.
  */
+import { noteReleasedAt as sharedNoteReleasedAt } from "../../electron/release-dates.cjs";
 
 /** One version's notes. Items are plain sentences; `**Label.** detail` renders the label bold. */
 export interface ReleaseNoteGroup {
@@ -37,15 +38,18 @@ function isCopyOf(item: string, text: string | undefined): boolean {
  * notes keeps it, for old readers; what a new client shows drops it: only that one trailing item,
  * compared as the full text with both sides normalized, never another bullet.
  *
- * The copy is last, so the item limits cut it off first. Once a list is full (the cap), a last item
- * that reads like the footer is the copy only if the whole count says the list was not cut: a whole
- * count (without the intro) that reaches the list's length means every item is a real one, and the
- * copy was the item that fell off.
+ * The copy is last, so the item limits cut it off first. A full list (the cap) whose whole count,
+ * less the intro, equals its length holds only real items: the copy was the one that fell off, so a
+ * last item reading like the footer is a real highlight and stays. Any other count (none, or one
+ * above the list) leaves the last item the copy, as it is for every shorter list. The release script
+ * writes at most 7 highlights before the copy (MAX_HIGHLIGHTS), so its own output is never full
+ * without it; a feed with more real items than the cap whose last shown one reads like the footer
+ * cannot be told from the copy and is read as the copy.
  */
 export function withoutSummaryEcho(items: readonly string[], { intro, footer, totalItems }: { intro?: string; footer?: string; totalItems?: number }): string[] {
 	const last = items.length > 0 ? normalized(items[items.length - 1]) : "";
 	const matches = last !== "" && (isCopyOf(last, footer) || isCopyOf(last, intro));
-	const copyWasCut = items.length >= MAX_RELEASE_NOTE_ITEMS && isCount(totalItems) && totalItems - (intro ? 1 : 0) >= items.length;
+	const copyWasCut = items.length >= MAX_RELEASE_NOTE_ITEMS && isCount(totalItems) && totalItems - (intro ? 1 : 0) === items.length;
 	return matches && !copyWasCut ? items.slice(0, -1) : [...items];
 }
 
@@ -69,13 +73,6 @@ export function truncateReleaseNoteItem(item: string): string {
 	return `${clean.slice(0, MAX_RELEASE_NOTE_ITEM_LENGTH - 3).trimEnd()}...`;
 }
 
-// A date the page can show: YYYY-MM-DD, or an ISO time with a zone (electron/release-notes.cjs safeReleasedAt).
-const RELEASED_AT = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
-const PRERELEASE_BUILD_DAY = /-(?:nightly|preview)\.(\d{4})(\d{2})(\d{2})\.\d+$/;
-
-const readableReleasedAt = (value: unknown): string | undefined =>
-	typeof value === "string" && value.length <= 40 && RELEASED_AT.test(value) && Number.isFinite(Date.parse(value)) ? value : undefined;
-
 /** The update feed's pointer: the version it offers and when that release was published. */
 export interface OfferedRelease {
 	version: string;
@@ -83,19 +80,12 @@ export interface OfferedRelease {
 }
 
 /**
- * A note's date, the same on every surface and the same as the desktop's (electron/release-notes.cjs
- * releaseNoteGroups): the note's own time when it is readable; for the offered version, else the
- * pointer's time when that is readable (T3's resolveReleasedAt); else the nightly's UTC build day
- * from its version; else none.
+ * A note's date, the same on every surface: the note's own time when it is readable; for the offered
+ * version, else the pointer's time when that is readable (T3's resolveReleasedAt); else the
+ * nightly's UTC build day from its version; else none. One implementation, shared with the desktop's
+ * note reader (electron/release-dates.cjs).
  */
-export function noteReleasedAt(value: unknown, version: string, offered?: OfferedRelease): string | undefined {
-	const own = readableReleasedAt(value);
-	if (own) return own;
-	const pointer = offered?.version === version ? readableReleasedAt(offered.releasedAt) : undefined;
-	if (pointer) return pointer;
-	const day = PRERELEASE_BUILD_DAY.exec(version);
-	return day ? `${day[1]}-${day[2]}-${day[3]}` : undefined;
-}
+export const noteReleasedAt: (own: unknown, version: string, offered?: OfferedRelease) => string | undefined = sharedNoteReleasedAt;
 
 /** Cap a newest-first list to what the UI shows; the rest is counted. */
 export function capReleaseNoteGroups(groups: readonly ReleaseNoteGroup[]): { releaseNotes: ReleaseNoteGroup[]; omittedReleaseCount: number } {

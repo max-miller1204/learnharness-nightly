@@ -42,6 +42,7 @@
  */
 const fs = require("node:fs");
 const path = require("node:path");
+const { readableReleasedAt, noteReleasedAt } = require("./release-dates.cjs");
 
 const MAX_RELEASE_NOTE_GROUPS = 6;
 const MAX_RELEASE_NOTE_ITEMS_PER_GROUP = 8;
@@ -190,15 +191,8 @@ function extractItems(note) {
 	return extractReleaseNoteItems(note).items;
 }
 
-// The update feed dates only the offered version; prerelease versions carry their UTC build day.
-const PRERELEASE_BUILD_DAY = /-(?:nightly|preview)\.(\d{4})(\d{2})(\d{2})\.\d+$/;
-
-// A date the page can show: YYYY-MM-DD, or an ISO time with a zone. Anything else is dropped.
-const RELEASED_AT = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
-const MAX_RELEASED_AT_LENGTH = 40;
-function safeReleasedAt(value) {
-	return typeof value === "string" && value.length <= MAX_RELEASED_AT_LENGTH && RELEASED_AT.test(value) && Number.isFinite(Date.parse(value)) ? value : undefined;
-}
+// How a note is dated is shared with the server and the pages (electron/release-dates.cjs).
+const safeReleasedAt = readableReleasedAt;
 
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -210,12 +204,6 @@ function releaseNotesOfOfferedVersion(info) {
 	if (typeof info.releaseNotes !== "string" || !info.releaseName) return info.releaseNotes;
 	const namesVersion = new RegExp(`(?:^|[^\\w.-])v?${escapeRegExp(info.version)}(?![\\w.-])`);
 	return namesVersion.test(info.releaseName) ? info.releaseNotes : undefined;
-}
-
-function releasedAtOf(version, offeredVersion, releaseDate) {
-	if (version === offeredVersion && safeReleasedAt(releaseDate)) return releaseDate;
-	const day = PRERELEASE_BUILD_DAY.exec(version);
-	return day ? `${day[1]}-${day[2]}-${day[3]}` : undefined;
 }
 
 /**
@@ -241,8 +229,9 @@ function releaseNoteGroups(info) {
 		// T3 drops a release with nothing to show; a footer alone is something.
 		if (note.totalItems === 0 && !note.stats && !note.footer) continue;
 		seen.add(version);
-		// A feed note carries its own publish time (the server reads the same one); else T3's rule.
-		const releasedAt = safeReleasedAt(entry.releasedAt) ?? releasedAtOf(version, info.version, info.releaseDate);
+		// A feed note carries its own publish time (the server reads the same one). noteReleasedAt is the
+		// rule the server and the pages use: the note's time, the pointer's for the offered version, the build day.
+		const releasedAt = noteReleasedAt(entry.releasedAt, version, { version: info.version, releasedAt: info.releaseDate });
 		groups.push({ version, ...note, ...(releasedAt ? { releasedAt } : {}) });
 	}
 	return groups;
@@ -252,7 +241,10 @@ function releaseNoteGroups(info) {
  * Old clients read only `items`, so the generator also writes the intro or footer once more as the
  * last item. The groups main keeps, caches and sends over the bridge keep that copy (a page from
  * before the fields shows it); counting and the release page drop it. Only that one trailing item,
- * compared as the full text with both sides normalized (src/core/release-notes.ts withoutSummaryEcho).
+ * compared as the full text with both sides normalized, as src/core/release-notes.ts withoutSummaryEcho
+ * does. This copy reads lists whose position is known (a feed note whole, a list before the item
+ * limits cut it); the pages read the cut lists and add that function's full-list rule, which
+ * keeps a real last item when the whole count equals the list's length.
  */
 function isCopyOf(item, text) {
 	if (text === undefined) return false;
