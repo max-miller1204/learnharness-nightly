@@ -93,9 +93,18 @@ export function PluginToolRenderer({ part, fallback: suppliedFallback }: { part:
 	if (part.pluginQuestion) return <p role="status" className="text-xs text-muted-foreground">Question unavailable</p>;
 	const fallback = suppliedFallback ?? (dispatched
 		? <DispatchCard kind="plugin" toolCallId={part.toolCallId ?? ""} />
-		: <ToolCallCard part={toolFallbackPart(part)} />);
+		: <UnsettledOrSettledCard part={part} />);
 	if (!registration || !isToolState(part.state)) return fallback;
 	return <RendererMount registration={registration} mount={mount} label={`Plugin tool (${toolName})`} fallback={fallback} />;
+}
+
+/** The generic card for a plugin tool call. While the call has no result its arguments are
+ *  not shown: they may carry hidden data (a problem tool's solution and tests), and only the
+ *  settled card decides what the learner sees. A call still streaming shows the live card. */
+function UnsettledOrSettledCard({ part }: { part: LhViewPart }) {
+	if (part.state === "input-streaming") return <LiveToolCard part={part as ArtifactPartProps["part"]} />;
+	const fallback = toolFallbackPart(part);
+	return <ToolCallCard part={part.state === "input-available" ? { ...fallback, input: undefined } : fallback} />;
 }
 
 function isToolState(state: unknown): state is PluginToolRenderProps["state"] {

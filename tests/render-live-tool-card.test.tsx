@@ -40,4 +40,25 @@ describe("LiveToolCard (the working-state grammar)", () => {
 		const html = renderToStaticMarkup(<LiveToolCard part={part("grep", undefined) as never} />);
 		assert.match(html, /<pre[^>]*>…<\/pre>/);
 	});
+
+	it("shows only a tool step's declared input fields while it streams", () => {
+		const html = renderToStaticMarkup(<LiveToolCard part={part("read", { path: "notes.md", modelSolution: "SECRET-SOLUTION", extra: "SECRET-EXTRA" }) as never} />);
+		assert.match(html, /notes\.md/);
+		assert.doesNotMatch(html, /SECRET/);
+	});
+
+	it("never shows a streaming problem, conclusion or plugin tool's arguments", () => {
+		const hidden = { statement: "Sum two numbers", modelSolution: "SECRET-SOLUTION", payload: { tests: ["SECRET-TESTS"] }, verdict: "SECRET-VERDICT" };
+		for (const tool of ["problem", "conclude", "coding_problem", "mystery_tool"]) {
+			const html = renderToStaticMarkup(<LiveToolCard part={part(tool, hidden) as never} />);
+			assert.match(html, /data-testid="live-tool-card"/, tool);
+			assert.doesNotMatch(html, /SECRET|Sum two numbers/, tool);
+			assert.doesNotMatch(html, /Input \(streaming\)/, tool);
+		}
+	});
+
+	it("takes no headline from an undeclared tool's path, pattern or session", () => {
+		const html = renderToStaticMarkup(<LiveToolCard part={part("coding_problem", { path: "SECRET-PATH", pattern: "SECRET-PATTERN", session: "SECRET-SESSION" }) as never} />);
+		assert.doesNotMatch(html, /SECRET/);
+	});
 });

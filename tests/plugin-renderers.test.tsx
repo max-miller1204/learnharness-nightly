@@ -147,6 +147,22 @@ describe("shared Markdown renderer dispatch", () => {
 });
 
 describe("native tool renderer dispatch", () => {
+	it("a plugin tool call with no result yet never shows its arguments, and a settled one keeps its card", () => {
+		const input = { modelSolution: "SECRET-SOLUTION" };
+		const dangling = renderToStaticMarkup(<ToolPartRenderer part={nativePart({ type: "tool-coding_problem", state: "input-available", input })} />);
+		assert.match(dangling, /tool-call-card/);
+		assert.doesNotMatch(dangling, /SECRET/);
+		const settled = renderToStaticMarkup(<ToolPartRenderer part={nativePart({ state: "output-available", input: { subject: "visible-subject" }, output: { ok: true } })} />);
+		assert.match(settled, /visible-subject/);
+	});
+
+	it("a plugin tool streaming its arguments without a renderer shows none of them", () => {
+		const input = { statement: "Sum two numbers", modelSolution: "SECRET-SOLUTION", payload: { tests: ["SECRET-TESTS"] }, path: "SECRET-PATH" };
+		const html = renderToStaticMarkup(<ToolPartRenderer part={nativePart({ type: "tool-coding_problem", state: "input-streaming", input })} />);
+		assert.match(html, /live-tool-card/);
+		assert.doesNotMatch(html, /SECRET|Sum two numbers/);
+	});
+
 	it("passes all four native states, call identity/input/details/error/result, and cancels on every update", async () => {
 		const seen: PluginToolRenderProps[] = [];
 		const h = await harness({ activate(ctx) { ctx.registerToolRenderer({ toolName: "custom_tool", mount(container, props) { seen.push(props); container.textContent = `custom ${props.state}`; } }); } });

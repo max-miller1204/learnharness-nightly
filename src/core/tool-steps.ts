@@ -30,6 +30,15 @@ export function toolStepInput(tool: string, input: unknown): unknown {
 	return Object.fromEntries(Object.entries(input).filter(([key]) => fields.includes(key)));
 }
 
+/** A running call's input as a live card shows it: the declared fields of a tool with a
+ *  declared schema (TOOL_STEP_INPUT_FIELDS, an empty object before any has arrived), and
+ *  undefined for any other tool. Streaming
+ *  arguments have no schema check behind them, so a problem, a conclusion or a plugin
+ *  tool's arguments, which can hold the hidden solution and tests, never reach the page. */
+export function streamingToolInput(tool: string, input: unknown): unknown {
+	return Object.hasOwn(TOOL_STEP_INPUT_FIELDS, tool) ? toolStepInput(tool, input) ?? {} : undefined;
+}
+
 /** What a stopped call's result says: pi's own wording, and the Node and fetch wordings that
  *  a tool's own rejection can carry when the run's signal fired mid-call. */
 export function isAbortedCall(errorText: unknown): boolean {
