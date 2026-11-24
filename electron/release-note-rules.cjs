@@ -29,10 +29,14 @@ function boundedNoteText(value, limit) {
 }
 
 /** @param {string} item @returns {string} */
+function sliceReleaseNoteItem(item) {
+	if (item.length <= MAX_RELEASE_NOTE_ITEM_LENGTH) return item;
+	return `${item.slice(0, MAX_RELEASE_NOTE_ITEM_LENGTH - 3).trimEnd()}...`;
+}
+
+/** @param {string} item @returns {string} */
 function truncateReleaseNoteItem(item) {
-	const clean = cleanNoteText(item);
-	if (clean.length <= MAX_RELEASE_NOTE_ITEM_LENGTH) return clean;
-	return `${clean.slice(0, MAX_RELEASE_NOTE_ITEM_LENGTH - 3).trimEnd()}...`;
+	return sliceReleaseNoteItem(cleanNoteText(item));
 }
 
 /** @param {string} item @param {string | undefined} text @returns {boolean} */
@@ -46,6 +50,11 @@ function isCopyOf(item, text) {
 function endsWithSummaryCopy(items, { intro, footer } = {}) {
 	const last = items.length > 0 ? cleanNoteText(items[items.length - 1]) : "";
 	return last !== "" && (isCopyOf(last, footer) || isCopyOf(last, intro));
+}
+
+/** @param {readonly string[]} items @param {{ intro?: string; footer?: string }} [summary] @returns {string[]} */
+function stripTrailingSummaryEcho(items, summary = {}) {
+	return endsWithSummaryCopy(items, summary) ? items.slice(0, -1) : [...items];
 }
 
 /**
@@ -84,9 +93,11 @@ module.exports = {
 	SUMMARY_LIMITS,
 	cleanNoteText,
 	boundedNoteText,
+	sliceReleaseNoteItem,
 	truncateReleaseNoteItem,
 	isCopyOf,
 	endsWithSummaryCopy,
+	stripTrailingSummaryEcho,
 	withoutSummaryEcho,
 	totalReleaseItems,
 };

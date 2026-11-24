@@ -52,9 +52,9 @@ const {
 	SUMMARY_LIMITS,
 	cleanNoteText: cleanText,
 	boundedNoteText: boundedText,
-	truncateReleaseNoteItem: truncateItem,
+	sliceReleaseNoteItem: truncateItem,
 	endsWithSummaryCopy,
-	withoutSummaryEcho,
+	stripTrailingSummaryEcho: withoutSummaryEcho,
 } = require("./release-note-rules.cjs");
 
 const NOTES_CACHE_KEEP = 30;

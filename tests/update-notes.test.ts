@@ -467,4 +467,19 @@ describe("electron release notes (T3 port)", () => {
 		electronNotes.mergeNotesCache(dir, [group(V(5)), group(V(6))]);
 		assert.deepEqual(readNotesCache(dir).map((g) => g.version), [V(6), V(5)]);
 	});
+
+	it("preserves Electron slice-only truncation and unconditional trailing-echo stripping", () => {
+		const rules = require("../electron/release-note-rules.cjs") as {
+			sliceReleaseNoteItem: (item: string) => string;
+			stripTrailingSummaryEcho: (items: readonly string[], summary?: { intro?: string; footer?: string }) => string[];
+		};
+		assert.equal(rules.sliceReleaseNoteItem("  keep   spaces  "), "  keep   spaces  ");
+		const padded = `  ${"a".repeat(220)}`;
+		assert.equal(rules.sliceReleaseNoteItem(padded), `  ${"a".repeat(215)}...`);
+		const eightWithFooter = [...Array.from({ length: 7 }, (_, i) => `item ${i + 1}`), "Plus 2 more bug fixes."];
+		assert.deepEqual(
+			rules.stripTrailingSummaryEcho(eightWithFooter, { footer: "Plus 2 more bug fixes." }),
+			eightWithFooter.slice(0, -1),
+		);
+	});
 });
