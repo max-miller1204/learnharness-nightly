@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, afterEach, before, describe, it } from "node:test";
-import { instanceDir, launchPointer, pairingCode, publishLaunch, stateFile, unpublishLaunch, type InstanceState } from "./e2e/support/instance.ts";
+import { instanceDir, launchPointer, pairingCode, phoneLaunchId, publishLaunch, stateFile, unpublishLaunch, type InstanceState } from "./e2e/support/instance.ts";
 
 // A fresh, empty temp folder, so nothing depends on a learnharness-e2e folder already being there
 // (a CI runner has none): the records and instance folders all live under os.tmpdir().
@@ -27,6 +27,17 @@ function instanceFor(state: Partial<InstanceState>, port = String(40000 + Math.f
 	made.push(dataDir, instanceDir(port), launchPointer(id), `${launchPointer(id)}.tmp`);
 	return { id, port, dataDir };
 }
+
+describe("the phone's launch", () => {
+	it("is a launch id of its own, the same on every evaluation of the config", () => {
+		for (const id of [randomUUID(), "00000000-0000-4000-8000-000000000000", "ffffffff-ffff-4fff-8fff-fffffffffff0"]) {
+			const phone = phoneLaunchId(id);
+			assert.notEqual(phone, id);
+			assert.equal(launchPointer(phone).endsWith(`launch-${phone}.json`), true);
+			assert.equal(phoneLaunchId(id), phone);
+		}
+	});
+});
 
 describe("the launch record", () => {
 	it("is removed by the process that published it and by nobody else", () => {

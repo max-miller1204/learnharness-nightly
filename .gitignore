@@ -44,6 +44,7 @@ xai-credentials.json*
 .e2e/junit.xml
 .e2e/summary.md
 .e2e/logs/
+.e2e/ios/
 .e2e/videos/
 .e2e/proof/
 .e2e/bugbash/

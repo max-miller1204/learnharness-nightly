@@ -7,7 +7,7 @@ import { pairWithCode } from "./support/pair.ts";
 // (e2e.config.ts): a handle, so it never reaches report.json or a trace, which
 // a `/pair#token=<code>` link would. Tests that declare `session: "learner"`
 // start signed in.
-test.setup("pair the browser as the learner", { sessions: ["learner"] }, async ({ app, screen, session, browser }) => {
+test.setup("pair the browser as the learner", { sessions: ["learner"], requires: ["browser"] }, async ({ app, screen, session, browser }) => {
 	await app.open("/pair");
 
 	await pairWithCode(screen);

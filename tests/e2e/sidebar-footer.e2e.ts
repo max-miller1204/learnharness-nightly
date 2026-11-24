@@ -13,7 +13,7 @@ const pageVersion = (JSON.parse(fs.readFileSync("package.json", "utf8")) as { ve
 // desktop app shows them: `window.lh.desktopUpdate` is stubbed by an init
 // script and /api/updates answers "idle", so the pill offers "Update
 // everything" and the test sets the run state the capsule shows.
-describe("sidebar update pill and capsule", { session: "learner" }, () => {
+describe("sidebar update pill and capsule", { session: "learner", requires: ["browser"] }, () => {
 	beforeEach(async ({ browser }) => {
 		await browser.addInitScript(() => {
 			const w = window as unknown as { calls: string[]; testStatus: Record<string, unknown>; lh: unknown };

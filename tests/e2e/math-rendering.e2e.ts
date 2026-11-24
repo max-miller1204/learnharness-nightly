@@ -5,7 +5,7 @@ import { expect } from "e2e";
 // \xrightarrow width and \text inside colour boxes). Baselines live in
 // math-rendering.e2e.ts-snapshots/ and come from CI's Linux runner, since
 // fonts and antialiasing differ between machines (verify-learnharness, Evidence).
-describe("math rendering", { session: "learner", tags: ["visual"] }, () => {
+describe("math rendering", { session: "learner", tags: ["visual"], requires: ["browser"] }, () => {
 	test("a reply draws arrows with labels and text inside boxes", async ({ app, screen, browser }) => {
 		await app.open("/chat/new");
 		const input = screen.getByTestId("composer").getByRole("textbox");

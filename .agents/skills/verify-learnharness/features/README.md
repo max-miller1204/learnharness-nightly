@@ -9,6 +9,7 @@ the feature file changes in the same commit.
 | --- | --- |
 | [Pairing and sign-in](pairing.md) | `/pair` |
 | [Teaching session](teaching-session.md) | `/chat/new`, `/chat/<id>` |
+| [Phone app](phone.md) | the `ios` target (`apps/mobile`) |
 | [Session list](session-list.md) | sidebar on every signed-in page |
 | [Settings](settings.md) | `/settings` |
 | [Knowledge graph and notes import](graph.md) | `/` |

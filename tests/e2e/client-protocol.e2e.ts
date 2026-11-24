@@ -44,7 +44,7 @@ const pair = async (baseUrl: string, label: string) => {
 	return { first, second, bearer: { [PROTOCOL]: "1", authorization: `Bearer ${first.json?.access_token}` } as Record<string, string> };
 };
 
-describe("client protocol", () => {
+describe("client protocol", { requires: ["browser"] }, () => {
 	test("server info is public, uncached and the same for any client", async ({ app }) => {
 		const base = app.baseUrl;
 		const port = new URL(base).port;

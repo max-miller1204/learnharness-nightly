@@ -2,7 +2,7 @@ import { describe, test } from "@e2e-dev/web";
 import { expect } from "e2e";
 import { pairWithCode } from "./support/pair.ts";
 
-describe("pairing a browser", () => {
+describe("pairing a browser", { requires: ["browser"] }, () => {
 	test("a signed-out page shows the pairing screen", async ({ app, screen }) => {
 		await app.open("/chat/new");
 
