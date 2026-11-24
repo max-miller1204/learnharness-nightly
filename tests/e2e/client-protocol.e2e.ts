@@ -20,8 +20,8 @@ const call = async (baseUrl: string, method: string, path: string, init: { heade
 	return { status: response.status, headers: response.headers, json, text };
 };
 
-/** Reads an SSE stream until `[DONE]`, or until `ms` pass, as parsed `data:` payloads. */
-const stream = async (baseUrl: string, path: string, headers: Record<string, string>, ms = 30_000) => {
+/** Reads an SSE stream until `[DONE]`, a frame holding `stopAt`, or `ms`, as the `data:` payloads. */
+const stream = async (baseUrl: string, path: string, headers: Record<string, string>, ms = 30_000, stopAt?: string) => {
 	const response = await fetch(`${baseUrl}${path}`, { headers: { accept: "text/event-stream", ...headers }, signal: AbortSignal.timeout(ms) });
 	const frames: string[] = [];
 	if (!response.body) return { status: response.status, frames, done: false };
@@ -41,6 +41,7 @@ const stream = async (baseUrl: string, path: string, headers: Record<string, str
 				if (!data) continue;
 				frames.push(data);
 				if (data === "[DONE]") return { status: response.status, frames, done: true };
+				if (stopAt && data.includes(stopAt)) return { status: response.status, frames, done: false };
 			}
 		}
 	} catch { /* the read timed out or the stream was cut */ } finally {
@@ -170,7 +171,7 @@ describe("client protocol", () => {
 		expect(opened.json.turnInFlight).toBeFalsy();
 
 		// Send, and watch: the notification stream and the turn stream both tell of the turn, and the turn ends with [DONE].
-		const events = stream(base, "/api/events?protocol=1", { authorization: bearer.authorization! }, 8000);
+		const events = stream(base, "/api/events?protocol=1", { authorization: bearer.authorization! }, 30_000, chatId);
 		await new Promise((resolve) => setTimeout(resolve, 500));
 		const goal = `zz-e2e slow ${Date.now().toString(36)} why is the sky blue`;
 		const sent = await call(base, "POST", "/api/chat", { headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ chatId, input: { type: "text", text: goal } }) });

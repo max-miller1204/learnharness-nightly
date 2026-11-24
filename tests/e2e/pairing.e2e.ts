@@ -1,5 +1,6 @@
 import { describe, test } from "@e2e-dev/web";
-import { expect, secrets } from "e2e";
+import { expect } from "e2e";
+import { pairWithCode } from "./support/pair.ts";
 
 describe("pairing a browser", () => {
 	test("a signed-out page shows the pairing screen", async ({ app, screen }) => {
@@ -22,9 +23,7 @@ describe("pairing a browser", () => {
 	test("a code typed on the pairing screen signs the browser in", async ({ app, screen }) => {
 		await app.open("/pair");
 
-		// A secret handle: the code stays out of the report and traces.
-		await screen.getByLabel("Pairing code").fill(secrets.get("pairing-code"));
-		await screen.getByRole("button", "Pair").click();
+		await pairWithCode(screen);
 
 		await expect(screen.getByTestId("settings-entry")).toBeVisible({ timeout: 60_000 });
 	});

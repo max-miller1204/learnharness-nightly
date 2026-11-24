@@ -12,7 +12,7 @@ The phone app and the desktop app pointed at a server use it; there is no screen
 
 ## Driving it with e2e
 
-`tests/e2e/client-protocol.e2e.ts`: raw `fetch` against `app.baseUrl`, no browser. It mints pairing codes with `createPairingLink` (`selfhost/src/auth-store.ts`) in the instance's data folder. Its turns use the fake model's `zz-e2e slow` (a reply after 1.5 seconds, so the stream is live) and `zz-e2e hang` (a reply held back two minutes, so the turn can be aborted) goals from `tests/e2e/support/scenarios/teach.json`.
+`tests/e2e/client-protocol.e2e.ts`: raw `fetch` against `app.baseUrl`, no browser. It mints pairing codes with `createPairingLink` (`selfhost/src/auth-store.ts`) in the instance's data folder. Its turns use the fake model's `zz-e2e slow` (a reply after a few seconds, so the stream is live) and `zz-e2e hang` (a reply held back two minutes, so the turn can be aborted) goals from `tests/e2e/support/scenarios/teach.json`.
 
 ## Proof
 

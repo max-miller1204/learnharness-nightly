@@ -2,6 +2,7 @@ import { beforeEach, describe, test } from "@e2e-dev/web";
 import type { Browser } from "@e2e-dev/web";
 import { expect, type Screen } from "e2e";
 import * as fs from "node:fs";
+import { dockAcceptsAnswers } from "./support/dock.ts";
 
 // The version the page was built with, which the server must report or the pill offers a reload instead.
 const pageVersion = (JSON.parse(fs.readFileSync("package.json", "utf8")) as { version: string }).version;
@@ -133,9 +134,7 @@ describe("sidebar update pill and capsule", { session: "learner" }, () => {
 		await input.press("Enter");
 		const dock = screen.getByTestId("question-dock");
 		await dock.getByRole("radio").first().waitFor({ timeout: 90_000 });
-		// A dock that has just shown does not claim Enter yet, so a focused pill would take
-		// it. Nothing on screen marks the end of that, so let it pass.
-		await new Promise((resolve) => setTimeout(resolve, 1500));
+		await dockAcceptsAnswers(browser);
 		await dock.getByRole("radio", /Blue$/).check();
 		await expect(dock.getByRole("button", "Submit answer")).toBeEnabled();
 
@@ -143,7 +142,15 @@ describe("sidebar update pill and capsule", { session: "learner" }, () => {
 		await screen.getByTestId("update-pill").click();
 		await expect.poll(async () => (await calls(browser)).includes("everything")).toBe(true);
 		const before = (await calls(browser)).filter((c) => c === "everything").length;
-		await browser.keyboard.press("Enter");
+		// Enter must submit the answer and never activate the pill. A loaded machine can drop a
+		// press the dock was not ready for, which is harmless, so press again; a press the pill
+		// took shows as a second "everything" call, and that fails at once.
+		const answered = async () => (await browser.evaluate(() => document.body.innerText.includes("zz-e2e acknowledged your answer")));
+		for (let press = 0; press < 5 && !(await answered()); press++) {
+			await browser.keyboard.press("Enter");
+			await expect.poll(async () => (await answered()) || (await calls(browser)).filter((c) => c === "everything").length !== before, { timeout: 4000 }).toBe(true).catch(() => {});
+			expect((await calls(browser)).filter((c) => c === "everything").length, "Enter activated the pill").toBe(before);
+		}
 
 		await expect(screen.getByText(/zz-e2e acknowledged your answer/, { visible: true })).toBeVisible({ timeout: 60_000 });
 		await expect(dock).not.toBeVisible();

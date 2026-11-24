@@ -2,6 +2,7 @@ import { beforeEach, describe, test } from "@e2e-dev/web";
 import type { Browser } from "@e2e-dev/web";
 import { expect, type Screen } from "e2e";
 import * as fs from "node:fs";
+import { answerQuestion } from "./support/dock.ts";
 import { instance, sessionRequests, storedChat, type InstanceState } from "./support/instance.ts";
 
 // Plays tests/e2e/support/scenarios/teach.json on the fake model: the goal
@@ -25,13 +26,7 @@ describe("teaching session", { session: "learner" }, () => {
 		await browser.waitForURL(/\/chat\/chat_/, { timeout: 60_000 });
 		await screen.getByTestId("question-dock").getByText("zz-e2e: which colour of sunlight scatters most in air?").waitFor({ timeout: 90_000 });
 	};
-	const answerBlue = async ({ screen }: { screen: Screen }) => {
-		const dock = screen.getByTestId("question-dock");
-		const blue = dock.getByRole("radio", /Blue$/);
-		await blue.check();
-		await expect(blue).toBeChecked();
-		await dock.getByRole("button", "Submit answer").click();
-	};
+	const answerBlue = ({ screen }: { screen: Screen; browser: Browser }) => answerQuestion(screen, /Blue$/);
 	// The tutor's reply; `visible` drops the hidden copy a reload can leave for a moment.
 	const reply = (screen: Screen) => screen.getByText(/zz-e2e acknowledged your answer/, { visible: true });
 
@@ -51,7 +46,7 @@ describe("teaching session", { session: "learner" }, () => {
 	test("an answer reaches the tutor and its reply shows", async ({ screen, browser }) => {
 		await startSession({ screen, browser });
 
-		await answerBlue({ screen });
+		await answerBlue({ screen, browser });
 
 		await expect(reply(screen)).toBeVisible({ timeout: 60_000 });
 		await expect(screen.getByTestId("question-dock")).not.toBeVisible();
@@ -67,7 +62,7 @@ describe("teaching session", { session: "learner" }, () => {
 
 	test("the session is stored and survives a reload", async ({ screen, browser }) => {
 		await startSession({ screen, browser });
-		await answerBlue({ screen });
+		await answerBlue({ screen, browser });
 		await reply(screen).waitFor({ timeout: 60_000 });
 		const chatId = new URL(await browser.url()).pathname.split("/").pop() ?? "";
 

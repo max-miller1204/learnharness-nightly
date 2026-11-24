@@ -1,5 +1,6 @@
 import { test } from "@e2e-dev/web";
-import { expect, secrets } from "e2e";
+import { expect } from "e2e";
+import { pairWithCode } from "./support/pair.ts";
 
 // Signs the browser in with a one-time pairing code, typed on the pairing
 // screen (what `npm run pair` prints). The code is the `pairing-code` secret
@@ -9,8 +10,7 @@ import { expect, secrets } from "e2e";
 test.setup("pair the browser as the learner", { sessions: ["learner"] }, async ({ app, screen, session, browser }) => {
 	await app.open("/pair");
 
-	await screen.getByLabel("Pairing code").fill(secrets.get("pairing-code"));
-	await screen.getByRole("button", "Pair").click();
+	await pairWithCode(screen);
 
 	await expect(screen.getByTestId("settings-entry")).toBeVisible({ timeout: 60_000 });
 	await expect(browser).not.toHaveURL(/\/pair/);
