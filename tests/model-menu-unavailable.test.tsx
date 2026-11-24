@@ -5,12 +5,13 @@ import { renderWithInteractionLayers as renderToStaticMarkup } from "./interacti
 import { ModelMenuList } from "../components/settings/model-menu.tsx";
 import { toModelDto } from "../src/server/model-catalog.ts";
 import { piModels } from "../src/agent/models.ts";
+import { modelUnavailableMessage } from "../src/core/model-unavailable.ts";
 
 const models = piModels().getModels("opencode-go").map(toModelDto);
 
 test("the model menu says why when the saved model is not in the catalog", () => {
 	const html = renderToStaticMarkup(<ModelMenuList models={models} effectiveProvider="opencode-go" effectiveId="gemini-4-argon-contributor" onPick={() => {}} />);
-	assert.match(html, /The model opencode-go\/gemini-4-argon-contributor isn(&#x27;|')t available: it was removed or its provider isn(&#x27;|')t connected\. Pick another model\./);
+	assert.ok(html.includes(modelUnavailableMessage("opencode-go", "gemini-4-argon-contributor")));
 });
 
 test("a saved model the catalog has, or a catalog still loading, shows no notice", () => {

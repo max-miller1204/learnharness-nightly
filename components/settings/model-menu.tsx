@@ -21,7 +21,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ModelCatalogEntry } from "@/src/core";
-import { CLAUDE_CODE_PROVIDER, CUSTOM_PROVIDER, fuzzyScore, subscriptionLabel } from "@/src/core";
+import { CLAUDE_CODE_PROVIDER, CUSTOM_PROVIDER, fuzzyScore, modelUnavailableMessage, subscriptionLabel } from "@/src/core";
 import { formatTokens } from "@/components/usage-format";
 import { SearchMenuList } from "./search-menu-list";
 
@@ -74,7 +74,7 @@ export function ModelMenuList({
 		<>
 			{unavailable && (
 				<div role="status" data-testid="model-unavailable" className="mb-1.5 px-2 text-destructive">
-					{`The model ${effectiveProvider}/${effectiveId} isn't available: it was removed or its provider isn't connected. Pick another model.`}
+					{modelUnavailableMessage(effectiveProvider, effectiveId)}
 				</div>
 			)}
 			<SearchMenuList
