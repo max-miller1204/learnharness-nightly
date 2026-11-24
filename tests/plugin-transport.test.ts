@@ -3,6 +3,7 @@ import { it } from "node:test";
 import { createPluginTransport, type PluginTransportHost } from "../src/server/plugin-transport.ts";
 import { PluginHostError } from "../src/server/plugin-host.ts";
 import { modelsNotConfigured } from "../src/core/settings.ts";
+import { modelUnavailableMessage } from "../src/core/model-unavailable.ts";
 
 const request = (body: unknown) => new Request("http://localhost/api/plugins", { method: "POST", body: JSON.stringify(body) });
 function fixture() {
@@ -100,11 +101,11 @@ it("a plugin with no model configured is refused with 422 and the same setup env
 	assert.equal(refused.status, 422);
 	assert.deepEqual(await refused.json(), modelsNotConfigured(["cheap"]));
 });
-it("a plugin's model_unavailable refusal is 422 with its message, unless only the provider key is missing", async () => {
+it("a plugin's model_unavailable refusal is 422 with the shared refusal message for its model, unless only the provider key is missing", async () => {
 	const { host } = fixture();
 	const model = { provider: "opencode-go", id: "retired" };
-	const message = "The model opencode-go/retired is no longer available. Pick another model in Settings.";
-	host.call = async () => { throw Object.assign(new Error(message), { code: "model_unavailable", model }); };
+	const message = modelUnavailableMessage("opencode-go", "retired");
+	host.call = async () => { throw Object.assign(new Error("A plugin's own wording"), { code: "model_unavailable", model }); };
 	const asked: unknown[] = [];
 	const gone = createPluginTransport({ getHost: async () => host, directory: "/temporary/plugins", keyMissing: (provider, id) => { asked.push({ provider, id }); return null; } });
 	const refused = await gone.call("flashcards", request({ operation: "preflight-file", input: {} }));
@@ -116,6 +117,8 @@ it("a plugin's model_unavailable refusal is 422 with its message, unless only th
 	const keyRefused = await keyless.call("flashcards", request({ operation: "preflight-file", input: {} }));
 	assert.equal(keyRefused.status, 422);
 	assert.deepEqual(await keyRefused.json(), envelope);
+	host.call = async () => { throw Object.assign(new Error("A plugin's own wording"), { code: "model_unavailable" }); };
+	assert.deepEqual(await (await gone.call("flashcards", request({ operation: "x", input: {} }))).json(), { error: "A plugin's own wording", code: "model_unavailable" }, "a refusal naming no model keeps its text");
 	host.call = async () => { throw new Error("Plugin operation failed"); };
 	assert.equal((await gone.call("flashcards", request({ operation: "x", input: {} }))).status, 500, "other plugin errors stay 500");
 });

@@ -40,6 +40,7 @@ import { isInteractionScopeEligible } from "@/components/plugin-input-focus";
 import { useInteractionLayers, type CloseOutcome } from "@/components/interaction-layers";
 import {
 	CURRENT_SETTINGS_VERSION,
+	PROVIDERS_SECTION_LABEL,
 	type AppearanceSettings,
 	type CompactionSettings,
 	type GraphSettings,
@@ -68,7 +69,7 @@ import { SettingsDialogContext, useSettingsDialog } from "./settings-dialog-cont
  *  prose is out; only the keyboard note stays (storage location is a
  *  real question users ask). */
 const SECTIONS = [
-	{ id: "keys", label: "Providers", icon: KeyIcon },
+	{ id: "keys", label: PROVIDERS_SECTION_LABEL, icon: KeyIcon },
 	{ id: "agent", label: "Agent", icon: BotIcon },
 	{ id: "appearance", label: "Appearance", icon: PaletteIcon },
 	{ id: "graph", label: "Graph", icon: WaypointsIcon },
@@ -511,7 +512,7 @@ export function SettingsDialogBody({
 								</SettingsSection>
 							)}
 							{active === "keys" && (
-								<SettingsSection title="Providers" testid="section-keys">
+								<SettingsSection title={PROVIDERS_SECTION_LABEL} testid="section-keys">
 									<KeysSection initialRow={initialRow ?? undefined} />
 								</SettingsSection>
 							)}

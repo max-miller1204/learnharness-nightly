@@ -566,7 +566,7 @@ describe("a side chat on a saved model the catalog dropped", () => {
 				assert.ok(refused instanceof Response);
 				assert.equal(refused.status, 422);
 				assert.deepEqual(await refused.json(), {
-					error: "The model opencode-go/minimax-m3.1-flash-free is no longer available. Pick another model in Settings.",
+					error: "The model minimax-m3.1-flash-free from OpenCode Go isn't available right now. It may be retired, or its provider isn't connected or can't be reached. Check Providers in Settings, or pick another model.",
 					code: "model_unavailable",
 				});
 			}

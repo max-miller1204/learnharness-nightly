@@ -1,6 +1,6 @@
 import { isPluginHostError } from "./plugin-host.ts";
 import { authRefusal } from "./auth.ts";
-import { MODEL_UNAVAILABLE } from "../core/model-unavailable.ts";
+import { MODEL_UNAVAILABLE, modelUnavailableMessage } from "../core/model-unavailable.ts";
 import { MODEL_SLOTS, MODELS_NOT_CONFIGURED_CODE, modelsNotConfigured, SUBSCRIPTION_UNREACHABLE_CODE, type ModelSlotName } from "../core/settings.ts";
 import type { PluginFrontendContext, PluginInfo } from "../core/plugins.ts";
 
@@ -24,7 +24,8 @@ async function objectBody(request: Request): Promise<Record<string, unknown>> {
 }
 /** A plugin operation refused for a saved model it can't use throws an Error
  * with code "model_unavailable" and that `model`. The host answers 422 with
- * the message, or its key-missing envelope when the model still exists and
+ * the shared refusal message for that model (the plugin's own text only when
+ * it names no model), or its key-missing envelope when the model still exists and
  * only the provider key is gone, or 503 when a subscription's status check
  * just failed. One refused because a slot it needs is unset throws code
  * "models_not_configured" with the `missing` slots, and the host answers 422
@@ -38,9 +39,10 @@ export function createPluginTransport(deps: { getHost(): Promise<PluginTransport
 		}
 		if (!refusal || typeof refusal !== "object" || refusal.code !== MODEL_UNAVAILABLE || typeof refusal.message !== "string") return undefined;
 		const model = refusal.model;
-		const keyMissing = typeof model?.provider === "string" && typeof model.id === "string" ? await deps.keyMissing?.(model.provider, model.id) : null;
+		const named = typeof model?.provider === "string" && typeof model.id === "string" ? { provider: model.provider, id: model.id } : undefined;
+		const keyMissing = named ? await deps.keyMissing?.(named.provider, named.id) : null;
 		const outage = (keyMissing as { code?: unknown } | null)?.code === SUBSCRIPTION_UNREACHABLE_CODE;
-		return json(keyMissing ?? { error: refusal.message, code: MODEL_UNAVAILABLE }, outage ? 503 : 422);
+		return json(keyMissing ?? { error: named ? modelUnavailableMessage(named.provider, named.id) : refusal.message, code: MODEL_UNAVAILABLE }, outage ? 503 : 422);
 	};
 	const guarded = async (handle: () => Promise<Response>) => {
 		try { return await handle(); }

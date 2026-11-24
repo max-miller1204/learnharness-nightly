@@ -8,7 +8,7 @@ import { apiClient } from "../src/protocol.ts";
 import { errorText, refusedByServer } from "../src/use-session.ts";
 
 const origin = "https://test.learnharness.example";
-const message = "The model opencode-go/minimax-m3.1-flash-free is no longer available. Pick another model in Settings.";
+const message = "The model minimax-m3.1-flash-free from OpenCode Go isn't available right now. It may be retired, or its provider isn't connected or can't be reached. Check Providers in Settings, or pick another model.";
 const api = apiClient(async () => Response.json({ error: message, code: "model_unavailable" }, { status: 422 }), origin, "example-native-token");
 
 for (const [path, route, body] of [

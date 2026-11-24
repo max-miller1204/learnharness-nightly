@@ -319,7 +319,6 @@ export function ModelControl({ chatId, onModelChange }: { chatId?: string; onMod
 					{error && <div className="mb-1.5 text-destructive">{error}</div>}
 					<ModelMenuList
 						models={catalog?.models}
-						providers={catalog?.providers}
 						effectiveId={effectiveId}
 						effectiveProvider={effectiveProvider}
 						onPick={pickModel}

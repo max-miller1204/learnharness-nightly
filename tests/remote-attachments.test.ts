@@ -164,7 +164,7 @@ test("an opening on a saved model the catalog dropped is refused as model_unavai
 		const refused = await startAttachmentRequest(request("/api/attachments/start", "POST", JSON.stringify({ draftId, sendId: randomUUID(), title: "Open with a file", attachmentUploadIds: [upload.id] })));
 		assert.equal(refused.status, 422);
 		assert.deepEqual(await refused.json(), {
-			error: "The model opencode-go/minimax-m3.1-flash-free is no longer available. Pick another model in Settings.",
+			error: "The model minimax-m3.1-flash-free from OpenCode Go isn't available right now. It may be retired, or its provider isn't connected or can't be reached. Check Providers in Settings, or pick another model.",
 			code: "model_unavailable",
 		});
 		assert.equal(chatStore.listChats().length, chats, "no chat is created");
