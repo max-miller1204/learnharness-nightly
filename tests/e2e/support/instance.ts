@@ -27,7 +27,7 @@ export type InstanceState = {
 	launchId?: string;
 	/** serve.ts's pid. */
 	pid: number;
-	/** Set when serve.ts ran with LH_E2E_TLS_PORT: the https address in front of the app and the CA file that signs it. */
+	/** Set when serve.ts ran with LH_E2E_TLS_PORT: the https address in front of the app and the CA file that signs it (its key is gone). */
 	tls?: { url: string; ca: string };
 };
 
@@ -81,13 +81,19 @@ export function unpublishLaunch(id: string) {
 	fs.rmSync(`${file}.tmp`, { force: true });
 }
 
+/** The id of the launch this process belongs to, as handed down by the runner (LAUNCH_HANDOFF_ENV). */
+export function currentLaunchId(): string {
+	const inherited = (process.env[LAUNCH_HANDOFF_ENV] ?? "").split(":")[1];
+	if (!inherited || !LAUNCH_ID.test(inherited)) throw new Error(`${LAUNCH_HANDOFF_ENV} is not set: this process was not started by a run of e2e.config.ts`);
+	return inherited;
+}
+
 /**
- * A fresh one-time pairing code for the instance of launch `id`, as the
- * pairing screen shows it. Backs the `pairing-code` secret in e2e.config.ts, so a
- * test fills it as a secret handle and the code never reaches a report or a
- * trace. A provider runs on every fill, so each fill gets its own code.
+ * The instance of launch `id`, found through its launch record and checked
+ * against its state.json: a stale record, a reused pid or a reused port never
+ * resolves to another instance.
  */
-export async function pairingCode(id: string): Promise<string> {
+export async function launchedInstance(id: string): Promise<InstanceState> {
 	const file = launchPointer(id);
 	const deadline = Date.now() + 120_000;
 	while (!fs.existsSync(file)) {
@@ -97,8 +103,18 @@ export async function pairingCode(id: string): Promise<string> {
 	const { port, pid } = JSON.parse(fs.readFileSync(file, "utf8")) as { port: string; pid: number };
 	try { process.kill(pid, 0); } catch { throw new Error(`the instance of launch ${id} (serve.ts pid ${pid}) is no longer running`); }
 	const state = await instance(`http://127.0.0.1:${port}`);
-	// A stale record, a reused pid or a reused port must never mint against another instance.
 	if (state.launchId !== id || state.pid !== pid) throw new Error(`the instance on port ${port} is not launch ${id} (it serves ${state.launchId ?? "no launch"}, pid ${state.pid})`);
+	return state;
+}
+
+/**
+ * A fresh one-time pairing code for the instance of launch `id`, as the
+ * pairing screen shows it. Backs the `pairing-code` secret in e2e.config.ts, so a
+ * test fills it as a secret handle and the code never reaches a report or a
+ * trace. A provider runs on every fill, so each fill gets its own code.
+ */
+export async function pairingCode(id: string): Promise<string> {
+	const state = await launchedInstance(id);
 	return formatCode(createPairingLink(state.dataDir, { label: "e2e" }).code);
 }
 

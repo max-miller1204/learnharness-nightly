@@ -18,19 +18,30 @@
  * LH_E2E_FIXTURES=<dir>,<dir> copies each folder's chat_*.json and job_*.json
  * into the data folder before the app starts (tests/fixtures/mobile-lesson).
  * LH_E2E_TLS_PORT=<port> also serves the app over https on 127.0.0.1:<port>
- * with a throwaway CA, for the phone app, which accepts only https servers
- * (scripts/iphone-check/tls-cert.sh and tls-front.mjs); state.json names the
- * address and the CA file.
+ * for the phone app, which accepts only https servers. The CA and the
+ * certificate (scripts/iphone-check/tls-cert.sh) live in a private folder made
+ * for this launch; the CA's key is deleted once the certificate is signed, the
+ * certificate's key once the proxy (tls-front.mjs) answers over https with
+ * this CA, and the folder when the instance stops or fails to start.
+ * state.json names the address and the CA file. With LH_E2E_IOS_DEVICE (a
+ * simulator ios.sh created, checked by ios-device.ts) it also trusts that CA
+ * in the simulator and installs the app at LH_E2E_IOS_APP.
+ *
+ * Everything this process starts is registered for cleanup before it starts, so
+ * a failure at any step, or a signal, stops what is already running.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import * as net from "node:net";
+import * as https from "node:https";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { issueSession } from "../../../selfhost/src/auth-store.ts";
 import { startFakeModel } from "./fake-model.ts";
+import { provisionSimulator } from "./ios-device.ts";
+import { phoneBundleId } from "./phone-config.ts";
 import { instanceDir, LAUNCH_ID_ENV, publishLaunch, stateFile, unpublishLaunch, type InstanceState } from "./instance.ts";
 
 const port = process.argv[2];
@@ -47,6 +58,24 @@ if (launchId && !/^[0-9a-f-]{36}$/.test(launchId)) {
 	console.error(`serve: ${LAUNCH_ID_ENV} is not a launch id`);
 	process.exit(2);
 }
+
+// What this process has started, undone in reverse order by stop(): registered before
+// the thing it undoes starts, so a failure or a signal at any step leaves nothing behind.
+const cleanups: Array<() => void | Promise<void>> = [];
+let stopping = false;
+async function stop(code: number): Promise<never> {
+	if (!stopping) {
+		stopping = true;
+		for (const undo of cleanups.reverse()) await Promise.resolve(undo()).catch(() => {});
+	}
+	process.exit(code);
+}
+for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, () => void stop(0));
+async function fail(message: string): Promise<never> {
+	console.error(`serve: ${message}`);
+	return stop(1);
+}
+
 const dir = instanceDir(port);
 const home = path.join(dir, "home");
 const dataDir = path.join(dir, "data");
@@ -54,6 +83,26 @@ const authFile = path.join(dir, "auth.json");
 const modelLog = path.join(dir, "model-requests.jsonl");
 const appUrl = `http://127.0.0.1:${port}`;
 
+const alive = (pid: unknown) => { try { process.kill(Number(pid), 0); return Number.isInteger(pid) && pid !== process.pid; } catch { return false; } };
+// A live instance on this port keeps its folder: a second start never wipes it.
+try {
+	const running = (JSON.parse(fs.readFileSync(stateFile(port), "utf8")) as { pid?: number }).pid;
+	if (alive(running)) await fail(`port ${port} already belongs to a live instance (serve.ts pid ${running}); its folder ${dir} is left alone`);
+} catch { /* no state.json, or half written */ }
+// One `next dev` per checkout: its build folder (.next/dev) is locked by the first.
+if (mode === "dev") {
+	const lock = path.join(os.tmpdir(), "learnharness-e2e", `dev-${createHash("sha1").update(root).digest("hex").slice(0, 12)}.lock`);
+	fs.mkdirSync(path.dirname(lock), { recursive: true });
+	for (let attempt = 0; ; attempt++) {
+		try { fs.writeFileSync(lock, String(process.pid), { flag: "wx" }); break; } catch {
+			const holder = Number(fs.readFileSync(lock, "utf8"));
+			if (alive(holder)) await fail(`another \`next dev\` of this checkout (serve.ts pid ${holder}) is running; start only one, or serve the production build with LH_E2E_SERVER=standalone`);
+			if (attempt > 2) await fail(`cannot take ${lock}`);
+			fs.rmSync(lock, { force: true });
+		}
+	}
+	cleanups.push(() => { if (fs.readFileSync(lock, "utf8") === String(process.pid)) fs.rmSync(lock, { force: true }); });
+}
 fs.rmSync(dir, { recursive: true, force: true });
 fs.mkdirSync(home, { recursive: true });
 fs.mkdirSync(dataDir, { recursive: true });
@@ -79,20 +128,20 @@ const fixtureImage = path.join(home, "zz-e2e-image.png");
 fs.writeFileSync(fixtureImage, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64"));
 
 const fake = await startFakeModel({ scenario, log: modelLog, vars: { FIXTURE: fixture, FIXTURE_NONL: fixtureNoNewline } });
+cleanups.push(() => fake.close());
 
 let server: [string, ...string[]];
 if (mode === "standalone") {
 	const entry = path.join(root, ".next/standalone/server.js");
 	if (!fs.existsSync(entry)) {
-		console.error(`serve: no production build at ${entry}. Run \`npm run build && node scripts/build-server.mjs\` first.`);
-		process.exit(1);
+		await fail(`no production build at ${entry}. Run \`npm run build && node scripts/build-server.mjs\` first.`);
 	}
 	server = [process.execPath, entry];
 } else {
 	// `npm run dev` builds the core plugins and the authoring package first; so does this.
 	for (const script of ["plugins:build-core", "plugins:build-authoring"]) {
 		const built = spawnSync("npm", ["run", "--silent", script], { cwd: root, stdio: "inherit" });
-		if (built.status !== 0) process.exit(built.status ?? 1);
+		if (built.status !== 0) await stop(built.status ?? 1);
 	}
 	server = [process.execPath, path.join(root, "node_modules/next/dist/bin/next"), "dev", "-H", "127.0.0.1", "-p", port];
 }
@@ -148,6 +197,23 @@ const isolatedEnv: Record<string, string> = {
 	CHROME_PATH: "",
 };
 
+// TLS in front of the app, for the phone: a CA and a certificate for 127.0.0.1 in a folder
+// private to this launch, made before anything else starts so a failure here leaves nothing running.
+const tlsPort = process.env.LH_E2E_TLS_PORT;
+let tls: InstanceState["tls"];
+let tlsDir = "";
+if (tlsPort) {
+	if (!/^\d+$/.test(tlsPort) || tlsPort === port) await fail(`LH_E2E_TLS_PORT is not a port other than the app's: ${tlsPort}`);
+	fs.mkdirSync(path.join(os.tmpdir(), "learnharness-e2e"), { recursive: true });
+	tlsDir = fs.mkdtempSync(path.join(os.tmpdir(), "learnharness-e2e", "tls-"));
+	cleanups.push(() => fs.rmSync(tlsDir, { recursive: true, force: true }));
+	const made = spawnSync("bash", [path.join(root, "scripts/iphone-check/tls-cert.sh"), tlsDir], { stdio: ["ignore", "ignore", "inherit"] });
+	if (made.status !== 0) await fail("the TLS certificate could not be made");
+	// The CA signed the certificate; nothing may sign with it again.
+	for (const name of ["ca.key", "ca.srl", "server.csr", "openssl.cnf"]) fs.rmSync(path.join(tlsDir, name), { force: true });
+	tls = { url: `https://127.0.0.1:${tlsPort}`, ca: path.join(tlsDir, "ca.pem") };
+}
+
 const app: ChildProcess = spawn(server[0], server.slice(1), {
 	cwd: mode === "standalone" ? path.join(root, ".next/standalone") : root,
 	// Its own process group, so stopping it also stops the server Next forks.
@@ -168,6 +234,19 @@ const app: ChildProcess = spawn(server[0], server.slice(1), {
 		...isolatedEnv,
 	} as NodeJS.ProcessEnv,
 });
+cleanups.push(async () => {
+	if (app.pid && app.exitCode === null) {
+		try { process.kill(-app.pid, "SIGTERM"); } catch { /* already gone */ }
+		const deadline = Date.now() + 10_000;
+		while (app.exitCode === null && app.signalCode === null && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+		try { process.kill(-app.pid, "SIGKILL"); } catch { /* already gone */ }
+	}
+});
+app.on("exit", (code) => {
+	if (stopping) return;
+	console.error(`serve: the app exited (${code ?? "signal"})`);
+	void stop(1);
+});
 
 // The app's output passes through with pairing codes redacted: the app prints
 // a startup pairing link, and the runner quotes this output in its errors and traces.
@@ -186,39 +265,17 @@ function passThrough(from: NodeJS.ReadableStream, to: NodeJS.WritableStream) {
 }
 passThrough(app.stdout!, process.stdout);
 passThrough(app.stderr!, process.stderr);
-// TLS in front of the app for the phone: a throwaway CA and a certificate for 127.0.0.1.
-let tlsFront: ChildProcess | undefined;
-const tlsPort = process.env.LH_E2E_TLS_PORT;
-let tls: InstanceState["tls"];
-if (tlsPort) {
-	const tlsDir = path.join(dir, "tls");
-	const made = spawnSync("bash", [path.join(root, "scripts/iphone-check/tls-cert.sh"), tlsDir], { stdio: ["ignore", "ignore", "inherit"] });
-	if (made.status !== 0) process.exit(made.status ?? 1);
-	tlsFront = spawn(process.execPath, [path.join(root, "scripts/iphone-check/tls-front.mjs"), tlsPort, port, path.join(tlsDir, "cert.pem"), path.join(tlsDir, "key.pem")], { stdio: ["ignore", "inherit", "inherit"] });
-	tls = { url: `https://127.0.0.1:${tlsPort}`, ca: path.join(tlsDir, "ca.pem") };
-}
 
-let stopping = false;
-async function stop(code: number) {
-	if (stopping) return;
-	stopping = true;
-	tlsFront?.kill();
-	if (app.pid && app.exitCode === null) {
-		try { process.kill(-app.pid, "SIGTERM"); } catch { /* already gone */ }
-		const deadline = Date.now() + 10_000;
-		while (app.exitCode === null && app.signalCode === null && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
-		try { process.kill(-app.pid, "SIGKILL"); } catch { /* already gone */ }
-	}
-	if (launchId) unpublishLaunch(launchId);
-	await fake.close();
-	process.exit(code);
+// The proxy that ends TLS. If it dies the phone has no server, so the instance stops.
+if (tls) {
+	const front: ChildProcess = spawn(process.execPath, [path.join(root, "scripts/iphone-check/tls-front.mjs"), tlsPort!, port, path.join(tlsDir, "cert.pem"), path.join(tlsDir, "key.pem")], { stdio: ["ignore", "inherit", "inherit"] });
+	cleanups.push(() => { front.kill(); });
+	front.on("exit", (code, signal) => {
+		if (stopping) return;
+		console.error(`serve: the TLS proxy exited (${code ?? signal})`);
+		void stop(1);
+	});
 }
-for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, () => void stop(0));
-app.on("exit", (code) => {
-	if (stopping) return;
-	console.error(`serve: the app exited (${code ?? "signal"})`);
-	void stop(1);
-});
 
 async function until(what: string, timeoutMs: number, check: () => Promise<boolean>) {
 	const deadline = Date.now() + timeoutMs;
@@ -226,15 +283,24 @@ async function until(what: string, timeoutMs: number, check: () => Promise<boole
 		if (await check().catch(() => false)) return;
 		await new Promise((r) => setTimeout(r, 500));
 	}
-	console.error(`serve: ${what} not within ${timeoutMs / 1000}s`);
-	await stop(1);
+	await fail(`${what} not within ${timeoutMs / 1000}s`);
 }
 await until("/api/health answering", 180_000, async () => (await fetch(`${appUrl}/api/health`)).ok);
 if (tls) {
-	await until("the TLS front accepting", 10_000, () => new Promise<boolean>((resolve) => {
-		const socket = net.connect(Number(tlsPort), "127.0.0.1", () => { socket.destroy(); resolve(true); });
-		socket.on("error", () => resolve(false));
+	// Over https, verified against this launch's CA only: another listener on the port cannot pass.
+	const ca = fs.readFileSync(tls.ca);
+	await until("/api/health over https with this launch's CA", 20_000, () => new Promise<boolean>((resolve) => {
+		const request = https.get({ host: "127.0.0.1", port: Number(tlsPort), path: "/api/health", ca, timeout: 5_000 }, (response) => { response.resume(); resolve(response.statusCode === 200); });
+		request.on("error", () => resolve(false));
+		request.on("timeout", () => { request.destroy(); resolve(false); });
 	}));
+	// The proxy has the certificate's key in memory; the files are not needed again.
+	for (const name of ["cert.pem", "key.pem"]) fs.rmSync(path.join(tlsDir, name), { force: true });
+	if (process.env.LH_E2E_IOS_DEVICE) {
+		const appPath = process.env.LH_E2E_IOS_APP;
+		if (!appPath) await fail("LH_E2E_IOS_APP is not set");
+		try { provisionSimulator({ udid: process.env.LH_E2E_IOS_DEVICE, ca: tls.ca, appPath: appPath!, bundleId: phoneBundleId }); } catch (error) { await fail(`the simulator could not be prepared: ${error instanceof Error ? error.message : error}`); }
+	}
 }
 
 // Seed the fake model the way Settings does, signed in as a hidden CLI session.
@@ -258,8 +324,7 @@ async function seed() {
 try {
 	await seed();
 } catch (error) {
-	console.error("serve: seeding the fake model failed:", error);
-	await stop(1);
+	await fail(`seeding the fake model failed: ${error instanceof Error ? error.message : error}`);
 }
 
 // `next dev` compiles a page and its client chunks when first asked, and a
@@ -278,5 +343,5 @@ if (mode === "dev") {
 const state: InstanceState = { appUrl, mode, dataDir, home, authFile, modelLog, fixture, fixtureNoNewline, fixtureImage, fakeModel: fake.url, fakeControl: fake.control, scenario, tls, ...(launchId ? { launchId } : {}), pid: process.pid };
 fs.writeFileSync(stateFile(port), `${JSON.stringify(state, null, 2)}\n`);
 // Last, so a reader that finds the record finds a usable instance.
-if (launchId) publishLaunch(launchId, port);
+if (launchId) { cleanups.push(() => unpublishLaunch(launchId)); publishLaunch(launchId, port); }
 console.log(`serve: ready (${mode}) at ${appUrl}, state in ${stateFile(port)}`);

@@ -1,31 +1,29 @@
 /**
  * The phone app's test: `test`, `describe` and `beforeEach` from
- * @e2e-dev/mobile, plus a worker fixture that prepares the simulator once.
+ * @e2e-dev/mobile, plus a worker fixture that refuses a simulator `ios.sh`
+ * did not create.
  *
  * The phone accepts only https servers, so the instance serve.ts started for
- * the `ios` target sits behind a TLS front with a throwaway CA (see
- * LH_E2E_TLS_PORT there). The fixture trusts that CA in the simulator, then
- * installs the build ios.sh made, with `reinstall` so the app starts with no
- * saved servers. A device has no saved sessions to restore, so a test that
- * needs a paired phone calls `pairPhone`.
+ * the `ios` target sits behind a TLS front with a throwaway CA. serve.ts
+ * trusts that CA in the simulator and installs the build before it reports
+ * ready, for a scripted run and a live one alike (ios-device.ts). Tests find
+ * that instance through its launch record, never through a port. A device has
+ * no saved sessions to restore, so a test that needs a paired phone calls
+ * `pairPhone`.
  */
-import { execFileSync } from "node:child_process";
 import { test as base, type Device } from "@e2e-dev/mobile";
 import { expect, secrets, type Screen } from "e2e";
-import { instance } from "./instance.ts";
-import { phoneBase } from "./phone-config.ts";
+import { currentLaunchId, launchedInstance, phoneLaunchId } from "./instance.ts";
+import { verifyOwnedSimulator } from "./ios-device.ts";
 
 export { beforeEach, describe } from "@e2e-dev/mobile";
 
 /** The `ios` target's instance, once serve.ts has finished seeding it. */
-export const phoneInstance = () => instance(phoneBase);
+export const phoneInstance = () => launchedInstance(phoneLaunchId(currentLaunchId()));
 
-export const test = base.extend<object, { phoneBuild: void }>({
-	phoneBuild: [async ({ device }, use) => {
-		const state = await phoneInstance();
-		if (!state.tls) throw new Error("the ios target's server has no TLS front: serve.ts needs LH_E2E_TLS_PORT");
-		execFileSync("xcrun", ["simctl", "keychain", device.unstable_raw.deviceId, "add-root-cert", state.tls.ca]);
-		await device.installApp(undefined, { reinstall: true });
+export const test = base.extend<object, { ownedSimulator: void }>({
+	ownedSimulator: [async ({ device }, use) => {
+		verifyOwnedSimulator(device.unstable_raw.deviceId);
 		await use();
 	}, { scope: "worker", auto: true }],
 });

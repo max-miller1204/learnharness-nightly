@@ -5,10 +5,14 @@ import { claudeCode, codex } from "@e2e-dev/acp";
 import { github } from "@e2e-dev/github";
 import { chatgpt } from "e2e/oauth/chatgpt";
 import { LAUNCH_ID_ENV, launchIdForConfig, pairingCode, phoneLaunchId } from "./tests/e2e/support/instance.ts";
-import { phoneAppPath, phoneBundleId, phonePort, phoneTlsPort } from "./tests/e2e/support/phone-config.ts";
+import { verifyOwnedSimulator } from "./tests/e2e/support/ios-device.ts";
+import { phoneAppPath, phoneBundleId, phonePort, phoneRunId, phoneTlsPort, phoneWrapped } from "./tests/e2e/support/phone-config.ts";
 
 // Names this launch for serve.ts and the pairing-code secrets (instance.ts).
 const launchId = launchIdForConfig();
+// A simulator named in the environment must be one ios.sh made for this run.
+if (process.env.E2E_IOS_DEVICE) verifyOwnedSimulator(process.env.E2E_IOS_DEVICE);
+const phoneDevice = process.env.E2E_IOS_DEVICE ?? "lh-e2e-no-simulator-run-ios.sh-e2e";
 
 /**
  * End-to-end tests (tests/e2e/) and live drives over `npx e2e mcp`, against
@@ -63,27 +67,38 @@ export default {
 		},
 		{
 			name: "ios",
-			// The simulator is pinned (E2E_IOS_DEVICE: its udid or name): left unset, the pool is every
-			// booted simulator, shared ones included.
-			engine: mobile({ platform: "ios", device: process.env.E2E_IOS_DEVICE }),
+			// Only the simulator `ios.sh e2e` created for this run (ios-device.ts checks its record; a
+			// udid it did not create fails the config load). With none, the name below matches no
+			// simulator, so the engine never falls back to every booted one, the owner's included.
+			engine: mobile({ platform: "ios", device: phoneDevice, session: phoneRunId ? `lh-e2e-${phoneRunId}` : undefined }),
 			app: {
 				bundleId: phoneBundleId,
 				appPath: phoneAppPath,
-				// No url on a device target, so no {port}: the server takes the fixed ports.
-				readyUrl: `http://127.0.0.1:${phonePort}/api/health`,
-				command: {
+				// No url on a device target, so no {port}: the wrapper allocated the ports.
+				readyUrl: `http://127.0.0.1:${phonePort ?? "1"}/api/health`,
+				command: phoneWrapped ? {
 					executable: "node",
-					args: ["tests/e2e/support/serve.ts", phonePort],
+					args: ["tests/e2e/support/serve.ts", phonePort!],
 					env: {
 						// A launch of its own: a run can start both targets, and each server records itself under its id.
 						[LAUNCH_ID_ENV]: phoneLaunchId(launchId),
-						LH_E2E_TLS_PORT: phoneTlsPort,
+						LH_E2E_TLS_PORT: phoneTlsPort!,
+						LH_E2E_IOS_DEVICE: process.env.E2E_IOS_DEVICE!,
+						LH_E2E_IOS_APP: phoneAppPath,
+						E2E_IOS_DEVICE: process.env.E2E_IOS_DEVICE!,
+						E2E_IOS_SIM_RECORD: process.env.E2E_IOS_SIM_RECORD!,
 						LH_E2E_FIXTURES: "tests/fixtures/mobile-lesson,tests/fixtures/mobile-quiz",
 						LH_E2E_SCENARIO: "tests/fixtures/mobile-quiz/scenario.json",
 					},
 					inheritEnv: ["LH_E2E_SERVER"],
 					startupTimeout: 240_000,
 					shutdownTimeout: 20_000,
+					log: ".e2e/logs/app-ios.log",
+				} : {
+					// Not started by ios.sh: say so instead of serving a phone nothing can reach.
+					executable: "node",
+					args: ["-e", "console.error('the ios target runs through tests/e2e/support/ios.sh e2e (it creates the simulator, the ports and the build path this target needs)'); process.exit(2)"],
+					startupTimeout: 20_000,
 					log: ".e2e/logs/app-ios.log",
 				},
 			},

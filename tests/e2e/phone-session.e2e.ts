@@ -13,6 +13,8 @@ describe("a seeded session on the phone", { requires: ["native-app"] }, () => {
 		for (const [folder, id] of [["mobile-lesson", "chat_zzmobilelesson"], ["mobile-quiz", "chat_zzmobilequiz"]]) {
 			fs.copyFileSync(path.resolve(import.meta.dirname, `../fixtures/${folder}/${id}.json`), path.join(state.dataDir, "chats", `${id}.json`));
 		}
+		// The quiz rule fires once per session, so a retry starts from the fake model's first answer again.
+		await fetch(`${state.fakeControl}/__fake/reset`, { method: "POST" });
 		await pairPhone({ app, device, screen });
 	});
 
