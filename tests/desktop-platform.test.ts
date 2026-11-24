@@ -318,7 +318,7 @@ describe("workflow action versions", () => {
 	const sources: Record<string, { path: string; expected: string[]; npmCache: boolean }> = {
 		"ci.yml": {
 			path: "../.github/workflows/ci.yml",
-			expected: ["actions/checkout@v7", "actions/setup-node@v7", "./.github/actions/setup-deps", "actions/cache/restore@v6", "actions/cache/save@v6", "actions/upload-artifact@v7"],
+			expected: ["actions/checkout@v7", "actions/setup-node@v7", "./.github/actions/setup-deps", "actions/cache/restore@v6", "actions/cache/save@v6"],
 			npmCache: false,
 		},
 		"setup-deps": {
@@ -343,8 +343,8 @@ describe("workflow action versions", () => {
 					assert.ok(expected.includes(step.uses), `unexpected Action reference: ${step.uses}`);
 					observed.add(step.uses);
 					if (step.uses === "actions/setup-node@v7") {
-						// The phone app's jobs build it on Node 22, as EAS does.
-						if (filename === "ci.yml" && (id === "mobile" || id === "iphone")) {
+						// The phone app's job builds it on Node 22, as EAS does.
+						if (filename === "ci.yml" && id === "mobile") {
 							assert.equal(step.with?.["node-version"], "22");
 							assert.equal(step.with?.cache, "npm");
 							assert.equal(step.with?.["cache-dependency-path"], "apps/mobile/package-lock.json");

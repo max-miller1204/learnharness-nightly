@@ -152,6 +152,16 @@ export function catalogSlots(): SlotPins {
  *  plain-key model provider (core/auth-keys.ts's pi-ai-derived table),
  *  with keyPresent read env-wins through the keys seam, fresh per call —
  *  saving a key immediately federates the provider into the picker. */
+/** Every provider id the host can name in a refusal, independent of keys,
+ *  connections or whether the custom endpoint is usable right now. Every
+ *  catalog row's id is in it (a test pins that), and host inference only
+ *  validates a plugin's provider against those rows. */
+export function hostProviderIds(): ReadonlySet<string> {
+	return new Set([
+		...AUTH_PROVIDER_KEYS.map((p) => p.id), "chatgpt", CLAUDE_CODE_PROVIDER,
+		...NATIVE_SUBSCRIPTIONS.map((p) => p.logicalId), CUSTOM_PROVIDER.id,
+	]);
+}
 const unreachableRow = (provider: string) => connectionUnreachable(provider) ? { unreachable: true } : {};
 export function catalogProviders(): CatalogProvider[] {
 	piModels();

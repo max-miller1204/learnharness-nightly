@@ -1,5 +1,5 @@
 /**
- * paging.mjs: how the CI iPhone driver walks one scrolling area of a session
+ * paging.mjs: how the iPhone simulator driver walks one scrolling area of a session
  * (the transcript, or a dock that scrolls) from its top to its end.
  *
  * The screen gives two signals, and neither is trusted alone:

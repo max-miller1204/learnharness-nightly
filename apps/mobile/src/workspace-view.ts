@@ -8,9 +8,9 @@ export type Page = { type: "list" } | { type: "new"; kind: ChatKind } | { type: 
  *  connection), which starts from `freshView`. */
 export interface WorkspaceView { page: Page; query: string }
 
-/** For the CI iPhone check only (docs/specs/ios-simulator-ci.md): AXe's touches
- *  don't reach session rows inside the long-press menu on the simulator, so that
- *  job's Metro dev bundle sets EXPO_PUBLIC_CI_OPEN_SESSIONS="id,id" and each new
+/** For the iPhone simulator driver only (docs/specs/ios-simulator-ci.md): AXe's
+ *  touches don't reach session rows inside the long-press menu on the simulator,
+ *  so the driver's Metro dev bundle sets EXPO_PUBLIC_CI_OPEN_SESSIONS="id,id" and each new
  *  connection opens the next listed session. Only dev bundles read it: a release
  *  or update bundle drops the branch even when the variable is set (CI's Mobile
  *  job exports with it set and checks). */

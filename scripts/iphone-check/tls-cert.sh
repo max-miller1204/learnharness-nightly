@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tls-cert.sh <dir>: a throwaway CA (ca.pem) and a server certificate for
-# 127.0.0.1 signed by it (cert.pem, key.pem), valid for two days. The CI
-# iPhone job trusts ca.pem only inside its own simulator.
+# 127.0.0.1 signed by it (cert.pem, key.pem), valid for two days. Trust
+# ca.pem only inside a simulator.
 set -euo pipefail
 DIR=${1:?usage: tls-cert.sh <dir>}
 mkdir -p "$DIR"

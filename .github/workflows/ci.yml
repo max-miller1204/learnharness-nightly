@@ -24,9 +24,8 @@ env:
 jobs:
   # Skips jobs a pull request cannot affect: docs-only changes run only lint,
   # and test-only changes skip the standalone builds. Manual runs run
-  # everything; pushes to main run everything but the iPhone job, which runs
-  # only when the merge reaches the phone app or its check. Detection fails
-  # open: if the diff cannot be read, everything runs.
+  # everything, and so do pushes to main. Detection fails open: if the diff
+  # cannot be read, everything runs.
   # .github/scripts/ci-changes.cjs holds the rules.
   changes:
     name: Changes
@@ -38,7 +37,6 @@ jobs:
       selfhost: ${{ steps.detect.outputs.selfhost }}
       standalone: ${{ steps.detect.outputs.standalone }}
       mobile: ${{ steps.detect.outputs.mobile }}
-      iphone: ${{ steps.detect.outputs.iphone }}
     steps:
       # Depth 2 brings the base commit the PR's merge commit is diffed against.
       - uses: actions/checkout@v7
@@ -48,18 +46,12 @@ jobs:
         id: detect
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PUSH_BEFORE: ${{ github.event.before }}
         run: |
           set -uo pipefail
           decide() {
             node .github/scripts/ci-changes.cjs "$@" | tee -a "$GITHUB_OUTPUT"
             exit "${PIPESTATUS[0]}"
           }
-          # A push is diffed from the commit main was at before it, so every
-          # commit in it counts; when that commit is unknown, everything runs.
-          if [[ "$EVENT_NAME" == push ]]; then
-            decide --full --push-before "$PUSH_BEFORE"
-          fi
           if [[ "$EVENT_NAME" != pull_request ]]; then
             decide --full
           fi
@@ -237,7 +229,7 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
-      # The production export, with the CI iPhone job's session opener set on
+      # The production export, with the dev-only session opener set on
       # purpose: a release or update bundle must never carry it
       # (apps/mobile/src/workspace-view.ts).
       - name: export:ios, with the CI-only session opener set
@@ -251,173 +243,6 @@ jobs:
           fi
       - run: npm run export:android
 
-  # The phone app on an iOS Simulator against a throwaway server: iPhone and
-  # web screenshots side by side, and a failure on a screen that is not
-  # reached, an error screen, or a quiz choice row that is not one item
-  # speaking its math. No secrets, nothing published, and the app runs the
-  # PR's code from this job's Metro. See docs/specs/ios-simulator-ci.md.
-  iphone:
-    name: iPhone
-    needs: changes
-    if: needs.changes.outputs.iphone == 'true'
-    runs-on: xcode-27
-    # 75, not T3's 60 (owner, 2026-11-20): this image's slow simulator boot plus
-    # up to two reboots before AXe can read the screen. See the spec.
-    timeout-minutes: 75
-    permissions:
-      contents: read
-    env:
-      EXPO_NO_TELEMETRY: "1"
-      PROVE_CHROME: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
-      AXE_URL: https://github.com/cameroncooke/AXe/releases/download/v2.0.4/AXe-macOS-v2.0.4-universal.tar.gz
-      AXE_SHA256: 3178ec66d9ff46455fec737debad719c41cab16edb1435b2c721e07760a208c3
-      SHOTS: ${{ github.workspace }}/iphone-screenshots
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      # Xcode 27.1 is the version EAS builds SDK 58 with, and the newest iOS
-      # 27 runtime that has an iPhone 17. The simulator boots after the builds.
-      - name: Xcode 27.1 and an iPhone 17
-        run: |
-          set -euo pipefail
-          sudo xcode-select -s /Applications/Xcode_27.1.app
-          version=$(xcodebuild -version)
-          version=${version%%$'\n'*}
-          [ "$version" = "Xcode 27.1" ] || { echo "::error::Xcode 27.1 is not on this image ($version)"; exit 1; }
-          runtime=$(xcrun simctl list runtimes -j | jq -r '[.runtimes[] | select(.isAvailable and .platform == "iOS"
-            and (.version | startswith("27.")) and any(.supportedDeviceTypes[]; .name == "iPhone 17"))]
-            | sort_by(.version | split(".") | map(tonumber)) | last | .identifier // empty')
-          [ -n "$runtime" ] || { xcrun simctl list runtimes; echo "::error::no iOS 27 runtime with an iPhone 17"; exit 1; }
-          udid=$(xcrun simctl create ci-iphone com.apple.CoreSimulator.SimDeviceType.iPhone-17 "$runtime")
-          echo "iPhone 17 on $runtime: $udid"
-          echo "UDID=$udid" >> "$GITHUB_ENV"
-      # The simulator shares the Mac's resolver: no published update can load.
-      - name: Block published updates
-        run: printf '\n0.0.0.0 u.expo.dev\n' | sudo tee -a /etc/hosts
-      - name: Install AXe
-        run: |
-          set -euo pipefail
-          curl -fsSL -o "$RUNNER_TEMP/axe.tar.gz" "$AXE_URL"
-          echo "$AXE_SHA256  $RUNNER_TEMP/axe.tar.gz" | shasum -a 256 -c -
-          mkdir "$RUNNER_TEMP/axe"
-          tar -xzf "$RUNNER_TEMP/axe.tar.gz" -C "$RUNNER_TEMP/axe"
-          "$RUNNER_TEMP/axe/axe" --version
-          [ -x "$PROVE_CHROME" ] || { echo "::error::no Chrome at $PROVE_CHROME"; exit 1; }
-      # Node 26 runs the server and the driver; the app builds on Node 22.
-      - uses: ./.github/actions/setup-deps
-      - run: echo "NODE26_BIN=$(dirname "$(command -v node)")" >> "$GITHUB_ENV"
-      # Restore only: Standalone (mac-arm64) saves this cache from main.
-      - name: Restore the Next.js build cache
-        uses: actions/cache/restore@v6
-        with:
-          path: .next/cache
-          key: nextjs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json', 'plugins/*/package-lock.json') }}-${{ github.sha }}
-          restore-keys: nextjs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json', 'plugins/*/package-lock.json') }}-
-      - name: Build the server
-        run: |
-          set -euo pipefail
-          RUN=$(.claude/skills/prove-learnharness/scripts/new-run.sh iphone)
-          echo "RUN=$RUN" >> "$GITHUB_ENV"
-          .claude/skills/prove-learnharness/scripts/build.sh "$RUN" head
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: apps/mobile/package-lock.json
-      - run: npm ci
-        working-directory: apps/mobile
-      # CocoaPods' download cache: restored on every run, saved only from main,
-      # as with the Next.js cache, so a pull request never writes it.
-      - name: Restore the CocoaPods download cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/Library/Caches/CocoaPods
-          key: pods-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/mobile/package-lock.json') }}
-          restore-keys: pods-v1-${{ runner.os }}-${{ runner.arch }}-
-      # T3 Code's Debug simulator build (scripts/mobile-native-client.ts:722-766):
-      # a clean prebuild, pod install, then one unsigned arm64 build. Debug
-      # embeds no bundle, so the app can only run what Metro serves it.
-      - name: Build the app
-        working-directory: apps/mobile
-        run: |
-          set -euo pipefail
-          npx expo prebuild --clean --platform ios --no-install
-          (cd ios && pod install)
-          xcrun xcodebuild -workspace ios/LearnHarnessNightly.xcworkspace -scheme LearnHarnessNightly -configuration Debug \
-            -destination "generic/platform=iOS Simulator" -derivedDataPath "$RUNNER_TEMP/dd" \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO build -quiet
-          app="$RUNNER_TEMP/dd/Build/Products/Debug-iphonesimulator/LearnHarnessNightly.app"
-          if [ -e "$app/main.jsbundle" ]; then echo "::error::the Debug app embeds a bundle"; exit 1; fi
-          echo "APP=$app" >> "$GITHUB_ENV"
-      - name: Save the CocoaPods download cache
-        if: github.event_name == 'push'
-        uses: actions/cache/save@v6
-        with:
-          path: ~/Library/Caches/CocoaPods
-          key: pods-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/mobile/package-lock.json') }}
-      # The prove scripts' fake-model instance, with the lesson and quiz
-      # fixtures in its throwaway data folder, behind a throwaway CA that only
-      # the simulator trusts.
-      - name: Start the server
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUN/head/data/chats" "$RUN/head/data/jobs"
-          cp tests/fixtures/mobile-lesson/chat_*.json tests/fixtures/mobile-quiz/chat_*.json "$RUN/head/data/chats/"
-          cp tests/fixtures/mobile-lesson/job_*.json "$RUN/head/data/jobs/"
-          INST=$(PATH="$NODE26_BIN:$PATH" .claude/skills/prove-learnharness/scripts/start.sh "$RUN" head "$PWD/tests/fixtures/mobile-quiz/scenario.json")
-          echo "INST=$INST" >> "$GITHUB_ENV"
-          . "$INST"
-          scripts/iphone-check/tls-cert.sh "$RUNNER_TEMP/tls"
-          port=$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')
-          nohup node scripts/iphone-check/tls-front.mjs "$port" "$APP_PORT" "$RUNNER_TEMP/tls/cert.pem" "$RUNNER_TEMP/tls/key.pem" > "$RUN/tls-front.log" 2>&1 &
-          echo "ORIGIN=https://127.0.0.1:$port" >> "$GITHUB_ENV"
-          curl -fsS --cacert "$RUNNER_TEMP/tls/ca.pem" --retry 10 --retry-connrefused --retry-delay 1 "https://127.0.0.1:$port/api/health" > /dev/null
-          echo "DRIVE=$NODE26_BIN/node scripts/iphone-check/drive.mjs --udid $UDID --bundle com.maxmiller.learnharness.nightly --origin https://127.0.0.1:$port --instance $INST --out $SHOTS --axe $RUNNER_TEMP/axe/axe --metro-log $RUNNER_TEMP/metro.log" >> "$GITHUB_ENV"
-      # Chrome and the booted simulator never run together: beside it, Chrome
-      # stalls at launch on a busy runner.
-      - name: Shoot the web before the answer
-        run: $DRIVE --chrome "$PROVE_CHROME" --phase web-before
-      - name: Start the simulator and Metro
-        run: |
-          set -euo pipefail
-          xcrun simctl boot "$UDID"
-          xcrun simctl bootstatus "$UDID" -b
-          xcrun simctl keychain "$UDID" add-root-cert "$RUNNER_TEMP/tls/ca.pem"
-          xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4
-          xcrun simctl install "$UDID" "$APP"
-          # Each connection opens the next fixture session: AXe's touches don't reach
-          # session rows on the simulator (apps/mobile/src/workspace-view.ts).
-          (cd apps/mobile && EXPO_PUBLIC_CI_OPEN_SESSIONS=chat_zzmobilelesson,chat_zzmobilequiz nohup npx expo start --port 8081 > "$RUNNER_TEMP/metro.log" 2>&1 &)
-          # Metro can take minutes to listen on a busy runner.
-          curl -fsS --retry 300 --retry-connrefused --retry-delay 2 --retry-max-time 600 http://127.0.0.1:8081/status
-          # Build the bundle once, so the app's own request is served from a warm cache.
-          curl -fsS -o /dev/null --max-time 600 "http://127.0.0.1:8081/.expo/.virtual-metro-entry.bundle?platform=ios&dev=true&hot=false&lazy=true&transform.engine=hermes&transform.bytecode=1&unstable_transformProfile=hermes-stable"
-      - name: Drive the app
-        run: $DRIVE --chrome "$PROVE_CHROME" --phase phone
-      - name: Shoot the web after the answer
-        run: |
-          xcrun simctl shutdown "$UDID"
-          $DRIVE --chrome "$PROVE_CHROME" --phase web-after
-      - name: Job summary and logs
-        if: always()
-        run: |
-          mkdir -p "$SHOTS/logs"
-          if [ -f "$SHOTS/summary.md" ]; then cat "$SHOTS/summary.md" >> "$GITHUB_STEP_SUMMARY"; else echo "No screenshots summary: see the steps above." >> "$GITHUB_STEP_SUMMARY"; fi
-          cp "$RUNNER_TEMP/metro.log" "$SHOTS/logs/" 2>/dev/null || true
-          if [ -n "${RUN:-}" ]; then cp "$RUN"/head/*.log "$RUN"/head/*.jsonl "$RUN"/*.log "$SHOTS/logs/" 2>/dev/null || true; fi
-      - name: Upload the screenshots
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: iphone-screenshots
-          path: ${{ env.SHOTS }}
-          retention-days: 14
-          if-no-files-found: error
-
   # The required status check for main. It fails when any other job fails, is
   # cancelled, or is skipped although `changes` said it was needed, so splitting
   # or resharding jobs needs no branch-protection change. Add every new job to
@@ -426,7 +251,7 @@ jobs:
   check:
     name: Check
     if: ${{ always() }}
-    needs: [changes, lint, typecheck, test, selfhost, standalone, mobile, iphone]
+    needs: [changes, lint, typecheck, test, selfhost, standalone, mobile]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

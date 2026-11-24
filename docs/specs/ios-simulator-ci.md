@@ -1,5 +1,7 @@
 # iPhone check in CI
 
+> The CI `iPhone` job this spec describes was retired in favour of local iOS Simulator runs on a Mac. The history below is kept as written. The driver scripts remain in `scripts/iphone-check/`.
+
 Approved by the owner on 2026-11-19 (playback confirmed, no vetoes). A new required CI job runs the phone app (`apps/mobile`) on an iOS Simulator on GitHub's Macs for every phone PR. It drives a few key screens against a throwaway server, takes iPhone and web screenshots side by side, and fails on mechanical problems. The prove-it checker judges how the screens look.
 
 ## 1. Starting point
@@ -21,7 +23,7 @@ Approved by the owner on 2026-11-19 (playback confirmed, no vetoes). A new requi
 - **Runner capacity.** macOS arm64 jobs sometimes are never given a runner. `ci-runner-retry.yml` re-runs such a CI run up to 3 times when the "was not acquired by Runner of type hosted" annotation is present (`.github/scripts/ci-runner-retry.cjs:23`, `docs/specs/ci-runner-retry.md`). Capacity ran out on 2026-11-17 and 18. **I could not verify** that the `xcode-27` queue's cancels carry the same annotation. If they don't, a no-runner cancel fails `Check` with no automatic re-run.
 - **Time.** `Standalone (mac-arm64)` builds the production server on `macos-15` in 4 to 5 minutes (CI runs on main, 2026-11-19). **I could not verify** how long a cold iOS Debug build takes on a standard `xcode-27` runner.
 - **The app accepts only `https://` servers** (`apps/mobile/src/protocol.ts:6-15`). A committed throwaway certificate exists at `tests/fixtures/security-tls/`.
-- **The prove scripts are Linux-only** in places: `flock` and `setsid` in `.claude/skills/prove-learnharness/scripts/start.sh:28,43,58` and `env -C` at `:58`. They won't run as is on a macOS runner.
+- **The prove scripts are Linux-only** in places: `flock` and `setsid` in `.claude/skills/prove-learnharness/scripts/start.sh:28,43,58` and `env -C` at `:58`. They won't run as is on a macOS runner. (Since then `.claude/skills/prove-learnharness/scripts/lib.sh` supplies macOS stand-ins for `flock` and `setsid`, and the scripts run on macOS. Only `stop.sh`, and `start.sh`'s cleanup after a failed start, read `/proc`, so they do not.)
 - **Fixtures.** `scripts/fake-model.mjs` plays scenario files (`.claude/skills/prove-learnharness/references/agent.md`). `tests/fixtures/mobile-lesson/` is a synthetic teaching record. PR #277 committed no quiz-math fixture.
 - **Updates.** `app.json` turns expo-updates on, with `checkAutomatically: ON_LOAD` against the production update URL. A release-style simulator build could load main's published update instead of the PR's code. A Debug build loads its code from Metro.
 - **Screen reader.** AXe's `describe-ui` lists the simulator's accessibility items (label, frame, state). **I could not verify** that real VoiceOver speech runs in the simulator, so it is not used.

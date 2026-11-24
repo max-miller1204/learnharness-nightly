@@ -494,7 +494,7 @@ describe("round 1 review of #410", () => {
 
 	it("Chat sends what the learner saw, and not before the saved attachments are loaded (wiring; the hook tests cover the rules)", () => {
 		const source = readFileSync(new URL("../components/chat.tsx", import.meta.url), "utf8");
-		assert.match(source, /const rows = attachments\.current\(\), waiting = attachments\.restoring\(\);\n\t+void prepareText\(undefined, undefined, undefined, rows\.length \|\| waiting \? \{ rows, waiting \} : undefined\);/);
+		assert.match(source, /const rows = attachments\.current\(\), waiting = attachments\.restoring\(\);\s*if \(openingDraftRef\.current !== null\) \{ deliverOpeningPrompt\(textRef\.current\.trim\(\), true, rows\.length \|\| waiting \? \{ rows, waiting \} : undefined\); return; \}\s*void prepareText\(undefined, undefined, undefined, rows\.length \|\| waiting \? \{ rows, waiting \} : undefined\);/);
 		// The wait is inside the submission: text captured at the click, and a change while waiting cancels (also while a restored chip's check is pending; tests/chat-attachment-send.test.tsx drives that).
 		assert.match(source, /const changedWhileWaiting = \(\) => composerEditRevision\.current !== capturedRevision \|\| !isInteractionScopeEligible\(sessionFindScopeRef\.current, controller\);/);
 		assert.match(source, /await attachments\.restored\(\);\s*attempt\.check\(\);\s*if \(changedWhileWaiting\(\)\) \{ attempt\.cancel\(\); return false; \}\s*selected = attachments\.current\(\);/);
