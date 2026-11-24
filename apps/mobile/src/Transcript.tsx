@@ -298,13 +298,20 @@ export function Transcript({ settled, batches, eager, batchWidth = 0, onBatchLay
   tail: LhMessage[]; api: MobileApi; chatId: string; jobs: readonly JobRecord[]; liveHelpers: boolean; openPlan: () => void;
   /** Saved user messages' uploaded files, by message ID. */
   files: ReadonlyMap<string, readonly AttachmentReference[]>; unavailableFiles: ReadonlySet<string>;
-  /** The turn is still running: a call with no result yet is not a stopped one. */
+  /** A turn is running: in its own messages (those after the last learner message) a call with
+   * no result yet is not a stopped one. Earlier messages keep their Stopped line. */
   turnInFlight?: boolean;
 }) {
   const { s } = useTheme();
   const live = useMemo(() => projectView(tail), [tail]);
   const seam = useMemo(() => teachSeam(settled), [settled]);
-  const context = { api, chatId, jobs, liveHelpers, openPlan, turnInFlight };
+  // The tail is the running turn itself: a call there is stopped only by an aborted result.
+  const context = { api, chatId, jobs, liveHelpers, openPlan, turnInFlight: true };
+  // The running turn's messages: the only ones holding a call that may still be running.
+  const running = useMemo(() => {
+    if (!turnInFlight) return new Set<string>();
+    return new Set(settled.slice(settled.findLastIndex(({ role }) => role === "user") + 1).map(({ id }) => id));
+  }, [settled, turnInFlight]);
   // Tool steps' open state, by call id, shared by the live rows and the record's.
   const [openSteps, setOpenSteps] = useState<ReadonlySet<string>>(() => new Set());
   const steps = useMemo(() => ({
@@ -328,14 +335,16 @@ export function Transcript({ settled, batches, eager, batchWidth = 0, onBatchLay
       const range = shown.get(part);
       shown.set(part, block === undefined ? [0, Infinity] : [range?.[0] ?? block, block + 1]);
     });
+    const runningTurn = running.has(message.id);
+    const partContext = { ...context, turnInFlight: runningTurn };
     const parts = message.parts.flatMap((part, index) => {
       const blocks = shown.get(index);
       if (!blocks) return [];
       // One Stopped line per run of stopped calls (chat.tsx).
-      if (isStoppedCall(part, turnInFlight) && isStoppedCall(message.parts[index - 1], turnInFlight)) return [];
+      if (isStoppedCall(part, runningTurn) && isStoppedCall(message.parts[index - 1], runningTurn)) return [];
       return [index === teachAt && part.type === "step-start"
         ? <SeamDivider key={part.id ?? index} label="Teaching" />
-        : <Part key={part.id ?? index} part={part} context={context} blocks={blocks} />];
+        : <Part key={part.id ?? index} part={part} context={partContext} blocks={blocks} />];
     });
     // The learner's words sit in the web's band: card fill, left rail, YOU label.
     if (message.role === "user" && message.parts.some(({ type }) => type === "text")) {

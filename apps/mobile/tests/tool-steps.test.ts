@@ -138,6 +138,7 @@ test("during the turn a step shows in order with the text, breathing while its c
   }
 });
 
+const user = (id: string, content: string) => ({ role: "user", content, id, timestamp: 1 }) as unknown as LhMessage;
 const SECRET = "SECRET-SOLUTION-7731";
 const hidden = { statement: "Compute 1 + 1.", mode: "recall", modelSolution: SECRET };
 const posed = [assistant("m_pose", [{ type: "toolCall", id: "call_pose", name: "problem", arguments: hidden }]), result("call_pose", "problem", null)];
@@ -209,6 +210,64 @@ test("a call that errored with any abort wording shows Stopped, once per run, fo
     assert.equal(rows(missing.root).length, 1, "a call that ran and failed keeps its step");
   } finally {
     act(() => missing.unmount());
+  }
+});
+
+test("a saved Stopped line stays while a later turn runs, and only that turn's own unfinished call is left out", async () => {
+  const conclude = (id: string) => ({ type: "toolCall", id, name: "conclude", arguments: { outcome: "solved", verdict: "Done." } });
+  const later = [user("u_again", "I think it is 2"), assistant("m_end2", [conclude("call_end2")])];
+  const history = [...posed, assistant("m_end", [conclude("call_end")]), ...later];
+  const running = await render(practice(history, true));
+  try {
+    assert.equal(stoppedLines(running), 1, "the earlier stop shows; the call of the running turn does not");
+  } finally {
+    act(() => running.unmount());
+  }
+  const over = await render(practice(history));
+  try {
+    assert.equal(stoppedLines(over), 2, "once the turn is over, both calls are stopped");
+  } finally {
+    act(() => over.unmount());
+  }
+  const first = await render(practice([...posed, assistant("m_end", [conclude("call_end")])], true));
+  try {
+    assert.equal(stoppedLines(first), 0, "the only unfinished call of a running turn is not stopped");
+  } finally {
+    act(() => first.unmount());
+  }
+});
+
+test("a Stopped line is one per run of stopped calls, not one per message", async () => {
+  const call = (id: string, name: string, args: unknown) => ({ type: "toolCall", id, name, arguments: args });
+  const aborted = (id: string) => result(id, "read", "Operation aborted", true);
+  const separated = (between: unknown) => [assistant("m_a", [call("c1", "read", { path: "a.md" }), between, call("c2", "read", { path: "b.md" })]), aborted("c1"), aborted("c2")] as LhMessage[];
+  for (const between of [{ type: "text", text: "Trying again." }, call("c_ok", "ls", { path: "." })]) {
+    const extra = between.type === "toolCall" ? [result("c_ok", "ls", "notes.md")] : [];
+    const tree = await render(practice([...separated(between), ...extra]));
+    try {
+      assert.equal(stoppedLines(tree), 2, `two stopped calls with ${between.type} between them`);
+    } finally {
+      act(() => tree.unmount());
+    }
+  }
+});
+
+test("in the live tail, a run of stopped calls is one line, and a call with no result is not stopped", async () => {
+  const calls = [{ type: "toolCall", id: "c1", name: "read", arguments: { path: "a.md" } }, { type: "toolCall", id: "c2", name: "read", arguments: { path: "b.md" } }];
+  const events = [message("message_start", calls), message("message_end", calls), finished("c1", "read", "Operation aborted", true), finished("c2", "read", "Operation aborted", true)];
+  const tree = await render(practice([], true, replayed(events)));
+  try {
+    assert.equal(stoppedLines(tree), 1);
+    assert.equal(rows(tree.root).length, 0);
+  } finally {
+    act(() => tree.unmount());
+  }
+  const pending = [{ type: "toolCall", id: "call_end", name: "conclude", arguments: { outcome: "solved", verdict: "Done." } }];
+  const running = await render(practice([...posed], true, replayed([message("message_start", pending), message("message_end", pending)])));
+  try {
+    assert.equal(stoppedLines(running), 0);
+  } finally {
+    act(() => running.unmount());
   }
 });
 
