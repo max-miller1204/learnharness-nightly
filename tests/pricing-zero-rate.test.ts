@@ -46,46 +46,66 @@ test("a zero-rate model the catalog does not list is not frozen at $0.00", () =>
 	assert.equal(captureCallUsage(usage, unlisted).costUsd, undefined);
 });
 
-const paidPlans = [
-	["qwen-token-plan-individual", "qwen3.7-max"],
-	["zai", "glm-5.2-highspeed"],
-	["zai", "glm-5.3-highspeed"],
-	["zai-coding-cn", "glm-5.3-highspeed"],
-	["vercel-ai-gateway", "reflection/beam"],
-] as const;
+// Literal ids: each of these ships all-zero rates and is not positively free, so
+// it stores nothing and reads as unknown, whatever list or pattern the code uses.
+const unknownCost = [
+	"qwen-token-plan:qwen3.7-max",
+	"qwen-token-plan-individual:qwen3.7-max",
+	"xiaomi-token-plan-ams:mimo-v2.6-pro",
+	"zai:glm-5.2-highspeed",
+	"zai:glm-5.3-highspeed",
+	"zai-coding-cn:glm-5.3-highspeed",
+	"vercel-ai-gateway:reflection/beam",
+	"vercel-ai-gateway:spacexai/grok-voice-3.0",
+	"vercel-ai-gateway:humansand/ampersand-v0.1",
+	"vercel-ai-gateway:stealth/glyph-cluster",
+	"huggingface:zai-org/GLM-4.7-Flash",
+	"openrouter:openrouter/auto",
+];
 
-test("paid token-plan models with zero catalog rates are unknown, not $0.00", () => {
-	for (const [provider, id] of paidPlans) {
-		const model = catalog(provider, id);
-		assert.ok(isZero(model), `${provider}:${id} ships zero rates`);
+test("all-zero models that are not positively free store nothing and read as unknown", () => {
+	for (const id of unknownCost) {
+		const colon = id.indexOf(":");
+		const model = catalog(id.slice(0, colon), id.slice(colon + 1));
+		assert.ok(isZero(model), `${id} ships zero rates`);
 		const call = captureCallUsage(usage, model);
-		assert.equal(call.costUsd, undefined, `${provider}:${id} stores no cost`);
-		assert.equal(callCost(call, `${provider}:${id}`), null, `${provider}:${id} reads as unknown`);
-		const turn = { id: "t", messageId: "m", at: "2026-01-01T00:00:00Z", model: `${provider}:${id}`, steps: [call] };
+		assert.equal(call.costUsd, undefined, `${id} stores no cost`);
+		assert.equal(callCost(call, id), null, `${id} reads as unknown`);
+		const turn = { id: "t", messageId: "m", at: "2026-01-01T00:00:00Z", model: id, steps: [call] };
 		const priced = sessionCost({ turns: [turn] } as never);
-		assert.equal(priced.unpriced, 1, `${provider}:${id} counts as an unpriced turn`);
+		assert.equal(priced.unpriced, 1, `${id} counts as an unpriced turn`);
 		assert.equal(priced.cost, 0);
 	}
+});
+
+test("a model with an explicit free marker keeps $0.00 on a router that also lists a paid variant", () => {
+	const free = catalog("vercel-ai-gateway", "reflection/beam-free");
+	assert.equal(captureCallUsage(usage, free).costUsd, 0);
+	assert.equal(callCost({ inputTokens: 10, outputTokens: 10 }, "vercel-ai-gateway:reflection/beam-free"), 0);
+	assert.equal(callCost({ inputTokens: 10, outputTokens: 10 }, "vercel-ai-gateway:reflection/beam"), null);
 });
 
 test("every zero-rate token-plan catalog entry is unknown", () => {
 	let seen = 0;
 	for (const provider of piModels().getProviders()) {
-		if (!/-token-plan(-|$)/.test(provider.id)) continue;
+		if (!provider.id.includes("token-plan")) continue;
 		for (const model of piModels().getModels(provider.id)) {
 			if (!isZero(model)) continue;
 			seen++;
-			assert.equal(callCost({ inputTokens: 10, outputTokens: 10, costUsd: undefined }, `${provider.id}:${model.id}`), null, `${provider.id}:${model.id}`);
+			assert.equal(callCost({ inputTokens: 10, outputTokens: 10 }, `${provider.id}:${model.id}`), null, `${provider.id}:${model.id}`);
+			assert.equal(captureCallUsage(usage, model).costUsd, undefined, `${provider.id}:${model.id}`);
 		}
 	}
 	assert.ok(seen > 0);
 });
 
-test("a paid plan the catalog gives real rates prices normally", () => {
+test("a call on an unknown-cost model is priced once the catalog gives it real rates", () => {
 	const model = catalog("zai", "glm-5.2-highspeed");
+	const call = captureCallUsage(usage, model);
 	restore(model, () => {
 		model.cost.input = 1;
 		model.cost.output = 2;
 		assert.ok(Math.abs(captureCallUsage(usage, model).costUsd! - 0.2) < 1e-9);
+		assert.ok(Math.abs(callCost(call, "zai:glm-5.2-highspeed")! - 0.2) < 1e-9, "the unrecorded call is repaired by the catalog");
 	});
 });

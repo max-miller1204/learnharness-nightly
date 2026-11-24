@@ -1,7 +1,7 @@
 /** Per-call API-dollar calculation. Record-time capture prices each call from
  *  the dispatched model's own rates (never re-reading the live catalog) and
- *  skips placeholder models that are not listed in the catalog, routers with no bill
- *  and paid plans with no dollar rate. Read-time
+ *  stores $0 only for models positively known to be free. An all-zero entry that
+ *  is not (a paid plan, a router) stores nothing and reads as unknown. Read-time
  *  fallback (src/server/pricing.ts) shares computeCallCost and liveCatalogModel.
  *  Never mutate saved native messages: calculateCost mutates its usage.cost. */
 import { calculateCost, type Api, type Model, type Usage } from "@earendil-works/pi-ai";
@@ -57,33 +57,24 @@ export function isKnownFreeModelId(id: string): boolean {
 	return /(?:^|[:/-])free(?:$|[:/-])/i.test(id);
 }
 
-/** Paid plans that deduct credits but ship all-zero per-token rates in the
- *  catalog: every token-plan provider, plus individual models of other providers. */
-const UNRATED_PAID_PLAN_PROVIDER = /-token-plan(?:-|$)/;
-const UNRATED_PAID_MODELS: ReadonlySet<string> = new Set([
-	"zai:glm-5.2-highspeed",
-	"zai:glm-5.3-highspeed",
-	"zai-coding-cn:glm-5.3-highspeed",
-	"vercel-ai-gateway:reflection/beam",
-]);
+/** Zero-rate models known to be free by name, not by an id marker: OpenCode's
+ *  free tier and Google's Gemma models. Every other all-zero entry (a paid plan
+ *  or a router that hides the backend's bill) is unknown, never free. */
+const NAMED_FREE_MODEL = /^(?:opencode:|google:gemma-)/;
 
-/** Whether this model is a paid plan whose catalog entry carries no dollar rate.
- *  With zero rates its cost is unknown, never $0.00. */
-export function isUnratedPaidModelId(id: string): boolean {
-	const colon = id.indexOf(":");
-	return UNRATED_PAID_MODELS.has(id) || (colon > 0 && UNRATED_PAID_PLAN_PROVIDER.test(id.slice(0, colon)));
+/** Whether a call on this model costs $0.00 for certain. An explicit free marker
+ *  always counts; a name on the free list counts only while its rates are zero. */
+export function isPositivelyFreeModel(model: { provider: string; id: string; cost?: Model<Api>["cost"]; free?: boolean }): boolean {
+	if (model.free === true || isKnownFreeModelId(model.id)) return true;
+	return model.cost !== undefined && !hasNonZeroRate(model.cost) && NAMED_FREE_MODEL.test(`${model.provider}:${model.id}`);
 }
 
-/** Whether a model's rates are real and safe to persist (not an unpriced provider,
- *  a paid plan with no dollar rate, or a $0 placeholder). */
+/** Whether a model's rates are real and safe to persist. Real rates and models
+ *  positively known to be free are. An all-zero entry that is neither is
+ *  unknown: it stores nothing, so a later catalog fix can still price it. */
 export function hasRecordableCost(model: DispatchedModel): boolean {
-	const modelId = `${model.provider}:${model.id}`;
-	if (isUnpricedModelId(modelId) || !model.cost) return false;
-	if (model.free === true || hasNonZeroRate(model.cost) || isKnownFreeModelId(model.id)) return true;
-	// All-zero rates. A listed model is free unless it is a paid plan with no
-	// dollar rate or a router whose bill the catalog cannot show. A call's cost is
-	// fixed when it runs, so a later catalog price never rewrites a free call.
-	return model.provider !== "openrouter" && !isUnratedPaidModelId(modelId) && liveCatalogModel(modelId) !== undefined;
+	if (isUnpricedModelId(`${model.provider}:${model.id}`) || !model.cost) return false;
+	return hasNonZeroRate(model.cost) || isPositivelyFreeModel(model);
 }
 
 function dispatchedCost(call: Partial<CallUsage>, model: DispatchedModel): number | null {
