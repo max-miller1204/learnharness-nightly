@@ -19,6 +19,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { issueSession } from "../../../selfhost/src/auth-store.ts";
@@ -139,10 +140,11 @@ const app: ChildProcess = spawn(server[0], server.slice(1), {
 	// Next types NODE_ENV as always set; `next dev` sets it itself.
 	env: {
 		...blankedEnv,
-		PATH: process.env.PATH,
+		// Concrete values: an undefined one would let the checkout's .env file supply it.
+		PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
 		HOME: home,
 		LANG: "C.UTF-8",
-		TMPDIR: process.env.TMPDIR,
+		TMPDIR: process.env.TMPDIR ?? os.tmpdir(),
 		...(mode === "standalone" ? { NODE_ENV: "production" } : {}),
 		HOSTNAME: "127.0.0.1",
 		PORT: port,
@@ -239,7 +241,7 @@ if (mode === "dev") {
 	for (const route of ["/pair", "/chat/new", "/chat/chat_zzwarmup"]) await warm(route, route === "/pair" ? {} : { authorization: `Bearer ${token}` }).catch(() => {});
 }
 
-const state: InstanceState = { appUrl, mode, dataDir, home, authFile, modelLog, fixture, fixtureNoNewline, fixtureImage, fakeModel: fake.url, fakeControl: fake.control, scenario };
+const state: InstanceState = { appUrl, mode, dataDir, home, authFile, modelLog, fixture, fixtureNoNewline, fixtureImage, fakeModel: fake.url, fakeControl: fake.control, scenario, ...(launchId ? { launchId } : {}), pid: process.pid };
 fs.writeFileSync(stateFile(port), `${JSON.stringify(state, null, 2)}\n`);
 // Last, so a reader that finds the record finds a usable instance.
 if (launchId) publishLaunch(launchId, port);

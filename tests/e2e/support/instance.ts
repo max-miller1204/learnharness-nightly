@@ -23,6 +23,10 @@ export type InstanceState = {
 	fakeModel: string;
 	fakeControl: string;
 	scenario: string;
+	/** The launch this instance serves (LAUNCH_ID_ENV), when started by the config. */
+	launchId?: string;
+	/** serve.ts's pid. */
+	pid: number;
 };
 
 /** Outside the checkout: `next dev` reloads the page when a file under it changes. */
@@ -65,9 +69,13 @@ export function publishLaunch(id: string, port: string) {
 	fs.writeFileSync(`${file}.tmp`, `${JSON.stringify({ port, pid: process.pid })}\n`);
 	fs.renameSync(`${file}.tmp`, file);
 }
+/** Removes the record of launch `id`, but only a record this process published: another instance's is left alone. */
 export function unpublishLaunch(id: string) {
-	fs.rmSync(launchPointer(id), { force: true });
-	fs.rmSync(`${launchPointer(id)}.tmp`, { force: true });
+	const file = launchPointer(id);
+	let owner: number | undefined;
+	try { owner = (JSON.parse(fs.readFileSync(file, "utf8")) as { pid?: number }).pid; } catch { /* no record, or half written */ }
+	if (owner === process.pid) fs.rmSync(file, { force: true });
+	fs.rmSync(`${file}.tmp`, { force: true });
 }
 
 /**
@@ -86,6 +94,8 @@ export async function pairingCode(id: string): Promise<string> {
 	const { port, pid } = JSON.parse(fs.readFileSync(file, "utf8")) as { port: string; pid: number };
 	try { process.kill(pid, 0); } catch { throw new Error(`the instance of launch ${id} (serve.ts pid ${pid}) is no longer running`); }
 	const state = await instance(`http://127.0.0.1:${port}`);
+	// A stale record, a reused pid or a reused port must never mint against another instance.
+	if (state.launchId !== id || state.pid !== pid) throw new Error(`the instance on port ${port} is not launch ${id} (it serves ${state.launchId ?? "no launch"}, pid ${state.pid})`);
 	return formatCode(createPairingLink(state.dataDir, { label: "e2e" }).code);
 }
 
