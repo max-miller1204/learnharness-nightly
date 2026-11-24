@@ -13,6 +13,7 @@ import { createPluginAgentRecordStore } from "../src/store/plugin-agent-records.
 import { runSubagent } from "../src/agent/subagents/pi-run.ts";
 import type { ModelCatalogResponse } from "../src/core/contracts/models.ts";
 import type { PluginModelSpec } from "../src/core/plugin-agents.ts";
+import { modelUnavailableMessage } from "../src/core/model-unavailable.ts";
 import type { PluginInferenceOptions, PluginInferenceRequest } from "../src/core/plugins.ts";
 import { usageWasAdmitted, type SubscriptionDispatchLifecycle } from "../src/agent/subscription-request-cycle.ts";
 import { CLAUDE_CODE_PROVIDER } from "../src/agent/claude-code/constants.ts";
@@ -154,7 +155,7 @@ test("every model is explicit and available: missing, unknown, removed keys and 
 	await assert.rejects(f.adapter.inference.complete({ ...request(), model: undefined as never }), /explicit model/);
 	await assert.rejects(f.adapter.engineFor({ provider: "", id: "" }, "user"), /explicit model/);
 	await assert.rejects(f.adapter.engineFor({ provider: "unknown", id: spec.id }, "user"), /Unknown model provider/);
-	await assert.rejects(f.adapter.engineFor({ provider: spec.provider, id: "missing" }, "background"), /is no longer available\. Pick another model in Settings\./);
+	await assert.rejects(f.adapter.engineFor({ provider: spec.provider, id: "missing" }, "background"), /isn't available right now\. It may be retired/);
 	await assert.rejects(f.adapter.engineFor(spec, "automatic" as never), /purpose/);
 	await assert.rejects(f.adapter.engineFor({ ...spec, thinkingLevel: "guess" as never }, "user"), /thinkingLevel/);
 	const fallback = createPluginInference({ signal: f.signal.signal, dataDirectory: f.directory }, { ...f.deps, engineForSpec: () => ({ model: { provider: "another-provider", id: "another-model" } as never, streamFn: () => { throw new Error("must not run"); } }) });
@@ -522,7 +523,7 @@ test("a model the catalog dropped is refused as model_unavailable before the pro
 	f.removeKey();
 	const gone = createPluginInference({ signal: f.signal.signal, dataDirectory: f.directory }, { ...f.deps, modelGone: (provider, id) => provider === spec.provider && id === "retired" });
 	await assert.rejects(gone.engineFor({ provider: spec.provider, id: "retired" }, "background"), (error: Error & { code?: string }) =>
-		error.code === "model_unavailable" && error.message === `The model ${spec.provider}/retired is no longer available. Pick another model in Settings.`);
+		error.code === "model_unavailable" && error.message === modelUnavailableMessage(spec.provider, "retired"));
 	await assert.rejects(gone.engineFor(spec, "background"), /key/i, "a model that still exists keeps the key refusal");
 });
 

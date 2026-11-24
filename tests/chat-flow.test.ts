@@ -1135,7 +1135,7 @@ describe("a saved model the catalog no longer has", () => {
 			const res = await handleChatRequest(post(chat.id, { type: "text", text: "teach me something" }), agentFactory(scriptedTeacher(defaultLesson).engine));
 			assert.equal(res.status, 422);
 			assert.deepEqual(await res.json(), {
-				error: "The model opencode-go/minimax-m3.1-flash-free is no longer available. Pick another model in Settings.",
+				error: "The model minimax-m3.1-flash-free from OpenCode Go isn't available right now. It may be retired, or its provider isn't connected or can't be reached. Check Providers in Settings, or pick another model.",
 				code: "model_unavailable",
 			});
 			assert.equal(isTurnRunning(chat.id), false);
@@ -1152,7 +1152,7 @@ describe("a saved model the catalog no longer has", () => {
 		const res = await handleChatRequest(post(chat.id, { type: "text", text: "teach me something" }), agentFactory(scriptedTeacher(defaultLesson).engine));
 		assert.equal(res.status, 422);
 		assert.deepEqual(await res.json(), {
-			error: "The model opencode-go/minimax-m3.1-flash-free is no longer available. Pick another model in Settings.",
+			error: "The model minimax-m3.1-flash-free from OpenCode Go isn't available right now. It may be retired, or its provider isn't connected or can't be reached. Check Providers in Settings, or pick another model.",
 			code: "model_unavailable",
 		});
 		assert.equal(isTurnRunning(chat.id), false);

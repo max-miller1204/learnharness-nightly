@@ -53,7 +53,7 @@ describe("bundled OpenRouter free catalog (offline, no live discovery)", { concu
 	}
 	it("removed/unknown native models remain unpriced and unresolvable, never aliased to a paid fallback", () => {
 		for (const id of ["openai/gpt-3.5-turbo", "removed/no-such-model"]) {
-			assert.throws(() => piEngineForSpec({ provider: "openrouter", id }), /is no longer available/);
+			assert.throws(() => piEngineForSpec({ provider: "openrouter", id }), /isn't available right now/);
 		}
 		assert.equal(callCost({ inputTokens: 1, outputTokens: 1 }, "openrouter:removed/no-such-model"), null);
 		// A model Pi's catalog retired keeps its recorded price for usage already spent

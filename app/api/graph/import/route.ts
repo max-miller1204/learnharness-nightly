@@ -28,7 +28,7 @@
  */
 import {
 	convertDocument, conversionFailureMessage, convertPdf, detectDocumentFormat, detectSupportedImageMimeType, DocumentConversionError,
-	extraction, isOleCompound, joinPages, looksBinary, NotesImportError, sourceDirectory,
+	extraction, isOleCompound, joinPages, looksBinary, ModelUnavailableError, NotesImportError, sourceDirectory,
 } from "@/src/server";
 import {
 	CODE_CAP_MESSAGE, importKind, MAX_CODE_FILE_BYTES, MAX_CODE_FILES, MAX_CODE_TOTAL_BYTES, MAX_IMPORT_BODY_BYTES, MAX_IMPORT_BYTES,
@@ -37,6 +37,7 @@ import {
 import { FormBodyLimitError, readBoundedFormData } from "@/lib/bounded-form-data.ts";
 import {
 	emit,
+	MODEL_UNAVAILABLE,
 	ModelsNotConfiguredError,
 	PROVIDER_KEY_MISSING_CODE,
 	ProviderKeyMissingError,
@@ -54,11 +55,12 @@ interface ImportResult {
 	ok: boolean;
 	stats?: EmissionStats;
 	error?: string;
-	/** The machine discriminator when ok:false is a config refusal — the
-	 * BYOK models refusal (owner, 2026-09-22) or the provider-key refusal
-	 * (2026-09-25); the client can open the setup/keys flow off it. An
+	/** The machine discriminator when ok:false is a config refusal: the BYOK
+	 * models refusal (owner, 2026-09-22), a saved model the catalog dropped
+	 * (model_unavailable) or the provider-key refusal (2026-09-25). Callers
+	 * can branch on it; the import dialog shows the row's message. An
 	 * unreachable subscription is an outage, not setup: import again later. */
-	code?: "models_not_configured" | (typeof PROVIDER_KEY_MISSING_CODE) | (typeof SUBSCRIPTION_UNREACHABLE_CODE);
+	code?: "models_not_configured" | (typeof MODEL_UNAVAILABLE) | (typeof PROVIDER_KEY_MISSING_CODE) | (typeof SUBSCRIPTION_UNREACHABLE_CODE);
 	missing?: string[];
 	/** Whose key or connection (provider_key_missing, subscription_unreachable). */
 	provider?: string;
@@ -188,6 +190,9 @@ async function runImport(filePath: string, requestIndex: number, input: NotesInp
 		if (err instanceof ModelsNotConfiguredError) {
 			return { filePath, ok: false, requestIndex, outcome: "failed", error: err.envelope.error,
 				code: "models_not_configured", missing: err.envelope.missing };
+		}
+		if (err instanceof ModelUnavailableError) {
+			return { filePath, ok: false, requestIndex, outcome: "failed", error: err.message, code: MODEL_UNAVAILABLE };
 		}
 		if (err instanceof ProviderKeyMissingError) {
 			return { filePath, ok: false, requestIndex, outcome: "failed", error: err.envelope.error,

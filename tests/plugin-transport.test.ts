@@ -3,6 +3,7 @@ import { it } from "node:test";
 import { createPluginTransport, type PluginTransportHost } from "../src/server/plugin-transport.ts";
 import { PluginHostError } from "../src/server/plugin-host.ts";
 import { modelsNotConfigured, providerKeyMissing } from "../src/core/settings.ts";
+import { modelUnavailableMessage } from "../src/core/model-unavailable.ts";
 
 const request = (body: unknown) => new Request("http://localhost/api/plugins", { method: "POST", body: JSON.stringify(body) });
 function fixture() {
@@ -100,11 +101,11 @@ it("a plugin with no model configured is refused with 422 and the same setup env
 	assert.equal(refused.status, 422);
 	assert.deepEqual(await refused.json(), modelsNotConfigured(["cheap"]));
 });
-it("a plugin's model_unavailable refusal is 422 with its message, unless only the provider key is missing", async () => {
+it("a plugin's model_unavailable refusal is 422 with the shared refusal message for its model, unless only the provider key is missing", async () => {
 	const { host } = fixture();
 	const model = { provider: "opencode-go", id: "retired" };
-	const message = "The model opencode-go/retired is no longer available. Pick another model in Settings or as the Flashcards model.";
-	host.call = async () => { throw Object.assign(new Error(message), { code: "model_unavailable", model }); };
+	const message = modelUnavailableMessage("opencode-go", "retired");
+	host.call = async () => { throw Object.assign(new Error("A plugin's own wording"), { code: "model_unavailable", model }); };
 	const asked: unknown[] = [];
 	const gone = createPluginTransport({ getHost: async () => host, directory: "/temporary/plugins", keyMissing: (provider, id) => { asked.push({ provider, id }); return null; } });
 	const refused = await gone.call("flashcards", request({ operation: "preflight-file", input: {} }));
@@ -116,6 +117,8 @@ it("a plugin's model_unavailable refusal is 422 with its message, unless only th
 	const keyRefused = await keyless.call("flashcards", request({ operation: "preflight-file", input: {} }));
 	assert.equal(keyRefused.status, 422);
 	assert.deepEqual(await keyRefused.json(), envelope);
+	host.call = async () => { throw Object.assign(new Error("A plugin's own wording"), { code: "model_unavailable" }); };
+	assert.deepEqual(await (await gone.call("flashcards", request({ operation: "x", input: {} }))).json(), { error: "A plugin's own wording", code: "model_unavailable" }, "a refusal naming no model keeps its text");
 	host.call = async () => { throw new Error("Plugin operation failed"); };
 	assert.equal((await gone.call("flashcards", request({ operation: "x", input: {} }))).status, 500, "other plugin errors stay 500");
 });
@@ -141,4 +144,22 @@ it("a provider_key_missing error for a provider the host does not know keeps the
 	const bare = createPluginTransport({ getHost: async () => host, directory: "/temporary/plugins" });
 	host.call = async () => { throw Object.assign(new Error("No OpenCode Go key is set"), { code: "provider_key_missing", provider: "opencode-go" }); };
 	assert.equal((await bare.call("example", request({ operation: "summarize", input: {} }))).status, 500, "with no provider check the error stays generic");
+});
+it("a model_unavailable refusal and a provider_key_missing refusal each keep their own answer, with neither shadowing the other", async () => {
+	const { host } = fixture();
+	const model = { provider: "opencode-go", id: "retired" };
+	const transport = createPluginTransport({ getHost: async () => host, directory: "/temporary/plugins", knownProvider: (provider) => provider === "opencode-go", keyMissing: () => null });
+	const ask = () => transport.call("example", request({ operation: "summarize", input: {} }));
+	host.call = async () => { throw Object.assign(new Error("A plugin's own wording"), { code: "model_unavailable", model, provider: "opencode-go" }); };
+	const gone = await ask();
+	assert.equal(gone.status, 422);
+	assert.deepEqual(await gone.json(), { error: modelUnavailableMessage("opencode-go", "retired"), code: "model_unavailable" }, "a model refusal is not turned into a key request");
+	host.call = async () => { throw Object.assign(new Error("No OpenCode Go key is set"), { code: "provider_key_missing", provider: "opencode-go", slots: ["cheap"], model }); };
+	const keyless = await ask();
+	assert.equal(keyless.status, 422);
+	assert.deepEqual(await keyless.json(), providerKeyMissing("opencode-go", ["cheap"]), "a key refusal keeps its envelope and is not worded as a retired model");
+	host.call = async () => { throw Object.assign(new Error("GitHub token is missing"), { code: "provider_key_missing", provider: "github", model }); };
+	const unknown = await ask();
+	assert.equal(unknown.status, 500, "an unknown provider's key refusal stays the plugin's own error");
+	assert.deepEqual(await unknown.json(), { error: "GitHub token is missing" });
 });

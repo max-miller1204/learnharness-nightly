@@ -1218,10 +1218,10 @@ test('settings validate atomically and model resolution fails explicitly without
 test('a saved model the catalog no longer has fails generation as model_unavailable with a message naming it, and never switches models', async t => {
   const h = harness(t, graph('p1'));
   h.catalog.models = [];
-  await assert.rejects(h.call('preflight-file', fileInput()), /^Error: The model mock\/cheap is no longer available\. Pick another model in Settings\.$/);
+  await assert.rejects(h.call('preflight-file', fileInput()), /^Error: The model mock\/cheap isn't available right now\.$/);
   h.catalog.models = [{ provider: 'mock', id: 'other', name: 'Other', supportedLevels: ['off'], contextWindow: 100000, maxTokens: 8192 }];
   await h.call('save-settings', { modelOverride: { provider: 'mock', id: 'gone' } });
   await assert.rejects(h.call('preflight-file', fileInput()), error => error.code === 'model_unavailable' && error.model.provider === 'mock' && error.model.id === 'gone'
-    && error.message === 'The model mock/gone is no longer available. Pick another model in Settings or as the Flashcards model.');
+    && error.message === "The model mock/gone isn't available right now.");
   assert.equal(h.workers.starts, 0);
 });

@@ -148,7 +148,7 @@ test("retained selections remain unavailable at runtime, with no API-key fallbac
 	const engine = piEngineForSpec(copilot, false);
 	await connection(false);
 	assert.equal((await put({ ...initial, cheap: { model: replacement } })).status, 200);
-	assert.throws(() => piEngineForSpec(copilot, false), /is no longer available/);
+	assert.throws(() => piEngineForSpec(copilot, false), /isn't available right now/);
 	let requests = 0;
 	const before = leases;
 	const key = process.env.COPILOT_GITHUB_TOKEN;

@@ -319,7 +319,7 @@ it("folder review lines: unpriced models, failed estimates, nothing to extract",
 	assert.equal(folderReviewLines({ plan, estimate: { tokens: 100, usd: 0.001, rough: false } }).estimate, "About 100 tokens, about less than $0.01");
 	assert.equal(folderReviewLines({ plan, estimate: "failed" }).estimate, "Could not estimate the cost.");
 	assert.equal(folderReviewLines({ plan, estimate: { tokens: 100, usd: null, rough: false, unavailable: "opencode-go:minimax-m3.1-flash-free" } }).estimate,
-		"About 100 tokens. The model opencode-go/minimax-m3.1-flash-free is no longer available. Pick another model in Settings.");
+		"About 100 tokens. The model minimax-m3.1-flash-free from OpenCode Go isn't available right now. It may be retired, or its provider isn't connected or can't be reached. Check Providers in Settings, or pick another model.");
 	const empty = await planFolder([picked("e/data.xlsx")]);
 	assert.deepEqual(folderReviewLines({ plan: empty, estimate: "failed" }), { title: "Nothing to extract in e", skipped: "Skipped: 1 unsupported", empty: true });
 });

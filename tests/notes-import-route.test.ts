@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { after, it } from "node:test";
 import { POST } from "../app/api/graph/import/route.ts";
 import { extraction, sourceDirectory } from "../src/server/index.ts";
+import { ModelUnavailableError } from "../src/agent/models.ts";
+import { modelUnavailableMessage } from "../src/core/model-unavailable.ts";
 import { ModelsNotConfiguredError, ProviderKeyMissingError, SubscriptionUnreachableError, subscriptionUnreachable } from "../src/core/settings.ts";
 import { createExtractionPipeline, NotesImportError } from "../src/agent/subagents/extraction.ts";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
@@ -69,6 +72,64 @@ it("route keeps three-worker batching, request positions and mixed per-file outc
 	assert.equal(outage.code, "subscription_unreachable", "an outage is not a setup refusal");
 	assert.equal(outage.error, subscriptionUnreachable("chatgpt").error);
 	assert.equal(outage.provider, "chatgpt");
+});
+
+it("a removed model is refused per file as model_unavailable with the one refusal message", async () => {
+	extraction.importNotes = async () => { throw new ModelUnavailableError("opencode-go", "retired"); };
+	const response = await POST(request(["a.md", "b.md"]));
+	assert.equal(response.status, 200);
+	const { results } = await response.json();
+	assert.equal(results.length, 2);
+	for (const result of results) {
+		assert.equal(result.ok, false);
+		assert.equal(result.outcome, "failed");
+		assert.equal(result.code, "model_unavailable");
+		assert.equal(result.error, modelUnavailableMessage("opencode-go", "retired"));
+	}
+});
+
+it("a retired Vision model refuses the image row and the note in the same batch still merges under its own index", async () => {
+	const nodes: GraphNode[] = [];
+	const sources = new Map<string, NotesSource>();
+	const graphStore: GraphStore = {
+		appendNode: (node) => { nodes.push(node); }, readNodes: () => [...nodes],
+		appendChain: () => {}, readChains: () => [],
+		appendCheckpoint: () => {}, readCheckpoints: () => [],
+		appendCoverage: () => {}, readCoverage: () => [],
+		upsertSource: (source) => { sources.set(source.id, { ...source, extractions: sources.get(source.id)?.extractions ?? [] }); },
+		readSources: () => [...sources.values()],
+		deleteSources: (ids) => [...ids].reduce((count, id) => count + Number(sources.delete(id)), 0),
+		appendSourceUsage: (id, usage) => { sources.get(id)!.extractions!.push(usage); },
+		readPositions: () => ({}), writePositions: () => {}, rewriteLedgers: () => {},
+	};
+	const pipeline = createExtractionPipeline({ chatStore: stores.chatStore, graphStore,
+		engineFor: (role) => {
+			if (role === "imageReader") throw new ModelUnavailableError("opencode-go", "retired-vision");
+			const faux = createFauxCore({});
+			faux.setResponses([() => fauxAssistantMessage([fauxToolCall(role === "extractor" ? "submit_findings" : "submit_review", role === "extractor" ? {
+				propositions: [{ id: "p1", name: "Synthetic note", statement: "A note merges beside a refused image.", aliases: [] }], chains: [],
+			} : { links: [] })], { stopReason: "toolUse" })]);
+			return { model: faux.getModel(), streamFn: faux.streamSimple };
+		},
+	});
+	extraction.importNotes = pipeline.importNotes;
+	const png = new Uint8Array(fs.readFileSync(new URL("./fixtures/images/sample.png", import.meta.url)));
+	const form = new FormData();
+	form.append("files", new File([png], "diagram.png"));
+	form.append("files", new File(["# a note"], "note.md"));
+	const response = await POST(new Request("http://localhost/api/graph/import", { method: "POST", body: form }));
+	assert.equal(response.status, 200);
+	const { results } = await response.json();
+	const image = results.find((r: { requestIndex: number }) => r.requestIndex === 0);
+	const note = results.find((r: { requestIndex: number }) => r.requestIndex === 1);
+	assert.equal(image.filePath, "diagram.png");
+	assert.equal(image.ok, false);
+	assert.equal(image.code, "model_unavailable");
+	assert.equal(image.error, modelUnavailableMessage("opencode-go", "retired-vision"));
+	assert.equal(note.filePath, "note.md");
+	assert.equal(note.ok, true);
+	assert.equal(note.outcome, "completed");
+	assert.equal(nodes.length, 1);
 });
 
 it("real route plus in-memory ledgers and faux stages reprocess identical imports for all four filename cases", async () => {

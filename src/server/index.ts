@@ -11,6 +11,7 @@ export * from "./graph.ts";
 export * from "./source-organization.ts";
 export * from "./source-deletion.ts";
 export { NotesImportError } from "../agent/subagents/extraction.ts";
+export { ModelUnavailableError } from "../agent/models.ts";
 export { convertPdf } from "../agent/subagents/pdf-ops.ts";
 export { joinPages } from "../agent/subagents/pdf-markdown.ts";
 // Extract files (item 26): the document converter and image sniffing, for the import route.

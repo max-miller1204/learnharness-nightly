@@ -225,7 +225,7 @@ test("a refresh serves a model Pi retired when pi.dev lists it again; one it doe
 		assert.equal(piEngineForSpec({ provider: "openrouter", id: listed }).model.id, listed, "a saved session on it runs again");
 		assert.equal(callCost(million, `openrouter:${listed}`), 7, "priced from the catalog that serves it");
 		assert.equal(piModels().getModel("openrouter", unlisted), undefined);
-		assert.throws(() => piEngineForSpec({ provider: "openrouter", id: unlisted }), /is no longer available/);
+		assert.throws(() => piEngineForSpec({ provider: "openrouter", id: unlisted }), /isn't available right now/);
 		assert.equal(callCost(million, `openrouter:${unlisted}`), 1, "history keeps the table's $0.25 + $0.75");
 	} finally {
 		setModelCatalogOverlay(new Map());

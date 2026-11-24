@@ -382,7 +382,7 @@ describe("send (one input event, verbatim consumption)", () => {
 	});
 
 	it("a saved model that is gone surfaces its plain message, not the JSON envelope", async () => {
-		const error = "The model opencode-go/minimax-m3.1-flash-free is no longer available. Pick another model in Settings.";
+		const error = "The model minimax-m3.1-flash-free from OpenCode Go isn't available right now. It may be retired, or its provider isn't connected or can't be reached. Check Providers in Settings, or pick another model.";
 		globalThis.fetch = (async () => new Response(JSON.stringify({ error, code: "model_unavailable" }), { status: 422 })) as typeof globalThis.fetch;
 		const m = model();
 		await m.send({ type: "text", text: "q" });

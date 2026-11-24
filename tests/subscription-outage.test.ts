@@ -137,7 +137,7 @@ async function sideChat(provider: string, id: string) {
 function plugin(provider: string, id: string) {
 	const host = {
 		list: () => [], conflicts: () => [], refresh: async () => {}, setEnabled: async () => {}, convertDocument: async () => assert.fail("unused"), asset: () => assert.fail("unused"),
-		call: async () => { throw Object.assign(new Error(`The model ${provider}/${id} is no longer available. Pick another model in Settings.`), { code: "model_unavailable", model: { provider, id } }); },
+		call: async () => { throw Object.assign(new Error(`The model ${provider}/${id} isn't available right now.`), { code: "model_unavailable", model: { provider, id } }); },
 	};
 	const transport = createPluginTransport({ getHost: async () => host, directory: path.join(root, "plugins"), keyMissing: pluginKeyMissing });
 	return transport.call("flashcards", new Request("http://localhost/api/plugins", { method: "POST", body: JSON.stringify({ operation: "preflight-file", input: {} }) }));
