@@ -7,7 +7,7 @@ import type { PlanBlockData } from "../../../src/core/contracts/chat.ts";
 import { blockLayout, GRAPH_PAD, TEXT_CAP_SCALE } from "../../../src/core/plan-layout.ts";
 import { projectView, type LhViewMessage, type LhViewPart } from "../../../src/core/view.ts";
 import { shownConfidence, type QuestionAnswerData } from "../../../src/core/question-core.ts";
-import { isShowImageDetails } from "../../../src/core/tool-steps.ts";
+import { isShowImageDetails, isStoppedCall } from "../../../src/core/tool-steps.ts";
 import type { MobileApi } from "./protocol";
 import { helperCard, isSubagentSteer, teachSeam } from "./lesson";
 import { CompactionCut, CompactionNote, DispatchCard, GraphContextCard, ReasoningRow, SeamDivider, SteerCard, ThinkingRow } from "./LessonParts";
@@ -219,6 +219,9 @@ function Part({ part, context, blocks }: { part: LhViewPart; context: PartContex
   const { c, s } = useTheme();
   const { api, chatId } = context;
   if (part.type === "text" && part.text) return <MarkdownBlocks text={part.text} from={blocks?.[0]} to={blocks?.[1]} />;
+  // A call the learner stopped: chat.tsx's SystemLine, a quiet line, never a card or an error.
+  // The saved record holds earlier turns only: the running turn's own messages are saved when it ends.
+  if (isStoppedCall(part)) return <Text style={[s.meta, { textAlign: "center", paddingVertical: space.xs }]}>Stopped</Text>;
   if (part.type === "reasoning") return <ReasoningRow text={part.text ?? ""} streaming={false} />;
   if (part.type === "data-plan-block") return <PlanBlock data={part.data as PlanBlockData} openPlan={context.openPlan} />;
   if (part.type === "data-compaction") return <CompactionNote />;
@@ -327,6 +330,8 @@ export function Transcript({ settled, batches, eager, batchWidth = 0, onBatchLay
     const parts = message.parts.flatMap((part, index) => {
       const blocks = shown.get(index);
       if (!blocks) return [];
+      // One Stopped line per run of stopped calls (chat.tsx).
+      if (isStoppedCall(part) && isStoppedCall(message.parts[index - 1])) return [];
       return [index === teachAt && part.type === "step-start"
         ? <SeamDivider key={part.id ?? index} label="Teaching" />
         : <Part key={part.id ?? index} part={part} context={context} blocks={blocks} />];
@@ -376,6 +381,8 @@ export function Transcript({ settled, batches, eager, batchWidth = 0, onBatchLay
               const last = messageIndex === live.length - 1 && index === message.parts.length - 1;
               return <ReasoningRow key={part.id ?? index} text={part.text ?? ""} streaming={last} />;
             }
+            // The tail is the running turn: a call there is stopped only by a result that says aborted.
+            if (isStoppedCall(part, true)) return isStoppedCall(message.parts[index - 1], true) ? null : <Part key={part.toolCallId ?? index} part={part} context={context} />;
             if (isToolStep(part)) return <ToolStep key={part.toolCallId ?? index} part={part} running={isRunning(part)} />;
             // A shown image settles into its picture mid-turn too, as in the record.
             if (part.type === "tool-show_image") return <Part key={part.toolCallId ?? index} part={part} context={context} />;

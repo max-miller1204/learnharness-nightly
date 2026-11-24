@@ -71,6 +71,15 @@ export function isAbortedCall(errorText: unknown): boolean {
 	return errorText === "Operation aborted" || errorText === "The operation was aborted" || errorText === "This operation was aborted";
 }
 
+/** A tool call the learner stopped, as the transcript shows it: a quiet "Stopped" line in place
+ *  of a card or a retry line. Either its result says it was aborted, or it is a practice call
+ *  `projectView` flagged `stopped` (no clean result in a turn that is over). While the turn
+ *  still runs, the flag is not trusted: a call with no result yet may be running. */
+export function isStoppedCall(part: { type: string; state?: string; errorText?: unknown; stopped?: boolean } | undefined, turnRunning = false): boolean {
+	if (!part?.type.startsWith("tool-")) return false;
+	return (part.state === "output-error" && isAbortedCall(part.errorText)) || (part.stopped === true && !turnRunning);
+}
+
 /** A failure the agent is told about because its call never ran: pi's schema check (its
  *  text echoes the received arguments), the tool's own refinement check, an unknown tool,
  *  a call cut off by the token limit. The agent retries these, so the transcript shows the
