@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * drive.mjs: the CI iPhone job's driver (docs/specs/ios-simulator-ci.md).
+ * drive.mjs: the iPhone simulator driver (docs/specs/ios-simulator-ci.md).
  *
  *   node scripts/iphone-check/drive.mjs --phase web-before|phone|web-after --udid <sim> --bundle <id>
  *     --origin https://127.0.0.1:<port> --instance <instance.env> --out <dir> --axe <path> --chrome <path>
  *     --metro-log <file>
  *
- * The job runs the three phases in turn, so Chrome never runs beside the
+ * The driver runs the three phases in turn, so Chrome never runs beside the
  * booted simulator: web-before shoots the web's screens while the quiz waits,
  * phone drives the app and answers the quiz, and web-after shoots the
  * answered quiz on the web and puts every iPhone and web picture side by side.
@@ -530,7 +530,7 @@ async function sideBySide(browser) {
 		}
 	}
 	const rel = (file) => path.relative(OUT, file);
-	const summary = ["## iPhone and web screenshots", "", "Download the `iphone-screenshots` artifact. Each `pairs/` picture puts the iPhone pages beside the web pages of the same screen.", "",
+	const summary = ["## iPhone and web screenshots", "", "Each `pairs/` picture under the `--out` directory puts the iPhone pages beside the web pages of the same screen.", "",
 		"| Screen | Mode | Side by side | iPhone | Web |", "| --- | --- | --- | --- | --- |",
 		...rows.map((r) => `| ${r.screen} | ${r.mode} | \`${rel(r.pair)}\` | ${r.phone.map((s) => `\`${rel(s.file)}\``).join("<br>")} | ${r.web.map((s) => `\`${rel(s.file)}\``).join("<br>")} |`)];
 	writeFileSync(path.join(OUT, "summary.md"), summary.join("\n") + "\n");
@@ -633,7 +633,7 @@ async function phone() {
 	await tap("pair", (el) => label(el) === "Connect");
 
 	// The one step not driven: AXe's touches do not reach session rows inside
-	// the long-press menu on the simulator, so the job's Metro bundles with
+	// the long-press menu on the simulator, so the simulator run's Metro bundles with
 	// EXPO_PUBLIC_CI_OPEN_SESSIONS (apps/mobile/src/workspace-view.ts) and each
 	// connection opens the next fixture session instead of a tapped row.
 	const sessionsReached = (elements) => hasMatch(new RegExp(QUIZ.title))(elements) && hasMatch(new RegExp(LESSON.title))(elements);

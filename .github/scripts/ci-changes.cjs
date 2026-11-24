@@ -28,7 +28,6 @@
 //
 // The independently installed mobile app and the web app share source,
 // so path gates follow the source they consume.
-const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 
 // Docs the app or its plugin-authoring bundle ships, so they are not inert:
@@ -60,14 +59,7 @@ const STANDALONE_TESTS = [
 ];
 
 const WEB_GATES = ["typecheck", "test", "selfhost", "standalone"];
-const GATES = [...WEB_GATES, "mobile", "iphone"];
-// The iPhone job runs whenever the mobile job does, and also when the
-// fixtures, scenario and scripts it drives the app and server with change.
-const IPHONE_OWN = [
-	/^scripts\/iphone-check\//,
-	/^tests\/fixtures\/(mobile-lesson|mobile-quiz)\//,
-	/^\.claude\/skills\/prove-learnharness\/scripts\/(lib\.sh|knobs\.env|new-run\.sh|build\.sh|start\.sh|seed\.mjs|sign-in\.mjs|fake-model\.mjs)$/,
-];
+const GATES = [...WEB_GATES, "mobile"];
 const MOBILE_SHARED = /^(src\/(client-protocol|core)\/|\.github\/|package(-lock)?\.json$|build\/icon\.png$|public\/fonts\/cmunbx\.ttf$)/;
 
 /** Web gate class for one repo-relative path. */
@@ -80,16 +72,9 @@ function classify(file) {
 	return "everything";
 }
 
-/** files: changed paths, or null when the diff is unknown. full: run every
- *  job, except that with a known diff (a push to main) the iPhone job still
- *  follows its own gate, so merges that can't affect it don't wait on it. */
+/** files: changed paths, or null when the diff is unknown. full: run every job. */
 function decide(files, full = false) {
 	const outputs = Object.fromEntries(GATES.map((gate) => [gate, false]));
-	if (full && files !== null) {
-		const gated = decide(files);
-		for (const gate of GATES) outputs[gate] = gate === "iphone" ? gated.iphone : true;
-		return outputs;
-	}
 	if (full || files === null) {
 		for (const gate of GATES) outputs[gate] = true;
 		return outputs;
@@ -101,7 +86,6 @@ function decide(files, full = false) {
 		if (kind === "mobile" || (kind !== "inert" && MOBILE_SHARED.test(file))) {
 			outputs.mobile = true;
 		}
-		if (outputs.mobile || IPHONE_OWN.some((pattern) => pattern.test(file))) outputs.iphone = true;
 		if (kind === "tests") {
 			outputs.typecheck = true;
 			outputs.test = true;
@@ -126,38 +110,17 @@ function pathsFile(text) {
 	return text.length > 0 && !text.includes("\0") ? null : splitPaths(text);
 }
 
-/** The paths a push changed, from the commit main was at before it to HEAD,
- *  or null when that commit is unknown (a new branch, the all-zero SHA, or a
- *  commit gone after a force push). A shallow checkout fetches it first. */
-function pushPaths(before, cwd = process.cwd()) {
-	if (!/^[0-9a-f]{40}$/.test(before ?? "") || /^0+$/.test(before)) return null;
-	const git = (...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-	try { git("cat-file", "-e", `${before}^{commit}`); } catch {
-		try { git("fetch", "-q", "--no-tags", "--depth=1", "origin", before); } catch { return null; }
-	}
-	try {
-		return splitPaths(git("diff", "-z", "--name-only", "--no-renames", before, "HEAD"));
-	} catch {
-		return null;
-	}
-}
-
 function main() {
 	const args = process.argv.slice(2);
 	const pathsIndex = args.indexOf("--paths");
-	const beforeIndex = args.indexOf("--push-before");
-	const files = beforeIndex !== -1
-		? pushPaths(args[beforeIndex + 1])
-		: pathsIndex === -1
-			? null
-			: pathsFile(fs.readFileSync(args[pathsIndex + 1], "utf8"));
+	const files = pathsIndex === -1 ? null : pathsFile(fs.readFileSync(args[pathsIndex + 1], "utf8"));
 	const full = args.includes("--full");
 	for (const file of files ?? []) console.error(`${classify(file)}: ${JSON.stringify(file)}`);
-	if (files === null) console.error(pathsIndex !== -1 && beforeIndex === -1 ? "The paths file is not NUL-separated (git diff -z): running every job." : "No diff: running every job.");
-	if (full) console.error(files === null ? "Full run: running every job." : "Full run: running every job but iPhone, which follows the diff.");
+	if (files === null) console.error(pathsIndex !== -1 ? "The paths file is not NUL-separated (git diff -z): running every job." : "No diff: running every job.");
+	if (full) console.error("Full run: running every job.");
 	for (const [key, value] of Object.entries(decide(files, full))) console.log(`${key}=${value}`);
 }
 
-module.exports = { classify, decide, pathsFile, pushPaths, splitPaths, GATES };
+module.exports = { classify, decide, pathsFile, splitPaths, GATES };
 
 if (require.main === module) main();

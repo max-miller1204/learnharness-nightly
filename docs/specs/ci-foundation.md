@@ -56,7 +56,7 @@ Expected PR critical path: about 20 s `changes`, then a test shard of about 30 s
 
 Ported from T3's `.github/actions/ci-changes/action.yml` and `.github/scripts/ci-changes.cjs` (MIT, notice kept in the file header), cut down because LearnHarness is one package, not a workspace graph.
 
-How the diff is read (T3, adopted): `changes` checks out with `fetch-depth: 2`. On `pull_request` the merge commit's first parent is the base, so it diffs `HEAD^1..HEAD`. On `push` it passes `--full --push-before` with the commit main was at before the push: every gate is true except iPhone, which follows the diff from that commit to `HEAD` (every commit in the push counts), and everything runs when that commit is unknown. On `workflow_dispatch` it passes `--full` and every gate is true (main is the backstop). `git diff -z --name-only --no-renames`, so a rename counts as both paths, and the paths are NUL-separated so Git never quotes a name (a non-ASCII character or a newline in it would otherwise reach the classifier quoted). A `--paths` file that isn't NUL-separated runs everything. If the base cannot be fetched or the diff fails, it fails open: everything runs.
+How the diff is read (T3, adopted): `changes` checks out with `fetch-depth: 2`. On `pull_request` the merge commit's first parent is the base, so it diffs `HEAD^1..HEAD`. On `push` and `workflow_dispatch` it passes `--full` and every gate is true (main is the backstop). `git diff -z --name-only --no-renames`, so a rename counts as both paths, and the paths are NUL-separated so Git never quotes a name (a non-ASCII character or a newline in it would otherwise reach the classifier quoted). A `--paths` file that isn't NUL-separated runs everything. If the base cannot be fetched or the diff fails, it fails open: everything runs.
 
 Outputs: `typecheck`, `test`, `selfhost`, `standalone` (`true`/`false`). Each changed file is classified; the gates are the union:
 
@@ -68,7 +68,7 @@ Outputs: `typecheck`, `test`, `selfhost`, `standalone` (`true`/`false`). Each ch
 
 So a docs-only PR runs only `changes`, `lint` and `Check`; a tests-only PR skips the three standalone builds.
 
-The classifier gets a small `node:test` suite (`.github/scripts/ci-changes.test.cjs`) that the `lint` job runs: docs-only, shipped docs, tests-only, native test, unknown path, `--full`, no `--paths` (fail open), a `--paths` file that isn't NUL-separated (fail open), and names Git would quote (non-ASCII, a newline) from a pull request's paths file and from a push.
+The classifier gets a small `node:test` suite (`.github/scripts/ci-changes.test.cjs`) that the `lint` job runs: docs-only, shipped docs, tests-only, native test, unknown path, `--full`, no `--paths` (fail open), a `--paths` file that isn't NUL-separated (fail open), and names Git would quote (non-ASCII, a newline) from a pull request's paths file, whose decoded names the test checks one by one. Pushes and manual runs pass `--full`, so they run the full set.
 
 ### Caching
 

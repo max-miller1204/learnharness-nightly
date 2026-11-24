@@ -35,21 +35,23 @@ Follow each changed file to the surfaces and flows it reaches. Internal code cou
 | Changed path | Shared? | Reaches | Flows |
 |---|---|---|---|
 | `app/globals.css`, `components/sidebar.tsx`, `components/side-thread.tsx` | yes: they also lay out the desktop window's chrome (`data-lh-platform`, the window-control gutters) | web, electron dev | [teaching session](references/features/teaching-session.md) and [desktop window](references/features/desktop-window.md) |
+| `public/fonts/cmunbx.ttf` | yes: the phone app bundles it too | web, mobile | [teaching session](references/features/teaching-session.md) and the [mobile beta](references/features/mobile-beta.md) |
 | `app/**` (not api), `components/**`, `public/**` | no | web | [teaching session](references/features/teaching-session.md) and the page the file renders |
-| `src/client-protocol/**`, `app/.well-known/**` | yes: the client protocol contract and server info | api, web, agent | [client protocol](references/features/client-protocol.md) |
-| `app/api/attachments/**`, `src/store/attachment*.ts`, `src/server/attachment-*.ts`, `src/core/attachment*.ts`, `components/attach*`, `components/file-path-drop-zone.tsx`, `src/agent/tools/{learner-file,fs-shared,ls,find,grep}.ts` | yes: uploads, claimed copies and the learner-file tools | api, web, agent | [remote attachments](references/features/remote-attachments.md) |
+| `src/client-protocol/**`, `app/.well-known/**` | yes: the client protocol contract and server info | api, web, agent, mobile | [client protocol](references/features/client-protocol.md) |
+| `app/api/attachments/**`, `src/store/attachment*.ts`, `src/server/attachment-*.ts`, `src/core/attachment*.ts`, `components/attach*`, `components/file-path-drop-zone.tsx`, `src/agent/tools/{learner-file,fs-shared,ls,find,grep}.ts` | yes: uploads, claimed copies and the learner-file tools | api, web, agent; `src/core/attachment*.ts` also mobile | [remote attachments](references/features/remote-attachments.md) |
 | `app/api/chat/**`, `app/api/chats/**` | yes: turns and sessions | api, web, agent | [teaching session](references/features/teaching-session.md) |
 | `app/api/**` (other) | no | api, web | the route's callers; [api.md](references/api.md) |
 | `app/api/updates/**`, `app/api/health/**`, `src/server/self-update.ts` | yes: update protocol | api, web, selfhost A+B | [update and rollback](references/features/update-rollback.md) |
 | `src/agent/**` (tools, subagents, prompts, providers) | yes: every turn | agent, web, api | [teaching session](references/features/teaching-session.md) |
-| `src/core/**`, `src/server/**`, `src/store/**`, `lib/**` | yes: records, settings, auth | web, api, agent | every flow that reads or writes what the file touches |
+| `src/core/**` | yes: records, settings, auth, and the phone app imports it | web, api, agent, mobile | every flow that reads or writes what the file touches |
+| `src/server/**`, `src/store/**`, `lib/**` | yes: records, settings, auth | web, api, agent | every flow that reads or writes what the file touches |
 | `selfhost/src/{supervisor,release,backup,service,protocol,server,locks,versions}.ts`, `selfhost/lh.ts`, `selfhost/install.sh`, `selfhost/scripts/package-archive.ts` | yes: install and recovery | selfhost A+B | [update and rollback](references/features/update-rollback.md) |
 | `selfhost/**` (other) | no | selfhost A | `lh` commands |
 | `electron/{main,preload,desktop-api}.cjs`, `electron-builder.yml`, `scripts/{after-pack.cjs,build-server.mjs}` | yes: desktop spawn and bridge | electron packaged, web | [desktop window](references/features/desktop-window.md) |
 | `electron/**` (other) | no | electron dev | [desktop window](references/features/desktop-window.md) |
 | `plugins/**`, `core-plugins.json`, plugin build scripts | yes | web, api, agent | the plugin's view and tools |
-| `package*.json`, `next.config.ts`, `proxy.ts`, `instrumentation.ts`, `config.ts`, `tsconfig.json` | yes: launch config | every surface (smoke) | teaching session, `lh` commands, desktop window |
-| `apps/mobile/**` | yes: same server contract | mobile | [mobile beta](references/features/mobile-beta.md) |
+| `package*.json`, `next.config.ts`, `proxy.ts`, `instrumentation.ts`, `config.ts`, `tsconfig.json` | yes: launch config | every surface (smoke), mobile included | teaching session, `lh` commands, desktop window |
+| `apps/mobile/**`, `scripts/iphone-check/**`, `build/icon.png`, `tests/fixtures/mobile-*/**` | yes: same server contract | mobile | [mobile beta](references/features/mobile-beta.md) |
 | `.github/scripts/**` (release and decision CLIs such as `mobile-release.cjs`) | no | ci-script: the plan runs the scripts' tests and ends `MANUAL` (exit 4); a diff of `*.test.cjs` only just runs the tests | its spec: run the script's own tests, then drive its CLI with fixtures you write from the spec (not from the script), and run each workflow step that calls it against stubs |
 | `app/api/v<N>/**` | PLANNED | protocol, api | none: [planned.md](references/planned.md) |
 
@@ -201,7 +203,7 @@ One section per surface. `/create-prove-it` adds a section when the app gains a 
 
 ### Planned surfaces
 
-`/api/v<N>` paths have no scripts and no recipe: a diff that reaches them is BLOCKED for that surface until `/create-prove-it` builds its section. The Expo mobile app on Android (the emulator on this machine) has no scripts but has a recipe: a diff that reaches `apps/mobile/**` runs the scripted plan, which ends `MANUAL` (exit 4), and then you drive the [mobile beta recipe](references/features/mobile-beta.md) on the emulator. Only a device step the machine can't give you is BLOCKED, and only that step. Its iOS variant follows [references/planned.md](references/planned.md#ios-iphone); the CI `iPhone` job (`.github/workflows/ci.yml`, `scripts/iphone-check/`) is that surface, and the mobile beta recipe judges its screenshots ([iPhone in CI](references/features/mobile-beta.md#iphone-in-ci)). The client protocol itself (server info, the version header, the protocol 1 routes) is driven with the API: [client-protocol recipe](references/features/client-protocol.md). Extension points: [references/planned.md](references/planned.md).
+`/api/v<N>` paths have no scripts and no recipe: a diff that reaches them is BLOCKED for that surface until `/create-prove-it` builds its section. The Expo mobile app, on the iOS Simulator on the Mac (T3 host `intel-mac`), has no scripts but has a recipe: a diff that reaches `apps/mobile/**` runs the scripted plan, which ends `MANUAL` (exit 4), and then you drive the [mobile beta recipe](references/features/mobile-beta.md#ios-simulator-on-the-mac) on the simulator through the T3 `device_list` and `device_open` tools and `agent-device`. Only a device step the Mac can't give you is BLOCKED, and only that step. Android is not run; its material is kept in [references/android-archive.md](references/android-archive.md), and an Android pass is never an iOS pass ([references/planned.md](references/planned.md#ios-iphone)). The client protocol itself (server info, the version header, the protocol 1 routes) is driven with the API: [client-protocol recipe](references/features/client-protocol.md). Extension points: [references/planned.md](references/planned.md).
 
 ### Varies by and deliberate
 
@@ -307,9 +309,9 @@ A failing step is evidence, and the verdict rules above still hold. Before you w
 
 - **The change**: head fails, and base passes or the step is new. BROKEN, back to the builder.
 - **Main's own bug**: base fails the same way on the same input (`compare.mjs` shows both values). BROKEN, sent back like any BROKEN, with the step labelled "base fails the same: main's bug, not this diff". The fix for the builder is to update the branch from main when main has a fix, then you run again; name that commit. Without one, it goes to the user with both values. Example: the question page's CLS scored 0.096 to 0.29 on main's identical code before 5a3910c4 (#282), so a branch whose merge base is older fails it until it is updated.
-- **The environment or a tool**: the emulator, the device tool, Xvfb, the keyring, a socket path, a CI runner. BLOCKED for that step with the raw error, never BROKEN. Gotchas below and the [mobile beta](references/features/mobile-beta.md) health gate list the known ones with their working fixes.
+- **The environment or a tool**: the simulator, the device tool, Xvfb, the keyring, a socket path, a CI runner. BLOCKED for that step with the raw error, never BROKEN. Gotchas below and the [mobile beta](references/features/mobile-beta.md) recipe list the known ones with their working fixes.
 - **A test harness that fails on both revisions before it drives anything** (a repo `scripts/smoke-*.mjs` crash, a fixture that can't start). BLOCKED for that check. Report the harness as a product bug, and prove the flow it covers another way if you can.
-- **Another job holding a shared resource** (the emulator, a build slot, a port). Wait, or BLOCKED. Never take it over.
+- **Another job holding a shared resource** (the simulator, a build slot, a port). Wait, or BLOCKED. Never take it over.
 
 ## Gotchas
 
