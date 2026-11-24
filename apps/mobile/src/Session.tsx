@@ -233,7 +233,7 @@ export function Session({ api, info, id, initialText, sendInitialText, active, r
           contentContainerStyle={[s.section, { gap: space.lg }]} keyboardShouldPersistTaps="handled">
           <MathWindowContext.Provider value={opening.mathWindow}>
             <Transcript settled={settledView} batches={opening.batches} eager={opening.eager} batchWidth={opening.width} onBatchLayout={opening.onBatchLayout}
-              tail={session.tail} api={api} chatId={id} jobs={jobs} liveHelpers={lessonView} openPlan={() => setPlanOpen(true)} turnInFlight={busy}
+              tail={session.tail} api={api} chatId={id} jobs={jobs} liveHelpers={lessonView} openPlan={() => setPlanOpen(true)}
               files={savedFiles} unavailableFiles={unavailableFiles} />
           </MathWindowContext.Provider>
           {busy && <Text accessibilityLiveRegion="polite" style={s.muted}>Reply in progress…</Text>}

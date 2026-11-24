@@ -144,7 +144,8 @@ const hidden = { statement: "Compute 1 + 1.", mode: "recall", modelSolution: SEC
 const posed = [assistant("m_pose", [{ type: "toolCall", id: "call_pose", name: "problem", arguments: hidden }]), result("call_pose", "problem", null)];
 const shownText = (tree: ReactTestRenderer) => texts(tree.root).join("|");
 const stoppedLines = (tree: ReactTestRenderer) => texts(tree.root).filter((text) => text === "Stopped").length;
-const practice = (messages: LhMessage[], turnInFlight = false, tail: LhMessage[] = []) => createElement(Transcript, { settled: projectView(messages), tail, turnInFlight, api: {} as never,
+/** The phone's transcript: the saved record, and the running turn's own messages in the live tail. */
+const practice = (messages: LhMessage[], tail: LhMessage[] = []) => createElement(Transcript, { settled: projectView(messages), tail, api: {} as never,
   chatId: "chat", jobs: [], liveHelpers: false, openPlan: () => {}, files: new Map(), unavailableFiles: new Set<string>() });
 
 test("a practice call the learner stopped shows the web's muted Stopped line, and no verdict, solution or card (#413)", async () => {
@@ -166,14 +167,8 @@ test("a practice call the learner stopped shows the web's muted Stopped line, an
   }
 });
 
-test("a conclusion still running is not stopped, and a settled one shows its card", async () => {
+test("a settled conclusion shows its card and no Stopped line", async () => {
   const concluding = assistant("m_end", [{ type: "toolCall", id: "call_end", name: "conclude", arguments: { outcome: "solved", verdict: "Done." } }]);
-  const running = await render(practice([...posed, concluding], true));
-  try {
-    assert.equal(stoppedLines(running), 0);
-  } finally {
-    act(() => running.unmount());
-  }
   const settled = await render(practice([...posed, concluding, result("call_end", "conclude", "Concluded")]));
   try {
     assert.equal(stoppedLines(settled), 0);
@@ -197,7 +192,7 @@ test("a call that errored with any abort wording shows Stopped, once per run, fo
       act(() => tree.unmount());
     }
   }
-  const live = await render(practice([], true, [assistant("m_live", [call("c1", "read", { path: "a.md" })]), result("c1", "read", "Operation aborted", true)]));
+  const live = await render(practice([], [assistant("m_live", [call("c1", "read", { path: "a.md" })]), result("c1", "read", "Operation aborted", true)]));
   try {
     assert.equal(stoppedLines(live), 1);
     assert.equal(rows(live.root).length, 0);
@@ -213,27 +208,54 @@ test("a call that errored with any abort wording shows Stopped, once per run, fo
   }
 });
 
-test("a saved Stopped line stays while a later turn runs, and only that turn's own unfinished call is left out", async () => {
-  const conclude = (id: string) => ({ type: "toolCall", id, name: "conclude", arguments: { outcome: "solved", verdict: "Done." } });
-  const later = [user("u_again", "I think it is 2"), assistant("m_end2", [conclude("call_end2")])];
-  const history = [...posed, assistant("m_end", [conclude("call_end")]), ...later];
-  const running = await render(practice(history, true));
+const conclude = (id: string) => ({ type: "toolCall", id, name: "conclude", arguments: { outcome: "solved", verdict: "Done." } });
+const stoppedConclusion = [...posed, assistant("m_end", [conclude("call_end")])];
+/** The running turn's own messages, as the stream leaves them in the tail. */
+const running = (content: unknown[]) => replayed([message("message_start", content), message("message_end", content)]);
+
+test("a saved Stopped line stays through a later turn, whatever the record holds of its input (#413)", async () => {
+  const again = [user("u_again", "I think it is 2")];
+  // The turn's own calls are only in the tail: the saved record holds earlier turns.
+  const tail = running([{ type: "text", text: "Checking." }, conclude("call_end2")]);
+  const withInput = await render(practice([...stoppedConclusion, ...again], tail));
   try {
-    assert.equal(stoppedLines(running), 1, "the earlier stop shows; the call of the running turn does not");
+    const shown = texts(withInput.root);
+    assert.equal(stoppedLines(withInput), 1, "the earlier stop shows once, and the running call shows nothing");
+    assert.ok(shown.indexOf("Stopped") < shown.indexOf("I think it is 2"), "the line is on the earlier call");
+    assert.ok(shown.indexOf("I think it is 2") < shown.indexOf("Checking."));
   } finally {
-    act(() => running.unmount());
+    act(() => withInput.unmount());
   }
-  const over = await render(practice(history));
+  // A revised submission or a job-wake turn read before its input is saved: no learner message after the stop.
+  const unsaved = await render(practice(stoppedConclusion, tail));
   try {
-    assert.equal(stoppedLines(over), 2, "once the turn is over, both calls are stopped");
+    assert.equal(stoppedLines(unsaved), 1);
+    const shown = texts(unsaved.root);
+    assert.ok(shown.indexOf("Stopped") < shown.indexOf("Checking."));
+  } finally {
+    act(() => unsaved.unmount());
+  }
+  // The turn ends: its saved record holds both stopped calls.
+  const over = await render(practice([...stoppedConclusion, ...again, assistant("m_end2", [conclude("call_end2")])]));
+  try {
+    assert.equal(stoppedLines(over), 2);
   } finally {
     act(() => over.unmount());
   }
-  const first = await render(practice([...posed, assistant("m_end", [conclude("call_end")])], true));
+});
+
+test("a tail call with no result is running, and a saved stop shows once beside it", async () => {
+  const tree = await render(practice(stoppedConclusion, running([conclude("call_end2")])));
   try {
-    assert.equal(stoppedLines(first), 0, "the only unfinished call of a running turn is not stopped");
+    assert.equal(stoppedLines(tree), 1);
   } finally {
-    act(() => first.unmount());
+    act(() => tree.unmount());
+  }
+  const alone = await render(practice([...posed], running([conclude("call_end")])));
+  try {
+    assert.equal(stoppedLines(alone), 0);
+  } finally {
+    act(() => alone.unmount());
   }
 });
 
@@ -252,22 +274,15 @@ test("a Stopped line is one per run of stopped calls, not one per message", asyn
   }
 });
 
-test("in the live tail, a run of stopped calls is one line, and a call with no result is not stopped", async () => {
+test("in the live tail, a run of aborted calls is one line", async () => {
   const calls = [{ type: "toolCall", id: "c1", name: "read", arguments: { path: "a.md" } }, { type: "toolCall", id: "c2", name: "read", arguments: { path: "b.md" } }];
   const events = [message("message_start", calls), message("message_end", calls), finished("c1", "read", "Operation aborted", true), finished("c2", "read", "Operation aborted", true)];
-  const tree = await render(practice([], true, replayed(events)));
+  const tree = await render(practice([], replayed(events)));
   try {
     assert.equal(stoppedLines(tree), 1);
     assert.equal(rows(tree.root).length, 0);
   } finally {
     act(() => tree.unmount());
-  }
-  const pending = [{ type: "toolCall", id: "call_end", name: "conclude", arguments: { outcome: "solved", verdict: "Done." } }];
-  const running = await render(practice([...posed], true, replayed([message("message_start", pending), message("message_end", pending)])));
-  try {
-    assert.equal(stoppedLines(running), 0);
-  } finally {
-    act(() => running.unmount());
   }
 });
 
