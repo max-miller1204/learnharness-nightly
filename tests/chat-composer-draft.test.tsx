@@ -27,6 +27,8 @@ const mapStorage = (map: Map<string, string>) => ({
 });
 const keyOf = (id: string) => COMPOSER_DRAFT_KEY_PREFIX + id;
 const writes: string[] = []; // every request that isn't a read (a send would be one)
+let modelsReady = false;
+let holdChatPost: (() => Promise<Response>) | null = null;
 const storedText = (id: string) => { const raw = values.get(keyOf(id)); return raw === undefined ? undefined : (JSON.parse(raw) as { text: string }).text; };
 const saveDraft = (id: string, text: string) => values.set(keyOf(id), JSON.stringify({ text, at: Date.now() }));
 
@@ -35,6 +37,7 @@ let savedObserver: PropertyDescriptor | undefined;
 let savedSession: PropertyDescriptor | undefined;
 beforeEach(async () => {
 	values.clear(); session.clear(); writes.length = 0;
+	modelsReady = false; holdChatPost = null;
 	savedObserver = Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver");
 	savedSession = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
 	Object.assign(globalThis, { ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } });
@@ -51,10 +54,17 @@ beforeEach(async () => {
 		},
 		fetch: async (input, init) => {
 			const url = String(input);
-			if ((init?.method ?? "GET") !== "GET") writes.push(`${init?.method} ${url}`);
+			if ((init?.method ?? "GET") !== "GET") {
+				writes.push(`${init?.method} ${url}`);
+				if (url === "/api/chat" && holdChatPost) return holdChatPost();
+			}
 			const chat = /^\/api\/chats\/(\w+)$/.exec(url);
 			if (chat) return Response.json({ id: chat[1], messages: [] });
-			if (url === "/api/models") return Response.json({ providers: [], models: [], slots: {} });
+			if (url === "/api/models") {
+				return Response.json(modelsReady
+					? { providers: [{ id: "custom", name: "Fixture", keyPresent: true, models: [] }], models: [], slots: {} }
+					: { providers: [], models: [], slots: {} });
+			}
 			if (url === "/api/settings") return Response.json({});
 			if (/^\/api\/chats\/\w+\/side-chats$/.test(url)) return Response.json({ threads: [] });
 			if (url.startsWith("/api/jobs?chatId=")) return Response.json({ jobs: [], turnInFlight: false });
@@ -159,5 +169,47 @@ describe("the composer draft in the production Chat", () => {
 		await open("d", { prompt: "a long-sent opening", messages: conversation });
 		await settle();
 		assert.equal(composer().textContent, "the draft of an established session");
+	});
+
+	it("clears the old chat's saved draft when a send is accepted after navigating away, unless a newer draft replaced it", async () => {
+		const pressSend = () => act(async () => {
+			fixture!.document.querySelector('[data-testid="composer"]')!.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+		});
+		modelsReady = true;
+
+		// Case 1: draft in storage still matches the sent text -> cleared once POST /api/chat accepts.
+		let resolvePost!: (response: Response) => void;
+		holdChatPost = () => new Promise<Response>((resolve) => { resolvePost = resolve; });
+		await open("a");
+		await settle();
+		await type("sent before leaving");
+		await pressSend();
+		await settle();
+		assert.deepEqual(writes, ["POST /api/chat"]);
+		await open("b");
+		await settle();
+		assert.equal(storedText("a"), "sent before leaving", "leaving saves the pending text while the POST is still in flight");
+		await type("staying on B");
+		resolvePost(new Response("", { status: 200 }));
+		await settle();
+		assert.equal(storedText("a"), undefined, "accepted send clears the unmounted chat's matching draft");
+		assert.equal(composer().textContent, "staying on B", "the active chat's composer is untouched");
+
+		// Case 2: a newer draft replaced the stored text before acceptance -> newer draft is preserved.
+		writes.length = 0;
+		holdChatPost = () => new Promise<Response>((resolve) => { resolvePost = resolve; });
+		await open("a");
+		await settle();
+		await type("first sent text");
+		await pressSend();
+		await settle();
+		assert.deepEqual(writes, ["POST /api/chat"]);
+		await open("b");
+		await settle();
+		assert.equal(storedText("a"), "first sent text");
+		saveDraft("a", "newer draft typed elsewhere");
+		resolvePost(new Response("", { status: 200 }));
+		await settle();
+		assert.equal(storedText("a"), "newer draft typed elsewhere", "a newer draft for the old chat is never wiped");
 	});
 });
