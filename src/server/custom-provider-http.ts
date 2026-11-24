@@ -6,7 +6,7 @@ import { readSettings, writeSettings } from "../store/settings.ts";
 import { readCustomAuth } from "../store/auth.ts";
 import { customAuthState, customKeyAuthorized, persistCustomAuth } from "./custom-provider-auth.ts";
 import type { CustomAuthBinding } from "../core/custom-provider-auth.ts";
-import { subscriptionRequestOrigin } from "./web-subscription-http.ts";
+import { subscriptionRequestOrigin } from "./desktop-access.ts";
 import { discoverModels, mergeManualModels, syncCustomProvider } from "./custom-provider.ts";
 import { parseCustomModelOverridesBody } from "./settings-body.ts";
 import { CustomBodyLimitError, readBoundedJson } from "./custom-provider-body.ts";

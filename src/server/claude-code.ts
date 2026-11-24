@@ -1,6 +1,6 @@
 import { inspectClaudeInstallation } from "../agent/claude-code/installation.ts";
 import { initAuthEnv } from "./keys.ts";
-import { subscriptionRequestOrigin } from "./web-subscription-http.ts";
+import { subscriptionRequestOrigin } from "./desktop-access.ts";
 import { claudeCodeEnabled } from "./claude-code-config.ts";
 
 /** The Settings status seam: initialize provenance before any child env is copied. */

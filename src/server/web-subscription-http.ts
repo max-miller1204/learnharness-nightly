@@ -1,11 +1,8 @@
 import { authenticate } from "./auth.ts";
 import { NATIVE_SUBSCRIPTIONS } from "../core/contracts/subscriptions.ts";
+import { CustomBodyLimitError, readBoundedJson } from "./custom-provider-body.ts";
 import { subscriptionRequestOrigin } from "./desktop-access.ts";
 import { webSubscriptionOwner, webSubscriptionsEnabled, webSubscriptionStatus } from "./web-subscriptions.ts";
-
-// Lives in desktop-access.ts so proxy.ts can share it without loading the
-// subscription runtime; re-exported for existing callers.
-export { subscriptionRequestOrigin };
 
 const HEADERS = { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff" };
 function authorized(request: Request): boolean {
@@ -23,20 +20,14 @@ export async function subscriptionControlsResponse(request: Request): Promise<Re
 		if (request.method === "GET") return Response.json(await webSubscriptionStatus(), { headers: HEADERS });
 		if (request.method !== "POST") return error("Unsupported method.", 405);
 		if (request.headers.get("content-type")?.split(";")[0]?.trim() !== "application/json") return error("Expected JSON.", 415);
-		// Bound both advertised and streamed input before parsing commands.
-		if (Number(request.headers.get("content-length")) > 16384) return error("Request too large.", 413);
-		const reader = request.body?.getReader();
-		if (!reader) return error("Expected a command.", 400);
-		const chunks: Uint8Array[] = []; let size = 0;
+		let command: unknown;
 		try {
-			for (;;) {
-				const next = await reader.read(); if (next.done) break;
-				size += next.value.byteLength;
-				if (size > 16384) { await reader.cancel(); return error("Request too large.", 413); }
-				chunks.push(next.value);
-			}
-		} finally { reader.releaseLock(); }
-		const command: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+			command = await readBoundedJson(request, 16384);
+		} catch (readError) {
+			if (readError instanceof CustomBodyLimitError) return error("Request too large.", 413);
+			if (!request.body) return error("Expected a command.", 400);
+			throw readError;
+		}
 		if (!command || typeof command !== "object" || Array.isArray(command)) return error("Invalid command.", 400);
 		const fields = command as Record<string, unknown>;
 		const providerId = fields.providerId;
