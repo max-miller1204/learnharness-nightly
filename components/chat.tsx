@@ -890,8 +890,9 @@ export function Chat({
 		});
 	};
 
-	const deliverOpeningPrompt = (prompt: string, captureNative = false) => {
+	const deliverOpeningPrompt = (prompt: string, captureNative = false, attached?: { rows: typeof attachments.files; waiting: boolean }) => {
 		let submitted = prompt;
+		const revision = composerEditRevision.current;
 		openingDraftRef.current = prompt;
 		// Persist uncertainty BEFORE the POST: another mount must restore,
 		// not race the still-arriving request. No storage means no auto-send.
@@ -911,8 +912,8 @@ export function Chat({
 			const saved = stashOpeningPrompt(chatId, captured, true);
 			if (!saved) setOpeningError(true);
 			return saved;
-		}).then(accepted => {
-			if (!accepted && openingMountedRef.current && openingDraftRef.current === prompt && !textRef.current) {
+		}, attached).then(accepted => {
+			if (!accepted && openingMountedRef.current && openingDraftRef.current === prompt && composerEditRevision.current === revision && !textRef.current) {
 				applyText(prompt);
 			}
 		});
@@ -1638,8 +1639,8 @@ export function Chat({
 
 	const onSend = () => {
 		if (!isInteractionScopeEligible(sessionFindScopeRef.current, controller) || submissionRunner.occupied) return;
-		if (openingDraftRef.current !== null) { deliverOpeningPrompt(textRef.current.trim(), true); return; }
 		const rows = attachments.current(), waiting = attachments.restoring();
+		if (openingDraftRef.current !== null) { deliverOpeningPrompt(textRef.current.trim(), true, rows.length || waiting ? { rows, waiting } : undefined); return; }
 		void prepareText(undefined, undefined, undefined, rows.length || waiting ? { rows, waiting } : undefined);
 	};
 
