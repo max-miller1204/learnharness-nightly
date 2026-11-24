@@ -8,9 +8,12 @@ export function formatUsd(c: number): string {
 	return c >= 1 ? `$${c.toFixed(2)}` : `$${c.toFixed(4)}`;
 }
 
-export function planCostLabel(dollars: number | null, subscription: boolean | string | readonly string[] | undefined, format = formatUsd): string {
+/** `unpriced` counts parts whose cost is unknown. It marks known dollars as partial
+ *  ("$0.12 + 1 unpriced"); with no dollars the label stays a dash placeholder or the plan names. */
+export function planCostLabel(dollars: number | null, subscription: boolean | string | readonly string[] | undefined, format = formatUsd, unpriced = 0): string {
 	const labels = subscription === true ? ["ChatGPT"] : typeof subscription === "string" ? [subscription] : Array.isArray(subscription) ? [...new Set(subscription)] : [];
-	return [...(dollars === null ? [] : [format(dollars)]), ...labels].join(" + ") || "—";
+	const partial = dollars !== null && unpriced > 0 ? [`${unpriced} unpriced`] : [];
+	return [...(dollars === null ? [] : [format(dollars)]), ...labels, ...partial].join(" + ") || "\u2014";
 }
 
 /** 38000 → "38k", 1234567 → "1.2M" — trimmed, never "38.0k". */

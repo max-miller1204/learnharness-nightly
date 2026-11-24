@@ -279,6 +279,24 @@ describe("activity section render", () => {
 		assert.match(html, /activity-total-cost[^>]*>\$0\.0040</);
 	});
 
+	it("marks the running total partial when a running job has an unknown cost", () => {
+		const usage = {
+			model: "openrouter:z-ai/glm-5.3-flash",
+			inputTokens: 10_000,
+			outputTokens: 1000,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 0,
+			reasoningTokens: 0,
+			steps: 1,
+		};
+		const priced = job({ id: "a", usage });
+		const header = (jobs: ActivityFeed["jobs"]) => renderToStaticMarkup(<ActivitySection feed={{ jobs, extractions: [] }} />);
+		assert.match(header([priced, job({ id: "b", createdAt: new Date(NOW - 20_000).toISOString() })]), /activity-total-cost[^>]*>\$0\.0020 \+ 1 unpriced</);
+		assert.match(header([priced, job({ id: "b" }), job({ id: "c" })]), /activity-total-cost[^>]*>\$0\.0020 \+ 2 unpriced</);
+		assert.match(header([priced]), /activity-total-cost[^>]*>\$0\.0020</, "fully priced stays a plain total");
+		assert.doesNotMatch(header([priced]), /unpriced/);
+	});
+
 	it("expanded card: END stays on the face row, the title isn't repeated (#450)", async () => {
 		const dom = parseHTML("<html><body><div id='root'></div></body></html>");
 		const globals = { window: dom.window, self: dom.window, document: dom.document, HTMLElement: dom.window.HTMLElement,
