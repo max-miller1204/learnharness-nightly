@@ -11,6 +11,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { capReleaseNoteGroups, MAX_RELEASE_NOTE_ITEM_LENGTH, totalReleaseItems, withoutSummaryEcho } from "../src/core/release-notes.ts";
+import { releaseLinkLabel } from "../components/release-notes-view.tsx";
 import { feedNotesToGroups, groupsBetween, mergeNotesCache, readNotesCache, readUpdateRecord, whatsNew, writeUpdateRecord } from "../src/server/update-records.ts";
 import { buildSummaryInput, countContributors, entryItems, fallbackItems, formatSummary, parseHighlights, pullRequestFor, readPullRequests, releaseStats, trimPullRequestBody, type PullRequest } from "../scripts/generate-release-notes.ts";
 
@@ -107,6 +108,26 @@ describe("notes limits", () => {
 		const desktop = electronNotes.releaseNoteGroups({ version: V(18), releaseNotes: notes.map((n) => ({ version: n.version, items: n.items, ...(n.publishedAt ? { releasedAt: n.publishedAt } : {}) })) }).map((g) => [g.version, g.releasedAt]);
 		assert.deepEqual(server, [[V(18), "2026-11-14T08:00:00Z"], [V(17), "2026-11-17"], [V(16), "2026-11-16"]]);
 		assert.deepEqual(desktop, server);
+	});
+
+	it("a note's own time is unreadable: the server and the desktop date it alike, the pointer's time for the offered note, else the build day", () => {
+		const pointer = "2026-11-12T00:00:00Z";
+		const dates = (publishedAt: string, pointerTime: unknown) => {
+			const notes = [{ version: V(18), publishedAt, items: ["the offered note"] }, { version: V(17), publishedAt, items: ["an older note"] }];
+			const server = feedNotesToGroups(notes, { version: V(18), releasedAt: pointerTime }).map((g) => g.releasedAt);
+			const desktop = electronNotes.releaseNoteGroups({
+				version: V(18),
+				releaseDate: pointerTime,
+				releaseNotes: notes.map((n) => ({ version: n.version, items: n.items, ...(n.publishedAt ? { releasedAt: n.publishedAt } : {}) })),
+			}).map((g) => g.releasedAt);
+			assert.deepEqual(desktop, server, `${JSON.stringify(publishedAt.slice(0, 20))} with the pointer ${JSON.stringify(pointerTime)}`);
+			return server;
+		};
+		for (const unreadable of ["last week", "2026-13-45", "", `2026-11-12T00:00:00Z${"x".repeat(80)}`]) {
+			assert.deepEqual(dates(unreadable, pointer), [pointer, "2026-11-17"], "the offered note takes the pointer's time; an older one its build day");
+			assert.deepEqual(dates(unreadable, "also unreadable"), ["2026-11-18", "2026-11-17"], "no readable pointer: the build day");
+		}
+		assert.deepEqual(dates("2026-11-14T08:00:00Z", pointer), ["2026-11-14T08:00:00Z", "2026-11-14T08:00:00Z"], "a readable note time wins");
 	});
 
 	it("one limit set everywhere: the server's groups and cache match the desktop's, 8 items of 220 characters, counted whole", () => {

@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { PATHS } from "../../config.ts";
 import { writeFileAtomicSync } from "../store/atomic-write.ts";
-import { capReleaseNoteGroups, MAX_RELEASE_NOTE_ITEMS, noteReleasedAt, totalReleaseItems, truncateReleaseNoteItem, type ReleaseNoteGroup } from "../core/release-notes.ts";
+import { capReleaseNoteGroups, MAX_RELEASE_NOTE_ITEMS, noteReleasedAt, totalReleaseItems, truncateReleaseNoteItem, type OfferedRelease, type ReleaseNoteGroup } from "../core/release-notes.ts";
 import { compareVersions, FEED_NOTE_LIMITS, FEED_NOTES_KEEP, isExactVersion, type FeedNote } from "../../selfhost/src/release.ts";
 
 export interface UpdateRecord {
@@ -47,7 +47,7 @@ function summaryText(key: keyof typeof FEED_NOTE_LIMITS, value: unknown): Partia
 	return text && text.length <= FEED_NOTE_LIMITS[key] ? { [key]: text } : {};
 }
 
-function parseGroups(value: unknown): ReleaseNoteGroup[] {
+function parseGroups(value: unknown, offered?: OfferedRelease): ReleaseNoteGroup[] {
 	if (!Array.isArray(value)) return [];
 	const groups: ReleaseNoteGroup[] = [];
 	const seen = new Set<string>();
@@ -62,7 +62,7 @@ function parseGroups(value: unknown): ReleaseNoteGroup[] {
 		const all = entry.items.filter((item): item is string => typeof item === "string" && item.trim() !== "").map((item) => item.trim().replace(/\s+/g, " "));
 		const counted = totalReleaseItems({ version: entry.version, items: all, ...summary });
 		const items = all.slice(0, MAX_RELEASE_NOTE_ITEMS).map(truncateReleaseNoteItem);
-		const releasedAt = noteReleasedAt(entry.releasedAt, entry.version);
+		const releasedAt = noteReleasedAt(entry.releasedAt, entry.version, offered);
 		groups.push({
 			version: entry.version,
 			...(releasedAt ? { releasedAt } : {}),
@@ -74,8 +74,9 @@ function parseGroups(value: unknown): ReleaseNoteGroup[] {
 	return groups.sort((a, b) => compareVersions(b.version, a.version));
 }
 
-export function feedNotesToGroups(notes: readonly FeedNote[]): ReleaseNoteGroup[] {
-	return parseGroups(notes.map((note) => ({ version: note.version, releasedAt: note.publishedAt, items: note.items, intro: note.intro, stats: note.stats, footer: note.footer })));
+/** `offered` is the feed's own pointer (its version and publishedAt): it dates the offered note when the note's own time is unreadable. */
+export function feedNotesToGroups(notes: readonly FeedNote[], offered?: OfferedRelease): ReleaseNoteGroup[] {
+	return parseGroups(notes.map((note) => ({ version: note.version, releasedAt: note.publishedAt, items: note.items, intro: note.intro, stats: note.stats, footer: note.footer })), offered);
 }
 
 /** Newest first, versions after `after` (exclusive, when given) up to `upTo` (inclusive), capped for the UI. */

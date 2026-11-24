@@ -65,10 +65,26 @@ export function truncateReleaseNoteItem(item: string): string {
 const RELEASED_AT = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
 const PRERELEASE_BUILD_DAY = /-(?:nightly|preview)\.(\d{4})(\d{2})(\d{2})\.\d+$/;
 
-/** A note's date, the same on every surface: the feed's own time when it gives a valid one, else the
- *  nightly's UTC build day from its version (T3's fallback), else none. */
-export function noteReleasedAt(value: unknown, version: string): string | undefined {
-	if (typeof value === "string" && value.length <= 40 && RELEASED_AT.test(value) && Number.isFinite(Date.parse(value))) return value;
+const readableReleasedAt = (value: unknown): string | undefined =>
+	typeof value === "string" && value.length <= 40 && RELEASED_AT.test(value) && Number.isFinite(Date.parse(value)) ? value : undefined;
+
+/** The update feed's pointer: the version it offers and when that release was published. */
+export interface OfferedRelease {
+	version: string;
+	releasedAt?: unknown;
+}
+
+/**
+ * A note's date, the same on every surface and the same as the desktop's (electron/release-notes.cjs
+ * releaseNoteGroups): the note's own time when it is readable; for the offered version, else the
+ * pointer's time when that is readable (T3's resolveReleasedAt); else the nightly's UTC build day
+ * from its version; else none.
+ */
+export function noteReleasedAt(value: unknown, version: string, offered?: OfferedRelease): string | undefined {
+	const own = readableReleasedAt(value);
+	if (own) return own;
+	const pointer = offered?.version === version ? readableReleasedAt(offered.releasedAt) : undefined;
+	if (pointer) return pointer;
 	const day = PRERELEASE_BUILD_DAY.exec(version);
 	return day ? `${day[1]}-${day[2]}-${day[3]}` : undefined;
 }
