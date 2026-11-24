@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { parseHTML } from "linkedom";
 import { renderToString } from "react-dom/server";
+import { PATH_INPUT_BOOT_SCRIPT } from "../components/path-input-boot.ts";
 import { PathInput } from "../components/path-input.tsx";
 import { readPathInput, readPathSelection } from "../components/path-input-dom.ts";
 
@@ -16,7 +17,7 @@ let cleanup: (() => Promise<void>) | undefined;
 afterEach(async () => { await cleanup?.(); cleanup = undefined; });
 
 /** Server-render `serverValue`, let the "user" edit the live field, then hydrate with `clientValue`. */
-async function hydrate(serverValue: string, typed: string | null, clientValue = serverValue, singleLine = false, caret?: number, extra?: React.ReactNode) {
+async function hydrate(serverValue: string, typed: string | null, clientValue = serverValue, singleLine = false, caret?: number, extra?: React.ReactNode, composing = false) {
 	const html = renderToString(<><PathInput value={serverValue} onValueChange={() => assert.fail("SSR cannot emit changes")} singleLine={singleLine} />{extra}</>);
 	const { window: win, document: doc } = parseHTML(`<html><body><div id='root'>${html}</div></body></html>`);
 	const previous = new Map<string, PropertyDescriptor | undefined>();
@@ -36,6 +37,9 @@ async function hydrate(serverValue: string, typed: string | null, clientValue = 
 		field.replaceChildren(text); // typed before any listener existed
 		if (caret !== undefined) selection.setBaseAndExtent(text, caret, text, caret);
 	}
+	if (composing) new Function("document", PATH_INPUT_BOOT_SCRIPT)(doc);
+	if (composing) field.dispatchEvent(new win.Event("compositionstart", { bubbles: true }));
+	const originalChild = field.firstChild;
 	const { hydrateRoot } = await import("react-dom/client");
 	const changes: string[] = [];
 	const errors: unknown[] = [];
@@ -52,7 +56,7 @@ async function hydrate(serverValue: string, typed: string | null, clientValue = 
 	const live = doc.querySelector("[data-file-path-input]") as HTMLElement;
 	assert.deepEqual(errors, [], "hydration raised no error (React error 418 is a text mismatch)");
 	assert.equal(live, field, "hydration keeps the element the learner typed into");
-	return { field, live, selection, doc, changes, errors, rerender: (value: string) => act(async () => { reactRoot.render(element(value)); }) };
+	return { field, live, selection, doc, changes, errors, originalChild, win, rerender: (value: string) => act(async () => { reactRoot.render(element(value)); }) };
 }
 
 test("text typed before hydration is kept and reported to the owner", async () => {
@@ -163,4 +167,22 @@ test("an edit that lands before the passive report is reported once", async () =
 	const f = await hydrate("", "typed early", "", false, undefined, <EditAtMount text="typed early and more" />);
 	assert.equal(readPathInput(f.live), "typed early and more");
 	assert.deepEqual(f.changes, ["typed early and more"]);
+});
+
+test("a stripped early line break preserves the caret without reporting a change", async () => {
+	const f = await hydrate("abcd", "ab\ncd", "abcd", true, 3);
+	assert.equal(readPathInput(f.live), "abcd");
+	assert.deepEqual(readPathSelection(f.live), { anchor: 2, focus: 2 });
+	assert.deepEqual(f.changes, []);
+});
+
+
+test("composition begun before hydration is left alone until commit", async () => {
+	const f = await hydrate("", "provisional", "", false, undefined, undefined, true);
+	assert.ok(f.live.firstChild === f.originalChild);
+	assert.deepEqual(f.changes, []);
+	f.live.textContent = "committed";
+	await act(async () => { f.live.dispatchEvent(new f.win.Event("compositionend", { bubbles: true })); await Promise.resolve(); });
+	assert.equal(readPathInput(f.live), "committed");
+	assert.deepEqual(f.changes, ["committed"]);
 });

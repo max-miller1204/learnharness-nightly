@@ -317,10 +317,13 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		const lineBreaks = (text: string) => text.replace(/\r\n?/g, "\n");
 		const live = readPathInput(root);
 		let edited = false;
+		let restoreCaret = false;
+		const earlyComposition = root.dataset.pathComposing === "true";
 		if (lineBreaks(live) !== lineBreaks(current)) {
 			const caret = document.activeElement === root ? readPathSelection(root) : null;
 			const next = normalizePathEdit({ value: live, selection: caret ?? { anchor: live.length, focus: live.length } }, initial.current.singleLine);
 			edited = next.value !== current;
+			if (caret) { saved = clampPathSelection(next.value, next.selection); restoreCaret = true; }
 			if (edited) {
 				current = next.value;
 				saved = clampPathSelection(current, next.selection);
@@ -328,8 +331,14 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 				adoptedEdit.current = true;
 			}
 		}
-		paint(saved, edited && document.activeElement === root);
-		if (initial.current.autoFocus) { root.focus(); restorePathSelection(root, saved); }
+		if (earlyComposition) {
+			composing.current = true;
+			compositionStart = { value: initial.current.value, selection: { ...saved } };
+			current = initial.current.value;
+			adopted = false;
+			adoptedEdit.current = true;
+		} else paint(saved, restoreCaret);
+		if (initial.current.autoFocus && !earlyComposition) { root.focus(); restorePathSelection(root, saved); }
 		root.addEventListener(INSERT_FILE_PATHS_EVENT, insertEvent);
 		root.addEventListener(INSERT_CITATION_EVENT, insertCitationEvent);
 		root.addEventListener(UPDATE_CITATION_EVENT, updateCitationEvent);
@@ -381,6 +390,7 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 			contentEditable
 			suppressContentEditableWarning
 			suppressHydrationWarning
+			data-path-input=""
 			data-file-path-input={fileInsertion ? "" : undefined}
 			data-empty={initial.current.value.length === 0 ? "true" : "false"}
 			data-file-path-default={fileInsertion && defaultDropTarget ? "" : undefined}
