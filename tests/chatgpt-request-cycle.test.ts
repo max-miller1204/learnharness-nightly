@@ -5,7 +5,7 @@ import { Type } from "typebox";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import { piModels, piEngineForSpec, APP_IDENTITY } from "../src/agent/models.ts";
 import { refreshChatGPTModels, chatGPTScopeCurrent } from "../src/agent/chatgpt-bridge.ts";
-import { ChatGPTRequestCycle } from "../src/agent/chatgpt-request-cycle.ts";
+import { SubscriptionRequestCycle as ChatGPTRequestCycle } from "../src/agent/subscription-request-cycle.ts";
 import { createTeacherAgent } from "../src/agent/teacher-agent.ts";
 import fs from "node:fs";
 import os from "node:os";

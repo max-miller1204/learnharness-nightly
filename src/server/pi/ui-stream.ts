@@ -1,7 +1,7 @@
 import type { Agent, AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import { ToolCallIdUniquifier } from "./call-ids.ts";
 import type { TurnStreamEvent } from "../../client-protocol/index.ts";
-import type { ChatGPTRequestCycle } from "../../agent/chatgpt-request-cycle.ts";
+import type { SubscriptionRequestCycle as ChatGPTRequestCycle } from "../../agent/subscription-request-cycle.ts";
 import { pluginQuestionLedgerFor } from "../../agent/plugin-question-tools.ts";
 
 /**

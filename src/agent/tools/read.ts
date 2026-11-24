@@ -4,6 +4,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute, type ImageFileResult } from "../tool-execute.ts";
 import { learnerFileErrorMessage, resolveLearnerFile, type ResolveAttachment } from "./learner-file.ts";
+import { formatSize } from "./fs-shared.ts";
 import { detectSupportedImageMimeTypeFromFile, processImage } from "../image-processing/index.ts";
 import {
 	conversionFailureMessage,
@@ -54,10 +55,6 @@ const readInput = Type.Object({
 	offset: Type.Optional(Type.Integer({ minimum: 1, description: "Line number to start reading from (1-indexed)" })),
 	limit: Type.Optional(Type.Integer({ minimum: 1, description: "Maximum number of lines to read" })),
 });
-
-function formatSize(bytes: number): string {
-	return bytes >= 1024 ? `${(bytes / 1024).toFixed(1)}KB` : `${bytes}B`;
-}
 
 /** Slice + truncate the text body, pi's continuation-notice style. */
 function readTextSlice(text: string, offset: number | undefined, limit: number | undefined): string {
