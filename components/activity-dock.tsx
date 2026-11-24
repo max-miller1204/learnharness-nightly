@@ -337,8 +337,10 @@ export function ActivitySection({ feed: feedProp }: { feed?: ActivityFeed }) {
 		const priced = blobs.map((b) => b.cost).filter((c): c is number => c !== null);
 		return {
 			totalCost: priced.length === 0 ? null : priced.reduce((a, c) => a + c, 0),
-			// A plan-billed blob is labeled by its plan, not unknown.
-			unpricedCount: blobs.filter((b) => b.cost === null && !subscriptionLabel(b.model)).length,
+			// Unknown means a model call whose cost is not known. A job with no call yet
+			// has no model, a plan-billed one is labeled by its plan, and a graph
+			// extraction is not on the money channel.
+			unpricedCount: blobs.filter((b) => b.process !== "extraction" && (b.steps ?? 0) > 0 && b.cost === null && !subscriptionLabel(b.model)).length,
 		};
 	}, [blobs]);
 
