@@ -17,7 +17,7 @@ import { readContentSpans } from "../../../src/core/content-reader.ts";
 import { indented, repairMathForDisplay } from "../../../src/core/math-delims.ts";
 import { resolveTheme, shiftHex } from "../../../src/core/themes.ts";
 import { parseColor } from "./math-colors";
-import { PARITY_TEXT_PACKAGES } from "./mathjax-katex-parity";
+import { PARITY_PACKAGES, PARITY_TEXT_PACKAGES } from "./mathjax-katex-parity";
 import { flattenSvg, frameBorder, safeMarkup, SVG_NUMBER, type SvgNode } from "./svg-flatten";
 
 /** AI-written math is untrusted. `html` makes links, styles and ids; `bussproofs` needs
@@ -70,7 +70,7 @@ function freshDocument() {
     RegisterHTMLHandler(adaptor);
     mathml = new SerializedMmlVisitor();
   }
-  const document = mathjax.document("", { InputJax: new TeX({ packages: PACKAGES, color: { borderWidth: FBOX_RULE }, textmacros: { packages: ["text-base", ...PARITY_TEXT_PACKAGES] } }), OutputJax: new SVG({ fontCache: "none" }) });
+  const document = mathjax.document("", { InputJax: new TeX({ packages: [...PACKAGES, ...PARITY_PACKAGES], color: { borderWidth: FBOX_RULE }, textmacros: { packages: ["text-base", ...PARITY_TEXT_PACKAGES] } }), OutputJax: new SVG({ fontCache: "none" }) });
   return { adaptor, document, mathml: mathml as SerializedMmlVisitor };
 }
 
