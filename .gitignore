@@ -30,8 +30,8 @@ xai-credentials.json*
 # dev-fresh launcher scratch (fresh-user sim): disposable per launch
 .fresh-data/
 
-# Run folders left by the removed prove-learnharness suite: they can hold
-# tokens, so a checkout that still has them must never stage them.
+# Run folders under .prove-it/ can hold tokens, so a checkout that has one
+# must never stage it.
 /.prove-it/
 
 # e2e run output (tests/e2e/, e2e.config.ts).

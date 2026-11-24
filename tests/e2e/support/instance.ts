@@ -18,6 +18,8 @@ export type InstanceState = {
 	modelLog: string;
 	fixture: string;
 	fixtureNoNewline: string;
+	/** A 1x1 PNG, for a test that puts an image snapshot in a session record. */
+	fixtureImage: string;
 	fakeModel: string;
 	fakeControl: string;
 	scenario: string;
@@ -117,6 +119,17 @@ export function sessionRequests(state: InstanceState, goal: string): ModelReques
 		const first = r.request.messages?.find((m) => m.role === "user");
 		return JSON.stringify(first?.content ?? "").includes(goal);
 	});
+}
+
+/**
+ * How many answers the tutor received in the session: the model requests whose last
+ * message is a quiz result from the probe tool. A double submit shows as two.
+ */
+export function answersReceived(state: InstanceState, goal: string): number {
+	return sessionRequests(state, goal).filter((r) => {
+		const last = r.request.messages?.at(-1);
+		return last?.role === "tool" && typeof last.content === "string" && last.content.includes('"kind":"quiz"');
+	}).length;
 }
 
 /** A stored session record, as the server wrote it to disk. */

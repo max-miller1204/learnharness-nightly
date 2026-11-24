@@ -16,24 +16,24 @@ export async function dockAcceptsAnswers(browser: Browser) {
 }
 
 /**
- * Picks the option named `label` and presses Submit answer. While the turn that asked
- * is still settling, the app ignores a submit (nothing is sent and the dock stays), so,
- * as a learner would, press it again until the dock goes. A press that is ignored has no
- * effect, so repeating it cannot hide a bug that sends a wrong or double answer: the
- * tests read what the tutor received.
+ * Picks the option named `label` and presses Submit answer.
+ *
+ * While the turn that asked is still settling, the app drops a submit with no sign on screen,
+ * even though the button is enabled (https://github.com/max-miller1204/learnharness-nightly/issues/449).
+ * Until that is fixed, press it again, as a learner would, until the dock goes. A dropped press
+ * sends nothing, so repeating cannot send a second answer unless the app does: the tests count
+ * the answers the tutor received (`answersReceived`) and fail on more than one.
  */
 export async function answerQuestion(screen: Screen, label: RegExp) {
 	const dock = screen.getByTestId("question-dock");
 	const option = dock.getByRole("radio", label);
 	await option.check();
 	await expect(option).toBeChecked();
+	const closes = (timeout: number) => expect(dock).not.toBeVisible({ timeout }).then(() => true, () => false);
 	for (let press = 1; ; press++) {
-		await dock.getByRole("button", "Submit answer").click();
-		try {
-			await expect(dock).not.toBeVisible({ timeout: 5000 });
-			return;
-		} catch (error) {
-			if (press >= 6) throw error;
-		}
+		const clicked = await dock.getByRole("button", "Submit answer").click({ timeout: 5000 }).then(() => true, () => false);
+		// A press that finds no button means the answer went in, and the dock is on its way out.
+		if (await closes(clicked ? 8000 : 3000)) return;
+		if (press >= 6) throw new Error(`the question dock was still open after ${press} presses of Submit answer`);
 	}
 }

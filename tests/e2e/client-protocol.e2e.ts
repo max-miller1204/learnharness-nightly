@@ -1,12 +1,14 @@
 import { describe, test } from "@e2e-dev/web";
 import { expect } from "e2e";
+import * as crypto from "node:crypto";
+import * as fs from "node:fs";
 import * as os from "node:os";
+import * as path from "node:path";
 import { createPairingLink } from "../../selfhost/src/auth-store.ts";
 import { instance } from "./support/instance.ts";
 
 // The client protocol (docs/specs/client-protocol.md) as a native client such
-// as the phone app uses it: raw HTTP against the instance, no browser. Ported
-// from the protocol drive the old verification suite ran.
+// as the phone app uses it: raw HTTP against the instance, no browser.
 const SERVER_INFO = "/.well-known/learnharness/server";
 const PROTOCOL = "x-learnharness-protocol";
 const FORM = { "content-type": "application/x-www-form-urlencoded" };
@@ -20,36 +22,66 @@ const call = async (baseUrl: string, method: string, path: string, init: { heade
 	return { status: response.status, headers: response.headers, json, text };
 };
 
-/** Reads an SSE stream until `[DONE]`, a frame holding `stopAt`, or `ms`, as the `data:` payloads. */
-const stream = async (baseUrl: string, path: string, headers: Record<string, string>, ms = 30_000, stopAt?: string) => {
-	const response = await fetch(`${baseUrl}${path}`, { headers: { accept: "text/event-stream", ...headers }, signal: AbortSignal.timeout(ms) });
-	const frames: string[] = [];
-	if (!response.body) return { status: response.status, frames, done: false };
-	const reader = response.body.getReader();
-	const decoder = new TextDecoder();
-	let buffer = "";
-	try {
-		for (;;) {
-			const { value, done } = await reader.read();
-			if (done) break;
-			buffer += decoder.decode(value, { stream: true });
-			let end: number;
-			while ((end = buffer.indexOf("\n\n")) >= 0) {
-				const block = buffer.slice(0, end);
-				buffer = buffer.slice(end + 2);
-				const data = block.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("");
-				if (!data) continue;
-				frames.push(data);
-				if (data === "[DONE]") return { status: response.status, frames, done: true };
-				if (stopAt && data.includes(stopAt)) return { status: response.status, frames, done: false };
+type Frame = { event?: string; data: string };
+const parse = (data: string): any => { try { return JSON.parse(data); } catch { return undefined; } };
+
+/**
+ * Opens an SSE stream. `fetch` resolves once the response head arrives, and the app has
+ * subscribed by then, so a caller that awaits this has missed nothing sent after it.
+ * Frames keep their `event:` names. `until` waits for a predicate over the frames so far,
+ * the end of the stream, or `ms` since opening; `close` ends the connection.
+ */
+const openStream = async (baseUrl: string, path: string, headers: Record<string, string>, ms = 30_000) => {
+	const deadline = Date.now() + ms;
+	const response = await fetch(`${baseUrl}${path}`, { headers: { accept: "text/event-stream", ...headers } });
+	const frames: Frame[] = [];
+	const reader = response.body?.getReader();
+	let ended = !reader;
+	// One free-running reader, so frames are taken off the connection as they arrive.
+	void (async () => {
+		if (!reader) return;
+		const decoder = new TextDecoder();
+		let buffer = "";
+		try {
+			for (;;) {
+				const { value, done } = await reader.read();
+				if (done) break;
+				buffer += decoder.decode(value, { stream: true });
+				let end: number;
+				while ((end = buffer.indexOf("\n\n")) >= 0) {
+					const lines = buffer.slice(0, end).split("\n");
+					buffer = buffer.slice(end + 2);
+					const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("");
+					const event = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
+					if (data || event) frames.push({ ...(event ? { event } : {}), data });
+				}
 			}
-		}
-	} catch { /* the read timed out or the stream was cut */ } finally {
-		await reader.cancel().catch(() => {});
-	}
-	return { status: response.status, frames, done: false };
+		} catch { /* cancelled */ }
+		ended = true;
+	})();
+	return {
+		status: response.status,
+		contentType: response.headers.get("content-type") ?? "",
+		frames,
+		/** Reads to the end of the stream. */
+		drain() { return this.until(() => false); },
+		async until(done: (frames: Frame[]) => boolean) {
+			while (!ended && !done(frames) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+			return frames;
+		},
+		close() {
+			void reader?.cancel().catch(() => {});
+		},
+	};
 };
-const types = (frames: string[]) => frames.map((frame) => { try { return JSON.parse(frame).type as string; } catch { return frame; } });
+/** Status of a stream request alone: the head, then the connection is dropped. */
+const streamStatus = async (baseUrl: string, path: string, headers: Record<string, string>) => {
+	const opened = await openStream(baseUrl, path, headers, 10_000);
+	opened.close();
+	return opened.status;
+};
+/** A turn stream, read to its end: the types of its frames. */
+const turnTypes = (frames: Frame[]) => frames.map((frame) => frame.data === "[DONE]" ? "[DONE]" : (parse(frame.data)?.type as string | undefined) ?? frame.data);
 
 /** Trades a fresh one-time pairing code for a bearer token, as a native client does. */
 const pair = async (baseUrl: string, label: string) => {
@@ -132,12 +164,12 @@ describe("client protocol", () => {
 		expect((await call(base, "GET", "/api/chats", { headers: bearer })).status).toBe(200);
 		// The query names a version only on the two streams, and the header wins over it.
 		expect((await call(base, "GET", "/api/chats?protocol=2")).status).toBe(401);
-		expect((await stream(base, "/api/events?protocol=2", {}, 3000)).status).toBe(426);
-		expect((await stream(base, "/api/chats/chat_zz_e2e_missing/stream?protocol=2", {}, 3000)).status).toBe(426);
-		expect((await stream(base, "/api/events?protocol=1", {}, 3000)).status).toBe(401);
-		expect((await stream(base, "/api/events?protocol=2", { [PROTOCOL]: "1" }, 3000)).status).toBe(401);
-		expect((await stream(base, "/api/events?protocol=1", { [PROTOCOL]: "2" }, 3000)).status).toBe(426);
-		expect((await stream(base, "/api/events?protocol=2", { authorization: bearer.authorization! }, 3000)).status).toBe(426);
+		expect(await streamStatus(base, "/api/events?protocol=2", {})).toBe(426);
+		expect(await streamStatus(base, "/api/chats/chat_zz_e2e_missing/stream?protocol=2", {})).toBe(426);
+		expect(await streamStatus(base, "/api/events?protocol=1", {})).toBe(401);
+		expect(await streamStatus(base, "/api/events?protocol=2", { [PROTOCOL]: "1" })).toBe(401);
+		expect(await streamStatus(base, "/api/events?protocol=1", { [PROTOCOL]: "2" })).toBe(426);
+		expect(await streamStatus(base, "/api/events?protocol=2", { authorization: bearer.authorization! })).toBe(426);
 	});
 
 	test("a native client pairs, lists, creates, sends and watches a turn", async ({ app }) => {
@@ -170,23 +202,31 @@ describe("client protocol", () => {
 		expect(opened.status).toBe(200);
 		expect(opened.json.turnInFlight).toBeFalsy();
 
-		// Send, and watch: the notification stream and the turn stream both tell of the turn, and the turn ends with [DONE].
-		const events = stream(base, "/api/events?protocol=1", { authorization: bearer.authorization! }, 30_000, chatId);
-		await new Promise((resolve) => setTimeout(resolve, 500));
+		// Send, and watch. The notification stream is open (and so subscribed) before the send,
+		// and names the turn's start and settle for this chat; the turn stream carries the
+		// agent's events and ends with [DONE].
+		const events = await openStream(base, "/api/events?protocol=1", { authorization: bearer.authorization! });
+		expect(events.status).toBe(200);
+		expect(events.contentType).toContain("text/event-stream");
+		// Read it from the start, alongside the turn stream below.
+		const eventsRead = events.until((frames) => frames.some((f) => f.event === "turn-settled" && parse(f.data)?.chatId === chatId));
 		const goal = `zz-e2e slow ${Date.now().toString(36)} why is the sky blue`;
 		const sent = await call(base, "POST", "/api/chat", { headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ chatId, input: { type: "text", text: goal } }) });
 		expect(sent.status).toBeLessThan(300);
-		const turn = await stream(base, `/api/chats/${chatId}/stream`, bearer);
+		const turn = await openStream(base, `/api/chats/${chatId}/stream`, bearer);
 		expect(turn.status).toBe(200);
-		expect(turn.done).toBe(true);
-		const seen = types(turn.frames);
+		expect(turn.contentType).toContain("text/event-stream");
+		const turnFrames = await turn.drain();
+		const seen = turnTypes(turnFrames);
 		expect(seen.at(-1)).toBe("[DONE]");
 		expect(seen.slice(0, 2)).toEqual(["agent_start", "turn_start"]);
 		expect(seen).toContain("agent_end");
-		expect(JSON.stringify(turn.frames)).toContain("zz-e2e slow: this reply comes after a short wait.");
-		const notified = await events;
-		expect(notified.status).toBe(200);
-		expect(JSON.stringify(notified.frames)).toContain(chatId);
+		expect(JSON.stringify(turnFrames)).toContain("zz-e2e slow: this reply comes after a short wait.");
+		const named = await eventsRead;
+		events.close();
+		const ours = named.filter((f) => parse(f.data)?.chatId === chatId).map((f) => f.event);
+		expect(ours.indexOf("turn-started")).toBeGreaterThanOrEqual(0);
+		expect(ours.indexOf("turn-settled")).toBeGreaterThan(ours.indexOf("turn-started"));
 
 		// The record holds the goal and the tutor's reply, verbatim.
 		await expect.poll(async () => JSON.stringify((await call(base, "GET", `/api/chats/${chatId}`, { headers: bearer })).json?.messages ?? []), { timeout: 10_000 }).toContain("zz-e2e slow: this reply comes after a short wait.");
@@ -195,11 +235,37 @@ describe("client protocol", () => {
 		expect(record.turnInFlight).toBeFalsy();
 
 		// A stream opened once the turn is over says only that it settled.
-		const late = await stream(base, `/api/chats/${chatId}/stream`, bearer);
-		expect(types(late.frames)).toEqual(["turn-settled", "[DONE]"]);
+		const late = await openStream(base, `/api/chats/${chatId}/stream`, bearer);
+		const lateFrames = await late.drain();
+		expect(turnTypes(lateFrames)).toEqual(["turn-settled", "[DONE]"]);
+	});
 
-		// An image id the record does not hold is a clean miss.
+	test("an image in a session record can be fetched by its snapshot id, and no other id finds it", async ({ app }) => {
+		const base = app.baseUrl;
+		const state = await instance(base);
+		const { bearer } = await pair(base, "zz-e2e image client");
+		const json = { ...bearer, "content-type": "application/json" };
+		const chatId = (await call(base, "POST", "/api/chats", { headers: json, body: JSON.stringify({ title: "zz-e2e protocol image" }) })).json.id as string;
+
+		// A session record refers to an image by its content's SHA-256. The tutor's show_image
+		// tool is teacher-only, so put the snapshot in the stored record, as the tool would.
+		const bytes = fs.readFileSync(state.fixtureImage);
+		const snapshotId = crypto.createHash("sha256").update(bytes).digest("hex");
+		const file = path.join(state.dataDir, "chats", `${chatId}.json`);
+		const record = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+		record.imageSnapshots = { [snapshotId]: { mimeType: "image/png", data: bytes.toString("base64"), width: 1, height: 1 } };
+		fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
+
+		const image = await call(base, "GET", `/api/chats/${chatId}/images/${snapshotId}`, { headers: bearer });
+		expect(image.status).toBe(200);
+		expect(image.headers.get("cache-control")).toContain("no-store");
+		expect(image.json).toMatchObject({ mimeType: "image/png", width: 1, height: 1 });
+		expect(Buffer.from(image.json.data, "base64").equals(fs.readFileSync(state.fixtureImage))).toBe(true);
+		// A well-formed id the record does not hold, and a malformed one, are misses; so is the right id under another session.
+		expect((await call(base, "GET", `/api/chats/${chatId}/images/${"0".repeat(64)}`, { headers: bearer })).status).toBe(404);
 		expect((await call(base, "GET", `/api/chats/${chatId}/images/zz-missing`, { headers: bearer })).status).toBe(404);
+		const other = (await call(base, "POST", "/api/chats", { headers: json, body: JSON.stringify({ title: "zz-e2e protocol image other" }) })).json.id as string;
+		expect((await call(base, "GET", `/api/chats/${other}/images/${snapshotId}`, { headers: bearer })).status).toBe(404);
 	});
 
 	test("a running turn stops when the client aborts it", async ({ app }) => {
@@ -211,15 +277,17 @@ describe("client protocol", () => {
 
 		// The fake model holds this reply back, so the turn stays running.
 		await call(base, "POST", "/api/chat", { headers: json, body: JSON.stringify({ chatId, input: { type: "text", text: `zz-e2e hang ${Date.now().toString(36)}` } }) });
-		const turn = stream(base, `/api/chats/${chatId}/stream`, bearer, 30_000);
+		const turn = await openStream(base, `/api/chats/${chatId}/stream`, bearer);
+		expect(turn.status).toBe(200);
 		await expect.poll(async () => (await call(base, "GET", `/api/chats/${chatId}`, { headers: bearer })).json?.turnInFlight, { timeout: 15_000 }).toBeTruthy();
 
 		const aborted = await call(base, "POST", "/api/activity/abort", { headers: json, body: JSON.stringify({ kind: "turn", id: chatId }) });
 		expect(aborted.status).toBe(200);
 		expect(aborted.json).toEqual({ ok: true });
 
-		const ended = await turn;
-		expect(ended.done).toBe(true);
+		const ended = await turn.drain();
+		expect(turnTypes(ended).at(-1)).toBe("[DONE]");
+		expect(turnTypes(ended)).toContain("agent_end");
 		await expect.poll(async () => (await call(base, "GET", `/api/chats/${chatId}`, { headers: bearer })).json?.turnInFlight, { timeout: 15_000 }).toBeFalsy();
 		// With nothing running, an abort says so.
 		const again = await call(base, "POST", "/api/activity/abort", { headers: json, body: JSON.stringify({ kind: "turn", id: chatId }) });

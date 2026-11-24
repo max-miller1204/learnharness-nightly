@@ -3,6 +3,7 @@ import type { Browser } from "@e2e-dev/web";
 import { expect, type Screen } from "e2e";
 import * as fs from "node:fs";
 import { dockAcceptsAnswers } from "./support/dock.ts";
+import { answersReceived, instance } from "./support/instance.ts";
 
 // The version the page was built with, which the server must report or the pill offers a reload instead.
 const pageVersion = (JSON.parse(fs.readFileSync("package.json", "utf8")) as { version: string }).version;
@@ -11,8 +12,7 @@ const pageVersion = (JSON.parse(fs.readFileSync("package.json", "utf8")) as { ve
 // (components/sidebar-update-pill.tsx, sidebar-update-capsule.tsx), as the
 // desktop app shows them: `window.lh.desktopUpdate` is stubbed by an init
 // script and /api/updates answers "idle", so the pill offers "Update
-// everything" and the test sets the run state the capsule shows. Ported from
-// the sidebar-footer drive that tests/ used to hold.
+// everything" and the test sets the run state the capsule shows.
 describe("sidebar update pill and capsule", { session: "learner" }, () => {
 	beforeEach(async ({ browser }) => {
 		await browser.addInitScript(() => {
@@ -129,8 +129,10 @@ describe("sidebar update pill and capsule", { session: "learner" }, () => {
 	test("Enter on the question dock after a click on the pill submits the answer, not the pill", async ({ app, screen, browser }) => {
 		await app.open("/chat/new");
 		await expect(screen.getByTestId("update-pill")).toBeVisible({ timeout: 60_000 });
+		const state = await instance(app.baseUrl);
+		const goal = `zz-e2e ${Date.now().toString(36)} why is the sky blue`;
 		const input = screen.getByTestId("composer").getByRole("textbox");
-		await input.fill(`zz-e2e ${Date.now().toString(36)} why is the sky blue`);
+		await input.fill(goal);
 		await input.press("Enter");
 		const dock = screen.getByTestId("question-dock");
 		await dock.getByRole("radio").first().waitFor({ timeout: 90_000 });
@@ -147,6 +149,8 @@ describe("sidebar update pill and capsule", { session: "learner" }, () => {
 		// took shows as a second "everything" call, and that fails at once.
 		const answered = async () => (await browser.evaluate(() => document.body.innerText.includes("zz-e2e acknowledged your answer")));
 		for (let press = 0; press < 5 && !(await answered()); press++) {
+			// The pill owns focus when Enter goes in: the pointer click gave it, nothing took it back.
+			expect(await focused(browser), "focus is on the pill").toBe("update-pill");
 			await browser.keyboard.press("Enter");
 			await expect.poll(async () => (await answered()) || (await calls(browser)).filter((c) => c === "everything").length !== before, { timeout: 4000 }).toBe(true).catch(() => {});
 			expect((await calls(browser)).filter((c) => c === "everything").length, "Enter activated the pill").toBe(before);
@@ -155,5 +159,7 @@ describe("sidebar update pill and capsule", { session: "learner" }, () => {
 		await expect(screen.getByText(/zz-e2e acknowledged your answer/, { visible: true })).toBeVisible({ timeout: 60_000 });
 		await expect(dock).not.toBeVisible();
 		expect((await calls(browser)).filter((c) => c === "everything").length).toBe(before);
+		// Pressing Enter again (above) must not have sent the answer twice.
+		await expect.poll(() => answersReceived(state, goal), { timeout: 10_000 }).toBe(1);
 	});
 });

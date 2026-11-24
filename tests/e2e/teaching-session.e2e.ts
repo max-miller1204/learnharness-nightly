@@ -3,7 +3,7 @@ import type { Browser } from "@e2e-dev/web";
 import { expect, type Screen } from "e2e";
 import * as fs from "node:fs";
 import { answerQuestion } from "./support/dock.ts";
-import { instance, sessionRequests, storedChat, type InstanceState } from "./support/instance.ts";
+import { answersReceived, instance, sessionRequests, storedChat, type InstanceState } from "./support/instance.ts";
 
 // Plays tests/e2e/support/scenarios/teach.json on the fake model: the goal
 // makes the tutor read two files, ask one question, then acknowledge the answer.
@@ -58,6 +58,8 @@ describe("teaching session", { session: "learner" }, () => {
 		expect(quiz.kind).toBe("quiz");
 		expect(quiz.answers.map((a) => a.label)).toEqual(["Blue"]);
 		expect(quiz.correct).toBe(true);
+		// Pressing Submit again until the dock went (support/dock.ts) must not have sent a second answer.
+		expect(answersReceived(state, goal)).toBe(1);
 	});
 
 	test("the session is stored and survives a reload", async ({ screen, browser }) => {

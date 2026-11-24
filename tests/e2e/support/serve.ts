@@ -57,6 +57,10 @@ const fixtureNoNewline = path.join(home, "zz-e2e-fixture-nonl.txt");
 fs.writeFileSync(fixture, "E2E-FIXTURE-SKY: Rayleigh scattering makes short (blue) wavelengths scatter most.\nzz-e2e second line.\n");
 fs.writeFileSync(fixtureNoNewline, "E2E-FIXTURE-NONL: this file has no final newline.\nzz-e2e last line, nothing after it.");
 
+// A 1x1 PNG, for tests that put an image snapshot in a session record.
+const fixtureImage = path.join(home, "zz-e2e-image.png");
+fs.writeFileSync(fixtureImage, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64"));
+
 const fake = await startFakeModel({ scenario, log: modelLog, vars: { FIXTURE: fixture, FIXTURE_NONL: fixtureNoNewline } });
 
 let server: [string, ...string[]];
@@ -235,7 +239,7 @@ if (mode === "dev") {
 	for (const route of ["/pair", "/chat/new", "/chat/chat_zzwarmup"]) await warm(route, route === "/pair" ? {} : { authorization: `Bearer ${token}` }).catch(() => {});
 }
 
-const state: InstanceState = { appUrl, mode, dataDir, home, authFile, modelLog, fixture, fixtureNoNewline, fakeModel: fake.url, fakeControl: fake.control, scenario };
+const state: InstanceState = { appUrl, mode, dataDir, home, authFile, modelLog, fixture, fixtureNoNewline, fixtureImage, fakeModel: fake.url, fakeControl: fake.control, scenario };
 fs.writeFileSync(stateFile(port), `${JSON.stringify(state, null, 2)}\n`);
 // Last, so a reader that finds the record finds a usable instance.
 if (launchId) publishLaunch(launchId, port);
