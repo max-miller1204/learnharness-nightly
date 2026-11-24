@@ -30,6 +30,9 @@ export interface StageCost {
 	dollars: number;
 	/** Stage-runs whose model is missing from Pi's catalog (render "—", never zero). */
 	unpricedRuns: number;
+	/** Runs where at least one API part is priced, so `dollars` is known spend
+	 *  (partial when the same run is also counted in `unpricedRuns`). */
+	pricedRuns?: number;
 	/** Runs that billed this stage. */
 	runs: number;
 	/** Token totals across every run. */
@@ -92,7 +95,7 @@ const ZERO_TOKENS: CallUsage = {
 	reasoningTokens: undefined,
 };
 
-const emptyStage = (): StageCost => ({ dollars: 0, unpricedRuns: 0, runs: 0, tokens: { ...ZERO_TOKENS } });
+const emptyStage = (): StageCost => ({ dollars: 0, unpricedRuns: 0, pricedRuns: 0, runs: 0, tokens: { ...ZERO_TOKENS } });
 
 /** One stage's dollars over its steps; null when the model is unpriced
  *  (all-or-nothing: a stage runs one model). */
@@ -148,6 +151,7 @@ export function graphCostSummary(input: CostSummaryInput, price: CallPricer): Gr
 		}
 		if (parts.some(([model, dollars]) => !isSubscriptionModel(model) && dollars === null)) extraction.unpricedRuns++;
 		for (const [model, dollars] of parts) if (!isSubscriptionModel(model) && dollars !== null) extraction.dollars += dollars;
+		if (parts.some(([model, dollars]) => !isSubscriptionModel(model) && dollars !== null)) extraction.pricedRuns = (extraction.pricedRuns ?? 0) + 1;
 
 		audit.runs++;
 		mergeTokens(audit.tokens, stages.auditor.steps);
@@ -157,7 +161,10 @@ export function graphCostSummary(input: CostSummaryInput, price: CallPricer): Gr
 			audit.subscriptionProviders = [...new Set([...(audit.subscriptionProviders ?? []), ...subscriptionLabels([stages.auditor.model])])];
 		}
 		else if (audDollars === null) audit.unpricedRuns++;
-		else audit.dollars += audDollars;
+		else {
+			audit.dollars += audDollars;
+			audit.pricedRuns = (audit.pricedRuns ?? 0) + 1;
+		}
 
 		// Run-level: null only when EVERY stage is unpriced.
 		const allStages: Array<number | null> = [extDollars, audDollars, ...(image ? [imgDollars] : [])];

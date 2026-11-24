@@ -32,10 +32,30 @@ test("known zero, mixed priced/unknown, and subscription headline semantics stay
 	const mixed = summary([priced, historical]);
 	assert.equal(mixed.unpricedRuns, 1);
 	assert.ok(mixed.totalDollars > 0);
-	assert.match(headline([priced, historical]), new RegExp(`>\\$${mixed.totalDollars.toFixed(2).replace(".", "\\.")}<\\/button>`));
+	assert.match(headline([priced, historical]), new RegExp(`>\\$${mixed.totalDollars.toFixed(2).replace(".", "\\.")} \\+ 2 unpriced<\\/button>`));
 	const plan = run([usage()], "chatgpt:fixture");
 	assert.match(headline([plan]), />ChatGPT<\/button>/);
 	assert.match(headline([plan, zero]), />\$0\.00 \+ ChatGPT<\/button>/);
+});
+
+test("a run with a priced extractor and an unpriced image reader shows its known spend, marked partial", () => {
+	const model = "anthropic:claude-haiku-4-5";
+	const imageRun: ExtractionRunUsage = {
+		startedAt: 1, at: "fixture", durationMs: 1,
+		stages: {
+			extractor: { model, steps: [usage({ cacheWrite1hTokens: 0 })] },
+			auditor: { model, steps: [] },
+			imageReader: { model, steps: [usage()] },
+		},
+	};
+	const costs = summary([imageRun]);
+	assert.ok(costs.stages.extraction.dollars > 0, "the extractor's spend is known");
+	assert.equal(costs.stages.extraction.unpricedRuns, 1);
+	assert.equal(costs.stages.extraction.runs - costs.stages.extraction.unpricedRuns, 0, "no extraction run is fully priced");
+	assert.equal(costs.stages.audit.unpricedRuns, 1, "the unbilled audit is unpriced");
+	const html = headline([imageRun]);
+	assert.match(html, new RegExp(`>\\$${costs.totalDollars.toFixed(2).replace(".", "\\.")} \\+ 2 unpriced</button>`));
+	assert.doesNotMatch(html, />\u2014<\/button>/);
 });
 
 test("graph stage and recent-run aggregates preserve known one-hour cache writes", () => {

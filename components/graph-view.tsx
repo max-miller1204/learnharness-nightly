@@ -287,9 +287,8 @@ function graphProviders(value: { subscriptionRuns?: number; subscriptionProvider
 function graphUsageLabel(costs: Pick<GraphCostSummary, "stages">): string {
 	const stages = [costs.stages.extraction, costs.stages.audit];
 	const providers = [...new Set(stages.flatMap(graphProviders))];
-	const priced = stages.some((stage) => stage.runs - stage.unpricedRuns - (stage.subscriptionRuns ?? 0) > 0);
-	const dollars = displayCostTotals(costs).totalDollars;
-	return planCostLabel(priced ? dollars : null, providers, (value) => `$${value.toFixed(2)}`);
+	const { totalDollars, unpricedRuns, pricedRuns } = displayCostTotals(costs);
+	return planCostLabel(pricedRuns > 0 ? totalDollars : null, providers, (value) => `$${value.toFixed(2)}`, unpricedRuns);
 }
 
 /**
@@ -304,12 +303,16 @@ function graphUsageLabel(costs: Pick<GraphCostSummary, "stages">): string {
 export function displayCostTotals(costs: Pick<GraphCostSummary, "stages">): {
 	totalDollars: number;
 	unpricedRuns: number;
+	/** Runs with known API spend, including runs that are only partly priced. */
+	pricedRuns: number;
 } {
 	// The two live stages (the spine came and went on one day,
 	// 2026-09-30 — digest-aware extraction replaced it).
 	return {
 		totalDollars: costs.stages.extraction.dollars + costs.stages.audit.dollars,
 		unpricedRuns: costs.stages.extraction.unpricedRuns + costs.stages.audit.unpricedRuns,
+		pricedRuns: [costs.stages.extraction, costs.stages.audit].reduce((sum, stage) =>
+			sum + (stage.pricedRuns ?? Math.max(0, stage.runs - stage.unpricedRuns - (stage.subscriptionRuns ?? 0))), 0),
 	};
 }
 
@@ -378,7 +381,7 @@ function GraphCostPanel({ costs }: { costs: GraphCostSummary }) {
 	];
 	// The displayed figures come from displayCostTotals (naming excluded —
 	// the pill and this panel must agree).
-	const { unpricedRuns } = displayCostTotals(costs);
+	const { unpricedRuns, pricedRuns } = displayCostTotals(costs);
 	return (
 		<div className="w-80 max-w-[calc(100vw-1.5rem)] rounded-xl border bg-card/95 p-3 text-xs shadow-lg backdrop-blur">
 			<div className="mb-2 flex items-baseline justify-between">
@@ -387,7 +390,7 @@ function GraphCostPanel({ costs }: { costs: GraphCostSummary }) {
 				</span>
 				<span className="text-foreground tabular-nums">
 					{graphUsageLabel(costs)}
-					{unpricedRuns > 0 && (
+					{unpricedRuns > 0 && pricedRuns === 0 && (
 						<span className="text-muted-foreground"> · {unpricedRuns} unpriced</span>
 					)}
 				</span>
