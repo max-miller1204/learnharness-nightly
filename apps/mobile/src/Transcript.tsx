@@ -7,7 +7,7 @@ import type { PlanBlockData } from "../../../src/core/contracts/chat.ts";
 import { blockLayout, GRAPH_PAD, TEXT_CAP_SCALE } from "../../../src/core/plan-layout.ts";
 import { projectView, type LhViewMessage, type LhViewPart } from "../../../src/core/view.ts";
 import { shownConfidence, type QuestionAnswerData } from "../../../src/core/question-core.ts";
-import { isShowImageDetails } from "../../../src/core/tool-steps.ts";
+import { isShowImageDetails, isStoppedCall } from "../../../src/core/tool-steps.ts";
 import type { MobileApi } from "./protocol";
 import { helperCard, isSubagentSteer, teachSeam } from "./lesson";
 import { CompactionCut, CompactionNote, DispatchCard, GraphContextCard, ReasoningRow, SeamDivider, SteerCard, ThinkingRow } from "./LessonParts";
@@ -213,12 +213,14 @@ function BatchView({ batch, eager, width, onBatchLayout, children }: {
   );
 }
 
-type PartContext = { api: MobileApi; chatId: string; jobs: readonly JobRecord[]; liveHelpers: boolean; openPlan: () => void };
+type PartContext = { api: MobileApi; chatId: string; jobs: readonly JobRecord[]; liveHelpers: boolean; openPlan: () => void; turnInFlight: boolean };
 
 function Part({ part, context, blocks }: { part: LhViewPart; context: PartContext; blocks?: [number, number] }) {
   const { c, s } = useTheme();
   const { api, chatId } = context;
   if (part.type === "text" && part.text) return <MarkdownBlocks text={part.text} from={blocks?.[0]} to={blocks?.[1]} />;
+  // A call the learner stopped: chat.tsx's SystemLine, a quiet line, never a card or an error.
+  if (isStoppedCall(part, context.turnInFlight)) return <Text style={[s.meta, { textAlign: "center", paddingVertical: space.xs }]}>Stopped</Text>;
   if (part.type === "reasoning") return <ReasoningRow text={part.text ?? ""} streaming={false} />;
   if (part.type === "data-plan-block") return <PlanBlock data={part.data as PlanBlockData} openPlan={context.openPlan} />;
   if (part.type === "data-compaction") return <CompactionNote />;
@@ -288,7 +290,7 @@ function Part({ part, context, blocks }: { part: LhViewPart; context: PartContex
   return helper ? <DispatchCard kind={helper.kind} job={helper.job} /> : null;
 }
 
-export function Transcript({ settled, batches, eager, batchWidth = 0, onBatchLayout, tail, api, chatId, jobs, liveHelpers, openPlan, files, unavailableFiles }: {
+export function Transcript({ settled, batches, eager, batchWidth = 0, onBatchLayout, tail, api, chatId, jobs, liveHelpers, openPlan, files, unavailableFiles, turnInFlight = false }: {
   /** The batches shown, oldest first (session-open.ts); messages before the first are still
    * being drawn. Without them every settled message shows. */
   settled: LhViewMessage[]; batches?: readonly Batch[]; eager?: (batch: Batch) => boolean; batchWidth?: number;
@@ -296,11 +298,13 @@ export function Transcript({ settled, batches, eager, batchWidth = 0, onBatchLay
   tail: LhMessage[]; api: MobileApi; chatId: string; jobs: readonly JobRecord[]; liveHelpers: boolean; openPlan: () => void;
   /** Saved user messages' uploaded files, by message ID. */
   files: ReadonlyMap<string, readonly AttachmentReference[]>; unavailableFiles: ReadonlySet<string>;
+  /** The turn is still running: a call with no result yet is not a stopped one. */
+  turnInFlight?: boolean;
 }) {
   const { s } = useTheme();
   const live = useMemo(() => projectView(tail), [tail]);
   const seam = useMemo(() => teachSeam(settled), [settled]);
-  const context = { api, chatId, jobs, liveHelpers, openPlan };
+  const context = { api, chatId, jobs, liveHelpers, openPlan, turnInFlight };
   // Tool steps' open state, by call id, shared by the live rows and the record's.
   const [openSteps, setOpenSteps] = useState<ReadonlySet<string>>(() => new Set());
   const steps = useMemo(() => ({
@@ -327,6 +331,8 @@ export function Transcript({ settled, batches, eager, batchWidth = 0, onBatchLay
     const parts = message.parts.flatMap((part, index) => {
       const blocks = shown.get(index);
       if (!blocks) return [];
+      // One Stopped line per run of stopped calls (chat.tsx).
+      if (isStoppedCall(part, turnInFlight) && isStoppedCall(message.parts[index - 1], turnInFlight)) return [];
       return [index === teachAt && part.type === "step-start"
         ? <SeamDivider key={part.id ?? index} label="Teaching" />
         : <Part key={part.id ?? index} part={part} context={context} blocks={blocks} />];
@@ -376,6 +382,8 @@ export function Transcript({ settled, batches, eager, batchWidth = 0, onBatchLay
               const last = messageIndex === live.length - 1 && index === message.parts.length - 1;
               return <ReasoningRow key={part.id ?? index} text={part.text ?? ""} streaming={last} />;
             }
+            // The tail's calls have no run state of their own: only a result that says aborted counts.
+            if (isStoppedCall(part, true)) return isStoppedCall(message.parts[index - 1], true) ? null : <Part key={part.toolCallId ?? index} part={part} context={context} />;
             if (isToolStep(part)) return <ToolStep key={part.toolCallId ?? index} part={part} running={isRunning(part)} />;
             // A shown image settles into its picture mid-turn too, as in the record.
             if (part.type === "tool-show_image") return <Part key={part.toolCallId ?? index} part={part} context={context} />;

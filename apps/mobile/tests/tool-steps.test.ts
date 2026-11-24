@@ -138,6 +138,80 @@ test("during the turn a step shows in order with the text, breathing while its c
   }
 });
 
+const SECRET = "SECRET-SOLUTION-7731";
+const hidden = { statement: "Compute 1 + 1.", mode: "recall", modelSolution: SECRET };
+const posed = [assistant("m_pose", [{ type: "toolCall", id: "call_pose", name: "problem", arguments: hidden }]), result("call_pose", "problem", null)];
+const shownText = (tree: ReactTestRenderer) => texts(tree.root).join("|");
+const stoppedLines = (tree: ReactTestRenderer) => texts(tree.root).filter((text) => text === "Stopped").length;
+const practice = (messages: LhMessage[], turnInFlight = false, tail: LhMessage[] = []) => createElement(Transcript, { settled: projectView(messages), tail, turnInFlight, api: {} as never,
+  chatId: "chat", jobs: [], liveHelpers: false, openPlan: () => {}, files: new Map(), unavailableFiles: new Set<string>() });
+
+test("a practice call the learner stopped shows the web's muted Stopped line, and no verdict, solution or card (#413)", async () => {
+  const concluding = assistant("m_end", [{ type: "toolCall", id: "call_end", name: "conclude", arguments: { outcome: "solved", verdict: "Done.", solutionReveal: SECRET } }]);
+  const tree = await render(practice([...posed, concluding]));
+  try {
+    assert.equal(stoppedLines(tree), 1);
+    assert.ok(shownText(tree).includes("Compute 1 + 1."), "the posed problem still shows");
+    assert.ok(!/Concluded|Done\.|Model solution/.test(shownText(tree)) && !shownText(tree).includes(SECRET));
+  } finally {
+    act(() => tree.unmount());
+  }
+  const unacknowledged = await render(practice([assistant("m_pose", [{ type: "toolCall", id: "call_pose", name: "problem", arguments: hidden }])]));
+  try {
+    assert.equal(stoppedLines(unacknowledged), 1);
+    assert.ok(!shownText(unacknowledged).includes("Compute 1 + 1.") && !shownText(unacknowledged).includes(SECRET), "a pose with no ack draws no Problem card");
+  } finally {
+    act(() => unacknowledged.unmount());
+  }
+});
+
+test("a conclusion still running is not stopped, and a settled one shows its card", async () => {
+  const concluding = assistant("m_end", [{ type: "toolCall", id: "call_end", name: "conclude", arguments: { outcome: "solved", verdict: "Done." } }]);
+  const running = await render(practice([...posed, concluding], true));
+  try {
+    assert.equal(stoppedLines(running), 0);
+  } finally {
+    act(() => running.unmount());
+  }
+  const settled = await render(practice([...posed, concluding, result("call_end", "conclude", "Concluded")]));
+  try {
+    assert.equal(stoppedLines(settled), 0);
+    assert.ok(shownText(settled).includes("Concluded"));
+  } finally {
+    act(() => settled.unmount());
+  }
+});
+
+test("a call that errored with any abort wording shows Stopped, once per run, for every tool, live or recorded", async () => {
+  const call = (id: string, name: string, args: unknown) => ({ type: "toolCall", id, name, arguments: args });
+  for (const wording of ["Operation aborted", "The operation was aborted", "This operation was aborted"]) {
+    const stopped = [assistant("m_a", [call("c1", "read", { path: "a.md" }), call("c2", "read", { path: "b.md" }), call("c3", "visual", { title: "t", code: "x" })]),
+      result("c1", "read", wording, true), result("c2", "read", wording, true), result("c3", "visual", wording, true)];
+    const tree = await render(practice(stopped));
+    try {
+      assert.equal(stoppedLines(tree), 1, wording);
+      assert.equal(rows(tree.root).length, 0, "no tool step row for a stopped call");
+      assert.ok(!shownText(tree).includes(wording));
+    } finally {
+      act(() => tree.unmount());
+    }
+  }
+  const live = await render(practice([], true, [assistant("m_live", [call("c1", "read", { path: "a.md" })]), result("c1", "read", "Operation aborted", true)]));
+  try {
+    assert.equal(stoppedLines(live), 1);
+    assert.equal(rows(live.root).length, 0);
+  } finally {
+    act(() => live.unmount());
+  }
+  const missing = await render(practice([assistant("m_a", [call("c1", "read", { path: "gone.md" })]), result("c1", "read", "ENOENT: no such file or directory", true)]));
+  try {
+    assert.equal(stoppedLines(missing), 0);
+    assert.equal(rows(missing.root).length, 1, "a call that ran and failed keeps its step");
+  } finally {
+    act(() => missing.unmount());
+  }
+});
+
 test("with Reduce Motion on, a running step's label stays still", async () => {
   globalThis.startedLoops = 0;
   Object.assign(globalThis, { reduceMotion: true });
