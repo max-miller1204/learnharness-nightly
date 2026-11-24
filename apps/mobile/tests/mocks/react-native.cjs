@@ -29,6 +29,10 @@ module.exports = {
   Animated, Easing: { linear: (t) => t },
   View: "View", Text: "Text", TextInput: "TextInput", Image: "Image", ScrollView: "ScrollView", FlatList: "FlatList", Pressable,
   Keyboard: { dismiss: () => {} },
+  // Tests read the latest alert from globalThis.lastAlert ({ title, message, buttons }) and
+  // every URL opened from globalThis.openedLinks.
+  Alert: { alert: (title, message, buttons) => { globalThis.lastAlert = { title, message, buttons }; } },
+  Linking: { openURL: (url) => { (globalThis.openedLinks ??= []).push(url); return Promise.resolve(); } },
   StyleSheet: { create: (styles) => styles, flatten, hairlineWidth: 1 },
   useColorScheme: () => "dark",
   // Tests set globalThis.fontScale to try the system font scale.
