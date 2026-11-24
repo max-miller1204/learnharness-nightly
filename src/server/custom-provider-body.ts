@@ -3,7 +3,7 @@ export class CustomBodyLimitError extends Error {}
 
 export async function readBoundedJson(message: Request | Response, limit: number, allowEmptyObject = false): Promise<unknown> {
 	if (Number(message.headers.get("content-length")) > limit) {
-		void message.body?.cancel().catch(() => undefined);
+		await message.body?.cancel();
 		throw new CustomBodyLimitError("JSON body exceeds the allowed byte limit");
 	}
 	const reader = message.body?.getReader();
@@ -11,18 +11,13 @@ export async function readBoundedJson(message: Request | Response, limit: number
 		if (allowEmptyObject) return {};
 		throw new SyntaxError("Missing JSON body");
 	}
-	// Preserve a leading UTF-8 BOM so JSON.parse rejects BOM-prefixed bodies.
-	const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
+	const decoder = new TextDecoder();
 	let text = "";
 	let bytes = 0;
-	let finished = false;
 	try {
 		for (;;) {
 			const { done, value } = await reader.read();
-			if (done) {
-				finished = true;
-				break;
-			}
+			if (done) break;
 			bytes += value.byteLength;
 			if (bytes > limit) throw new CustomBodyLimitError("JSON body exceeds the allowed byte limit");
 			text += decoder.decode(value, { stream: true });
@@ -30,12 +25,7 @@ export async function readBoundedJson(message: Request | Response, limit: number
 		if (bytes === 0 && allowEmptyObject) return {};
 		return JSON.parse(text + decoder.decode());
 	} finally {
-		if (finished) {
-			reader.releaseLock();
-		} else {
-			void reader.cancel().catch(() => undefined).finally(() => {
-				try { reader.releaseLock(); } catch { /* already released */ }
-			});
-		}
+		await reader.cancel().catch(() => undefined);
+		reader.releaseLock();
 	}
 }

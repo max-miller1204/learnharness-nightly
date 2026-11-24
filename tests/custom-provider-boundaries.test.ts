@@ -181,6 +181,162 @@ test("write size bounds are explicit for streamed bodies", async () => {
 	assert.equal((await mutate({ padding: "x".repeat(65536) }, "DELETE")).status, 413);
 	assert.equal(requests.length, 0);
 });
+test("custom-provider bounded JSON awaits cancellation, distinguishes cancel errors, and strips UTF-8 BOMs", async () => {
+	const postHeaders = () => ({ origin: "http://localhost", "content-type": "application/json", "if-match": get().headers.get("etag")! });
+	const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+	// Advertised oversized request awaits body.cancel() before returning 413.
+	{
+		let pulled = 0;
+		let cancelCalled = false;
+		let resolveCancel!: () => void;
+		const cancelGate = new Promise<void>((resolve) => { resolveCancel = resolve; });
+		const req = new Request("http://localhost/api/custom-provider", {
+			method: "POST",
+			headers: { ...postHeaders(), "content-length": "65537" },
+			body: new ReadableStream({
+				pull() { pulled++; },
+				cancel() { cancelCalled = true; return cancelGate; },
+			}, { highWaterMark: 0 }),
+			duplex: "half",
+		} as RequestInit);
+		let settled = false;
+		const pending = route.POST(req).then((res) => { settled = true; return res; });
+		await tick();
+		assert.equal(pulled, 0);
+		assert.equal(cancelCalled, true);
+		assert.equal(settled, false, "advertised oversize waits for body.cancel()");
+		resolveCancel();
+		assert.equal((await pending).status, 413);
+	}
+
+	// Advertised oversized request whose body.cancel() rejects surfaces as 500 (not 413).
+	{
+		let pulled = 0;
+		let cancelCalled = false;
+		const req = new Request("http://localhost/api/custom-provider", {
+			method: "POST",
+			headers: { ...postHeaders(), "content-length": "65537" },
+			body: new ReadableStream({
+				pull() { pulled++; },
+				cancel() { cancelCalled = true; return Promise.reject(new Error("cancel failed")); },
+			}, { highWaterMark: 0 }),
+			duplex: "half",
+		} as RequestInit);
+		assert.equal((await route.POST(req)).status, 500);
+		assert.equal(pulled, 0);
+		assert.equal(cancelCalled, true);
+	}
+
+	// Streamed oversized request awaits reader.cancel() before returning 413.
+	{
+		let streamed = false;
+		let cancelCalled = false;
+		let resolveCancel!: () => void;
+		const cancelGate = new Promise<void>((resolve) => { resolveCancel = resolve; });
+		const req = new Request("http://localhost/api/custom-provider", {
+			method: "POST",
+			headers: postHeaders(),
+			body: new ReadableStream({
+				pull(controller) {
+					if (!streamed) { streamed = true; controller.enqueue(new Uint8Array(65537)); }
+				},
+				cancel() { cancelCalled = true; return cancelGate; },
+			}),
+			duplex: "half",
+		} as RequestInit);
+		let settled = false;
+		const pending = route.POST(req).then((res) => { settled = true; return res; });
+		await tick();
+		assert.equal(cancelCalled, true);
+		assert.equal(settled, false, "streamed oversize waits for reader.cancel()");
+		resolveCancel();
+		assert.equal((await pending).status, 413);
+	}
+
+	// Streamed oversized request swallows reader.cancel() rejection in finally and still returns 413.
+	{
+		let streamed = false;
+		let cancelCalled = false;
+		const req = new Request("http://localhost/api/custom-provider", {
+			method: "POST",
+			headers: postHeaders(),
+			body: new ReadableStream({
+				pull(controller) {
+					if (!streamed) { streamed = true; controller.enqueue(new Uint8Array(65537)); }
+				},
+				cancel() { cancelCalled = true; return Promise.reject(new Error("cancel failed")); },
+			}),
+			duplex: "half",
+		} as RequestInit);
+		assert.equal((await route.POST(req)).status, 413);
+		assert.equal(cancelCalled, true);
+	}
+
+	// Discovery advertised oversize awaits body.cancel() before failing fatally (502).
+	{
+		let cancelCalled = false;
+		let resolveCancel!: () => void;
+		const cancelGate = new Promise<void>((resolve) => { resolveCancel = resolve; });
+		globalThis.fetch = async () => new Response(new ReadableStream({
+			cancel() { cancelCalled = true; return cancelGate; },
+		}), { status: 200, headers: { "content-type": "application/json", "content-length": String(8 * 1024 * 1024 + 1) } });
+		let settled = false;
+		const pending = mutate({ baseUrl: "http://h/v1", authMode: "keyless", manualModels: "fallback-model" }).then((res) => { settled = true; return res; });
+		await tick();
+		assert.equal(cancelCalled, true);
+		assert.equal(settled, false, "discovery advertised oversize waits for body.cancel()");
+		resolveCancel();
+		assert.equal((await pending).status, 502);
+	}
+
+	// Discovery advertised oversize whose body.cancel() rejects is non-fatal, allowing manual-model fallback.
+	{
+		let cancelCalled = false;
+		globalThis.fetch = async () => new Response(new ReadableStream({
+			cancel() { cancelCalled = true; return Promise.reject(new Error("cancel failed")); },
+		}), { status: 200, headers: { "content-type": "application/json", "content-length": String(8 * 1024 * 1024 + 1) } });
+		const res = await mutate({ baseUrl: "http://fallback/v1", authMode: "keyless", manualModels: "fallback-model" });
+		assert.equal(res.status, 200);
+		assert.equal(cancelCalled, true);
+		assert.deepEqual(current().customProvider.models, [{ id: "fallback-model" }]);
+	}
+
+	// Discovery streamed oversize swallows reader.cancel() rejection so the byte limit stays fatal (502).
+	{
+		let streamed = false;
+		let cancelCalled = false;
+		globalThis.fetch = async () => new Response(new ReadableStream({
+			pull(controller) {
+				if (!streamed) { streamed = true; controller.enqueue(new Uint8Array(8 * 1024 * 1024 + 1)); }
+			},
+			cancel() { cancelCalled = true; return Promise.reject(new Error("cancel failed")); },
+		}), { status: 200, headers: { "content-type": "application/json" } });
+		const before = current();
+		const res = await mutate({ baseUrl: "http://stream-limit/v1", authMode: "keyless", manualModels: "blocked-model" });
+		assert.equal(res.status, 502);
+		assert.equal(cancelCalled, true);
+		assert.deepEqual(current(), before);
+	}
+
+	// UTF-8 BOM-prefixed JSON is accepted for both request bodies and discovery responses.
+	{
+		const bom = [0xef, 0xbb, 0xbf];
+		globalThis.fetch = async () => new Response(
+			new Uint8Array([...bom, ...Buffer.from(JSON.stringify({ data: [{ id: "bom-model" }] }))]),
+			{ status: 200, headers: { "content-type": "application/json" } },
+		);
+		const req = new Request("http://localhost/api/custom-provider", {
+			method: "POST",
+			headers: postHeaders(),
+			body: new Uint8Array([...bom, ...Buffer.from(JSON.stringify({ baseUrl: "http://bom/v1", authMode: "keyless" }))]),
+		});
+		const res = await route.POST(req);
+		assert.equal(res.status, 200);
+		assert.equal(current().customProvider.baseUrl, "http://bom/v1");
+		assert.deepEqual(current().customProvider.models, [{ id: "bom-model" }]);
+	}
+});
 test("stale save, pin edit and disconnect all return reload guidance without writing", async () => {
 	const etag = get().headers.get("etag")!;
 	seed({ baseUrl: "http://other/v1", authMode: "keyless", models: [{ id: "different" }] });

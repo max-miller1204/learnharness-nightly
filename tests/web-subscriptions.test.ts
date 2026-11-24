@@ -84,19 +84,34 @@ test("HTTP controls reject cross-origin, simple-form and private credential oper
 	assert.equal((await subscriptionControlsResponse(huge)).status, 413);
 	const origin = "http://192.168.1.10:3000";
 	const postHeaders = { host: new URL(origin).host, origin, "sec-fetch-site": "same-origin", "x-learnharness-subscriptions": "1", "content-type": "application/json" };
-	// Oversized bodies get 413 immediately without waiting on stream cancellation.
-	for (const cancel of [() => new Promise<void>(() => {}), () => Promise.reject(new Error("cancel failed"))]) {
+	// Advertised oversized bodies return 413 immediately without cancelling or reading the stream.
+	for (const makeCancel of [
+		() => () => new Promise<void>(() => {}),
+		() => () => Promise.reject(new Error("cancel failed")),
+	]) {
 		let pulled = 0;
+		let cancelCalled = false;
+		const innerCancel = makeCancel();
 		const headerOversized = new Request(`${origin}/api/subscriptions`, {
 			method: "POST",
 			headers: { ...postHeaders, "content-length": "16385" },
-			body: new ReadableStream({ pull() { pulled++; }, cancel }),
+			body: new ReadableStream({
+				pull() { pulled++; },
+				cancel() { cancelCalled = true; return innerCancel(); },
+			}, { highWaterMark: 0 }),
 			duplex: "half",
 		} as RequestInit);
 		assert.equal((await subscriptionControlsResponse(headerOversized)).status, 413);
 		assert.equal(pulled, 0, "oversized content-length rejects before reading the body");
-
+		assert.equal(cancelCalled, false, "oversized content-length does not cancel the body");
+		assert.equal(headerOversized.bodyUsed, false);
+	}
+	// Streamed overflow awaits reader.cancel() before returning 413.
+	{
 		let streamed = false;
+		let cancelCalled = false;
+		let resolveCancel!: () => void;
+		const cancelGate = new Promise<void>((resolve) => { resolveCancel = resolve; });
 		const streamOversized = new Request(`${origin}/api/subscriptions`, {
 			method: "POST",
 			headers: postHeaders,
@@ -104,16 +119,41 @@ test("HTTP controls reject cross-origin, simple-form and private credential oper
 				pull(controller) {
 					if (!streamed) { streamed = true; controller.enqueue(new Uint8Array(16385)); }
 				},
-				cancel,
+				cancel() { cancelCalled = true; return cancelGate; },
 			}),
 			duplex: "half",
 		} as RequestInit);
-		assert.equal((await subscriptionControlsResponse(streamOversized)).status, 413);
+		let settled = false;
+		const pendingResponse = subscriptionControlsResponse(streamOversized).then((res) => { settled = true; return res; });
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(cancelCalled, true, "streamed overflow cancels the reader");
+		assert.equal(settled, false, "streamed overflow waits for reader.cancel() before returning 413");
+		resolveCancel();
+		assert.equal((await pendingResponse).status, 413);
+	}
+	// Streamed overflow whose reader.cancel() rejects falls into the route's outer 400 catch.
+	{
+		let streamed = false;
+		let cancelCalled = false;
+		const streamRejectCancel = new Request(`${origin}/api/subscriptions`, {
+			method: "POST",
+			headers: postHeaders,
+			body: new ReadableStream({
+				pull(controller) {
+					if (!streamed) { streamed = true; controller.enqueue(new Uint8Array(16385)); }
+				},
+				cancel() { cancelCalled = true; return Promise.reject(new Error("cancel failed")); },
+			}),
+			duplex: "half",
+		} as RequestInit);
+		assert.equal((await subscriptionControlsResponse(streamRejectCancel)).status, 400);
+		assert.equal(cancelCalled, true);
 	}
 	// UTF-8 BOM-prefixed JSON bodies are rejected as malformed JSON rather than reaching dispatch.
-	const bomPayload = new Uint8Array([0xef, 0xbb, 0xbf, ...Buffer.from(JSON.stringify({ providerId: "chatgpt", op: "consent", enabled: true }))]);
+	const bomPayload = new Uint8Array([0xef, 0xbb, 0xbf, ...Buffer.from(JSON.stringify({ providerId: "chatgpt", op: "login" }))]);
 	const bomRequest = new Request(`${origin}/api/subscriptions`, { method: "POST", headers: postHeaders, body: bomPayload });
 	assert.equal((await subscriptionControlsResponse(bomRequest)).status, 400);
+	assert.equal((await webSubscriptionOwner().chatgpt.status()).pending, false);
 	const browser = new Request("http://localhost:3000/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001");
 	assert.equal((await subscriptionBrowserResponse(browser)).status, 403);
 	for (const [marker, secret] of [["1", undefined], [undefined, "fixture-capability"]]) {
