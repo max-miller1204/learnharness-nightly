@@ -1723,6 +1723,58 @@ test("choosing a server returns a plain result across the IPC bridge, never the 
 	}
 });
 
+test("a Remove confirmed during a busy connect ends that connect and removes the server", async (t) => {
+	const list = await removalFixture(t);
+	// A reconnect of the open server is busy (its descriptor check waits) while the confirm is open.
+	await list.controller.launch();
+	let confirm!: () => void;
+	list.dialogGates.push(new Promise<void>((resolve) => { confirm = resolve; }));
+	const removal = list.send("remove", beta);
+	await until(() => list.asked.length > 0);
+	let release!: () => void;
+	list.holdDescriptor.set(beta, new Promise<void>((resolve) => { release = resolve; }));
+	const reopened = list.controller.reopen();
+	await until(() => list.calls.some((call) => call.startsWith(`${beta} ${PROTOCOL_ROUTES.serverInfo}`)));
+	assert.equal((await list.state()).busy, true, "the reconnect is busy");
+	const sent = list.calls.length;
+	confirm();
+	await removal;
+	await reopened;
+	release();
+	await settle();
+	const state = await list.state();
+	assert.deepEqual(state.servers, [alpha], "the confirmed removal happened");
+	assert.equal(state.busy, false);
+	assert.equal(state.removing, false);
+	assert.equal(list.controller.current(), null, "no window onto the removed server");
+	assert.deepEqual(removedBearer(list, sent), [], "the removed bearer is never sent after the confirm");
+	assert.ok(TestWindow.all.some((win) => !win.destroyed), "the app keeps a window (the list) meanwhile");
+	assert.deepEqual((await openServerList(list.file, fakeSafeStorage)).origins, [alpha]);
+});
+
+test("a Remove confirmed during a busy connect to another server waits for it, then removes", async (t) => {
+	const list = await removalFixture(t);
+	let confirm!: () => void;
+	list.dialogGates.push(new Promise<void>((resolve) => { confirm = resolve; }));
+	const removal = list.send("remove", alpha);
+	await until(() => list.asked.length > 0);
+	let release!: () => void;
+	list.holdDescriptor.set(beta, new Promise<void>((resolve) => { release = resolve; }));
+	const connecting = list.controller.launch();
+	await until(() => list.calls.some((call) => call.startsWith(`${beta} ${PROTOCOL_ROUTES.serverInfo}`)));
+	confirm();
+	await settle();
+	assert.deepEqual((await list.state()).servers, [alpha, beta], "still waiting on the connect");
+	release();
+	await connecting;
+	await removal;
+	const state = await list.state();
+	assert.deepEqual(state.servers, [beta], "the removal ran once the connect settled");
+	assert.equal(state.active, beta, "the other connect was left alone");
+	assert.equal(state.busy, false);
+	assert.equal(state.removing, false);
+});
+
 test("a check's session retries stop once its server is being removed", async (t) => {
 	const list = await removalFixture(t);
 	await list.controller.launch();

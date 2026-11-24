@@ -55,6 +55,14 @@ async function createServerList({
 	let problem = null;
 	let notice = "";
 	let connecting = null;
+	// The server `connecting` is for.
+	let connectingServer = null;
+	// Resolvers of the Removes waiting for the busy work (a connect, a reset, a default write) to end.
+	const idle = [];
+	function endBusy() {
+		busy = false;
+		for (const resolve of idle.splice(0)) resolve();
+	}
 	// A ghost-dashboard connect is in flight: launch and reopen wait on it.
 	let ghosting = false;
 	// The running check of each window: { server, stop, again }.
@@ -192,6 +200,7 @@ async function createServerList({
 		publish();
 		const operation = new AbortController();
 		connecting = operation;
+		connectingServer = server;
 		const options = { signal: operation.signal, retry: true };
 		// Closing the ghost dashboard cancels the connect quietly.
 		const hold = (win) => win.once("closed", () => { if (connecting === operation) operation.abort(); });
@@ -326,8 +335,9 @@ async function createServerList({
 			destroyContent();
 		} finally {
 			connecting = null;
+			connectingServer = null;
 			ghosting = false;
-			busy = false;
+			endBusy();
 			publish();
 		}
 	}
@@ -346,45 +356,54 @@ async function createServerList({
 			message: `Remove ${server} from this device?`,
 			detail: "This forgets its pairing and saved credential here. Pair again to add it back.",
 		});
-		if (response !== 1 || busy || removing || closing || store.damaged || !pairing) return;
-		if (store.pairing(server) !== pairing) {
-			// Paired again while this confirm was open: that is a new pairing, kept. Removed
-			// meanwhile (no pairing now): nothing left to say.
-			if (store.pairing(server)) {
-				notice = REPAIRED;
-				publish();
-			}
-			return;
-		}
-		if (held(server)) {
-			notice = HELD_BY_UPDATE;
-			publish();
-			return;
-		}
-		// Not busy: a failing check of another open server still shows its problem meanwhile.
+		if (response !== 1 || removing || closing || store.damaged || !pairing) return;
+		// A connect that was busy when Confirm came is not a reason to drop it: the removal claims
+		// the server now, so nothing new starts for it, ends the connect that is for it (that
+		// connect would send its bearer), and waits for the busy work to settle.
 		removing = server;
-		// Its bearer is never sent again: a check still running for it stops now, and so does
-		// its ChatGPT sign-in, without the cancel that would carry the bearer.
-		const signIns = chatgpt.forget(server);
-		if (window && rechecks.get(window)?.server === server) rechecks.get(window).stop.abort();
-		// Its window closes before the write: its page's own requests carry the bearer too.
-		// The list comes first, so the app always has a window, and stays in front for the keyboard.
-		if (active?.server === server) { show(); destroyContent(); }
-		publish();
 		try {
-			await store.remove(server);
-			if (problem?.server === server) problem = null;
-			notice = "";
-		} catch {
-			// A write can fail after it already took effect (its cleanup, say): then the server is
-			// gone, and so is its bearer.
-			const gone = !store.origins.includes(server);
-			if (gone && problem?.server === server) problem = null;
-			notice = gone ? "" : "Couldn’t remove the saved server.";
-			// The sign-in's skipped cancel goes out after all, so the server doesn't hold that
-			// attempt pending until its own timeout, but only while the same pairing is verifiably
-			// still saved, in memory and on disk. Otherwise the bearer is forgotten: never sent.
-			if (store.pairing(server) === pairing && await store.persisted(server)) await signIns.kept();
+			if (busy) {
+				publish();
+				// The list comes first, so the app always has a window, and stays in front for the keyboard.
+				show();
+				if (connectingServer === server) connecting?.abort();
+				while (busy) await new Promise((resolve) => idle.push(resolve));
+				if (closing || store.damaged) return;
+			}
+			if (store.pairing(server) !== pairing) {
+				// Paired again while this confirm was open: that is a new pairing, kept. Removed
+				// meanwhile (no pairing now): nothing left to say.
+				if (store.pairing(server)) notice = REPAIRED;
+				return;
+			}
+			if (updatingServer() === server || updating?.origin === server) {
+				notice = HELD_BY_UPDATE;
+				return;
+			}
+			// A failing check of another open server still shows its problem meanwhile.
+			// Its bearer is never sent again: a check still running for it stops now, and so does
+			// its ChatGPT sign-in, without the cancel that would carry the bearer.
+			const signIns = chatgpt.forget(server);
+			if (window && rechecks.get(window)?.server === server) rechecks.get(window).stop.abort();
+			// Its window closes before the write: its page's own requests carry the bearer too.
+			// The list comes first, so the app always has a window, and stays in front for the keyboard.
+			if (active?.server === server) { show(); destroyContent(); }
+			publish();
+			try {
+				await store.remove(server);
+				if (problem?.server === server) problem = null;
+				notice = "";
+			} catch {
+				// A write can fail after it already took effect (its cleanup, say): then the server is
+				// gone, and so is its bearer.
+				const gone = !store.origins.includes(server);
+				if (gone && problem?.server === server) problem = null;
+				notice = gone ? "" : "Couldn’t remove the saved server.";
+				// The sign-in's skipped cancel goes out after all, so the server doesn't hold that
+				// attempt pending until its own timeout, but only while the same pairing is verifiably
+				// still saved, in memory and on disk. Otherwise the bearer is forgotten: never sent.
+				if (store.pairing(server) === pairing && await store.persisted(server)) await signIns.kept();
+			}
 		} finally { removing = null; publish(); }
 	}
 	// The open remote window's ChatGPT sign-in (window.lh.chatgptSignIn), never for a held server.
@@ -408,7 +427,7 @@ async function createServerList({
 				await store.reset();
 				notice = "";
 			} catch { notice = "Couldn’t reset the saved server list."; }
-			finally { busy = false; publish(); }
+			finally { endBusy(); publish(); }
 		} else if (action === "pair" && !store.damaged) {
 			const origin = parseOrigin(withScheme(value?.origin));
 			if (!origin) return "Enter the HTTPS address of your server, or paste its pairing link.";
@@ -420,7 +439,7 @@ async function createServerList({
 			publish();
 			try { await store.saveDefault(value); }
 			catch { notice = "Couldn’t save the launch default."; }
-			finally { busy = false; publish(); }
+			finally { endBusy(); publish(); }
 		} else if (action === "remove" && !store.damaged && store.origins.includes(value)) {
 			await remove(value);
 		}
