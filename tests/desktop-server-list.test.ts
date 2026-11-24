@@ -1297,7 +1297,7 @@ async function removalFixture(t: test.TestContext, { defaultServer = beta as str
 		calls: [] as string[],
 		/** While set for an origin, its descriptor requests wait for the promise. */
 		holdDescriptor: new Map<string, Promise<void>>(),
-		/** While set for an origin, its page loads wait for the promise, or for their window to close. */
+		/** While set for an origin, its page loads wait for the promise (even past their window). */
 		holdPage: new Map<string, Promise<void>>(),
 		/** Origins (or an origin and path) whose next answers are 503s, by count. */
 		unavailable: new Map<string, number>(),
@@ -1379,11 +1379,10 @@ async function removalFixture(t: test.TestContext, { defaultServer = beta as str
 		fixture.calls.push(`${origin} /page ${bearer ?? "-"}`);
 		const gate = fixture.holdPage.get(origin);
 		if (!gate) return;
-		// A window destroyed during its load ends the load, as Electron's loadURL does.
-		await new Promise<void>((resolve, reject) => {
-			win.once("closed", () => reject(Object.assign(new Error("The load was aborted."), { code: "ERR_ABORTED" })));
-			void gate.then(resolve);
-		});
+		// The load is held past its window's destruction and ends only when the gate opens, as a
+		// slow loadURL can; one whose window went away meanwhile then rejects, late.
+		await gate;
+		if (win.destroyed) throw Object.assign(new Error("The load was aborted."), { code: "ERR_ABORTED" });
 	};
 	type FakeEvent = { sender: TestWindow["webContents"]; senderFrame: { url: string } };
 	let handler!: (event: FakeEvent, action: string, payload?: unknown) => Promise<unknown>;
@@ -1840,10 +1839,14 @@ test("a Remove confirmed during a reconnect's slow page load cancels the load in
 	assert.equal(loading.destroyed, true, "the page load's window is gone");
 	assert.equal(listOpen(), true, "the list stays open for the keyboard");
 	assert.deepEqual(removedBearer(list, confirmed), [], "nothing more carries the removed bearer");
+	// The held load only now fails, for its window is long gone: nothing is left to react to it.
+	page.open();
+	await settle();
 	const state = await list.state();
 	assert.deepEqual(state.servers, [alpha]);
 	assert.equal(state.busy, false);
 	assert.equal(state.removing, false);
+	assert.equal(state.problem, null, "the late failure of a cancelled load shows no problem");
 });
 
 test("a Remove that fails after another connect closed the list reopens it with the error", async (t) => {
@@ -1869,6 +1872,115 @@ test("a Remove that fails after another connect closed the list reopens it with 
 	const state = await list.state() as unknown as { servers: string[]; notice: string };
 	assert.deepEqual(state.servers, [alpha, beta], "nothing was forgotten");
 	assert.equal(state.notice, "Couldn’t remove the saved server.");
+});
+
+/** The Switch server… panel, if open, and the notice it was last sent. */
+const openList = () => TestWindow.all.find((win) => !win.destroyed && win.url.includes("server-list.html"));
+const shownNotice = () => (openList()?.snapshot as unknown as { notice: string } | null | undefined)?.notice;
+
+test("a ChatGPT sign-in whose server is being removed sends no cancel with the bearer after the confirm, however long the busy work runs", async (t) => {
+	const list = await removalFixture(t);
+	t.after(() => endFixture(list));
+	await list.controller.launch();
+	const login = gate();
+	list.signIn.holdLogin = login.closed;
+	const signing = list.controller.chatgptSignIn();
+	await until(() => list.signIn.ops.includes(`${beta} login`));
+	const confirm = gate();
+	list.dialogGates.push(confirm.closed);
+	const removal = list.send("remove", beta);
+	await until(() => list.asked.length > 0);
+	// Pairing the server again is busy (its descriptor check waits) and ends the open window and its sign-in.
+	const descriptor = gate();
+	list.holdDescriptor.set(beta, descriptor.closed);
+	const pairing = list.send("pair", { origin: beta, code });
+	await until(() => list.controller.current() === null);
+	const confirmed = list.calls.length;
+	confirm.open();
+	await settle();
+	// The login reply arrives before the pairing fails: the attempt must not answer it with a bearer.
+	login.open();
+	await settle();
+	list.down.add(beta);
+	descriptor.open();
+	await pairing;
+	await removal;
+	await signing;
+	await settle();
+	assert.deepEqual(removedBearer(list, confirmed), [], "no request carries the removed bearer after the confirm");
+	assert.deepEqual((await list.state()).servers, [alpha]);
+});
+
+test("a notice from a Remove that did nothing stays on the list until the user has seen it", async (t) => {
+	const list = await removalFixture(t);
+	t.after(() => endFixture(list));
+	const confirm = gate();
+	list.dialogGates.push(confirm.closed);
+	const removal = list.send("remove", alpha);
+	await until(() => list.asked.length > 0);
+	// The server is paired again, and the new pairing's page is still loading when Confirm comes.
+	const page = gate();
+	list.holdPage.set(alpha, page.closed);
+	const sent = list.calls.length;
+	const pairing = list.send("pair", { origin: alpha, code });
+	await until(() => list.calls.slice(sent).some((call) => call.startsWith(`${alpha} /page`)));
+	confirm.open();
+	await removal;
+	page.open();
+	await pairing;
+	await settle();
+	assert.equal(list.controller.current()?.origin, alpha, "the new pairing's window opened");
+	assert.equal(openList() !== undefined, true, "the list is still open for the notice");
+	assert.equal(shownNotice(), "This server was paired again, so it wasn’t removed.");
+	// The user's next action ends the notice: a connect from the list closes it as before.
+	await list.send("connect", beta);
+	assert.equal(openList(), undefined, "once seen, a connect closes the list again");
+});
+
+test("a failed Remove's error outlives a connect that was running when it failed", async (t) => {
+	const list = await removalFixture(t);
+	t.after(() => endFixture(list));
+	const confirm = gate();
+	list.dialogGates.push(confirm.closed);
+	const removal = list.send("remove", alpha);
+	await until(() => list.asked.length > 0);
+	const descriptor = gate();
+	list.holdDescriptor.set(beta, descriptor.closed);
+	const sent = list.calls.length;
+	const connecting = list.send("connect", beta);
+	await until(() => list.calls.slice(sent).some((call) => call.startsWith(`${beta} ${PROTOCOL_ROUTES.serverInfo}`)));
+	// The removal's write is held, then fails.
+	const write = gate();
+	const open = fs.open;
+	t.mock.method(fs, "open", (...args: Parameters<typeof fs.open>) => {
+		if (typeof args[0] === "string" && args[0].startsWith(`${list.file}.`) && args[0].endsWith(".tmp")) {
+			return write.closed.then(() => { throw Object.assign(new Error("synthetic write refusal"), { code: "EACCES" }); });
+		}
+		return Reflect.apply(open, fs, args);
+	});
+	confirm.open();
+	descriptor.open();
+	await connecting;
+	assert.equal(list.controller.current()?.origin, beta, "the other connect finished");
+	// beta's window is closed and reopened while the write is still pending.
+	list.controller.appWindow()!.destroy();
+	const second = gate();
+	list.holdDescriptor.set(beta, second.closed);
+	const again = list.controller.reopen();
+	const descriptors = () => list.calls.filter((call) => call.startsWith(`${beta} ${PROTOCOL_ROUTES.serverInfo}`)).length;
+	const first = descriptors();
+	await until(() => descriptors() > first);
+	assert.ok(descriptors() > first, "the second connect is waiting on its descriptor");
+	write.open();
+	await until(() => shownNotice() === "Couldn’t remove the saved server.");
+	assert.equal(shownNotice(), "Couldn’t remove the saved server.", "the failure shows while the second connect runs");
+	second.open();
+	await again;
+	await removal;
+	await settle();
+	assert.equal(list.controller.current()?.origin, beta, "the second connect finished");
+	assert.equal(openList() !== undefined, true, "the list is still open for the error");
+	assert.equal(shownNotice(), "Couldn’t remove the saved server.");
 });
 
 test("a stale Remove confirmed while its server is being paired again neither removes nor cancels the new pairing", async (t) => {

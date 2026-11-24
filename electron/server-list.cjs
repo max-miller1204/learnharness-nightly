@@ -66,6 +66,9 @@ async function createServerList({
 	let removing = null;
 	let problem = null;
 	let notice = "";
+	// A Remove's notice (it did nothing, or failed) that the user hasn't had a chance to read: a
+	// connect finishing meanwhile keeps the list open for it, and the user's next action ends it.
+	let unseen = false;
 	let connecting = null;
 	// The server `connecting` is for, and whether it is pairing it anew (a code, not a saved bearer).
 	let connectingServer = null;
@@ -104,6 +107,7 @@ async function createServerList({
 	// A notice for a Remove that did nothing, in a list that is open to show it.
 	function tell(message) {
 		notice = message;
+		unseen = true;
 		if (!closing) show();
 		publish();
 	}
@@ -134,6 +138,7 @@ async function createServerList({
 		return controls;
 	}
 	function closeList() {
+		if (unseen) return;
 		const panel = controls;
 		controls = null;
 		if (panel && !panel.isDestroyed()) {
@@ -212,7 +217,7 @@ async function createServerList({
 		}
 		busy = true;
 		problem = null;
-		notice = "";
+		if (!unseen) notice = "";
 		const ghost = quiet || server === "local";
 		ghosting = ghost;
 		if (!ghost) show();
@@ -389,6 +394,10 @@ async function createServerList({
 		// A connect that was busy when Confirm came is not a reason to drop it: the removal claims
 		// the server now, so nothing new starts for it, and waits for the busy work to settle.
 		removing = server;
+		// Its bearer is never sent again, however long the busy work below takes: a ChatGPT
+		// sign-in for it ends now and sends no cancel with it, and a check still running for it stops.
+		const signIns = chatgpt.forget(server);
+		if (window && rechecks.get(window)?.server === server) rechecks.get(window).stop.abort();
 		try {
 			if (busy) {
 				// A connect on the saved bearer would keep sending it, through its page load too (which
@@ -414,10 +423,6 @@ async function createServerList({
 				return;
 			}
 			// A failing check of another open server still shows its problem meanwhile.
-			// Its bearer is never sent again: a check still running for it stops now, and so does
-			// its ChatGPT sign-in, without the cancel that would carry the bearer.
-			const signIns = chatgpt.forget(server);
-			if (window && rechecks.get(window)?.server === server) rechecks.get(window).stop.abort();
 			// Its window closes before the write: its page's own requests carry the bearer too.
 			// The list comes first, so the app always has a window, and stays in front for the keyboard.
 			if (active?.server === server) { show(); destroyContent(); }
@@ -426,14 +431,16 @@ async function createServerList({
 				await store.remove(server);
 				if (problem?.server === server) problem = null;
 				notice = "";
+				unseen = false;
 			} catch {
 				// A write can fail after it already took effect (its cleanup, say): then the server is
 				// gone, and so is its bearer.
 				const gone = !store.origins.includes(server);
 				if (gone && problem?.server === server) problem = null;
-				notice = gone ? "" : "Couldn’t remove the saved server.";
-				// A connect that finished meanwhile closed the list: the error needs one.
-				if (!gone) show();
+				if (gone) notice = "";
+				// A connect meanwhile may have closed the list, or be showing it: the error needs one
+				// that stays until the user has seen it.
+				else tell("Couldn’t remove the saved server.");
 				// The sign-in's skipped cancel goes out after all, so the server doesn't hold that
 				// attempt pending until its own timeout, but only while the same pairing is verifiably
 				// still saved, in memory and on disk. Otherwise the bearer is forgotten: never sent.
@@ -454,6 +461,8 @@ async function createServerList({
 		if (action === "state") return snapshot();
 		if (action === "link") return typeof value === "string" && value.length <= 8192 ? parsePairLink(value) : null;
 		if (busy || removing || closing) return;
+		// The user acted: whatever the list last told them has been seen.
+		unseen = false;
 		// Nothing is returned: the window connect resolves with is native and can't cross IPC.
 		if (action === "connect" && (value === "local" || store.origins.includes(value))) { await connect(value); return; }
 		if (action === "reset" && store.damaged) {
