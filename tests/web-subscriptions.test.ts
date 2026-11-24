@@ -82,6 +82,38 @@ test("HTTP controls reject cross-origin, simple-form and private credential oper
 	assert.equal((await subscriptionControlsResponse(bareFormPaste)).status, 403);
 	const huge = request({ providerId: "chatgpt", op: "cancel", padding: "x".repeat(16384) });
 	assert.equal((await subscriptionControlsResponse(huge)).status, 413);
+	const origin = "http://192.168.1.10:3000";
+	const postHeaders = { host: new URL(origin).host, origin, "sec-fetch-site": "same-origin", "x-learnharness-subscriptions": "1", "content-type": "application/json" };
+	// Oversized bodies get 413 immediately without waiting on stream cancellation.
+	for (const cancel of [() => new Promise<void>(() => {}), () => Promise.reject(new Error("cancel failed"))]) {
+		let pulled = 0;
+		const headerOversized = new Request(`${origin}/api/subscriptions`, {
+			method: "POST",
+			headers: { ...postHeaders, "content-length": "16385" },
+			body: new ReadableStream({ pull() { pulled++; }, cancel }),
+			duplex: "half",
+		} as RequestInit);
+		assert.equal((await subscriptionControlsResponse(headerOversized)).status, 413);
+		assert.equal(pulled, 0, "oversized content-length rejects before reading the body");
+
+		let streamed = false;
+		const streamOversized = new Request(`${origin}/api/subscriptions`, {
+			method: "POST",
+			headers: postHeaders,
+			body: new ReadableStream({
+				pull(controller) {
+					if (!streamed) { streamed = true; controller.enqueue(new Uint8Array(16385)); }
+				},
+				cancel,
+			}),
+			duplex: "half",
+		} as RequestInit);
+		assert.equal((await subscriptionControlsResponse(streamOversized)).status, 413);
+	}
+	// UTF-8 BOM-prefixed JSON bodies are rejected as malformed JSON rather than reaching dispatch.
+	const bomPayload = new Uint8Array([0xef, 0xbb, 0xbf, ...Buffer.from(JSON.stringify({ providerId: "chatgpt", op: "consent", enabled: true }))]);
+	const bomRequest = new Request(`${origin}/api/subscriptions`, { method: "POST", headers: postHeaders, body: bomPayload });
+	assert.equal((await subscriptionControlsResponse(bomRequest)).status, 400);
 	const browser = new Request("http://localhost:3000/api/subscriptions/browser?id=00000000-0000-4000-8000-000000000001");
 	assert.equal((await subscriptionBrowserResponse(browser)).status, 403);
 	for (const [marker, secret] of [["1", undefined], [undefined, "fixture-capability"]]) {
