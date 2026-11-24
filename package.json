@@ -27,7 +27,7 @@
 		"pair": "node scripts/pair.ts",
 		"desktop:dist": "rm -rf dist .next/standalone && npm run build && node scripts/smoke-provider-runtime.mjs && node scripts/build-server.mjs && node scripts/smoke-server.mjs && DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer} APPLE_KEYCHAIN_PROFILE=LH_NOTARY APPLE_TEAM_ID=JS6XN22HY6 electron-builder --mac --arm64",
 		"test:e2e": "e2e run --target web",
-		"test:e2e:ios": "e2e run --target ios"
+		"test:e2e:ios": "tests/e2e/support/ios.sh e2e run"
 	},
 	"dependencies": {
 		"@earendil-works/pi-agent-core": "1.5.2",
