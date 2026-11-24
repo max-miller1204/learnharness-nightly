@@ -175,6 +175,19 @@ try {
 	await stop(1);
 }
 
+// `next dev` compiles a page and its client chunks when first asked, and a
+// browser that gets there first sees Fast Refresh reload the page under a test
+// (a typed pairing code vanishes). Load the pages the tests open, and the
+// scripts they name, once before declaring the instance ready.
+async function warm(route: string, headers: Record<string, string> = {}) {
+	const html = await (await fetch(`${appUrl}${route}`, { headers, redirect: "manual" })).text();
+	const scripts = [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map((m) => m[1] as string);
+	await Promise.all(scripts.map((src) => fetch(new URL(src, appUrl), { headers }).then((r) => r.arrayBuffer())));
+}
+if (mode === "dev") {
+	for (const route of ["/pair", "/chat/new", "/chat/chat_zzwarmup"]) await warm(route, route === "/pair" ? {} : { authorization: `Bearer ${token}` }).catch(() => {});
+}
+
 const state: InstanceState = { appUrl, mode, dataDir, home, authFile, modelLog, fixture, fixtureNoNewline, fakeModel: fake.url, fakeControl: fake.control, scenario };
 fs.writeFileSync(stateFile(port), `${JSON.stringify(state, null, 2)}\n`);
 // Last, so a reader that finds the pointer finds a usable instance.
