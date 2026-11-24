@@ -11,7 +11,7 @@ import { createGrepTool } from "../src/agent/tools/grep.ts";
 import { createLsTool } from "../src/agent/tools/ls.ts";
 import { createReadTool } from "../src/agent/tools/read.ts";
 import { createShowImageTool } from "../src/agent/tools/show-image.ts";
-import { failedCallShowsItsError, isAbortedCall, isRejectedCall, TOOL_STEP_INPUT_FIELDS, toolStepInput } from "../src/core/tool-steps.ts";
+import { failedCallShowsItsError, isAbortedCall, isRejectedCall, TOOL_STEP_FIELD_TYPES, TOOL_STEP_INPUT_FIELDS, toolStepInput } from "../src/core/tool-steps.ts";
 import { projectView, type LiveTurnState } from "../src/core/view.ts";
 
 describe("a tool step's declared input fields", () => {
@@ -23,12 +23,20 @@ describe("a tool step's declared input fields", () => {
 		assert.deepEqual([...TOOL_STEP_INPUT_FIELDS.grep!].sort(), keys(createGrepTool()));
 		assert.deepEqual([...TOOL_STEP_INPUT_FIELDS.show_image!].sort(), keys(createShowImageTool({ chatId: "c", chatStore: { saveImageSnapshot: () => { throw new Error("unused"); } } as never })));
 	});
+	it("each have the primitive type the tools' own schemas give them", () => {
+		const kind = (schema: { type?: string }) => schema.type === "integer" ? "number" : schema.type;
+		const props = (tool: { parameters: unknown }) => (tool.parameters as { properties: Record<string, { type?: string }> }).properties;
+		const tools: Record<string, { parameters: unknown }> = { read: createReadTool(), ls: createLsTool(), find: createFindTool(), grep: createGrepTool(),
+			show_image: createShowImageTool({ chatId: "c", chatStore: { saveImageSnapshot: () => { throw new Error("unused"); } } as never }) };
+		for (const [name, tool] of Object.entries(tools)) for (const [field, schema] of Object.entries(props(tool))) assert.equal(TOOL_STEP_FIELD_TYPES[field], kind(schema), `${name}.${field}`);
+		for (const fields of Object.values(TOOL_STEP_INPUT_FIELDS)) for (const field of fields) assert.ok(Object.hasOwn(TOOL_STEP_FIELD_TYPES, field), field);
+	});
 	it("are all a step shows of its input", () => {
 		assert.deepEqual(toolStepInput("read", { path: "a.md", modelSolution: "SECRET", payload: { tests: ["SECRET"] } }), { path: "a.md" });
 		assert.deepEqual(toolStepInput("list_propositions", { session: "s", extra: 1 }), { session: "s" });
 		assert.deepEqual(toolStepInput("list_sessions", { extra: 1 }), {});
 		assert.equal(toolStepInput("quiz", { any: 1 }) !== undefined, true, "another tool's input passes through");
-		assert.equal(toolStepInput("read", "text"), "text");
+		assert.deepEqual(toolStepInput("read", "text"), {}, "a non-object input has no declared field");
 	});
 });
 

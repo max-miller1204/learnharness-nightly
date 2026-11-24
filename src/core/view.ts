@@ -36,7 +36,7 @@ import type { AssistantMessage, ImageContent, ToolResultMessage } from "@earendi
 import type { LhMarkerMessage, LhMessage } from "./native-messages.ts";
 import { modelSolutionForConclude, PRACTICE_CONCLUDE_TOOL, problemInputForConclude, SEND_TO_USER_TOOL, sendToUserText, pluginQuestionResultMatches } from "./native-messages.ts";
 import { readPluginQuestionMessageAnnotation, readPluginQuestionCancellation, type PluginQuestionAnnotationRead } from "./plugin-questions.ts";
-import { pluginProblemForCall, type PluginProblemSnapshot } from "./plugin-problems.ts";
+import { pluginProblemForCall, readPluginProblemSnapshot, type PluginProblemSnapshot } from "./plugin-problems.ts";
 import { activeCompactionOf, type CompactionDetails } from "./compaction.ts";
 import { QUESTION_TOOLS } from "./pending.ts";
 import type { SubagentArtifactData, SubagentResultMeta } from "./contracts/jobs.ts";
@@ -267,7 +267,12 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 						continue;
 					}
 					const part = toolPartOf(block, live, streamingMessage);
-					const pluginProblem = pluginProblemForCall(messages, { messageId: m.id, contentIndex, toolCallId: block.id, toolName: block.name });
+					// The record knows a pose once its turn's results are appended. A pose whose
+					// execution ended earlier in the turn (a slow tool is still running beside it)
+					// is the same pose: its stored result carries the same snapshot, and without
+					// it the call would fall to a generic card holding its hidden fields.
+					const pluginProblem = pluginProblemForCall(messages, { messageId: m.id, contentIndex, toolCallId: block.id, toolName: block.name })
+						?? liveExecutionPluginProblem(live?.executions.get(block.id));
 					if (pluginProblem) { part.pluginProblem = pluginProblem; part.input = pluginProblem.input; }
 					if ((QUESTION_TOOLS as readonly string[]).includes(block.name)) {
 						part.sourceMessageId = m.id;
@@ -339,6 +344,12 @@ export function projectView(messages: readonly LhMessage[], live?: LiveTurnState
 		}
 	}
 	return out;
+}
+
+/** The plugin problem a clean live execution's result carries, if it is a pose. */
+function liveExecutionPluginProblem(exec: LiveExecution | undefined): PluginProblemSnapshot | null {
+	if (!exec || exec.isError || exec.result?.isError) return null;
+	return readPluginProblemSnapshot((exec.result?.details as { pluginProblem?: unknown } | null | undefined)?.pluginProblem);
 }
 
 /** The dock-owned tools: question tools (client-owned results — the dock

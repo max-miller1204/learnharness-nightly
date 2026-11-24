@@ -351,3 +351,29 @@ test("the Arabic letter mark and the left-to-right and right-to-left marks show 
     act(() => tree.unmount());
   }
 });
+
+test("a step shows and says only its tool's declared fields while it streams", async () => {
+  // list_sessions declares no field: an argument it was given is nowhere in its row or its label.
+  const sessions: LhViewPart = { type: "tool-list_sessions", state: "input-streaming", input: { pattern: "SECRET-HEADLINE" } };
+  let tree = await render(createElement(ToolStep, { part: sessions, running: true }));
+  try {
+    const [row] = rows(tree.root);
+    assert.ok(!JSON.stringify(row?.props.accessibilityLabel).includes("SECRET"));
+    assert.deepEqual(texts(row as ReactTestInstance).filter((text) => text.includes("SECRET")), []);
+    await act(async () => row?.props.onPress());
+    assert.ok(!texts(tree.root).some((text) => text.includes("SECRET")));
+  } finally {
+    act(() => tree.unmount());
+  }
+  // A declared field holding an object is not a path: none of it reaches the page.
+  const nested: LhViewPart = { type: "tool-read", state: "input-streaming", input: { path: { modelSolution: "SECRET-NESTED" } } };
+  tree = await render(createElement(ToolStep, { part: nested, running: true }));
+  try {
+    const [row] = rows(tree.root);
+    assert.ok(!JSON.stringify(row?.props.accessibilityLabel).includes("SECRET"));
+    await act(async () => row?.props.onPress());
+    assert.ok(!texts(tree.root).some((text) => text.includes("SECRET") || text.includes("modelSolution")));
+  } finally {
+    act(() => tree.unmount());
+  }
+});

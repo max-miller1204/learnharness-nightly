@@ -22,21 +22,43 @@ export const TOOL_STEP_INPUT_FIELDS: Readonly<Record<string, readonly string[]>>
 	show_image: ["path", "caption"],
 };
 
-/** A step's input as the card shows it: only the tool's declared fields. Other tools' input
- *  passes through. */
-export function toolStepInput(tool: string, input: unknown): unknown {
-	const fields = TOOL_STEP_INPUT_FIELDS[tool];
-	if (!fields || typeof input !== "object" || input === null || Array.isArray(input)) return input;
-	return Object.fromEntries(Object.entries(input).filter(([key]) => fields.includes(key)));
+/** The primitive type of each declared field's value, by field name. */
+export const TOOL_STEP_FIELD_TYPES: Readonly<Record<string, "string" | "number" | "boolean">> = {
+	path: "string", pattern: "string", glob: "string", session: "string", caption: "string",
+	offset: "number", limit: "number", context: "number",
+	ignoreCase: "boolean", literal: "boolean",
+};
+
+/** The input of a tool with declared fields, cut to them: each declared field whose value is
+ *  of its declared primitive type, and nothing else. An object or array in a declared field,
+ *  an undeclared field, and a non-object input all drop out, so the arguments of a call that
+ *  never got past its schema (the model's can hold anything) put none of their extras on the
+ *  page. Undefined for a tool with no declared fields. */
+export function declaredToolInput(tool: string, input: unknown): Record<string, string | number | boolean> | undefined {
+	if (!Object.hasOwn(TOOL_STEP_INPUT_FIELDS, tool)) return undefined;
+	const kept: Record<string, string | number | boolean> = {};
+	if (typeof input !== "object" || input === null || Array.isArray(input)) return kept;
+	for (const field of TOOL_STEP_INPUT_FIELDS[tool]!) {
+		if (!Object.hasOwn(input, field)) continue;
+		const value = (input as Record<string, unknown>)[field];
+		if (typeof value === TOOL_STEP_FIELD_TYPES[field]) kept[field] = value as string | number | boolean;
+	}
+	return kept;
 }
 
-/** A running call's input as a live card shows it: the declared fields of a tool with a
- *  declared schema (TOOL_STEP_INPUT_FIELDS, an empty object before any has arrived), and
- *  undefined for any other tool. Streaming
- *  arguments have no schema check behind them, so a problem, a conclusion or a plugin
- *  tool's arguments, which can hold the hidden solution and tests, never reach the page. */
+/** A step's input as the card shows it: the tool's declared fields (declaredToolInput). A
+ *  tool with none declared has its input pass through. */
+export function toolStepInput(tool: string, input: unknown): unknown {
+	return declaredToolInput(tool, input) ?? input;
+}
+
+/** A running call's input as a live card shows it: the declared fields of a tool that
+ *  declares some (an empty object before any has arrived), and undefined for any other tool.
+ *  Arguments still streaming have no schema check behind them, so a problem, a conclusion
+ *  or a plugin tool's arguments, which can hold the hidden solution and tests, never reach
+ *  the page. */
 export function streamingToolInput(tool: string, input: unknown): unknown {
-	return Object.hasOwn(TOOL_STEP_INPUT_FIELDS, tool) ? toolStepInput(tool, input) ?? {} : undefined;
+	return declaredToolInput(tool, input);
 }
 
 /** What a stopped call's result says: pi's own wording, and the Node and fetch wordings that
@@ -111,7 +133,7 @@ const codePoints = (text: string) => text.length - (text.match(/[\uD800-\uDBFF][
  *  bidirectional controls shown as escapes. Past `limit` code points it is cut, before the
  *  escapes, so a cut never splits one, and ends in an ellipsis. */
 export function toolStepHeadline(tool: string, input: unknown, limit = Infinity): string {
-	const raw = rawHeadline(tool, input);
+	const raw = rawHeadline(tool, declaredToolInput(tool, input) ?? {});
 	const cut = Number.isFinite(limit) ? firstCodePoints(raw, limit) : undefined;
 	return cut === undefined ? plainToolText(raw) : `${plainToolText(cut)}…`;
 }

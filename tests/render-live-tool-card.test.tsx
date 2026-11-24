@@ -21,11 +21,13 @@ describe("LiveToolCard (the working-state grammar)", () => {
 		assert.match(html, /data-testid="braille-spinner"/);
 		// the label names the ACTUAL tool (the old bottom line's text)
 		assert.match(html, /Reading a file…/);
-		// the headline argument rides the header
-		assert.match(html, /notes\.md/);
+		// the headline argument rides the header (the summary), apart from the body
+		const summary = html.match(/<summary[\s\S]*?<\/summary>/)?.[0] ?? "";
+		assert.match(summary, /<span class="truncate">notes\.md<\/span>/);
 		// the streaming input is shown in the expandable body
-		assert.match(html, /Input \(streaming\)/);
-		assert.match(html, /notes\.md/);
+		const body = html.slice(html.indexOf("</summary>"));
+		assert.match(body, /Input \(streaming\)/);
+		assert.match(body, /notes\.md/);
 	});
 
 	it("unknown tools stay generic; jobs get their dispatch labels", () => {
@@ -60,5 +62,6 @@ describe("LiveToolCard (the working-state grammar)", () => {
 	it("takes no headline from an undeclared tool's path, pattern or session", () => {
 		const html = renderToStaticMarkup(<LiveToolCard part={part("coding_problem", { path: "SECRET-PATH", pattern: "SECRET-PATTERN", session: "SECRET-SESSION" }) as never} />);
 		assert.doesNotMatch(html, /SECRET/);
+		assert.doesNotMatch(html, /class="truncate"/);
 	});
 });
