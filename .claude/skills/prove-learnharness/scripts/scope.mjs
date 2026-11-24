@@ -36,7 +36,7 @@ const ALL = ["web", "api", "selfhost-a", "electron-dev"];
 const RULES = [
 	[/^\.claude\/|^\.prove-it\/snapshots\//, [], "prove skill or its answer keys: no app surface"],
 	[/^(docs\/|examples\/|skills\/|LICENSE|README\.md|CONTRIBUTING\.md|SECURITY\.md|AGENTS\.md|CLAUDE\.md)/, [], "docs: no app surface"],
-	[/^tests\/fixtures\/(mobile-lesson|mobile-quiz)\//, ["mobile"], "fixtures the phone's lesson and quiz screens are driven with (references/features/mobile-beta.md)"],
+	[/^tests\/fixtures\/mobile-[^/]+\//, ["mobile"], "fixtures the phone's screens are driven and seeded with: lesson, quiz, graph, session open and session basics (references/features/mobile-beta.md)"],
 	[/^(tests\/|selfhost\/tests\/)/, [], "tests only: no app surface"],
 	[/^eslint\.config\.mjs$/, [], "lint configuration"],
 	[/^\.github\/scripts\/.*\.test\.cjs$/, ["ci-tests"], "CI script tests only: run them"],
@@ -122,7 +122,8 @@ if (Object.keys(surfaces).length) {
 		if (needsBase) plan.push(`EB=$(scripts/electron.sh "$RUN" dev-base); node scripts/web-teach.mjs "$EB"; node scripts/compare.mjs "$RUN/electron-dev-base/web-teach/result.json" "$RUN/electron-${electron}/web-teach/result.json" --only desktop --base-is-key --out "$RUN/compare-desktop.md"`);
 	}
 	if (surfaces.mobile) plan.push(`scripts/mobile-checks.sh "$RUN"   # the app's unit tests and the skill's phone checks, Node 22`);
-	if (surfaces.mobile) plan.push("# MANUAL: device proof next: in a new run folder (scripts/new-run.sh <slug>-device), drive references/features/mobile-beta.md on the iOS Simulator on the Mac (T3 host intel-mac), and name both run folders in one receipt. Why iOS only: references/planned.md (iOS).");
+	if (surfaces.mobile) plan.push("# MANUAL: device proof next: in a new run folder (scripts/new-run.sh iphone-mac), drive references/features/mobile-beta.md#ios-simulator-on-the-mac on the iOS Simulator on the Mac (T3 host intel-mac), and name both run folders in one receipt. Why iOS only: references/planned.md (iOS).");
+	if (surfaces.mobile) plan.push("# MANUAL: on macOS scripts/stop.sh cannot stop its own processes (issue #420): end the device run by killing the pids in references/features/mobile-beta.md#cleanup-and-restore.");
 	if (surfaces.protocol) plan.push("# PLANNED versioned protocol surface: see references/planned.md.");
 	plan.push(`scripts/stop.sh "$RUN"`);
 }

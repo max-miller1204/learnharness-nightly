@@ -19,6 +19,10 @@ test("inputs the phone app shares with the web select the mobile surface", () =>
 		"package.json",
 		"tests/fixtures/mobile-quiz/scenario.json",
 		"tests/fixtures/mobile-lesson/chat_zzmobilelesson.json",
+		"tests/fixtures/mobile-session-open/chats/chat_zzopenlong.json",
+		"tests/fixtures/mobile-session-basics/graph/nodes.jsonl",
+		"tests/fixtures/mobile-graph/nodes.jsonl",
+		"src/core/attachment-types.ts",
 		"scripts/iphone-check/drive.mjs",
 		"apps/mobile/src/App.tsx",
 	]) {

@@ -38,7 +38,7 @@ Follow each changed file to the surfaces and flows it reaches. Internal code cou
 | `public/fonts/cmunbx.ttf` | yes: the phone app bundles it too | web, mobile | [teaching session](references/features/teaching-session.md) and the [mobile beta](references/features/mobile-beta.md) |
 | `app/**` (not api), `components/**`, `public/**` | no | web | [teaching session](references/features/teaching-session.md) and the page the file renders |
 | `src/client-protocol/**`, `app/.well-known/**` | yes: the client protocol contract and server info | api, web, agent, mobile | [client protocol](references/features/client-protocol.md) |
-| `app/api/attachments/**`, `src/store/attachment*.ts`, `src/server/attachment-*.ts`, `src/core/attachment*.ts`, `components/attach*`, `components/file-path-drop-zone.tsx`, `src/agent/tools/{learner-file,fs-shared,ls,find,grep}.ts` | yes: uploads, claimed copies and the learner-file tools | api, web, agent | [remote attachments](references/features/remote-attachments.md) |
+| `app/api/attachments/**`, `src/store/attachment*.ts`, `src/server/attachment-*.ts`, `src/core/attachment*.ts`, `components/attach*`, `components/file-path-drop-zone.tsx`, `src/agent/tools/{learner-file,fs-shared,ls,find,grep}.ts` | yes: uploads, claimed copies and the learner-file tools | api, web, agent; `src/core/attachment*.ts` also mobile | [remote attachments](references/features/remote-attachments.md) |
 | `app/api/chat/**`, `app/api/chats/**` | yes: turns and sessions | api, web, agent | [teaching session](references/features/teaching-session.md) |
 | `app/api/**` (other) | no | api, web | the route's callers; [api.md](references/api.md) |
 | `app/api/updates/**`, `app/api/health/**`, `src/server/self-update.ts` | yes: update protocol | api, web, selfhost A+B | [update and rollback](references/features/update-rollback.md) |
@@ -51,7 +51,7 @@ Follow each changed file to the surfaces and flows it reaches. Internal code cou
 | `electron/**` (other) | no | electron dev | [desktop window](references/features/desktop-window.md) |
 | `plugins/**`, `core-plugins.json`, plugin build scripts | yes | web, api, agent | the plugin's view and tools |
 | `package*.json`, `next.config.ts`, `proxy.ts`, `instrumentation.ts`, `config.ts`, `tsconfig.json` | yes: launch config | every surface (smoke), mobile included | teaching session, `lh` commands, desktop window |
-| `apps/mobile/**`, `scripts/iphone-check/**`, `build/icon.png`, `tests/fixtures/{mobile-lesson,mobile-quiz}/**` | yes: same server contract | mobile | [mobile beta](references/features/mobile-beta.md) |
+| `apps/mobile/**`, `scripts/iphone-check/**`, `build/icon.png`, `tests/fixtures/mobile-*/**` | yes: same server contract | mobile | [mobile beta](references/features/mobile-beta.md) |
 | `.github/scripts/**` (release and decision CLIs such as `mobile-release.cjs`) | no | ci-script: the plan runs the scripts' tests and ends `MANUAL` (exit 4); a diff of `*.test.cjs` only just runs the tests | its spec: run the script's own tests, then drive its CLI with fixtures you write from the spec (not from the script), and run each workflow step that calls it against stubs |
 | `app/api/v<N>/**` | PLANNED | protocol, api | none: [planned.md](references/planned.md) |
 
