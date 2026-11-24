@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { test } from "node:test";
-import { DATE_CASES, OFFERED, OLDER } from "./release-date-cases.ts";
+import { DATE_CASES, noteTimeShapes, OFFERED, OLDER } from "./release-date-cases.ts";
 
 const require = createRequire(import.meta.url);
 const { NightlyProvider } = require("../electron/nightly-updater.cjs");
@@ -156,13 +156,13 @@ test("pinFeed pins the real feed through the provider, and the LH_UPDATE_FEED te
 });
 
 test("the provider hands the pointer's time to the note reader, so a note dates as it does on the server", async () => {
-	for (const c of DATE_CASES) {
+	for (const c of DATE_CASES) for (const shape of noteTimeShapes(c)) {
 		const f = fixture("linux", "latest-linux.yml", "AppImage");
 		f.setFeed({
 			tag: `v${version}`, version, publishedAt: c.pointer,
-			notes: [OFFERED, OLDER].map((v) => ({ version: v, ...(c.own ? { publishedAt: c.own } : {}), items: ["changed"] })),
+			notes: [OFFERED, OLDER].map((v) => ({ version: v, ...(shape === "missing" ? {} : { publishedAt: c.own }), items: ["changed"] })),
 		});
 		const info = await f.provider.getLatestVersion();
-		assert.deepEqual(releaseNoteGroups(info).map((g: { version: string; releasedAt?: string }) => [g.version, g.releasedAt]), [[OFFERED, c.offered], [OLDER, c.older]], c.name);
+		assert.deepEqual(releaseNoteGroups(info).map((g: { version: string; releasedAt?: string }) => [g.version, g.releasedAt]), [[OFFERED, c.offered], [OLDER, c.older]], `${c.name} (${shape})`);
 	}
 });

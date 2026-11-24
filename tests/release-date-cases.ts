@@ -33,3 +33,6 @@ export const DATE_CASES: readonly DateCase[] = [
 	{ name: "no pointer time at all", own: "", pointer: "", offered: BUILD_DAY, older: BUILD_DAY },
 	{ name: "the note's time over a readable pointer", own: "2026-11-15", pointer: "2026-11-16", offered: "2026-11-15", older: "2026-11-15" },
 ];
+
+/** How a feed note carries its time: a value, or for a case with none, the key left out or sent as "". */
+export const noteTimeShapes = (c: DateCase): readonly ("value" | "missing" | "empty")[] => (c.own ? ["value"] : ["missing", "empty"]);

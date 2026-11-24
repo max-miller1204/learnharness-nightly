@@ -21,6 +21,12 @@ export interface ReleaseNoteGroup {
 	stats?: string;
 	/** A generated summary's last line, for example "Plus 3 more bug fixes.". */
 	footer?: string;
+	/**
+	 * Whether the last of `items` is the old-client copy of the intro or footer (true), or a real item
+	 * (false). Decided where the whole list is known, before the item limits cut it, and carried
+	 * through every later copy of the group. Absent in groups stored before it existed: see withoutSummaryEcho.
+	 */
+	summaryCopy?: boolean;
 }
 
 const normalized = (text: string | undefined) => (text ?? "").trim().replace(/\s+/g, " ");
@@ -32,25 +38,31 @@ function isCopyOf(item: string, text: string | undefined): boolean {
 	return whole !== "" && (item === whole || item === truncateReleaseNoteItem(whole));
 }
 
+/** Whether the last item of a whole (uncut) list is the old-client copy: the position, compared as the full text. */
+export function endsWithSummaryCopy(items: readonly string[], { intro, footer }: { intro?: string; footer?: string }): boolean {
+	const last = items.length > 0 ? normalized(items[items.length - 1]) : "";
+	return last !== "" && (isCopyOf(last, footer) || isCopyOf(last, intro));
+}
+
 /**
  * Old clients read only `items`, so the release script also writes the intro or footer once more
  * as the last item (scripts/generate-release-notes.ts entryItems). Every stored or sent copy of the
  * notes keeps it, for old readers; what a new client shows drops it: only that one trailing item,
  * compared as the full text with both sides normalized, never another bullet.
  *
- * The copy is last, so the item limits cut it off first. A full list (the cap) whose whole count,
- * less the intro, equals its length holds only real items: the copy was the one that fell off, so a
- * last item reading like the footer is a real highlight and stays. Any other count (none, or one
- * above the list) leaves the last item the copy, as it is for every shorter list. The release script
- * writes at most 7 highlights before the copy (MAX_HIGHLIGHTS), so its own output is never full
- * without it; a feed with more real items than the cap whose last shown one reads like the footer
- * cannot be told from the copy and is read as the copy.
+ * The item limits cut the copy off first, and a cut list no longer shows whether its last item is
+ * the copy. So the producer decides while it still has the whole list, and `summaryCopy` records the
+ * decision (true when the copy is last, false when it was cut off or never there); a recorded
+ * decision is followed as it is. A group without one (stored before the field) is read as before
+ * it: the last item is the copy, unless the list is full and its whole count, less the intro,
+ * equals its length, which means nothing was cut and every item is real.
  */
-export function withoutSummaryEcho(items: readonly string[], { intro, footer, totalItems }: { intro?: string; footer?: string; totalItems?: number }): string[] {
-	const last = items.length > 0 ? normalized(items[items.length - 1]) : "";
-	const matches = last !== "" && (isCopyOf(last, footer) || isCopyOf(last, intro));
-	const copyWasCut = items.length >= MAX_RELEASE_NOTE_ITEMS && isCount(totalItems) && totalItems - (intro ? 1 : 0) === items.length;
-	return matches && !copyWasCut ? items.slice(0, -1) : [...items];
+export function withoutSummaryEcho(items: readonly string[], { intro, footer, totalItems, summaryCopy }: { intro?: string; footer?: string; totalItems?: number; summaryCopy?: boolean }): string[] {
+	if (!endsWithSummaryCopy(items, { intro, footer })) return [...items];
+	const copy = typeof summaryCopy === "boolean"
+		? summaryCopy
+		: !(items.length >= MAX_RELEASE_NOTE_ITEMS && isCount(totalItems) && totalItems - (intro ? 1 : 0) === items.length);
+	return copy ? items.slice(0, -1) : [...items];
 }
 
 const isCount = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0;
@@ -92,6 +104,8 @@ export function capReleaseNoteGroups(groups: readonly ReleaseNoteGroup[]): { rel
 	const shown = groups.slice(0, MAX_RELEASE_NOTE_GROUPS).map((group) => ({
 		...group,
 		totalItems: totalReleaseItems(group),
+		// A cut takes the copy off the end first: nothing left of it.
+		...(group.items.length > MAX_RELEASE_NOTE_ITEMS && group.summaryCopy !== undefined ? { summaryCopy: false } : {}),
 		items: group.items.slice(0, MAX_RELEASE_NOTE_ITEMS).map(truncateReleaseNoteItem),
 	}));
 	return { releaseNotes: shown, omittedReleaseCount: Math.max(0, groups.length - MAX_RELEASE_NOTE_GROUPS) };

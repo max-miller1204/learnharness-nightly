@@ -10,8 +10,9 @@ import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { capReleaseNoteGroups, noteReleasedAt, MAX_RELEASE_NOTE_ITEM_LENGTH, totalReleaseItems, withoutSummaryEcho } from "../src/core/release-notes.ts";
+import { capReleaseNoteGroups, noteReleasedAt, type ReleaseNoteGroup, MAX_RELEASE_NOTE_ITEM_LENGTH, totalReleaseItems, withoutSummaryEcho } from "../src/core/release-notes.ts";
 import { releaseLinkLabel } from "../components/release-notes-view.tsx";
+import { readDesktopAppStatus } from "../components/settings/update-settings.tsx";
 import { feedNotesToGroups, groupsBetween, mergeNotesCache, readNotesCache, readUpdateRecord, whatsNew, writeUpdateRecord } from "../src/server/update-records.ts";
 import { buildSummaryInput, countContributors, entryItems, fallbackItems, formatSummary, parseHighlights, pullRequestFor, readPullRequests, releaseStats, trimPullRequestBody, type PullRequest } from "../scripts/generate-release-notes.ts";
 
@@ -119,19 +120,68 @@ describe("notes limits", () => {
 		assert.ok(!/RELEASED_AT\s*=|PRERELEASE_BUILD_DAY\s*=/.test(src), "no second copy of the date patterns");
 	});
 
-	it("a real highlight in the last slot that reads like the footer is kept, on the server and the desktop", () => {
+	it("the copy is told apart from a real item where the whole list is known, and the decision survives the cut, the bridge and the cache", () => {
 		const footer = "Plus 2 more bug fixes.";
-		const real = [...Array.from({ length: 7 }, (_, i) => `**Feature ${i + 1}.** Detail ${i + 1}.`), footer];
-		const stored = [...real, footer]; // the generator's old-client copy follows the eighth highlight, then the cut drops it
-		const [server] = groupsBetween(feedNotesToGroups([{ version: V(12), publishedAt: "", items: stored, footer }]), undefined, V(12)).releaseNotes;
-		const [desktopFull] = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: [{ version: V(12), items: stored, footer }] });
-		const [desktop] = electronNotes.bridgeNotes(electronNotes.capGroups([desktopFull]).releaseNotes, 0).releaseNotes;
-		for (const [name, shown] of [["server", server!], ["desktop", desktop!]] as const) {
-			assert.equal(shown.items.length, 8, `${name} sends 8 items`);
-			assert.equal(shown.totalItems, 8, `${name} counts 8`);
-			assert.deepEqual(withoutSummaryEcho(shown.items, shown), real, `${name} shows the eighth highlight`);
-			assert.equal(releaseLinkLabel(shown), "View release on GitHub", `${name}: nothing is hidden`);
+		const real = (n: number, eighth?: string) => Array.from({ length: n }, (_, i) => (i === 7 && eighth ? eighth : `**Feature ${i + 1}.** Detail ${i + 1}.`));
+		const shown = (group: ReleaseNoteGroup) =>
+			[withoutSummaryEcho(group.items, group), releaseLinkLabel(group)] as const;
+		const cases: Array<{ name: string; items: string[]; footer: string; shown: string[]; label: string }> = [
+			{ name: "9 real highlights, the 8th reading like the footer, then the copy", items: [...real(9, footer), footer], footer, shown: real(8, footer), label: "1 more change on GitHub" },
+			{ name: "9 real highlights then the copy", items: [...real(9), "Plus 1 more bug fix."], footer: "Plus 1 more bug fix.", shown: real(8), label: "1 more change on GitHub" },
+			{ name: "8 real highlights, the 8th reading like the footer, then the copy", items: [...real(8, footer), footer], footer, shown: real(8, footer), label: "View release on GitHub" },
+			{ name: "7 highlights then the copy", items: [...real(7), footer], footer, shown: real(7), label: "View release on GitHub" },
+		];
+		for (const c of cases) {
+			const note = { version: V(12), publishedAt: "", items: c.items, footer: c.footer };
+			// The server: the feed read, the cut, then the cache written and read back.
+			const [server] = groupsBetween(feedNotesToGroups([note]), undefined, V(12)).releaseNotes;
+			mergeNotesCache([server!], dir);
+			const [reloaded] = readNotesCache(dir);
+			// The desktop: the note reader, main's cap, the bridge, then its cache file read by the server.
+			const [desktopFull] = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: [{ version: V(12), items: c.items, footer: c.footer }] });
+			const [capped] = electronNotes.capGroups([desktopFull]).releaseNotes;
+			const [bridged] = electronNotes.bridgeNotes([capped], 0).releaseNotes;
+			const [rebounded] = electronNotes.bridgeNotes([bridged], 0).releaseNotes;
+			// The page's own tolerant read of the bridge's status keeps the decision too.
+			const [onPage] = readDesktopAppStatus({ version: "0.6.1", phase: "idle", releaseNotes: [bridged], omittedReleaseCount: 0 })!.releaseNotes ?? [];
+			electronNotes.mergeNotesCache(dir, [capped]);
+			const [fromDesktopCache] = readNotesCache(dir);
+			for (const [where, group] of [["server", server!], ["server cache", reloaded!], ["desktop", capped!], ["bridge", bridged!], ["bridge again", rebounded!], ["page", onPage!], ["desktop cache", fromDesktopCache!]] as const) {
+				assert.deepEqual(shown(group), [c.shown, c.label], `${c.name}: ${where}`);
+			}
+			fs.rmSync(path.join(dir, "release-notes.json"), { force: true });
 		}
+	});
+
+	it("a generated release body lists real items only: its full list ending like the footer keeps the last one", () => {
+		const footer = "Plus 2 more bug fixes.";
+		const items = Array.from({ length: 9 }, (_, i) => (i === 7 ? footer : `**Feature ${i + 1}.** Detail ${i + 1}.`));
+		const body = `${electronNotes.summaryBody({ version: V(12), stats: "11 changes from 2 contributors", items, footer })}\n\n${electronNotes.FULL_CHANGELOG_MARKER}`;
+		const [group] = electronNotes.releaseNoteGroups({ version: V(12), releaseNotes: body });
+		const [bridged] = electronNotes.bridgeNotes(electronNotes.capGroups([group!]).releaseNotes, 0).releaseNotes;
+		assert.equal(bridged!.items.length, 8);
+		assert.deepEqual(withoutSummaryEcho(bridged!.items, bridged!), bridged!.items.map((item) => item), "all 8 shown, the 8th reading like the footer included");
+		assert.equal(bridged!.totalItems, 9);
+	});
+
+	it("a group stored before the decision was recorded reads as it did: a last item reading like the footer is the copy unless the count says nothing was cut", () => {
+		const footer = "Plus 2 more bug fixes.";
+		const seven = Array.from({ length: 7 }, (_, i) => `**Feature ${i + 1}.** Detail ${i + 1}.`);
+		fs.writeFileSync(path.join(dir, "release-notes.json"), JSON.stringify({ groups: [
+			{ version: V(12), items: [...seven, footer], totalItems: 9, footer },
+			{ version: V(11), items: [...seven, footer], totalItems: 7, footer },
+			{ version: V(10), items: [...seven, footer], footer },
+		] }));
+		const [counted, whole, uncounted] = readNotesCache(dir);
+		assert.equal(counted!.summaryCopy, undefined, "nothing is invented for a stored group");
+		assert.deepEqual(withoutSummaryEcho(counted!.items, counted!), seven);
+		assert.equal(releaseLinkLabel(counted!), "2 more changes on GitHub");
+		assert.deepEqual(withoutSummaryEcho(whole!.items, whole!), seven);
+		assert.deepEqual(withoutSummaryEcho(uncounted!.items, uncounted!), seven);
+		const eight = [...seven, footer];
+		assert.deepEqual(withoutSummaryEcho(eight, { footer, totalItems: 8 }), eight, "a full stored list that no count says was cut keeps its last item");
+		assert.deepEqual(withoutSummaryEcho(eight, { footer, totalItems: 8, summaryCopy: true }), seven, "a recorded copy goes whatever the count says");
+		assert.deepEqual(withoutSummaryEcho(eight, { footer, totalItems: 9, summaryCopy: false }), eight, "a recorded real item stays whatever the count says");
 	});
 
 	it("a full list whose last item reads like the footer: the copy only when the whole count says items were cut", () => {

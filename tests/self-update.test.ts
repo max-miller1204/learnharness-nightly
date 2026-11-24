@@ -18,7 +18,7 @@ import type { ReleaseNoteGroup } from "../src/core/release-notes.ts";
 import { dataLockPath, tryAcquireDataLock } from "../src/server/data-lock.ts";
 import type { ChildMessage } from "../selfhost/src/protocol.ts";
 import { fetchRelease, parseFeed, readBody, releaseFeedUrl, type LatestFeed, type ServiceState } from "../selfhost/src/release.ts";
-import { DATE_CASES, OFFERED, OLDER as OLDER_NOTE } from "./release-date-cases.ts";
+import { DATE_CASES, noteTimeShapes, OFFERED, OLDER as OLDER_NOTE } from "./release-date-cases.ts";
 
 const CURRENT = "0.6.1-nightly.20261116.1";
 const NEXT = "0.6.1-nightly.20261117.2";
@@ -145,16 +145,16 @@ describe("self-hosted updater", () => {
 	});
 
 	it("dates the offered note from the feed's own pointer time when its own is unreadable, and an older note by its build day", async () => {
-		for (const c of DATE_CASES) {
+		for (const c of DATE_CASES) for (const shape of noteTimeShapes(c)) {
 			// latest.json as the feed serves it, read the way the launcher reads it.
 			const latest = parseFeed({
 				version: OFFERED, tag: `v${OFFERED}`, sha: "x", publishedAt: c.pointer, launcherProtocol: 1, minLauncherProtocol: 1, assets: {},
-				notes: [OFFERED, OLDER_NOTE].map((version) => ({ version, ...(c.own ? { publishedAt: c.own } : {}), items: ["changed"] })),
+				notes: [OFFERED, OLDER_NOTE].map((version) => ({ version, ...(shape === "missing" ? {} : { publishedAt: c.own }), items: ["changed"] })),
 			});
 			const f = fake({ currentVersion: "0.6.1-nightly.20261118.1", fetchLatest: async () => latest });
 			const u = createSelfUpdater(f.deps);
 			await u.check();
-			assert.deepEqual(u.state().releaseNotes.map((g) => [g.version, g.releasedAt]), [[OFFERED, c.offered], [OLDER_NOTE, c.older]], c.name);
+			assert.deepEqual(u.state().releaseNotes.map((g) => [g.version, g.releasedAt]), [[OFFERED, c.offered], [OLDER_NOTE, c.older]], `${c.name} (${shape})`);
 		}
 	});
 

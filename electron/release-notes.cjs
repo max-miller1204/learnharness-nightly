@@ -151,9 +151,13 @@ function extractReleaseNoteSummary(summary) {
 		if (/^[-*]\s+/.test(line)) items.push(line.replace(/^[-*]\s+/, ""));
 		else intro.push(plain);
 	}
+	const shown = items.slice(0, MAX_RELEASE_NOTE_ITEMS_PER_GROUP).map(truncateItem);
+	const introText = intro.length > 0 ? intro.join(" ") : undefined;
 	return {
-		items: items.slice(0, MAX_RELEASE_NOTE_ITEMS_PER_GROUP).map(truncateItem),
+		items: shown,
 		totalItems: items.length + intro.length,
+		// A generated body lists real items only: a full list ending like its footer ends in a real item.
+		...(shown.length === MAX_RELEASE_NOTE_ITEMS_PER_GROUP && endsWithSummaryCopy(shown, { intro: introText, footer }) ? { summaryCopy: false } : {}),
 		...(intro.length > 0 ? { intro: intro.join(" ") } : {}),
 		...(stats ? { stats } : {}),
 		...(footer ? { footer } : {}),
@@ -242,9 +246,11 @@ function releaseNoteGroups(info) {
  * last item. The groups main keeps, caches and sends over the bridge keep that copy (a page from
  * before the fields shows it); counting and the release page drop it. Only that one trailing item,
  * compared as the full text with both sides normalized, as src/core/release-notes.ts withoutSummaryEcho
- * does. This copy reads lists whose position is known (a feed note whole, a list before the item
- * limits cut it); the pages read the cut lists and add that function's full-list rule, which
- * keeps a real last item when the whole count equals the list's length.
+ * does. This is the position rule, for a list whose whole is known: a feed note or a body before
+ * the item limits cut it. A cut list cannot show whether its last item is the copy, so the group
+ * records the decision (`summaryCopy`) where the whole list is read, for a full list that ends like
+ * the copy (the one shape a cut hides), and every bounding step after (main's cap, the cache, the
+ * bridge) keeps it; the pages follow the record.
  */
 function isCopyOf(item, text) {
 	if (text === undefined) return false;
@@ -253,10 +259,22 @@ function isCopyOf(item, text) {
 	return whole !== "" && (item === whole || item === truncateItem(whole));
 }
 
-function withoutSummaryEcho(items, { intro, footer } = {}) {
+function endsWithSummaryCopy(items, { intro, footer } = {}) {
 	const last = items.length > 0 ? cleanText(items[items.length - 1]) : "";
-	const echoes = last !== "" && (isCopyOf(last, footer) || isCopyOf(last, intro));
-	return echoes ? items.slice(0, -1) : [...items];
+	return last !== "" && (isCopyOf(last, footer) || isCopyOf(last, intro));
+}
+
+/**
+ * The decision for a full list that ends like the copy: true when the whole list is that list (the
+ * copy is last), false when `whole` is longer (the cut took the copy off). Nothing for any other list.
+ */
+function wholeListCopy(whole, shown, summary) {
+	const cut = shown.slice(0, MAX_RELEASE_NOTE_ITEMS_PER_GROUP);
+	return cut.length === MAX_RELEASE_NOTE_ITEMS_PER_GROUP && endsWithSummaryCopy(cut, summary) ? { summaryCopy: whole.length === MAX_RELEASE_NOTE_ITEMS_PER_GROUP } : {};
+}
+
+function withoutSummaryEcho(items, summary = {}) {
+	return endsWithSummaryCopy(items, summary) ? items.slice(0, -1) : [...items];
 }
 
 /** A feed note's own fields (latest.json notes, selfhost/src/release.ts FeedNote). */
@@ -267,7 +285,7 @@ function feedNoteFields(entry) {
 		if (value) summary[key] = value;
 	}
 	const items = entry.items.filter((item) => typeof item === "string").map(cleanText).filter(Boolean);
-	return { items, totalItems: withoutSummaryEcho(items, summary).length + (summary.intro ? 1 : 0), ...summary };
+	return { items, totalItems: withoutSummaryEcho(items, summary).length + (summary.intro ? 1 : 0), ...wholeListCopy(items, items, summary), ...summary };
 }
 
 /**
@@ -367,7 +385,11 @@ function boundedGroup(group) {
 	const counted = withoutSummaryEcho(all, summary).length + (summary.intro ? 1 : 0);
 	const totalItems = Number.isInteger(group.totalItems) && group.totalItems >= items.length ? Math.min(group.totalItems, MAX_TOTAL_ITEMS) : counted;
 	const releasedAt = safeReleasedAt(group.releasedAt);
-	return { version: group.version, ...(releasedAt ? { releasedAt } : {}), items, totalItems, ...summary };
+	// The copy is last only while the list is whole: the cut above takes it off the end. A recorded
+	// decision is kept as it is (this runs again over main's cut output, the cache and the bridge); a
+	// group with none, stored before the field, stays without one.
+	const summaryCopy = typeof group.summaryCopy === "boolean" ? group.summaryCopy && all.length <= MAX_RELEASE_NOTE_ITEMS_PER_GROUP : undefined;
+	return { version: group.version, ...(releasedAt ? { releasedAt } : {}), items, totalItems, ...summary, ...(summaryCopy === undefined ? {} : { summaryCopy }) };
 }
 
 /**
