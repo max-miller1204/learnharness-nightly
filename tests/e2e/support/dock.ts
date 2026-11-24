@@ -1,6 +1,14 @@
 import { expect, type Screen } from "e2e";
 import type { Browser } from "@e2e-dev/web";
 
+/** Waits until the server reports no turn running for the chat the browser is on (its record is written by then). */
+export async function turnSettled(browser: Browser, chatId: string) {
+	await expect.poll(() => browser.evaluate(async (id: string) => {
+		const record = (await (await fetch(`/api/chats/${id}`)).json()) as { turnInFlight?: unknown };
+		return !record.turnInFlight;
+	}, chatId), { timeout: 30_000 }).toBe(true);
+}
+
 /**
  * Waits until the question dock takes the keyboard and answers. A dock that has
  * just shown drops an answer sent at once, on a busy machine, and nothing on
@@ -22,7 +30,8 @@ export async function dockAcceptsAnswers(browser: Browser) {
  * even though the button is enabled (https://github.com/max-miller1204/learnharness-nightly/issues/449).
  * Until that is fixed, press it again, as a learner would, until the dock goes. A dropped press
  * sends nothing, so repeating cannot send a second answer unless the app does: the tests count
- * the answers the tutor received (`answersReceived`) and fail on more than one.
+ * the tool results stored for the question (`probeResults`, read once the turn has
+ * settled with `turnSettled`) and fail on more than one.
  */
 export async function answerQuestion(screen: Screen, label: RegExp) {
 	const dock = screen.getByTestId("question-dock");

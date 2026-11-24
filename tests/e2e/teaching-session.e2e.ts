@@ -2,8 +2,8 @@ import { beforeEach, describe, test } from "@e2e-dev/web";
 import type { Browser } from "@e2e-dev/web";
 import { expect, type Screen } from "e2e";
 import * as fs from "node:fs";
-import { answerQuestion } from "./support/dock.ts";
-import { answersReceived, instance, sessionRequests, storedChat, type InstanceState } from "./support/instance.ts";
+import { answerQuestion, turnSettled } from "./support/dock.ts";
+import { instance, probeResults, sessionRequests, storedChat, type InstanceState } from "./support/instance.ts";
 
 // Plays tests/e2e/support/scenarios/teach.json on the fake model: the goal
 // makes the tutor read two files, ask one question, then acknowledge the answer.
@@ -58,8 +58,14 @@ describe("teaching session", { session: "learner" }, () => {
 		expect(quiz.kind).toBe("quiz");
 		expect(quiz.answers.map((a) => a.label)).toEqual(["Blue"]);
 		expect(quiz.correct).toBe(true);
-		// Pressing Submit again until the dock went (support/dock.ts) must not have sent a second answer.
-		expect(answersReceived(state, goal)).toBe(1);
+		// Pressing Submit again until the dock went (support/dock.ts) must not have stored a second answer:
+		// once the turn has settled, the question has exactly one persisted tool result.
+		const chatId = new URL(await browser.url()).pathname.split("/").pop() ?? "";
+		await turnSettled(browser, chatId);
+		await expect.poll(() => JSON.stringify(storedChat(state, chatId)), { timeout: 10_000 }).toContain("acknowledged your answer");
+		const stored = probeResults(state, chatId);
+		expect(stored.toolCallId).toMatch(/^call_/);
+		expect(stored.results).toHaveLength(1);
 	});
 
 	test("the session is stored and survives a reload", async ({ screen, browser }) => {
@@ -75,5 +81,6 @@ describe("teaching session", { session: "learner" }, () => {
 		for (const part of [goal, "E2E-FIXTURE-SKY", "zz-e2e: which colour", "acknowledged your answer"]) {
 			await expect.poll(() => JSON.stringify(storedChat(state, chatId)), { timeout: 10_000 }).toContain(part);
 		}
+		expect(probeResults(state, chatId).results).toHaveLength(1);
 	});
 });

@@ -132,14 +132,17 @@ export function sessionRequests(state: InstanceState, goal: string): ModelReques
 }
 
 /**
- * How many answers the tutor received in the session: the model requests whose last
- * message is a quiz result from the probe tool. A double submit shows as two.
+ * The question the tutor asked (its `probe` tool call) and the tool results persisted for
+ * it, from the stored record. One answer is exactly one result; a double submit stored
+ * twice shows as two, whatever the model was sent.
  */
-export function answersReceived(state: InstanceState, goal: string): number {
-	return sessionRequests(state, goal).filter((r) => {
-		const last = r.request.messages?.at(-1);
-		return last?.role === "tool" && typeof last.content === "string" && last.content.includes('"kind":"quiz"');
-	}).length;
+export function probeResults(state: InstanceState, chatId: string): { toolCallId: string | undefined; results: unknown[] } {
+	type Part = { type?: string; name?: string; id?: string };
+	const messages = (storedChat(state, chatId).messages ?? []) as Array<{ role?: string; content?: unknown; toolCallId?: string }>;
+	const asked = messages
+		.flatMap((message) => (message.role === "assistant" && Array.isArray(message.content) ? (message.content as Part[]) : []))
+		.find((part) => part.type === "toolCall" && part.name === "probe");
+	return { toolCallId: asked?.id, results: messages.filter((message) => message.role === "toolResult" && message.toolCallId === asked?.id) };
 }
 
 /** A stored session record, as the server wrote it to disk. */

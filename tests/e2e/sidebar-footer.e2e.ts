@@ -2,8 +2,8 @@ import { beforeEach, describe, test } from "@e2e-dev/web";
 import type { Browser } from "@e2e-dev/web";
 import { expect, type Screen } from "e2e";
 import * as fs from "node:fs";
-import { dockAcceptsAnswers } from "./support/dock.ts";
-import { answersReceived, instance } from "./support/instance.ts";
+import { dockAcceptsAnswers, turnSettled } from "./support/dock.ts";
+import { instance, probeResults, storedChat } from "./support/instance.ts";
 
 // The version the page was built with, which the server must report or the pill offers a reload instead.
 const pageVersion = (JSON.parse(fs.readFileSync("package.json", "utf8")) as { version: string }).version;
@@ -159,7 +159,13 @@ describe("sidebar update pill and capsule", { session: "learner" }, () => {
 		await expect(screen.getByText(/zz-e2e acknowledged your answer/, { visible: true })).toBeVisible({ timeout: 60_000 });
 		await expect(dock).not.toBeVisible();
 		expect((await calls(browser)).filter((c) => c === "everything").length).toBe(before);
-		// Pressing Enter again (above) must not have sent the answer twice.
-		await expect.poll(() => answersReceived(state, goal), { timeout: 10_000 }).toBe(1);
+		// Pressing Enter again (above) must not have stored the answer twice: once the turn has
+		// settled, the question has exactly one persisted tool result.
+		const chatId = new URL(await browser.url()).pathname.split("/").pop() ?? "";
+		await turnSettled(browser, chatId);
+		await expect.poll(() => JSON.stringify(storedChat(state, chatId)), { timeout: 10_000 }).toContain("acknowledged your answer");
+		const stored = probeResults(state, chatId);
+		expect(stored.toolCallId).toMatch(/^call_/);
+		expect(stored.results).toHaveLength(1);
 	});
 });
