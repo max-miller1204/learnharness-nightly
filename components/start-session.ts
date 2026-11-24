@@ -1,4 +1,4 @@
-import { PROTOCOL_ROUTES, type StartWithAttachmentsRequest } from "@/src/core";
+import { OPENING_DELETED, PROTOCOL_ROUTES, type StartWithAttachmentsRequest } from "@/src/core";
 import { attachmentResponseError } from "./attachment-draft";
 import { clearOpeningPrompt, OPENING_PROMPT_FAILURE, stashOpeningPrompt } from "./opening-prompt";
 
@@ -29,7 +29,7 @@ export class SessionStarter {
 			if (!response.ok) {
 				const error = await response.clone().json().catch(() => null);
 				const message = await attachmentResponseError(response);
-				if (response.status === 409 && error?.code === "opening-deleted") throw new OpeningDeletedError(message);
+				if (response.status === 409 && error?.code === OPENING_DELETED) throw new OpeningDeletedError(message);
 				throw new Error(message);
 			}
 			const result = await response.json() as { id?: unknown };

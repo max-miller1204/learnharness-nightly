@@ -84,3 +84,15 @@ test("a new session with a file answered 503 subscription_unreachable keeps the 
   assert.equal(session.starts[1]!.sendId, session.starts[0]!.sendId, "sending again repeats the same start");
   act(() => session.tree.unmount());
 });
+
+test("a deleted opening keeps the text and retries with a fresh draft", async () => {
+  const session = await startWithFile(409, { code: "opening-deleted", error: "Deleted" });
+  await session.press();
+  await settle(); await settle();
+  assert.equal(session.input().props.value, "teach me this file");
+  assert.equal(session.input().props.editable, true);
+  await session.press();
+  assert.equal(session.starts.length, 2);
+  assert.notEqual((session.starts[0] as { draftId?: string }).draftId, (session.starts[1] as { draftId?: string }).draftId);
+  act(() => session.tree.unmount());
+});

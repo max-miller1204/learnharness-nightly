@@ -494,3 +494,36 @@ test("deletion clears a folder and its active member for a retired draft", async
 		assert.equal(fs.existsSync(path.join(PATHS.attachments, "pending", member + ".body")), false);
 	}
 });
+
+test("pending cleanup failure does not turn a completed deletion into an error", async t => {
+	const { sideChats } = await import("../src/server/side-chat.ts");
+	const stop = t.mock.method(sideChats, "stopAll");
+	const chat = chatStore.createChat("Pending cleanup fails");
+	const pending = path.join(PATHS.attachments, "pending");
+	const saved = pending + "-held";
+	fs.mkdirSync(pending, { recursive: true });
+	fs.renameSync(pending, saved);
+	fs.writeFileSync(pending, "not a directory");
+	try {
+		const outcome = await deleteChatSession(chat.id, "preserve-graph");
+		assert.equal(outcome.ok, true);
+		assert.equal(chatStore.getChat(chat.id), null);
+		assert.equal(stop.mock.calls.length, 1);
+		assert.equal(stop.mock.calls[0]!.arguments[0], chat.id);
+	} finally { fs.unlinkSync(pending); fs.renameSync(saved, pending); }
+});
+
+test("retired opening PUT and folder renewal reject valid pending metadata", async () => {
+	const { openingAttachmentChatId } = await import("../src/server/attachment-submissions.ts");
+	const { markDeletedOpening } = await import("../src/store/deleted-openings.ts");
+	const { renewAttachmentFolderRequest } = await import("../src/server/attachment-routes.ts");
+	const draftId = randomUUID();
+	const single = await (await reserve(draftId, 1)).json();
+	const folder = await (await reserveAttachmentRequest(request("/api/attachments", "POST", JSON.stringify({ draftId, name: "folder", files: [{ path: "one", mimeType: "text/plain", size: 1 }] })))).json();
+	markDeletedOpening(openingAttachmentChatId(first.session.id, draftId));
+	const put = await uploadAttachmentRequest(request(single.uploadUrl, "PUT", "x"));
+	const renewed = await renewAttachmentFolderRequest(request(`/api/attachments/${folder.id}`, "POST"), Promise.resolve({ id: folder.id }));
+	assert.deepEqual([put.status, renewed.status], [404, 404]);
+	assert.equal((await put.json()).code, "opening-deleted");
+	assert.equal((await renewed.json()).code, "opening-deleted");
+});

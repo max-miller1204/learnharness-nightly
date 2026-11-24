@@ -31,7 +31,7 @@ export async function attachmentOperation(request: Request, run: (owner: string)
 	if (refusal) return refusal;
 	try { return await run(attachmentOwner(request)); }
 	catch (error) {
-		if (error instanceof AttachmentError) return Response.json({ error: error.message }, { status: error.status, headers: CREDENTIAL_HEADERS });
+		if (error instanceof AttachmentError) return Response.json({ error: error.message, ...(error.code ? { code: error.code } : {}) }, { status: error.status, headers: CREDENTIAL_HEADERS });
 		console.error("[attachments] Operation failed:", error);
 		return Response.json({ error: "The attachment operation failed. Try again." }, { status: 500, headers: CREDENTIAL_HEADERS });
 	}

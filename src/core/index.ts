@@ -118,6 +118,6 @@ export * from "./plugin-agents.ts";
 export { attachmentLimitError, ATTACHMENT_UNAVAILABLE } from "./attachment-limits.ts";
 export * from "./attachment-folders.ts";
 export { isAttachmentId } from "./attachments.ts";
-export { ATTACHMENT_FOLDERS, ATTACHMENT_STATUS, ATTACHMENT_UPLOADS, hasCapability, PROTOCOL_ROUTES } from "../client-protocol/index.ts";
+export { OPENING_DELETED, ATTACHMENT_FOLDERS, ATTACHMENT_STATUS, ATTACHMENT_UPLOADS, hasCapability, PROTOCOL_ROUTES } from "../client-protocol/index.ts";
 export type { AttachmentFolderGrantResponse, AttachmentFolderRequest, AttachmentGrantResponse, AttachmentReference, AttachmentSend, AttachmentTarget, ServerInfo, StartWithAttachmentsRequest } from "../client-protocol/index.ts";
 export { MODEL_UNAVAILABLE, modelUnavailableMessage } from "./model-unavailable.ts";

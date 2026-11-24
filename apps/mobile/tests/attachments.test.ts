@@ -224,3 +224,21 @@ test("upload routes stay on the paired origin", () => {
   assert.throws(() => api.upload("https://other.example/api/attachments/upload"), /Invalid LearnHarness route/);
   assert.throws(() => api.upload("//other.example/x"), /Invalid LearnHarness route/);
 });
+
+test("retired opening keeps picks and uploads them under a fresh draft", async () => {
+  const { draft, calls, puts } = harness({});
+  draft.add([photo, pdf]);
+  await settle(); await settle();
+  const old = draft.draftId();
+  const before = await draft.prepare("prompt");
+  draft.resetOpening();
+  await settle(); await settle(); await settle();
+  assert.notEqual(draft.draftId(), old);
+  assert.equal(draft.rows.length, 2);
+  assert.equal(puts.length, 4);
+  const reservations = calls.filter(call => call.method === "POST").map(call => call.body as { draftId: string });
+  assert.equal(reservations[2]!.draftId, reservations[3]!.draftId);
+  assert.notEqual(reservations[2]!.draftId, old);
+  assert.notEqual((await draft.prepare("prompt"))!.sendId, before!.sendId);
+  draft.dispose();
+});

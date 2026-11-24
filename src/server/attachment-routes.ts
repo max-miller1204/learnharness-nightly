@@ -1,5 +1,5 @@
 import { wasOpeningDeleted } from "../store/deleted-openings.ts";
-import type { AttachmentTarget, CreateChatResponse } from "../client-protocol/index.ts";
+import { OPENING_DELETED, type AttachmentTarget, type CreateChatResponse } from "../client-protocol/index.ts";
 import { isAttachmentId } from "../core/attachments.ts";
 import { titleFromPrompt } from "../core/contracts.ts";
 import { ChatInputError, parseChatInput } from "../core/input-events.ts";
@@ -17,7 +17,7 @@ function assertTargetExists(owner: string, target: AttachmentTarget): void {
 		if (!stores.chatStore.getChat(target.chatId)) throw new AttachmentError(404, "Unknown chat.");
 	} else {
 		const id = openingAttachmentChatId(owner, target.draftId);
-		if (wasOpeningDeleted(id) && !stores.chatStore.getChat(id)) throw new AttachmentError(404, "Opening draft no longer available.");
+		if (wasOpeningDeleted(id) && !stores.chatStore.getChat(id)) throw new AttachmentError(404, "Opening draft no longer available.", OPENING_DELETED);
 	}
 }
 
@@ -110,7 +110,7 @@ export function startAttachmentRequest(request: Request) {
 			throw new AttachmentError(400, "Provide an opening draft ID and message text.");
 		}
 		const id = openingAttachmentChatId(owner, draftId);
-		if (wasOpeningDeleted(id) && !stores.chatStore.getChat(id)) return Response.json({ code: "opening-deleted", error: "This opening draft belongs to a deleted session." }, { status: 409, headers: CREDENTIAL_HEADERS });
+		if (wasOpeningDeleted(id) && !stores.chatStore.getChat(id)) return Response.json({ code: OPENING_DELETED, error: "This opening draft belongs to a deleted session." }, { status: 409, headers: CREDENTIAL_HEADERS });
 		const submission = attachmentSubmission(request, owner, { draftId }, id, attachmentUploadIds, sendId);
 		const record = newChatRecord(id, titleFromPrompt(title), kind === "practice" ? kind : undefined);
 		record.settings = initialChatSettings();
@@ -124,6 +124,8 @@ export function startAttachmentRequest(request: Request) {
 			throw error;
 		}
 		const response = await handleChatInput(id, input, undefined, undefined, submission);
-		return response.ok ? Response.json({ id, title: record.title } satisfies CreateChatResponse) : response;
+		if (response.ok) return Response.json({ id, title: record.title } satisfies CreateChatResponse);
+		for (const [name, value] of Object.entries(CREDENTIAL_HEADERS)) response.headers.set(name, value);
+		return response;
 	});
 }

@@ -35,7 +35,7 @@ const storage = {
 const keyOf = (id: string) => ATTACHMENT_DRAFT_KEY_PREFIX + id;
 const stored = (id: string) => values.has(keyOf(id)) ? (JSON.parse(values.get(keyOf(id))!) as { rows: { id: string; name: string }[] }).rows : [];
 
-interface Call { method: string; url: string; keepalive?: boolean }
+interface Call { method: string; url: string; keepalive?: boolean; body?: string }
 
 /** What a real fetch does: a request waiting on `held` ends when its signal aborts. */
 const heldUntilAborted = (held: Promise<void> | null, signal?: AbortSignal | null) => held === null ? Promise.resolve() : new Promise<void>((resolve, reject) => {
@@ -51,6 +51,8 @@ let transfers: Scripted[] = [];
 let capabilities: string[] = [];
 let grants = 0;
 let retiredReservations = 0;
+let plain404 = false;
+let holdReservation: Promise<void> | undefined;
 let statusFailure = false;
 /** While set, the server's answer to a status check waits for it. */
 let holdStatus: Promise<void> | null = null;
@@ -87,7 +89,7 @@ let doc!: Document;
 const saved: Record<string, PropertyDescriptor | undefined> = {};
 
 beforeEach(async () => {
-	values.clear(); calls = []; transfers = []; statusOf = new Map(); grants = 0; retiredReservations = 0; statusFailure = false; holdStatus = null; holdIds = new Map(); holdInfo = null; infoFailure = false; infoStatus = 200; restoreTimeouts.info = 5000; restoreTimeouts.check = 5000; deleteAnswers = []; statusSignals = []; quota = Infinity;
+	values.clear(); calls = []; transfers = []; statusOf = new Map(); grants = 0; retiredReservations = 0; plain404 = false; holdReservation = undefined; statusFailure = false; holdStatus = null; holdIds = new Map(); holdInfo = null; infoFailure = false; infoStatus = 200; restoreTimeouts.info = 5000; restoreTimeouts.check = 5000; deleteAnswers = []; statusSignals = []; quota = Infinity;
 	capabilities = ["attachment-uploads-v1", "attachment-status-v1"];
 	const { window: win, document } = parseHTML("<html><body><div id='root'></div></body></html>");
 	doc = document;
@@ -99,14 +101,16 @@ beforeEach(async () => {
 		fetch: async (input: string, init?: RequestInit) => {
 			const method = init?.method ?? "GET";
 			const url = String(input);
-			calls.push({ method, url, keepalive: init?.keepalive });
+			calls.push({ method, url, keepalive: init?.keepalive, body: typeof init?.body === "string" ? init.body : undefined });
 			if (url === "/.well-known/learnharness/server") {
 				await heldUntilAborted(holdInfo, init?.signal);
 				if (infoFailure) throw new TypeError("offline");
 				return infoStatus === 200 ? Response.json({ capabilities }) : new Response("unavailable", { status: infoStatus });
 			}
 			if (method === "POST" && url === "/api/attachments") {
-				if (retiredReservations > 0) { retiredReservations--; return Response.json({ error: "Opening draft no longer available." }, { status: 404 }); }
+				if (plain404) return Response.json({ error: "Not found" }, { status: 404 });
+				if (retiredReservations > 0) { retiredReservations--; return Response.json({ code: "opening-deleted", error: "Opening draft no longer available." }, { status: 404 }); }
+				if (holdReservation && JSON.parse(String(init?.body)).name === "waiting.pdf") await holdReservation;
 				const id = randomUUID();
 				statusOf.set(id, 204);
 				grants++;
@@ -655,4 +659,34 @@ it("reattaching after deletion rotates the opening and keeps both files", async 
 	assert.equal(transfers.length, 2);
 	await finishUploads();
 	assert.ok(latest.files.every(file => file.ready));
+});
+
+
+it("does not repeatedly reserve when the server returns an ordinary 404", async () => {
+	await render();
+	plain404 = true;
+	await attach(pdf());
+	await waitMs(40);
+	assert.equal(calls.filter(call => call.method === "POST" && call.url === "/api/attachments").length, 1);
+	assert.ok(latest.files[0]?.error);
+});
+
+it("releases late grants and rotates concurrent uploads once", async () => {
+	await render();
+	let release!: () => void;
+	holdReservation = new Promise<void>(resolve => { release = resolve; });
+	await attach(pdf("waiting.pdf"));
+	retiredReservations = 1;
+	await attach(pdf("retired.pdf"));
+	holdReservation = undefined;
+	release();
+	await waitMs(30);
+	const reservations = calls.filter(call => call.method === "POST" && call.url === "/api/attachments").map(call => JSON.parse(call.body!));
+	assert.equal(reservations.length, 4);
+	assert.equal(reservations[0].draftId, reservations[1].draftId);
+	assert.notEqual(reservations[0].draftId, reservations[2].draftId);
+	assert.equal(reservations[2].draftId, reservations[3].draftId);
+	assert.ok(calls.some(call => call.method === "DELETE"), "the late grant is released");
+	await finishUploads();
+	assert.ok(latest.files.every(row => row.ready));
 });

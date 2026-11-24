@@ -26,6 +26,8 @@ Goal: roadmap item 21. A client released separately from the server (the Expo ph
 | Old versions | A server speaks only its own protocol version (follows from exact match). |
 | Contract package | One dependency-free TypeScript file clients import, like T3's `packages/contracts` but without Effect: constants, request and response types, the mismatch helper. Its record types are type-only re-exports of the server's own (`src/core`), so they can't drift apart. |
 
+The `opening-deleted-v1` capability identifies typed retired-opening errors on attachment requests.
+
 ## Server info body
 
 ```ts

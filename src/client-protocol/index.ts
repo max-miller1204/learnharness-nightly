@@ -54,6 +54,11 @@ export interface ProtocolIncompatibleResponse {
 
 // ─── Server info ────────────────────────────────────────────────────────────
 
+/** Code on an attachment request whose opening draft was deleted. */
+export const OPENING_DELETED = "opening-deleted" as const;
+/** Retired opening drafts return OPENING_DELETED for attachment requests. */
+export const OPENING_DELETED_V1 = "opening-deleted-v1";
+
 /** Public, no credential. A client reads it before pairing and on every connect. */
 export const ATTACHMENT_UPLOADS = "attachment-uploads-v1";
 export const ATTACHMENT_FOLDERS = "attachment-folders-v1";

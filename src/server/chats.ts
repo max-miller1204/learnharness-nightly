@@ -185,7 +185,6 @@ function finishChatRecordDeletion(chatId: string): number {
 	const attachments = attachmentReferences(stores.chatStore.getChat(chatId)?.messages ?? []);
 	const jobsRemoved = stores.jobStore.deleteJobsForChat(chatId);
 	if (stores.chatStore.deleteChat(chatId)) {
-		discardPendingForChat(chatId, openingAttachmentChatId);
 		if (attachments.length) queueMicrotask(() => {
 			try { sweepAttachments(); }
 			catch (error) { console.warn("[attachments] Deferred cleanup will retry:", error); }
@@ -193,6 +192,8 @@ function finishChatRecordDeletion(chatId: string): number {
 		discardChatDeliveries(chatId);
 		clearTurnFailure(chatId);
 		sideChats.stopAll(chatId); // a running side answer has nowhere left to land
+		try { discardPendingForChat(chatId, openingAttachmentChatId); }
+		catch (error) { console.warn("[attachments] Pending cleanup will retry:", error); }
 	}
 	return jobsRemoved;
 }
