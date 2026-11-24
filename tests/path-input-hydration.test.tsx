@@ -17,7 +17,7 @@ let cleanup: (() => Promise<void>) | undefined;
 afterEach(async () => { await cleanup?.(); cleanup = undefined; });
 
 /** Server-render `serverValue`, let the "user" edit the live field, then hydrate with `clientValue`. */
-async function hydrate(serverValue: string, typed: string | null, clientValue = serverValue, singleLine = false, caret?: number, extra?: React.ReactNode, composing = false) {
+async function hydrate(serverValue: string, typed: string | null, clientValue = serverValue, singleLine = false, caret?: number, extra?: React.ReactNode, composing = false, provisional?: string) {
 	const html = renderToString(<><PathInput value={serverValue} onValueChange={() => assert.fail("SSR cannot emit changes")} singleLine={singleLine} />{extra}</>);
 	const { window: win, document: doc } = parseHTML(`<html><body><div id='root'>${html}</div></body></html>`);
 	const previous = new Map<string, PropertyDescriptor | undefined>();
@@ -39,6 +39,7 @@ async function hydrate(serverValue: string, typed: string | null, clientValue = 
 	}
 	if (composing) new Function("document", PATH_INPUT_BOOT_SCRIPT)(doc);
 	if (composing) field.dispatchEvent(new win.Event("compositionstart", { bubbles: true }));
+	if (provisional !== undefined) field.replaceChildren(doc.createTextNode(provisional));
 	const originalChild = field.firstChild;
 	const { hydrateRoot } = await import("react-dom/client");
 	const changes: string[] = [];
@@ -185,4 +186,85 @@ test("composition begun before hydration is left alone until commit", async () =
 	await act(async () => { f.live.dispatchEvent(new f.win.Event("compositionend", { bubbles: true })); await Promise.resolve(); });
 	assert.equal(readPathInput(f.live), "committed");
 	assert.deepEqual(f.changes, ["committed"]);
+});
+
+
+test("blur finalizes an early composition only once", async () => {
+	const f = await hydrate("", "early", "", false, undefined, undefined, true);
+	f.live.textContent = "committed";
+	await act(async () => { f.live.dispatchEvent(new f.win.Event("blur", { bubbles: true })); await Promise.resolve(); });
+	assert.equal(readPathInput(f.live), "committed");
+	assert.deepEqual(f.changes.at(-1), "committed");
+	const count = f.changes.length;
+	await act(async () => { f.live.dispatchEvent(new f.win.Event("compositionend", { bubbles: true })); await Promise.resolve(); });
+	assert.equal(f.changes.length, count);
+});
+
+test("undo after early composition keeps text typed before it", async () => {
+	const f = await hydrate("", "early", "", false, 5, undefined, true, "early provisional");
+	f.live.textContent = "early committed";
+	await act(async () => { f.live.dispatchEvent(new f.win.Event("compositionend", { bubbles: true })); await Promise.resolve(); });
+	const event = new f.win.Event("beforeinput", { bubbles: true, cancelable: true });
+	Object.assign(event, { inputType: "historyUndo", isComposing: false });
+	await act(async () => { f.live.dispatchEvent(event); });
+	assert.equal(readPathInput(f.live), "early");
+});
+
+
+test("non-composing input finalizes an early composition", async () => {
+	const f = await hydrate("", "early", "", false, undefined, undefined, true);
+	f.live.textContent = "finished";
+	const event = new f.win.Event("input", { bubbles: true });
+	Object.assign(event, { isComposing: false });
+	await act(async () => { f.live.dispatchEvent(event); await Promise.resolve(); });
+	assert.deepEqual(f.changes, ["finished"]);
+});
+
+test("an unchanged provisional value still records composition-start undo", async () => {
+	const f = await hydrate("", "early", "", false, 5, undefined, true, "early日本語");
+	await act(async () => { f.live.dispatchEvent(new f.win.Event("compositionend", { bubbles: true })); await Promise.resolve(); });
+	assert.deepEqual(f.changes, ["early日本語"]);
+	const event = new f.win.Event("beforeinput", { bubbles: true, cancelable: true });
+	Object.assign(event, { inputType: "historyUndo", isComposing: false });
+	await act(async () => { f.live.dispatchEvent(event); });
+	assert.equal(readPathInput(f.live), "early");
+	assert.deepEqual(readPathSelection(f.live), { anchor: 5, focus: 5 });
+});
+
+test("the boot listener clears a composition when focus leaves before hydration", () => {
+	const { window, document } = parseHTML('<html><body><div data-path-input></div></body></html>');
+	new Function("document", PATH_INPUT_BOOT_SCRIPT)(document);
+	const field = document.querySelector<HTMLElement>("[data-path-input]")!;
+	field.dispatchEvent(new window.Event("compositionstart", { bubbles: true }));
+	assert.equal(field.dataset.pathComposing, "true");
+	field.dispatchEvent(new window.Event("blur", { bubbles: true }));
+	assert.equal(field.dataset.pathComposing, undefined);
+});
+
+
+test("dictation appended during an early composition is retained", async () => {
+	const f = await hydrate("", "early", "", false, 5, undefined, true, "early provisional");
+	await f.rerender(" dictated");
+	f.live.textContent = "early committed";
+	await act(async () => { f.live.dispatchEvent(new f.win.Event("compositionend", { bubbles: true })); await Promise.resolve(); });
+	assert.equal(readPathInput(f.live), "early committed dictated");
+	assert.deepEqual(f.changes, ["early committed dictated"]);
+});
+
+
+test("dictation reports the combined value when provisional text is unchanged", async () => {
+	const f = await hydrate("", "early", "", false, 5, undefined, true, "early provisional");
+	await f.rerender(" dictated");
+	await act(async () => { f.live.dispatchEvent(new f.win.Event("compositionend", { bubbles: true })); await Promise.resolve(); });
+	assert.equal(readPathInput(f.live), "early provisional dictated");
+	assert.deepEqual(f.changes, ["early provisional dictated"]);
+});
+
+
+test("a controlled reset during an early composition clears the field", async () => {
+	const f = await hydrate("", "early", "", false, 5, undefined, true, "early provisional");
+	await f.rerender("reset");
+	await f.rerender("");
+	await act(async () => { f.live.dispatchEvent(new f.win.Event("compositionend", { bubbles: true })); await Promise.resolve(); });
+	assert.equal(readPathInput(f.live), "");
 });

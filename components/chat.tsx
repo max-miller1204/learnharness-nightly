@@ -697,6 +697,7 @@ export function Chat({
 	 * read the latest text without a parent render per input event. Explicit
 	 * resets still bump a revision so the local field can sync. */
 	const textRef = useRef("");
+	const composerInputRef = useRef<HTMLDivElement>(null);
 	const composerEditRevision = useRef(0);
 	const showText = useCallback((v: string) => {
 		textRef.current = v; composerEditRevision.current++;
@@ -723,8 +724,27 @@ export function Chat({
 		const { initialMessages: messages, initialPrompt: prompt } = openingAtMount.current;
 		const openingOwed = initialPromptOwed(messages, prompt || readOpeningPromptEntry(chatId)?.text);
 		const saved = readComposerDraft(chatId);
-		if (saved && textRef.current === "" && !openingOwed) showText(saved);
-		return () => flushComposerDrafts();
+		const field = composerInputRef.current;
+		const restore = () => { if (saved && textRef.current === "" && !openingOwed) showText(saved); };
+		let waiting = field?.dataset.pathComposing === "true";
+		let active = true;
+		const finish = (event: Event) => {
+			if (!waiting || (event.type === "input" && (event as InputEvent).isComposing !== false)) return;
+			waiting = false;
+			queueMicrotask(() => { if (active) restore(); });
+		};
+		if (waiting && field) {
+			field.addEventListener("compositionend", finish);
+			field.addEventListener("blur", finish);
+			field.addEventListener("input", finish);
+		} else restore();
+		return () => {
+			active = false;
+			field?.removeEventListener("compositionend", finish);
+			field?.removeEventListener("blur", finish);
+			field?.removeEventListener("input", finish);
+			flushComposerDrafts();
+		};
 	}, [chatId, showText]);
 	// Saved slot completeness is live, but the session's selected route
 	// comes from its own ordinary model control, never today's Strong pin.
@@ -1038,7 +1058,6 @@ export function Chat({
 	 * composer: with a question pending the Composer is unmounted, the ref
 	 * is null, and the thinking field is left alone by design. */
 	const dictationWasActiveRef = useRef(false);
-	const composerInputRef = useRef<HTMLDivElement>(null);
 
 	// CITE (2026-10-31): selected tutor text → a citation chip in the
 	// composer, then its comment popover. The transcript's scroll element

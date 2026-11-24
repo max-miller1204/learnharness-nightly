@@ -7,7 +7,7 @@ import { CitationChip } from "./citation-chip";
 import { cn } from "../lib/utils";
 import {
 	adjacentPathRange, atomicPathRange, clampPathSelection, insertCitation, insertFilePaths, locateToken,
-	normalizePathEdit, normalizePathInputValue, pathInputStaticRange, PathInputHistory, readPathInput, readPathSelection, renderPathInput,
+	normalizePathEdit, normalizePathInputValue, pathInputStaticRange, pathInputOffset, PathInputHistory, readPathInput, readPathSelection, renderPathInput,
 	replacePathSelection, restorePathSelection,
 	type ChipHost, type PathEditSnapshot, type TextSelection,
 } from "./path-input-dom";
@@ -87,6 +87,8 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		let pendingPaste: string[] = [];
 		let pendingCitations: InsertCitationDetail[] = [];
 		let mounted = true;
+		let finalizing = false;
+		let earlyPending = false;
 		// Text adopted at mount that the owner has not heard of yet (`report`).
 		let adopted = false;
 		const history = new PathInputHistory();
@@ -202,7 +204,8 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 				}
 			}
 		}
-		function input() {
+		function input(event: Event) {
+			if (composing.current && (event as InputEvent).isComposing === false) { endComposition(); return; }
 			if (composing.current) {
 				root.dataset.empty = normalizePathInputValue(readPathInput(root), callbacks.current.singleLine).length === 0 ? "true" : "false";
 				return;
@@ -254,18 +257,24 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 			compositionStart = snapshot();
 		}
 		function endComposition() {
+			if (!composing.current || finalizing) return;
+			finalizing = true;
 			// Some browsers send the final input immediately AFTER compositionend.
 			queueMicrotask(() => {
-				if (!mounted) return;
+				if (!mounted || !composing.current) return;
+				finalizing = false;
+				delete root.dataset.pathComposing;
+				delete (root as HTMLElement & { __pathCompositionStart?: unknown }).__pathCompositionStart;
 				let nextValue = readPathInput(root);
 				let selection = readPathSelection(root) ?? saved;
 				const previous = compositionStart ?? snapshot();
-				const reset = pendingExternal !== null && !pendingExternal.startsWith(previous.value);
-				const nativeChanged = normalizePathInputValue(nextValue, callbacks.current.singleLine) !== current;
+				const externalBase = earlyPending && pendingExternal !== null && !pendingExternal.startsWith(previous.value) ? initial.current.value : previous.value;
+				const reset = pendingExternal !== null && ((pendingExternal === "" && current !== "") || !pendingExternal.startsWith(externalBase));
+				const nativeChanged = normalizePathInputValue(nextValue, callbacks.current.singleLine) !== (earlyPending ? initial.current.value : current);
 				const notify = pendingExternal === null || (!reset && nativeChanged);
 				if (pendingExternal !== null) {
-					if (pendingExternal.startsWith(previous.value)) {
-						nextValue += pendingExternal.slice(previous.value.length);
+					if (!reset) {
+						nextValue += pendingExternal.slice(externalBase.length);
 					} else {
 						nextValue = pendingExternal;
 						selection = clampPathSelection(nextValue, selection);
@@ -276,7 +285,12 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 				beforeEdit = null;
 				composing.current = false;
 				if (reset) history.reset();
+				const normalized = normalizePathInputValue(nextValue, callbacks.current.singleLine);
+				if (earlyPending && !reset && normalized === current && normalized !== previous.value) history.push(previous);
+				const reportEarly = earlyPending && notify && normalized === current && normalized !== initial.current.value;
+				earlyPending = false;
 				change({ value: nextValue, selection }, !reset, previous, notify);
+				if (reportEarly) callbacks.current.onValueChange(current);
 				if (pendingPaste.length) { const text = pendingPaste.join(""); pendingPaste = []; replace(text); }
 				if (pendingPaths.length) { const paths = pendingPaths; pendingPaths = []; stage(paths); }
 				if (pendingCitations.length) { const citations = pendingCitations; pendingCitations = []; citations.forEach(cite); }
@@ -333,9 +347,18 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		}
 		if (earlyComposition) {
 			composing.current = true;
-			compositionStart = { value: initial.current.value, selection: { ...saved } };
-			current = initial.current.value;
+			const captured = (root as HTMLElement & { __pathCompositionStart?: { root: HTMLElement; anchor: { path: number[]; offset: number } | null; focus: { path: number[]; offset: number } | null } }).__pathCompositionStart;
+			const startValue = captured ? readPathInput(captured.root) : current;
+			const offset = (point: { path: number[]; offset: number } | null) => {
+				if (!captured || !point) return null;
+				let node: Node = captured.root;
+				for (const index of point.path) { if (!node.childNodes[index]) return null; node = node.childNodes[index]!; }
+				return pathInputOffset(captured.root, node, point.offset);
+			};
+			const anchor = offset(captured?.anchor ?? null), focus = offset(captured?.focus ?? null);
+			compositionStart = normalizePathEdit({ value: startValue, selection: anchor !== null && focus !== null ? { anchor, focus } : clampPathSelection(startValue, saved) }, initial.current.singleLine);
 			adopted = false;
+			earlyPending = true;
 			adoptedEdit.current = true;
 		} else paint(saved, restoreCaret);
 		if (initial.current.autoFocus && !earlyComposition) { root.focus(); restorePathSelection(root, saved); }
@@ -350,6 +373,7 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		root.addEventListener("cut", copy);
 		root.addEventListener("compositionstart", startComposition);
 		root.addEventListener("compositionend", endComposition);
+		root.addEventListener("blur", endComposition);
 		document.addEventListener("selectionchange", remember);
 		return () => {
 			mounted = false;
@@ -366,6 +390,7 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 			root.removeEventListener("cut", copy);
 			root.removeEventListener("compositionstart", startComposition);
 			root.removeEventListener("compositionend", endComposition);
+			root.removeEventListener("blur", endComposition);
 			document.removeEventListener("selectionchange", remember);
 		};
 	}, []);
