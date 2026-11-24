@@ -22,18 +22,22 @@ export const TOOL_STEP_INPUT_FIELDS: Readonly<Record<string, readonly string[]>>
 	show_image: ["path", "caption"],
 };
 
-/** The primitive type of each declared field's value, by field name. */
+/** The primitive type each declared field's schema gives its value, by field name. The filter
+ *  keeps a string, number or boolean in any declared field whatever its type here: the
+ *  execution layer normalizes a string into a number or a boolean (a read's offset "2", a
+ *  grep's ignoreCase "true") while the record keeps the original. */
 export const TOOL_STEP_FIELD_TYPES: Readonly<Record<string, "string" | "number" | "boolean">> = {
 	path: "string", pattern: "string", glob: "string", session: "string", caption: "string",
 	offset: "number", limit: "number", context: "number",
 	ignoreCase: "boolean", literal: "boolean",
 };
 
-/** The input of a tool with declared fields, cut to them: each declared field whose value is
- *  of its declared primitive type, and nothing else. An object or array in a declared field,
- *  an undeclared field, and a non-object input all drop out, so the arguments of a call that
- *  never got past its schema (the model's can hold anything) put none of their extras on the
- *  page. Undefined for a tool with no declared fields. */
+/** The input of a tool with declared fields, cut to them: each declared field whose value is a
+ *  primitive (a string, number or boolean, whatever type its schema declares), and nothing
+ *  else. An object, an array or null in a declared field, an undeclared field and a non-object
+ *  input all drop out, so the arguments of a call that never got past its schema (the model's
+ *  can hold anything) put none of their extras on the page. Undefined for a tool with no
+ *  declared fields. */
 export function declaredToolInput(tool: string, input: unknown): Record<string, string | number | boolean> | undefined {
 	if (!Object.hasOwn(TOOL_STEP_INPUT_FIELDS, tool)) return undefined;
 	const kept: Record<string, string | number | boolean> = {};
@@ -41,7 +45,7 @@ export function declaredToolInput(tool: string, input: unknown): Record<string, 
 	for (const field of TOOL_STEP_INPUT_FIELDS[tool]!) {
 		if (!Object.hasOwn(input, field)) continue;
 		const value = (input as Record<string, unknown>)[field];
-		if (typeof value === TOOL_STEP_FIELD_TYPES[field]) kept[field] = value as string | number | boolean;
+		if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") kept[field] = value;
 	}
 	return kept;
 }
@@ -131,9 +135,12 @@ const codePoints = (text: string) => text.length - (text.match(/[\uD800-\uDBFF][
 /** The collapsed headline argument per tool: path for read/ls/show_image, pattern for
  *  find/grep, the session for list_propositions. Shown as given, never resolved, with any
  *  bidirectional controls shown as escapes. Past `limit` code points it is cut, before the
- *  escapes, so a cut never splits one, and ends in an ellipsis. */
+ *  escapes, so a cut never splits one, and ends in an ellipsis. A tool with declared fields
+ *  takes its headline from those fields only. Any other tool's headline comes from its input
+ *  as given, which only a settled call's card passes: an unsettled call's input never reaches
+ *  it (the live card, and the plugin card's withheld input). */
 export function toolStepHeadline(tool: string, input: unknown, limit = Infinity): string {
-	const raw = rawHeadline(tool, declaredToolInput(tool, input) ?? {});
+	const raw = rawHeadline(tool, declaredToolInput(tool, input) ?? input);
 	const cut = Number.isFinite(limit) ? firstCodePoints(raw, limit) : undefined;
 	return cut === undefined ? plainToolText(raw) : `${plainToolText(cut)}…`;
 }

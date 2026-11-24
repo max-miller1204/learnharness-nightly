@@ -23,13 +23,17 @@ describe("a tool step's declared input fields", () => {
 		assert.deepEqual([...TOOL_STEP_INPUT_FIELDS.grep!].sort(), keys(createGrepTool()));
 		assert.deepEqual([...TOOL_STEP_INPUT_FIELDS.show_image!].sort(), keys(createShowImageTool({ chatId: "c", chatStore: { saveImageSnapshot: () => { throw new Error("unused"); } } as never })));
 	});
-	it("each have the primitive type the tools' own schemas give them", () => {
+	it("each name the primitive type the tools' own schemas give them, and a step keeps any primitive there", () => {
 		const kind = (schema: { type?: string }) => schema.type === "integer" ? "number" : schema.type;
 		const props = (tool: { parameters: unknown }) => (tool.parameters as { properties: Record<string, { type?: string }> }).properties;
 		const tools: Record<string, { parameters: unknown }> = { read: createReadTool(), ls: createLsTool(), find: createFindTool(), grep: createGrepTool(),
 			show_image: createShowImageTool({ chatId: "c", chatStore: { saveImageSnapshot: () => { throw new Error("unused"); } } as never }) };
 		for (const [name, tool] of Object.entries(tools)) for (const [field, schema] of Object.entries(props(tool))) assert.equal(TOOL_STEP_FIELD_TYPES[field], kind(schema), `${name}.${field}`);
 		for (const fields of Object.values(TOOL_STEP_INPUT_FIELDS)) for (const field of fields) assert.ok(Object.hasOwn(TOOL_STEP_FIELD_TYPES, field), field);
+		// The record keeps what the model sent: a string where the schema says number or boolean.
+		assert.deepEqual(toolStepInput("read", { path: "a.md", offset: "2", limit: "2" }), { path: "a.md", offset: "2", limit: "2" });
+		assert.deepEqual(toolStepInput("grep", { pattern: "p", ignoreCase: "true", literal: "false" }), { pattern: "p", ignoreCase: "true", literal: "false" });
+		assert.deepEqual(toolStepInput("read", { path: { a: 1 }, offset: [2], limit: null }), {});
 	});
 	it("are all a step shows of its input", () => {
 		assert.deepEqual(toolStepInput("read", { path: "a.md", modelSolution: "SECRET", payload: { tests: ["SECRET"] } }), { path: "a.md" });

@@ -377,3 +377,27 @@ test("a step shows and says only its tool's declared fields while it streams", a
     act(() => tree.unmount());
   }
 });
+
+test("a step keeps a string the execution layer normalizes, and still drops an object in its place", async () => {
+  const normalized: LhViewPart = { type: "tool-read", state: "output-available", input: { path: "notes.md", offset: "2", limit: "2", extra: { modelSolution: "SECRET" } }, output: "text" };
+  const tree = await render(createElement(ToolStep, { part: normalized }));
+  try {
+    const [row] = rows(tree.root);
+    assert.equal(row?.props.accessibilityLabel, "read notes.md");
+    await act(async () => row?.props.onPress());
+    const input = texts(tree.root).find((text) => text.includes("notes.md") && text.includes("offset")) ?? "";
+    assert.deepEqual(JSON.parse(input), { path: "notes.md", offset: "2", limit: "2" });
+    assert.ok(!texts(tree.root).some((text) => text.includes("SECRET")));
+  } finally {
+    act(() => tree.unmount());
+  }
+  const grep: LhViewPart = { type: "tool-grep", state: "output-available", input: { pattern: "eta", ignoreCase: "true", literal: "false", context: { x: 1 } }, output: "hit" };
+  const second = await render(createElement(ToolStep, { part: grep }));
+  try {
+    await act(async () => rows(second.root)[0]?.props.onPress());
+    const input = texts(second.root).find((text) => text.includes("ignoreCase")) ?? "";
+    assert.deepEqual(JSON.parse(input), { pattern: "eta", ignoreCase: "true", literal: "false" });
+  } finally {
+    act(() => second.unmount());
+  }
+});

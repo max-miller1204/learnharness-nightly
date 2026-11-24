@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LiveToolCard } from "../components/artifacts/live-tool-card.tsx";
+import { ToolCallCard } from "../components/artifacts/tool-call-card.tsx";
 import { ToolPartRenderer } from "../components/plugin-renderers.tsx";
 import { projectView, type LhMessage, type LiveExecution } from "../src/core/index.ts";
 import { toolActivityLabel } from "../src/core/pending.ts";
@@ -49,15 +50,24 @@ describe("a successful plugin pose before its result joins the record", () => {
 });
 
 describe("the declared-field filter", () => {
-	it("keeps only declared fields of the declared primitive type", () => {
+	it("keeps only the primitives in declared fields", () => {
 		assert.deepEqual(streamingToolInput("read", { path: { modelSolution: "SECRET" } }), {});
-		assert.deepEqual(streamingToolInput("read", { path: ["SECRET"], offset: "SECRET", limit: { a: 1 } }), {});
+		assert.deepEqual(streamingToolInput("read", { path: ["SECRET"], offset: null, limit: { a: 1 } }), {});
 		assert.deepEqual(streamingToolInput("read", { path: "a.md", offset: 3, limit: 5, extra: "SECRET" }), { path: "a.md", offset: 3, limit: 5 });
-		assert.deepEqual(streamingToolInput("grep", { pattern: "p", ignoreCase: true, literal: "SECRET", context: 2 }), { pattern: "p", ignoreCase: true, context: 2 });
+		assert.deepEqual(streamingToolInput("grep", { pattern: "p", ignoreCase: true, literal: { x: "SECRET" }, context: 2 }), { pattern: "p", ignoreCase: true, context: 2 });
 		assert.deepEqual(streamingToolInput("read", ["SECRET"]), {});
 		assert.deepEqual(streamingToolInput("read", "SECRET"), {});
 		assert.deepEqual(streamingToolInput("read", null), {});
 		assert.equal(streamingToolInput("coding_problem", { path: "SECRET" }), undefined);
+	});
+
+	it("keeps a string the execution layer normalizes into a number or a boolean", () => {
+		assert.deepEqual(toolStepInput("read", { path: "notes.md", offset: "2", limit: "2" }), { path: "notes.md", offset: "2", limit: "2" });
+		assert.deepEqual(toolStepInput("grep", { pattern: "p", ignoreCase: "true", literal: "false" }), { pattern: "p", ignoreCase: "true", literal: "false" });
+		const html = renderToStaticMarkup(<ToolCallCard part={{ type: "tool-read", state: "output-available", toolCallId: "c", input: { path: "notes.md", offset: "2", limit: "2", extra: { modelSolution: "SECRET" } }, output: "text" } as never} />);
+		assert.match(html, /&quot;offset&quot;: &quot;2&quot;/);
+		assert.match(html, /&quot;limit&quot;: &quot;2&quot;/);
+		assert.doesNotMatch(html, /SECRET/);
 	});
 
 	it("applies to a settled tool step's input too", () => {
@@ -77,7 +87,20 @@ describe("the declared-field filter", () => {
 		assert.equal(toolStepHeadline("read", { path: { modelSolution: "SECRET" } }), "~");
 		assert.equal(toolStepHeadline("read", { pattern: "SECRET" }), "~");
 		assert.equal(toolStepHeadline("list_propositions", { session: "chat_x", pattern: "SECRET" }), "chat_x");
-		assert.equal(toolStepHeadline("coding_problem", { pattern: "SECRET", path: "SECRET", session: "SECRET" }), "");
+	});
+
+	it("a settled card of an undeclared tool keeps the headline from its input as given", () => {
+		assert.equal(toolStepHeadline("search_notes", { pattern: "eigen" }), "eigen");
+		const settled = renderToStaticMarkup(<ToolPartRenderer part={{ type: "tool-search_notes", state: "output-available", toolCallId: "c", input: { pattern: "eigen" }, output: "ok" } as never} />);
+		assert.match(settled, /<span class="truncate">eigen<\/span>/);
+	});
+
+	it("an unsettled card of an undeclared tool has no headline from its input", () => {
+		for (const state of ["input-streaming", "input-available"]) {
+			const html = renderToStaticMarkup(<ToolPartRenderer part={{ type: "tool-search_notes", state, toolCallId: "c", input: { pattern: "SECRET-HEADLINE", path: "SECRET-HEADLINE" } } as never} />);
+			assert.doesNotMatch(html, /SECRET/, state);
+			assert.doesNotMatch(html, /class="truncate"/, state);
+		}
 	});
 });
 
@@ -86,7 +109,7 @@ describe("name-keyed lookups ignore the object prototype", () => {
 		it(`${name} is an ordinary unknown tool`, () => {
 			assert.equal(toolActivityLabel(name), "Working…");
 			assert.equal(streamingToolInput(name, { path: "SECRET" }), undefined);
-			assert.equal(toolStepHeadline(name, { pattern: "SECRET" }), "");
+			assert.equal(toolStepHeadline(name, { pattern: "eigen" }), "eigen", "settled input of an undeclared tool, as given");
 			assert.equal(toolStepInput(name, { any: 1 }) !== undefined, true);
 			const live = renderToStaticMarkup(<LiveToolCard part={part(name, {}) as never} />);
 			assert.match(live, /Working…/);
